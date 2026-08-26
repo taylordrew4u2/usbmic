@@ -44,11 +44,20 @@ cmake --build build -j
 
 `MMA_BUILD_APP` is `OFF` by default so the engine and its tests build anywhere.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` builds `Source/Core` and runs its tests on Linux,
+macOS and Windows for every push to `main` and every pull request, and can be
+run on demand from the Actions tab. Because the engine has no JUCE dependency
+and needs no audio hardware, the same job runs unchanged on all three, which
+also guards the portability the platform builds depend on.
+
 ## Current status
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 94 passing unit tests:
+All of `Source/Core`, covered by 94 unit tests passing in CI on Linux, macOS
+and Windows:
 
 | Area | Spec | Tests |
 |---|---|---|
