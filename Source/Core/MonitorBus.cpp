@@ -76,6 +76,16 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     return output;
 }
 
+void MonitorBus::setMasterVolume (double volume0to100) noexcept
+{
+    masterVolume = std::max (0.0, std::min (100.0, volume0to100));
+}
+
+float MonitorBus::applyMasterVolume (float busSample) const noexcept
+{
+    return busSample * monitorVolumeToLinearGain (masterVolume);
+}
+
 void MonitorBus::manuallyUnmute() noexcept
 {
     runawayMuted = false;

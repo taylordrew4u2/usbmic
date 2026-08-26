@@ -38,6 +38,8 @@ void Application::initialise()
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
 
     monitorBus = std::make_unique<MonitorBus> (currentSampleRate);
+    mixMeter = std::make_unique<Metering> (currentSampleRate);
+    rebuildMeters();
 
     if (audioBackend != nullptr)
     {
@@ -78,6 +80,45 @@ void Application::onDeviceListChanged()
     // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
     currentSampleRate = rateResult.chosenRate;
+
+    rebuildMeters();
+}
+
+void Application::rebuildMeters()
+{
+    const auto needed = static_cast<size_t> (getIncludedMicCount());
+
+    // Keep existing meters so ballistics and clip latches survive a hot-plug.
+    while (channelMeters.size() > needed)
+        channelMeters.pop_back();
+
+    while (channelMeters.size() < needed)
+        channelMeters.push_back (std::make_unique<Metering> (currentSampleRate));
+}
+
+Metering* Application::getChannelMetering (int index)
+{
+    if (index < 0 || static_cast<size_t> (index) >= channelMeters.size())
+        return nullptr;
+
+    return channelMeters[static_cast<size_t> (index)].get();
+}
+
+juce::String Application::getMicDisplayName (int index) const
+{
+    int seen = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (seen == index)
+            return juce::String (d.displayName);
+
+        ++seen;
+    }
+
+    return {};
 }
 
 void Application::chooseInitialDestination()
@@ -107,12 +148,94 @@ void Application::toggleRecording()
             c.name = d.displayName;
             channels.push_back (c);
         }
-        recordingEngine.start (std::move (channels));
+        if (recordingEngine.start (std::move (channels)))
+            recordingStartMs = juce::Time::getMillisecondCounterHiRes();
     }
     else
     {
         recordingEngine.stop();
+        recordingStartMs = 0.0;
     }
+}
+
+double Application::getElapsedRecordingSeconds() const
+{
+    if (recordingEngine.getState() != RecordingState::Recording || recordingStartMs <= 0.0)
+        return 0.0;
+
+    return (juce::Time::getMillisecondCounterHiRes() - recordingStartMs) / 1000.0;
+}
+
+int Application::getIncludedMicCount() const
+{
+    int count = 0;
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            ++count;
+
+    return count;
+}
+
+double Application::getRemainingRecordingSeconds() const
+{
+    const int channels = std::max (1, getIncludedMicCount());
+    const int bytesPerSample = std::max (1, currentBitDepth / 8);
+
+    // Stems plus the mix file, matching the pre-flight required-rate figure (§6.4).
+    const double bytesPerSecond = static_cast<double> (channels) * currentSampleRate
+                                * static_cast<double> (bytesPerSample) * 2.0;
+
+    if (bytesPerSecond <= 0.0)
+        return -1.0;
+
+    juce::File destination (destinationFolder);
+    auto probe = destination;
+    while (! probe.exists() && probe.getParentDirectory() != probe)
+        probe = probe.getParentDirectory();
+
+    const auto freeBytes = probe.getBytesFreeOnVolume();
+    if (freeBytes <= 0)
+        return -1.0;
+
+    return static_cast<double> (freeBytes) / bytesPerSecond;
+}
+
+juce::String Application::formatDuration (double seconds)
+{
+    if (seconds < 0.0)
+        return "--";
+
+    const auto total = static_cast<int64_t> (seconds);
+    const auto hours = total / 3600;
+    const auto minutes = (total % 3600) / 60;
+    const auto secs = total % 60;
+
+    if (hours > 0)
+        return juce::String (hours) + "h " + juce::String (minutes).paddedLeft ('0', 2) + "m";
+
+    return juce::String (minutes) + "m " + juce::String (secs).paddedLeft ('0', 2) + "s";
+}
+
+juce::String Application::getRecordDisabledReason() const
+{
+    if (getIncludedMicCount() == 0)
+        return "Plug in a microphone first.";
+
+    // §6.4: pre-flight blocks arming rather than degrading mid-take. Until a
+    // volume has been benchmarked, nothing else disables the button.
+    return {};
+}
+
+void Application::setMasterVolume (double volume0to100)
+{
+    if (monitorBus != nullptr)
+        monitorBus->setMasterVolume (volume0to100);
+}
+
+double Application::getMasterVolume() const
+{
+    return monitorBus != nullptr ? monitorBus->getMasterVolume()
+                                 : MonitorBus::kDefaultMonitorVolume;
 }
 
 void Application::exportDiagnostics (const juce::File& destinationZip)

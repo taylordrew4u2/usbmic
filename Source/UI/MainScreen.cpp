@@ -41,6 +41,14 @@ MainScreen::MainScreen()
 
 MainScreen::~MainScreen() = default;
 
+void MainScreen::repaintMeters()
+{
+    for (auto* meter : skullMeters)
+        meter->repaint();
+
+    mixBar.repaint();
+}
+
 void MainScreen::setMicCount (int count)
 {
     skullMeters.clear();

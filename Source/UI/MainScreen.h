@@ -22,6 +22,10 @@ public:
     void setMicCount (int count);
     SkullMeterComponent* getSkullMeter (int index);
 
+    void setMixMetering (Metering* meteringSource) { mixBar.setMetering (meteringSource); }
+    /// Repaints only the meters, so status-label updates don't redraw the whole screen.
+    void repaintMeters();
+
     void setRecording (bool isRecording);
     void setElapsedTimeText (const juce::String& text) { elapsedLabel.setText (text, juce::dontSendNotification); }
     void setRemainingTimeText (const juce::String& text) { remainingLabel.setText (text, juce::dontSendNotification); }
