@@ -28,3 +28,37 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
+
+  app:
+    name: App (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # CoreAudioBackend and WasapiAsioBackend sit behind JUCE_MAC / JUCE_WINDOWS
+      # guards, so only the matching runner compiles them at all. Without this job
+      # they are never built anywhere.
+      - name: Install Linux JUCE dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev \
+            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build-app/_deps
+          key: juce-7.0.12-${{ runner.os }}
+
+      - name: Configure
+        run: cmake -B build-app -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-app --config Release -j 4

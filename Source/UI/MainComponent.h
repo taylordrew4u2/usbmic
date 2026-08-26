@@ -9,19 +9,29 @@ class Application; // App/Application.h
 
 /// Top-level component: hosts MainScreen always, and slides in AdvancedPanel
 /// on demand (§10.3: "one door, one click").
-class MainComponent : public juce::Component
+class MainComponent : public juce::Component,
+                      private juce::Timer
 {
 public:
+    static constexpr int kUiRefreshHz = 60;     // §8.2 meter polling
+    static constexpr int kStatusRefreshHz = 2;  // disk-backed status; see refreshStatus()
+
     explicit MainComponent (Application& app);
     ~MainComponent() override;
 
     void resized() override;
 
 private:
+    /// §8.2: the UI polls, the audio thread never pushes. Dropping a frame here
+    /// is acceptable; it can never stall the audio callback.
+    void timerCallback() override;
+    void refreshStatus();
     Application& application;
     MainScreen mainScreen;
     AdvancedPanel advancedPanel;
     bool advancedVisible = false;
+    int lastMicCount = -1;
+    int framesUntilStatusRefresh = 1;
 
     void toggleAdvanced();
 
