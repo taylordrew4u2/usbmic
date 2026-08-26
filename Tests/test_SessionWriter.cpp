@@ -11,9 +11,17 @@ namespace {
 
 std::string tempBasePath (const std::string& name)
 {
-    const char* dir = std::getenv ("MMA_TEST_TMPDIR");
-    std::string base = dir ? dir : "/tmp";
-    return base + "/" + name;
+    // Windows has no /tmp, so fall back through the usual temp-dir variables
+    // before assuming a POSIX layout.
+    for (const char* var : { "MMA_TEST_TMPDIR", "TMPDIR", "TMP", "TEMP" })
+    {
+        const char* dir = std::getenv (var);
+
+        if (dir != nullptr && *dir != '\0')
+            return std::string (dir) + "/" + name;
+    }
+
+    return "/tmp/" + name;
 }
 
 uint32_t readU32LE (std::ifstream& f, std::streampos pos)
