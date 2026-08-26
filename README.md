@@ -46,22 +46,33 @@ cmake --build build -j
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` builds `Source/Core` and runs its tests on Linux,
-macOS and Windows for every push to `main` and every pull request, and can be
-run on demand from the Actions tab. Because the engine has no JUCE dependency
-and needs no audio hardware, the same job runs unchanged on all three, which
-also guards the portability the platform builds depend on.
+`.github/workflows/ci.yml` runs two jobs on Linux, macOS and Windows for every
+push to `main` and every pull request, and can be run on demand from the
+Actions tab.
+
+- **Core + tests** builds the engine and runs its unit tests. It needs no JUCE
+  and no audio hardware, so it runs unchanged everywhere and guards the
+  portability the platform builds depend on.
+- **App** builds the full JUCE application. `CoreAudioBackend` and
+  `WasapiAsioBackend` sit behind `JUCE_MAC` / `JUCE_WINDOWS` guards, so only
+  the matching runner compiles each one; without this job neither is built
+  anywhere.
+
+The app job pins macOS to `macos-14`. JUCE 7.0.12 calls
+`CGWindowListCreateImage`, which the macOS 15+ SDK marks unavailable, so JUCE's
+own tooling fails to build on newer runners. Moving to a newer SDK means moving
+to JUCE 8.
 
 ## Current status
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 94 unit tests passing in CI on Linux, macOS
+All of `Source/Core`, covered by 99 unit tests passing in CI on Linux, macOS
 and Windows:
 
 | Area | Spec | Tests |
 |---|---|---|
-| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection | §5 | 10 |
+| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 15 |
 | `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 9 |
 | `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 9 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 8 |
@@ -76,11 +87,10 @@ and Windows:
 | `DeadChannelDetector` — silence against an active reference channel | §8.1 | 4 |
 | `SessionMetadata` + JSON | §6.2 | 4 |
 
-### Written but not verified here
+### Compiled, but never exercised against hardware
 
-`Source/Platform` and `Source/UI` are real code against the real APIs, but this
-sandbox is Linux with no audio hardware and no JUCE, so none of it has been
-compiled or run:
+The full application builds and links in CI on Linux, macOS and Windows, so
+`Source/Platform` and `Source/UI` are no longer unverified code:
 
 - `CoreAudioBackend` — macOS, guarded by `JUCE_MAC`.
 - `WasapiAsioBackend` — Windows, guarded by `JUCE_WINDOWS`. Selects ASIO or
@@ -88,8 +98,13 @@ compiled or run:
 - `SkullMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
 
-These need a first compile-and-run on their target OS before they can be
-trusted.
+The app has also been run headless under Xvfb, where it renders the §1
+zero-microphone state and survives with its 60 Hz refresh running.
+
+What that does **not** establish is behaviour with real audio. Every code path
+that depends on an actual device — enumeration, the monitor stream, the write
+pipeline under load — has still never executed, because no build environment
+here has an audio device. Compiling and rendering are not the same as working.
 
 ### Deliberately stubbed
 
@@ -156,5 +171,5 @@ Per §13, and where this repository sits against it:
 3. Shared monitor bus with limiter, mute, feedback protection — **written and
    unit-tested, gated on the §5.4 latency measurement**
 4. Metering — **written and unit-tested**
-5. Virtual device backends — **A implemented, B/C/D stubbed per above**
-6. UI and zero-knowledge setup flow — **written, never compiled or run**
+5. Virtual device backends — **A implemented and compiled on all three platforms, B/C/D stubbed per above**
+6. UI and zero-knowledge setup flow — **builds in CI on all three platforms and runs headless; never used with real microphones**
