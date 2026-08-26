@@ -1,5 +1,6 @@
 #include "SampleRateNegotiator.h"
 #include <algorithm>
+#include <iterator> // std::inserter: MSVC's STL does not pull this in via <set>
 #include <set>
 
 namespace mma {
