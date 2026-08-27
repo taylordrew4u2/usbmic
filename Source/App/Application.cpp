@@ -86,6 +86,33 @@ void Application::onDeviceListChanged()
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
     reselectOutputDevice();
+
+    // §10.5 guidance follows the device list: names so advice can say "Kitchen"
+    // rather than "channel 2", and topology so §14.3 contention is re-judged
+    // when the card reader moves.
+    std::vector<std::string> names;
+    std::vector<ControllerContentionDetector::DeviceControllerInfo> topology;
+
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        names.push_back (d.displayName);
+
+        ControllerContentionDetector::DeviceControllerInfo info;
+        info.deviceId = d.identity.key();
+        // controllerId is left empty: no backend reports USB host-controller
+        // topology yet, and §14.3 only judges co-location "where the OS exposes
+        // controller topology". The detector treats unknown as unjudgeable and
+        // stays silent, which is right -- guessing would warn people whose card
+        // reader is fine.
+        info.isMicrophone = true;
+        topology.push_back (std::move (info));
+    }
+
+    setupAdvisor.setChannelNames (std::move (names));
+    setupAdvisor.updateControllerTopology (topology);
 }
 
 void Application::reselectOutputDevice()
@@ -137,6 +164,22 @@ PerformanceWarning Application::updatePerformance (double cpuLoad, bool thermall
 {
     return cpuPressureMonitor.update (cpuLoad, thermallyThrottled,
                                       juce::Time::getMillisecondCounterHiRes() / 1000.0);
+}
+
+std::vector<SetupAdvice> Application::getSetupAdvice() const
+{
+    return setupAdvisor.getActiveAdvice (juce::Time::getMillisecondCounterHiRes() / 1000.0);
+}
+
+void Application::noteDeviceDropout()
+{
+    setupAdvisor.noteDeviceDropout (juce::Time::getMillisecondCounterHiRes() / 1000.0,
+                                    getIncludedMicCount());
+}
+
+void Application::updateSetupAdvisorLevels (const std::vector<float>& peaksDb, double blockSeconds)
+{
+    setupAdvisor.updateChannelLevels (peaksDb, blockSeconds);
 }
 
 RemainingTimeWarning Application::pollCapacityWarning()
