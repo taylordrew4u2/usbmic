@@ -169,3 +169,46 @@ TEST_CASE (DeviceManager_PreferredMasterThatLeavesFallsBackToTheRule)
     REQUIRE (m.selectDefaultMaster() != nullptr);
     REQUIRE (m.selectDefaultMaster()->displayName == "A");
 }
+
+TEST_CASE (DeviceManager_DriftIsNotClaimedBeforeTheMeasurementWindow)
+{
+    DeviceManager m;
+
+    MicDeviceState a;
+    a.identity.locationId = "port-a";
+    a.displayName = "A";
+    m.addDevice (a);
+
+    // §3.1: 60 seconds of running measurement, not 59.
+    m.updateMeasuredDrift ("port-a", 12.5, 59.0);
+    REQUIRE_FALSE (m.getDevices()[0].hasDriftMeasurement);
+    REQUIRE_NEAR (m.getDevices()[0].measuredDriftPpm, 12.5, 1e-9);
+
+    m.updateMeasuredDrift ("port-a", 12.5, 60.0);
+    REQUIRE (m.getDevices()[0].hasDriftMeasurement);
+}
+
+TEST_CASE (DeviceManager_MasterSelectionUsesMeasuredDriftOnceAvailable)
+{
+    DeviceManager m;
+
+    MicDeviceState a;
+    a.identity.locationId = "port-a";
+    a.displayName = "A";
+    m.addDevice (a);
+
+    MicDeviceState b;
+    b.identity.locationId = "port-b";
+    b.displayName = "B";
+    b.enumerationOrder = 1;
+    m.addDevice (b);
+
+    // §3.1: before any measurement exists the tiebreak is enumeration order.
+    REQUIRE (m.selectDefaultMaster()->displayName == "A");
+
+    // Once B is measured as the steadier clock, it becomes the master.
+    m.updateMeasuredDrift ("port-b", 1.0, 60.0);
+    m.updateMeasuredDrift ("port-a", 40.0, 60.0);
+
+    REQUIRE (m.selectDefaultMaster()->displayName == "B");
+}

@@ -132,7 +132,45 @@ void Application::restartCapture()
         return;
     }
 
-    capture->startMonitoring (channels, selectedOutputDeviceId);
+    if (! capture->startMonitoring (channels, selectedOutputDeviceId))
+        return;
+
+    applyClockMaster();
+    driftMeasuredSeconds = 0.0;
+}
+
+void Application::applyClockMaster()
+{
+    if (capture == nullptr)
+        return;
+
+    // §3.1 / §3.3: DeviceManager owns which mic is the timebase -- lowest
+    // measured drift, the user's override, or the failover pick after the
+    // master leaves. The coordinator only needs the resulting channel index.
+    const auto* master = deviceManager.selectDefaultMaster();
+
+    if (master == nullptr)
+    {
+        capture->setMasterChannel (-1);
+        return;
+    }
+
+    int index = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (d.identity.key() == master->identity.key())
+        {
+            capture->setMasterChannel (index);
+            return;
+        }
+
+        ++index;
+    }
+
+    capture->setMasterChannel (-1);
 }
 
 MonitorBus* Application::getMonitorBus()
@@ -800,6 +838,7 @@ void Application::setClockMasterByName (const juce::String& displayName)
             continue;
 
         deviceManager.setPreferredMaster (d.identity.key());
+        applyClockMaster();
         return;
     }
 }
@@ -907,6 +946,39 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     }
 
     updateSetupAdvisorLevels (peaksDb, sinceLastCallSeconds);
+
+    // §3.2 / §3.3: the loop runs in the audio callback; reporting it does not.
+    if (capture != nullptr)
+    {
+        capture->tickDriftReporting (sinceLastCallSeconds);
+        driftMeasuredSeconds += sinceLastCallSeconds;
+
+        int index = 0;
+        for (const auto& d : deviceManager.getDevices())
+        {
+            if (! d.included)
+                continue;
+
+            deviceManager.updateMeasuredDrift (d.identity.key(),
+                                               capture->getChannelDriftPpm (index),
+                                               driftMeasuredSeconds);
+            ++index;
+        }
+
+        // §3.1: the master is re-picked as measurements arrive, so a rig that
+        // started on enumeration order settles onto the steadiest clock.
+        applyClockMaster();
+
+        // §3.3: a device this far out is not drifting, it is failing.
+        for (int i = 0; i < micCount; ++i)
+        {
+            if (! capture->hasSustainedExcessDrift (i))
+                continue;
+
+            return juce::String (getMicDisplayName (i))
+                   + " can't keep steady time with the others. Try a different USB port.";
+        }
+    }
 
     // §6.3: the mirror is re-judged during the take, and once it stops it never
     // restarts within the same recording.
