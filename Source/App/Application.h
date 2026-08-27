@@ -40,6 +40,32 @@ public:
     /// confirmation either direction.
     void toggleRecording();
 
+    /// §10.2 status the main screen shows by default. All plain language --
+    /// no sample rates, buffers or backends leak into these.
+    juce::String getDestinationFolder() const { return juce::String (destinationFolder); }
+    double getElapsedRecordingSeconds() const;
+    /// Remaining recording time at the current channel count and format, from
+    /// free space on the destination volume. Negative if it cannot be determined.
+    double getRemainingRecordingSeconds() const;
+    /// Formats a duration as "2h 14m" / "14m 03s" (§6.4: hours and minutes, never bytes).
+    static juce::String formatDuration (double seconds);
+
+    /// §10.4: the record button is disabled only for these two reasons, and the
+    /// reason is shown next to it. Empty string means enabled.
+    juce::String getRecordDisabledReason() const;
+
+    /// §5.1 master monitor volume, 0-100. Recorded files are unaffected.
+    void setMasterVolume (double volume0to100);
+    double getMasterVolume() const;
+
+    int getIncludedMicCount() const;
+
+    /// §8.1: one meter per microphone plus one for the shared mix. These are
+    /// owned here so they outlive any UI rebuild when mics come and go.
+    Metering* getChannelMetering (int index);
+    Metering* getMixMetering() { return mixMeter.get(); }
+    juce::String getMicDisplayName (int index) const;
+
     /// §11: diagnostics export -- logs, last 5 session.json files, device
     /// inventory. Never audio.
     void exportDiagnostics (const juce::File& destinationZip);
@@ -53,12 +79,17 @@ private:
     std::unique_ptr<MonitorBus> monitorBus;
     PortIdentityStore portIdentityStore;
 
+    double recordingStartMs = 0.0;
     double currentSampleRate = 48000.0;
     int currentBitDepth = 24;
     int currentBufferSize = 64;
     std::string destinationFolder;
     bool mirrorEnabled = true;
 
+    std::vector<std::unique_ptr<Metering>> channelMeters;
+    std::unique_ptr<Metering> mixMeter;
+
+    void rebuildMeters();
     void onDeviceListChanged();
     void chooseInitialDestination();
     std::unique_ptr<IAudioBackend> createPlatformBackend();

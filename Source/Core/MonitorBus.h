@@ -37,6 +37,17 @@ public:
     /// Maps 0-100 UI volume to a linear gain, logarithmically, per §5.1.
     static float monitorVolumeToLinearGain (double volume0to100) noexcept;
 
+    /// §5.1 master monitor volume, 0-100, default 70. Affects only what reaches
+    /// the headphones; recorded files are written from a separate path.
+    void setMasterVolume (double volume0to100) noexcept;
+    double getMasterVolume() const noexcept { return masterVolume; }
+
+    /// Output-stage gain, applied to the bus result on the way to the headphone
+    /// device. Deliberately NOT part of processSample: §5.4 puts nothing on the
+    /// bus but summing, trim and the safety limiter, so the -3 dBFS ceiling stays
+    /// a property of the bus rather than of the current listening level.
+    float applyMasterVolume (float busSample) const noexcept;
+
     /// Maps a -20..+20 dB trim value to a linear multiplier.
     static float trimDbToLinearGain (float trimDb) noexcept;
 
@@ -61,6 +72,7 @@ private:
     double limiterEngagedSeconds = 0.0;
     bool runawayMuted = false;
     bool globallyMuted = false;
+    double masterVolume = kDefaultMonitorVolume;
 
     // Feedback detector state: level at the start of the current growth window.
     double feedbackWindowStartDb = -200.0;
