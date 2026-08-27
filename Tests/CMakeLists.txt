@@ -20,6 +20,7 @@ add_executable(mma_core_tests
     test_CpuPressureMonitor.cpp
     test_MirrorPolicy.cpp
     test_SetupAdvisor.cpp
+    test_WritePipeline.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)

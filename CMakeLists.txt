@@ -38,6 +38,7 @@ add_library(mma_core STATIC
     Source/Core/CpuPressureMonitor.cpp
     Source/Core/MirrorPolicy.cpp
     Source/Core/SetupAdvisor.cpp
+    Source/Core/WritePipeline.cpp
 )
 target_include_directories(mma_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Source
