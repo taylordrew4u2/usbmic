@@ -15,6 +15,7 @@
 #include "../Core/CapacityMonitor.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
+#include "../Core/MirrorPolicy.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 
@@ -85,6 +86,12 @@ public:
     /// causes dropouts rather than after.
     PerformanceWarning updatePerformance (double cpuLoad, bool thermallyThrottled);
 
+    /// §6.3 redundant local mirror. Default on; turns most card failures from
+    /// data loss into inconvenience.
+    void setMirrorEnabled (bool enabled) { mirrorPolicy.setEnabledByUser (enabled); }
+    bool isMirroring() const { return mirrorPolicy.isMirroring(); }
+    MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
+
     /// §8.1: one meter per microphone plus one for the shared mix. These are
     /// owned here so they outlive any UI rebuild when mics come and go.
     Metering* getChannelMetering (int index);
@@ -119,7 +126,7 @@ private:
     // Buffer size lives in bufferLadder, which is the only thing allowed to
     // change it (§5.4). Keeping a second copy here would let the two disagree.
     std::string destinationFolder;
-    bool mirrorEnabled = true;
+    MirrorPolicy mirrorPolicy;
 
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::unique_ptr<Metering> mixMeter;
@@ -128,6 +135,8 @@ private:
     void onDeviceListChanged();
     void chooseInitialDestination();
     void reselectOutputDevice();
+    double bytesPerSecondOfAudio() const;
+    int64_t projectedSessionBytes() const;
     std::unique_ptr<IAudioBackend> createPlatformBackend();
     std::unique_ptr<VirtualDeviceBackend> createDefaultVirtualDeviceBackend();
 };

@@ -18,6 +18,7 @@ add_executable(mma_core_tests
     test_CapacityMonitor.cpp
     test_BufferLadder.cpp
     test_CpuPressureMonitor.cpp
+    test_MirrorPolicy.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)
