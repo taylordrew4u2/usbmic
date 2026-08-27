@@ -26,6 +26,7 @@
 #include "../Core/TapToNameDetector.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
+#include "../Platform/SystemAggregateDevice.h"
 
 namespace mma {
 
@@ -105,6 +106,12 @@ public:
     /// live to the monitor mix and the mix file -- never to the stems.
     void setChannelTrimDb (int index, float trimDb);
     float getChannelTrimDb (int index) const;
+
+    /// The combined device other apps see (macOS: a real CoreAudio aggregate).
+    /// The name is the user's -- it is what shows up in Zoom's input list.
+    void setAggregateDeviceName (const juce::String& name);
+    juce::String getAggregateStatus() const;
+    juce::String getAggregateDeviceName() const { return aggregateName; }
 
     /// §10.3 Advanced panel contents.
     double getSampleRate() const { return currentSampleRate; }
@@ -221,6 +228,14 @@ private:
     std::string preflightTargetPath;
     void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
+    std::unique_ptr<SystemAggregateDevice> systemAggregate;
+    juce::String aggregateName { "Multi-Mic Aggregator" };
+    // What was last published, so device-change churn republishes only on a
+    // real difference -- destroying a device another app is recording from is
+    // justified when hardware changed, never as a side effect of a no-op.
+    std::vector<std::string> publishedUids;
+    std::string publishedMaster, publishedNameStd;
+    void publishAggregateDevice();
 
     DeviceManager deviceManager;
     RecordingEngine recordingEngine;

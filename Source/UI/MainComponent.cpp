@@ -64,6 +64,10 @@ MainComponent::MainComponent (Application& app)
         application.setClockMasterByName (name);
     };
 
+    advancedPanel.onAggregateNameChanged = [this] (const juce::String& name) {
+        application.setAggregateDeviceName (name);
+    };
+
     advancedPanel.onOutputDeviceChanged = [this] (const juce::String& name) {
         application.setOutputDeviceByName (name);
     };
@@ -251,6 +255,8 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
     advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
     advancedPanel.setDriftReport (application.getDriftReport());
+    advancedPanel.setAggregateStatus (application.getAggregateStatus());
+    advancedPanel.setAggregateName (application.getAggregateDeviceName());
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
 
     juce::StringArray outputs;

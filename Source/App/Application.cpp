@@ -40,6 +40,7 @@ void Application::initialise()
 {
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
+    systemAggregate = createSystemAggregateDevice();
 
     if (audioBackend != nullptr)
     {
@@ -167,6 +168,47 @@ void Application::restartCapture()
         onCaptureRebuilt();
 }
 
+void Application::publishAggregateDevice()
+{
+    if (systemAggregate == nullptr)
+        return;
+
+    std::vector<std::string> uids;
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            uids.push_back (d.identity.locationId); // the CoreAudio device UID on macOS
+
+    // §3.1: same clock master as the in-app capture path, so the aggregate and
+    // the app agree about whose crystal is the truth.
+    std::string master;
+    if (const auto* m = deviceManager.selectDefaultMaster())
+        master = m->identity.locationId;
+
+    const auto name = aggregateName.toStdString();
+
+    // Republishing destroys the device other apps may be recording from, so it
+    // happens only when something real changed.
+    if (uids == publishedUids && master == publishedMaster && name == publishedNameStd)
+        return;
+
+    systemAggregate->publish (name, uids, master);
+    publishedUids = std::move (uids);
+    publishedMaster = std::move (master);
+    publishedNameStd = name;
+}
+
+void Application::setAggregateDeviceName (const juce::String& name)
+{
+    const auto trimmed = name.trim();
+    aggregateName = trimmed.isEmpty() ? juce::String ("Multi-Mic Aggregator") : trimmed;
+    publishAggregateDevice();
+}
+
+juce::String Application::getAggregateStatus() const
+{
+    return systemAggregate != nullptr ? juce::String (systemAggregate->getStatus()) : juce::String();
+}
+
 void Application::applyClockMaster()
 {
     if (capture == nullptr)
@@ -275,6 +317,11 @@ void Application::onDeviceListChanged()
 
     setupAdvisor.setChannelNames (std::move (names));
     setupAdvisor.updateControllerTopology (topology);
+
+    // The combined device other apps see tracks the rig -- §2: on the OS
+    // notification, never a timer. Safe during a take: our own capture reads
+    // the per-device streams, not the aggregate.
+    publishAggregateDevice();
 
     if (capture != nullptr && capture->isRecording())
     {
@@ -1254,6 +1301,10 @@ juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) con
 
 void Application::shutdown()
 {
+    // Other apps must not be left holding a combined device whose owner is gone.
+    if (systemAggregate != nullptr)
+        systemAggregate->remove();
+
     preflightAbort.store (true);
 
     if (preflightThread.joinable())

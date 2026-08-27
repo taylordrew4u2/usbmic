@@ -23,6 +23,15 @@ public:
     void setMeasuredLatency (double ms) { latencyValue.setText (juce::String (ms, 1) + " ms", juce::dontSendNotification); }
     void setActiveBackendDescription (const juce::String& text) { backendValue.setText (text, juce::dontSendNotification); }
     void setDriftReport (const juce::String& text) { driftLabel.setText (text, juce::dontSendNotification); }
+
+    /// What other apps currently see, and the field that names it. The editor
+    /// is only overwritten while unfocused, so refresh never eats typing.
+    void setAggregateStatus (const juce::String& text) { aggregateStatusLabel.setText (text, juce::dontSendNotification); }
+    void setAggregateName (const juce::String& name)
+    {
+        if (! aggregateNameEditor.hasKeyboardFocus (true))
+            aggregateNameEditor.setText (name, juce::dontSendNotification);
+    }
     void setDestinationFolderText (const juce::String& text) { destinationFolderLabel.setText (text, juce::dontSendNotification); }
 
     /// Fills a combo without firing onChange -- otherwise refreshing the list
@@ -36,6 +45,7 @@ public:
                           const std::function<float (int)>& currentTrimDb);
 
     std::function<void (int, float)> onTrimChanged; // channel index, dB
+    std::function<void (const juce::String&)> onAggregateNameChanged;
     std::function<void()> onDiagnosticsExportClicked;
     std::function<void (bool)> onMirrorToggled;
     std::function<void()> onDestinationFolderClicked;
@@ -58,6 +68,9 @@ private:
     juce::Label outputDeviceLabel;
     juce::ComboBox outputDeviceCombo;
     juce::Label backendLabel, backendValue;
+    juce::Label aggregateNameLabel;
+    juce::TextEditor aggregateNameEditor;
+    juce::Label aggregateStatusLabel;
     juce::ToggleButton mirrorToggle { "Keep a local backup copy" };
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };

@@ -96,6 +96,15 @@ The steps below include it.
 
 ### Using it
 
+- **One device for other apps (macOS)** — the app publishes a combined input
+  device containing every connected microphone, created through CoreAudio's
+  public aggregate-device API: no driver, no signing. It appears in every
+  app's input list (Zoom, OBS, a DAW) under a name you set in **Advanced →
+  Combined device name**, with one channel per mic and the same §3.1 clock
+  master the app itself uses. It tracks hot-plug and is removed when the app
+  quits. On Windows this needs the §7 virtual-device driver — the Advanced
+  panel says so rather than pretending.
+
 - **Tell your mics apart** — tap (or speak into) a microphone and its skull
   lights up. Click a skull to name that mic; the name sticks to the physical
   port across replug and goes into that mic's recording filename.
@@ -300,9 +309,14 @@ is correct and permanently quiet rather than wrong:
 
 ### Deliberately stubbed
 
-Virtual device backends per §7. The interface is real; the implementations
-behind B, C and D are not, because each is gated on something that cannot be
-obtained from source code:
+Virtual device backends per §7 — with one carve-out that ships: on macOS the
+combined device needs no driver at all, because CoreAudio's public
+`AudioHardwareCreateAggregateDevice` API publishes a system-wide aggregate
+(`Source/Platform/MacSystemAggregateDevice.cpp`). Other apps see one named
+multi-channel input containing every mic, with per-sub-device drift
+compensation handled by the HAL. What remains stubbed is Windows, and the
+§7 "virtual cable carrying the summed mix" use case; each is gated on
+something that cannot be obtained from source code:
 
 | Backend | State | Blocked on |
 |---|---|---|
