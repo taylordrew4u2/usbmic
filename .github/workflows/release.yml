@@ -6,6 +6,16 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Optional: publish a GitHub Release under this tag (e.g. v0.1.0).
+          The tag is created at the built commit by the workflow itself --
+          this environment's git proxy only permits branch pushes, so tagging
+          has to happen here. Leave empty for build-only artifacts.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -80,7 +90,7 @@ jobs:
     name: Attach to release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     steps:
       - uses: actions/download-artifact@v4
         with: { path: artifacts }
@@ -93,7 +103,11 @@ jobs:
             zip -r "../$name.zip" "$d"
           done
 
+      # On a tag push, tag_name is empty and the action uses the ref. On a
+      # dispatch with release_tag set, the action creates that tag at the
+      # commit this workflow built and tested.
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag }}
           files: '*.zip'
           generate_release_notes: true
