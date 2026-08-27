@@ -45,10 +45,10 @@ TEST_CASE (DeviceInputStream_FastDeviceIsPulledDown)
     s.prepare (48000.0, 64);
     s.setIsMaster (false);
 
-    // Start the ring above its target fill, which is what a device running
+    // Start the ring well above its target fill, which is what a device running
     // fast produces. §3.2 must then raise the playout ratio to drain it.
-    std::vector<float> preload (1024, 0.25f);
-    s.pushBlock (preload.data(), 1024);
+    std::vector<float> preload (400, 0.25f);
+    s.pushBlock (preload.data(), 400);
 
     // Thereafter the device supplies exactly what the clock consumes, so the
     // surplus persists and only the loop can remove it.
@@ -63,12 +63,13 @@ TEST_CASE (DeviceInputStream_SlowDeviceIsPulledUp)
     s.prepare (48000.0, 64);
     s.setIsMaster (false);
 
-    // The mirror image: a ring sitting below target means the device is not
-    // keeping up, so the correction must go the other way.
-    std::vector<float> preload (128, 0.25f);
-    s.pushBlock (preload.data(), 128);
+    // Enough to clear pre-roll and start, then a device that supplies less than
+    // the clock consumes: the ring drains below target, which is what "not
+    // keeping up" looks like, and the correction must go the other way.
+    std::vector<float> preload (256, 0.25f);
+    s.pushBlock (preload.data(), 256);
 
-    runClockRatio (s, 64, 64, 400);
+    runClockRatio (s, 60, 64, 400);
 
     REQUIRE (s.getDriftPpm() < 0.0);
 }
@@ -88,19 +89,66 @@ TEST_CASE (DeviceInputStream_CorrectionStaysInsideTheSafetyClamp)
     REQUIRE (std::abs (s.getDriftPpm()) <= DriftCompensator::kMaxRatioDeviationPpm + 1e-9);
 }
 
-TEST_CASE (DeviceInputStream_UnderrunIsCountedNotFaked)
+TEST_CASE (DeviceInputStream_PreRollYieldsSilenceWithoutCryingUnderrun)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
     std::vector<float> out (64, 1.0f);
 
-    // Nothing was ever pushed. §0.1 treats missing audio as the one unacceptable
-    // failure, so it must be counted rather than silently papered over.
+    // The output clock starts before any device has delivered. That is normal
+    // startup, not lost audio: consuming here would click at the top of every
+    // take, and counting it would make the §0.1 metric untrustworthy.
     s.pull (out.data(), 64);
 
-    REQUIRE (s.getUnderrunSamples() > 0);
+    REQUIRE_FALSE (s.hasStarted());
+    REQUIRE (s.getUnderrunSamples() == 0);
     REQUIRE_NEAR (out[0], 0.0f, 1e-9);
+}
+
+TEST_CASE (DeviceInputStream_StartsOnceThePreRollTargetIsReached)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    // One block is not enough to start on: it would leave the loop chasing a
+    // fill error that only means "not buffered yet", which reads as drift.
+    std::vector<float> small (64, 0.5f);
+    s.pushBlock (small.data(), 64);
+
+    std::vector<float> out (64, 0.0f);
+    s.pull (out.data(), 64);
+    REQUIRE_FALSE (s.hasStarted());
+
+    // §5.4: playout starts at kPreRollBlocks, which is the latency this buffer
+    // costs the monitor path -- not some fraction of the ring's headroom.
+    std::vector<float> rest (64, 0.5f);
+    s.pushBlock (rest.data(), 64);
+    s.pull (out.data(), 64);
+
+    REQUIRE (s.hasStarted());
+    REQUIRE_NEAR (out[0], 0.5f, 1e-4);
+}
+
+TEST_CASE (DeviceInputStream_UnderrunAfterStartingIsCountedNotFaked)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    // Get past pre-roll, then starve it.
+    std::vector<float> in (256, 0.5f);
+    s.pushBlock (in.data(), 256);
+
+    std::vector<float> out (256, 0.0f);
+    s.pull (out.data(), 256);
+    REQUIRE (s.hasStarted());
+
+    s.pull (out.data(), 256);
+    s.pull (out.data(), 256);
+
+    // Audio the clock asked for and the device never delivered is exactly the
+    // failure §0.1 refuses to let pass silently.
+    REQUIRE (s.getUnderrunSamples() > 0);
 }
 
 TEST_CASE (DeviceInputStream_UnpluggedDeviceYieldsSilenceNotStaleAudio)

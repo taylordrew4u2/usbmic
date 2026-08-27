@@ -19,10 +19,21 @@ class DeviceInputStream
 {
 public:
     /// Jitter headroom. Eight output blocks is enough to absorb a device that
-    /// briefly runs late without the ring emptying, while staying far below the
-    /// §5.4 latency budget -- the loop keeps fill near the target, not near full.
+    /// briefly runs late without the ring ever emptying or overflowing.
     static constexpr int kRingBlocks = 8;
-    static constexpr size_t kMinRingSamples = 2048;
+
+    /// How full the ring must be before playout starts, and what the PI loop
+    /// steers back to. This is the latency the drift buffer costs, so it is
+    /// deliberately small: §5.4 allows 10 ms end to end for the whole monitor
+    /// path, and an input block plus this plus an output block has to fit
+    /// inside that. Two blocks (2.7 ms at 64 samples / 48 kHz) absorbs the
+    /// jitter between a device callback and the output callback without
+    /// spending the budget on buffering.
+    ///
+    /// Sizing this from the ring capacity instead -- half full, say -- ties the
+    /// latency to the headroom, so making the ring safer would silently make
+    /// the monitor path slower.
+    static constexpr int kPreRollBlocks = 2;
 
     explicit DeviceInputStream (double sampleRate) noexcept;
 
@@ -35,9 +46,17 @@ public:
 
     /// Consumer: the output clock pulls numSamples of this device's audio,
     /// resampled by the current drift ratio so it lands on the master's
-    /// timebase. Real-time safe. Writes silence for any sample the ring could
-    /// not supply, and counts it.
+    /// timebase. Real-time safe.
+    ///
+    /// Until the ring has pre-rolled to its target fill this yields silence and
+    /// counts nothing: at stream start the output callback runs before any
+    /// input has arrived, and consuming an empty ring there would glitch the
+    /// first block of every take and leave the loop chasing a fill error that
+    /// only means "not buffered yet". Genuine underruns after that are counted.
     void pull (float* destination, int numSamples) noexcept;
+
+    /// True once enough audio has arrived to start consuming (§3.2 pre-roll).
+    bool hasStarted() const noexcept { return started; }
 
     /// §3.1: the master defines the timebase, so it is never resampled. Its
     /// ratio stays exactly 1.0 no matter what its fill does.
@@ -78,6 +97,7 @@ private:
     float currentSample = 0.0f;
     double phase = 0.0;
     bool primed = false;
+    bool started = false;
 
     size_t targetFillSamples = 0;
 
