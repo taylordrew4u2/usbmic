@@ -1,0 +1,106 @@
+name: Release
+
+# Produces downloadable builds for all three platforms. Runs on a version tag,
+# and on demand so a build can be had without cutting a release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-14 for the same reason as CI: JUCE 7.0.12 calls
+          # CGWindowListCreateImage, which the macOS 15+ SDK marks unavailable.
+          - os: macos-14
+            label: macOS
+            artifact: MultiMicAggregator-macOS
+          - os: windows-latest
+            label: Windows
+            artifact: MultiMicAggregator-Windows
+          - os: ubuntu-latest
+            label: Linux
+            artifact: MultiMicAggregator-Linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev \
+            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-7.0.12-${{ runner.os }}
+
+      - name: Configure
+        run: cmake -B build -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      # The unit tests gate the release: a build that cannot pass them is not
+      # worth handing to anyone.
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Package
+        shell: bash
+        run: cmake --install build --prefix dist --config Release || cmake --build build --config Release --target package
+
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out
+          cp README.md LICENSING.md out/
+          # LICENSE is optional on purpose -- see LICENSING.md.
+          [ -f LICENSE ] && cp LICENSE out/ || true
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cp -R "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator.app" out/
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            cp "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator.exe" out/
+          else
+            cp "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" out/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/
+          if-no-files-found: error
+
+  release:
+    name: Attach to release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+
+      - name: Archive each platform
+        run: |
+          cd artifacts
+          for d in */; do
+            name="${d%/}"
+            zip -r "../$name.zip" "$d"
+          done
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: '*.zip'
+          generate_release_notes: true

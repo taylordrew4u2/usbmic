@@ -55,6 +55,10 @@ private:
 
     std::vector<std::unique_ptr<WasapiStream>> openStreams;
 
+    /// §2: unregisters and releases the hotplug notification client. Safe to
+    /// call when none is registered.
+    void unregisterNotificationClient();
+
     bool hasAnyAsioDriverInstalled() const;
     std::vector<AudioDeviceDescriptor> enumerateWasapiDevices (bool wantInput) const;
     std::vector<AudioDeviceDescriptor> enumerateAsioDevices() const;

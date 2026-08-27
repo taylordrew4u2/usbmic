@@ -1032,13 +1032,10 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
 void Application::exportDiagnostics (const juce::File& destinationZip)
 {
-    // §11: logs + last 5 session.json + device inventory. NEVER audio.
+    // §11: logs + last 5 session.json + device inventory. NEVER audio -- the
+    // point of a diagnostics bundle is that it can be sent to a stranger.
     juce::ZipFile::Builder builder;
-    // TODO: add real log file(s) and the last 5 session.json paths once the
-    // App layer tracks recent session folders; device inventory below is
-    // real and complete.
 
-    juce::var deviceInventory;
     juce::Array<juce::var> deviceArray;
     for (const auto& d : deviceManager.getDevices())
     {
@@ -1046,17 +1043,96 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
         obj->setProperty ("name", juce::String (d.displayName));
         obj->setProperty ("usbId", juce::String (d.identity.key()));
         obj->setProperty ("included", d.included);
+        obj->setProperty ("exclusionReason", juce::String (d.exclusionReason));
+        obj->setProperty ("driftPpm", d.measuredDriftPpm);
+        obj->setProperty ("driftMeasured", d.hasDriftMeasurement);
         deviceArray.add (juce::var (obj));
     }
-    deviceInventory = deviceArray;
+
+    auto* summary = new juce::DynamicObject();
+    summary->setProperty ("appVersion", JUCE_STRINGIFY (JUCE_APP_VERSION));
+    summary->setProperty ("sampleRate", currentSampleRate);
+    summary->setProperty ("bitDepth", currentBitDepth);
+    summary->setProperty ("bufferSize", bufferLadder.getCurrentSize());
+    summary->setProperty ("backend", audioBackend != nullptr
+                                         ? juce::String (audioBackend->getBackendName())
+                                         : juce::String ("none"));
+    summary->setProperty ("outputDevice", juce::String (selectedOutputDeviceId));
+    summary->setProperty ("outputProblem", juce::String (outputSelectionProblem));
+    summary->setProperty ("monitorProblem", getMonitorProblem());
+    summary->setProperty ("destination", juce::String (destinationFolder));
+    summary->setProperty ("devices", juce::var (deviceArray));
 
     juce::TemporaryFile tempInventory;
-    tempInventory.getFile().replaceWithText (juce::JSON::toString (deviceInventory));
+    tempInventory.getFile().replaceWithText (juce::JSON::toString (juce::var (summary), true));
     builder.addFile (tempInventory.getFile(), 9, "device_inventory.json");
 
+    // §11: the last five sessions. Newest first, because the one being asked
+    // about is almost always the most recent.
+    auto sessions = findRecentSessionMetadata (5);
+    int index = 0;
+
+    for (const auto& file : sessions)
+        builder.addFile (file, 9, "sessions/" + juce::String (++index) + "_"
+                                      + file.getParentDirectory().getFileName() + ".json");
+
+    if (const auto log = getLogFile(); log.existsAsFile())
+        builder.addFile (log, 9, "log.txt");
+
     juce::FileOutputStream out (destinationZip);
+
     if (out.openedOk())
         builder.writeToStream (out, nullptr);
+}
+
+juce::File Application::getLogFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("MultiMicAggregator")
+        .getChildFile ("log.txt");
+}
+
+namespace {
+struct NewestFirst
+{
+    static int compareElements (const juce::File& a, const juce::File& b)
+    {
+        const auto ta = a.getLastModificationTime();
+        const auto tb = b.getLastModificationTime();
+        return ta > tb ? -1 : (ta < tb ? 1 : 0);
+    }
+};
+} // namespace
+
+juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) const
+{
+    juce::Array<juce::File> found;
+
+    const juce::File root { juce::String (destinationFolder) };
+
+    if (! root.isDirectory())
+        return found;
+
+    juce::Array<juce::File> folders;
+    root.findChildFiles (folders, juce::File::findDirectories, false);
+
+    // Newest first: a diagnostics bundle is nearly always about the take that
+    // just went wrong.
+    NewestFirst comparator;
+    folders.sort (comparator);
+
+    for (const auto& folder : folders)
+    {
+        if (found.size() >= maximum)
+            break;
+
+        const auto metadata = folder.getChildFile ("session.json");
+
+        if (metadata.existsAsFile())
+            found.add (metadata);
+    }
+
+    return found;
 }
 
 void Application::shutdown()
