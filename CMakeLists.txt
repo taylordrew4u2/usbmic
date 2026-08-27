@@ -68,7 +68,16 @@ if (MMA_BUILD_APP)
         GIT_TAG        7.0.12
         GIT_SHALLOW    TRUE
     )
-    FetchContent_MakeAvailable(JUCE)
+    # Populated and added manually rather than via MakeAvailable so JUCE's own
+    # install() rules stay out of our install tree. MakeAvailable would put
+    # JUCE's CMake package files, .nib templates and helper sources into
+    # dist/lib/, which is clutter for anyone downloading a built app.
+    FetchContent_GetProperties(JUCE)
+
+    if (NOT juce_POPULATED)
+        FetchContent_Populate(JUCE)
+        add_subdirectory(${juce_SOURCE_DIR} ${juce_BINARY_DIR} EXCLUDE_FROM_ALL)
+    endif()
 
     juce_add_gui_app(MultiMicAggregator
         PRODUCT_NAME "Multi-Mic Aggregator"
@@ -113,6 +122,38 @@ if (MMA_BUILD_APP)
         # reliably enough to hold the §5.4 latency budget.
         target_link_libraries(MultiMicAggregator PRIVATE avrt)
     endif()
+
+    # -----------------------------------------------------------------------
+    # Install / package. juce_add_gui_app puts the real product under
+    # <target>_artefacts/<config>/ -- a .app bundle on macOS, a plain
+    # executable elsewhere -- so the install rule copies from there rather than
+    # from the raw target, which on macOS would install the binary inside the
+    # bundle and leave the bundle behind.
+    # -----------------------------------------------------------------------
+    if (APPLE)
+        # TARGET_BUNDLE_DIR names the .app itself. Deriving it from
+        # TARGET_FILE_DIR/../.. instead would install the bundle's *contents*
+        # loose into the prefix, because CMake takes the destination name from
+        # the last path component -- which would be "..".
+        install(DIRECTORY "$<TARGET_BUNDLE_DIR:MultiMicAggregator>"
+                DESTINATION .
+                USE_SOURCE_PERMISSIONS)
+    else()
+        install(PROGRAMS "$<TARGET_FILE:MultiMicAggregator>" DESTINATION bin)
+    endif()
+
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+        "${CMAKE_CURRENT_SOURCE_DIR}/LICENSING.md"
+        DESTINATION .)
+
+    set(CPACK_PACKAGE_NAME "MultiMicAggregator")
+    set(CPACK_PACKAGE_VENDOR "MultiMicAggregator")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "Record up to 8 USB microphones as separate tracks, and hear them all live")
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_GENERATOR "ZIP")
+    include(CPack)
 endif()
 
 # ---------------------------------------------------------------------------

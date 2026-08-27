@@ -41,6 +41,20 @@ public:
 
     void initialise (const juce::String&) override
     {
+        // §11: the diagnostics bundle promises a log, so one has to exist
+        // before the first thing that can go wrong. The path comes from
+        // Application so the bundle and the logger cannot disagree about where
+        // it is, and it is capped so a bundle a user emails stays small.
+        constexpr int kMaxLogBytes = 256 * 1024;
+
+        logger = std::make_unique<juce::FileLogger> (
+            Application::getLogFile(),
+            "Multi-Mic Aggregator " + getApplicationVersion(),
+            kMaxLogBytes);
+
+        juce::Logger::setCurrentLogger (logger.get());
+        juce::Logger::writeToLog ("Starting up.");
+
         application = std::make_unique<Application>();
         application->initialise();
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *application);
@@ -54,6 +68,11 @@ public:
             application->shutdown();
 
         application.reset();
+
+        // Cleared before the logger is destroyed: anything that logs during
+        // teardown would otherwise write through a dangling pointer.
+        juce::Logger::setCurrentLogger (nullptr);
+        logger.reset();
     }
 
     void systemRequestedQuit() override
@@ -62,6 +81,7 @@ public:
     }
 
 private:
+    std::unique_ptr<juce::FileLogger> logger;
     std::unique_ptr<Application> application;
     std::unique_ptr<MainWindow> mainWindow;
 };
