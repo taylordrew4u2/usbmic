@@ -2,6 +2,8 @@
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <cstdio>
+#include <chrono>
+#include <cmath>
 #include <set>
 
 #if JUCE_MAC
@@ -39,14 +41,11 @@ void Application::initialise()
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
 
-    monitorBus = std::make_unique<MonitorBus> (currentSampleRate);
-    mixMeter = std::make_unique<Metering> (currentSampleRate);
-    rebuildMeters();
-
     if (audioBackend != nullptr)
     {
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         bufferLadder.getCurrentSize());
+        capture->getMonitorBus().setMasterVolume (masterVolume);
         captureRate = currentSampleRate;
         captureBufferSize = bufferLadder.getCurrentSize();
 
@@ -55,6 +54,9 @@ void Application::initialise()
     }
 
     chooseInitialDestination();
+
+    // §6.4: benchmark before the user reaches for record, not at record time.
+    beginPreflightForDestination();
 
     // §5.1: monitoring is live from launch, independent of record state --
     // there is deliberately no "arm monitoring" step anywhere in this flow.
@@ -113,12 +115,10 @@ void Application::restartCapture()
     if (audioBackend != nullptr
         && (captureRate != currentSampleRate || captureBufferSize != bufferLadder.getCurrentSize()))
     {
-        const auto volume = capture->getMonitorBus().getMasterVolume();
-
         capture->stopMonitoring();
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         bufferLadder.getCurrentSize());
-        capture->getMonitorBus().setMasterVolume (volume);
+        capture->getMonitorBus().setMasterVolume (masterVolume);
 
         captureRate = currentSampleRate;
         captureBufferSize = bufferLadder.getCurrentSize();
@@ -137,10 +137,10 @@ void Application::restartCapture()
 
 MonitorBus* Application::getMonitorBus()
 {
-    // The coordinator owns the bus the audio callback actually runs, so the UI
-    // must reach that one. monitorBus is the fallback for a build with no
-    // platform backend, where there is no callback to own it.
-    return capture != nullptr ? &capture->getMonitorBus() : monitorBus.get();
+    // The coordinator owns the bus the audio callback actually runs, so this is
+    // the only bus there is. A second one kept here as a "fallback" is what let
+    // the volume slider write to a bus nothing was listening to.
+    return capture != nullptr ? &capture->getMonitorBus() : nullptr;
 }
 
 juce::String Application::getMonitorProblem() const
@@ -178,8 +178,6 @@ void Application::onDeviceListChanged()
     // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
     currentSampleRate = rateResult.chosenRate;
-
-    rebuildMeters();
 
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
@@ -237,9 +235,15 @@ void Application::reselectOutputDevice()
         return;
 
     std::vector<OutputDeviceCandidate> candidates;
+    outputDeviceNames.clear();
 
     for (const auto& d : audioBackend->enumerateOutputDevices())
     {
+        // §5.2: a mic's own playback endpoint is never offered as a monitor
+        // output, so it does not belong in the Advanced panel's list either.
+        if (! d.isMicrophone)
+            outputDeviceNames.push_back (d.name);
+
         OutputDeviceCandidate c;
         c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
         c.displayName = d.name;
@@ -306,34 +310,16 @@ RemainingTimeWarning Application::pollCapacityWarning()
     return capacityMonitor.evaluateRemaining (getRemainingRecordingSeconds());
 }
 
-void Application::rebuildMeters()
-{
-    const auto needed = static_cast<size_t> (getIncludedMicCount());
-
-    // Keep existing meters so ballistics and clip latches survive a hot-plug.
-    while (channelMeters.size() > needed)
-        channelMeters.pop_back();
-
-    while (channelMeters.size() < needed)
-        channelMeters.push_back (std::make_unique<Metering> (currentSampleRate));
-}
-
 Metering* Application::getChannelMetering (int index)
 {
     // Same reasoning as getMonitorBus(): the meters the audio thread feeds live
     // in the coordinator, so the UI has to read those and not a second set.
-    if (capture != nullptr)
-        return capture->getChannelMetering (index);
-
-    if (index < 0 || static_cast<size_t> (index) >= channelMeters.size())
-        return nullptr;
-
-    return channelMeters[static_cast<size_t> (index)].get();
+    return capture != nullptr ? capture->getChannelMetering (index) : nullptr;
 }
 
 Metering* Application::getMixMetering()
 {
-    return capture != nullptr ? &capture->getMixMetering() : mixMeter.get();
+    return capture != nullptr ? &capture->getMixMetering() : nullptr;
 }
 
 juce::String Application::getMicDisplayName (int index) const
@@ -391,15 +377,30 @@ void Application::toggleRecording()
                 const auto now = juce::Time::getCurrentTime();
                 const auto folder = createSessionFolder (now);
 
+                // §6.3: the mirror decision was made just above, at arm time.
+                const auto mirror = mirrorPolicy.isMirroring()
+                                        ? createMirrorFolder (juce::File (folder).getFileName())
+                                        : juce::String();
+
                 if (folder.isEmpty()
                     || ! capture->startRecording (folder.toStdString(), currentBitDepth,
-                                                  now.toISO8601 (true).toStdString()))
+                                                  now.toISO8601 (true).toStdString(),
+                                                  mirror.toStdString()))
                 {
                     // Nothing was written, so the engine must not claim a take.
                     recordingEngine.stop();
                     recordingStartMs = 0.0;
                     return;
                 }
+
+                currentSessionFolder = folder;
+                currentMirrorFolder = mirror;
+                sessionStartIso = now.toISO8601 (true);
+
+                // §6.2: session.json is written at the start so a crash mid-take
+                // still leaves a record of what the rig was, and rewritten on
+                // stop to add the stop time and everything logged since.
+                writeSessionMetadata (false);
             }
 
             // Each take gets its own warnings; a previous one must not leave the
@@ -423,9 +424,17 @@ void Application::toggleRecording()
         if (capture != nullptr)
             capture->stopRecording();
 
+        // Written after stopRecording() so the frame counts and buffer log it
+        // records are the take's final ones -- and before recordingStartMs is
+        // cleared, or every timestamp inside it would read as zero.
+        writeSessionMetadata (true);
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
+
+        currentSessionFolder.clear();
+        currentMirrorFolder.clear();
     }
 }
 
@@ -531,21 +540,422 @@ juce::String Application::getRecordDisabledReason() const
     if (getIncludedMicCount() == 0)
         return "Plug in a microphone first.";
 
-    // §6.4: pre-flight blocks arming rather than degrading mid-take. Until a
-    // volume has been benchmarked, nothing else disables the button.
+    // §6.4: pre-flight blocks arming rather than degrading mid-take.
+    if (preflightRunning.load())
+        return "Checking this drive is fast enough...";
+
+    {
+        std::lock_guard<std::mutex> lock (preflightMutex);
+        const auto it = preflightResults.find (destinationFolder);
+
+        if (it != preflightResults.end() && ! it->second.passed)
+            return juce::String (it->second.reason);
+    }
+
     return {};
+}
+
+void Application::beginPreflightForDestination()
+{
+    if (preflightRunning.load() || destinationFolder.empty())
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock (preflightMutex);
+
+        // §6.4: cached per volume. Re-benchmarking a card the user already
+        // waited on, every launch, is exactly the friction §10.1 rules out.
+        if (preflightResults.count (destinationFolder) > 0)
+            return;
+    }
+
+    const int channelCount = std::max (1, getIncludedMicCount());
+    const auto target = destinationFolder;
+
+    if (preflightThread.joinable())
+        preflightThread.join();
+
+    preflightRunning.store (true);
+    preflightThread = std::thread ([this, target, channelCount] { runPreflight (target, channelCount); });
+}
+
+void Application::runPreflight (const std::string& destination, int channelCount)
+{
+    PreflightResult result;
+
+    const juce::File folder { juce::String (destination) };
+    folder.createDirectory();
+
+    const auto testFile = folder.getNonexistentChildFile ("preflight", ".tmp");
+
+    std::vector<double> rollingWindows;
+    const int bytesPerSample = currentBitDepth / 8;
+
+    {
+        // §6.4: 200 MB, written the way a take writes -- steadily, measuring the
+        // sustained floor rather than a burst into the OS cache.
+        juce::FileOutputStream out (testFile);
+
+        if (out.openedOk())
+        {
+            constexpr size_t kChunkBytes = 1024 * 1024;
+            const std::vector<char> chunk (kChunkBytes, 0);
+
+            size_t written = 0;
+            size_t writtenThisWindow = 0;
+            auto windowStart = std::chrono::steady_clock::now();
+
+            while (written < PreflightThroughputTest::kTestFileBytes)
+            {
+                if (! out.write (chunk.data(), kChunkBytes))
+                    break;
+
+                written += kChunkBytes;
+                writtenThisWindow += kChunkBytes;
+
+                const auto elapsed = std::chrono::duration<double> (
+                    std::chrono::steady_clock::now() - windowStart).count();
+
+                if (elapsed >= 1.0)
+                {
+                    rollingWindows.push_back (static_cast<double> (writtenThisWindow) / elapsed);
+                    writtenThisWindow = 0;
+                    windowStart = std::chrono::steady_clock::now();
+                }
+            }
+
+            out.flush();
+
+            // A card fast enough to finish inside one window still needs a
+            // sample, or the gate would see no data and fail a good drive.
+            if (rollingWindows.empty() && writtenThisWindow > 0)
+            {
+                const auto elapsed = std::chrono::duration<double> (
+                    std::chrono::steady_clock::now() - windowStart).count();
+
+                if (elapsed > 0.0)
+                    rollingWindows.push_back (static_cast<double> (writtenThisWindow) / elapsed);
+            }
+        }
+    }
+
+    testFile.deleteFile();
+
+    result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
+                                                currentSampleRate, bytesPerSample);
+
+    {
+        std::lock_guard<std::mutex> lock (preflightMutex);
+        preflightResults[destination] = result;
+    }
+
+    preflightRunning.store (false);
 }
 
 void Application::setMasterVolume (double volume0to100)
 {
-    if (monitorBus != nullptr)
-        monitorBus->setMasterVolume (volume0to100);
+    // Held here rather than only on the bus: §2.2 and §5.4 can both rebuild the
+    // coordinator underneath us, and the listening level must not jump back to
+    // the default when they do.
+    masterVolume = volume0to100;
+
+    if (auto* bus = getMonitorBus())
+        bus->setMasterVolume (masterVolume);
 }
 
 double Application::getMasterVolume() const
 {
-    return monitorBus != nullptr ? monitorBus->getMasterVolume()
-                                 : MonitorBus::kDefaultMonitorVolume;
+    return masterVolume;
+}
+
+void Application::setChannelTrimDb (int index, float trimDb)
+{
+    // §4: clamped to the stated range and quantised to the stated step, so the
+    // value that gets persisted is one the UI can round-trip exactly.
+    const auto clamped = juce::jlimit (static_cast<float> (MonitorBus::kMinTrimDb),
+                                       static_cast<float> (MonitorBus::kMaxTrimDb), trimDb);
+    const auto step = static_cast<float> (MonitorBus::kTrimStepDb);
+    const auto quantised = std::round (clamped / step) * step;
+
+    int seen = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (seen++ != index)
+            continue;
+
+        // §4 persists trim against the physical port, not the slot, so it
+        // follows the mic when it is unplugged and moved.
+        auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
+        settings.trimDb = quantised;
+        portIdentityStore.put (d.identity, settings);
+        break;
+    }
+
+    if (capture != nullptr)
+        capture->setChannelTrimDb (index, quantised);
+}
+
+float Application::getChannelTrimDb (int index) const
+{
+    int seen = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (seen++ != index)
+            continue;
+
+        if (const auto settings = portIdentityStore.get (d.identity))
+            return settings->trimDb;
+
+        return 0.0f;
+    }
+
+    return 0.0f;
+}
+
+juce::String Application::getActiveBackendDescription() const
+{
+    if (virtualDeviceBackend == nullptr)
+        return "None";
+
+    const auto status = virtualDeviceBackend->getStatus();
+
+    // §7/§10.3: say what other apps can see, not which driver model is in use.
+    if (! status.reachDescription.empty())
+        return juce::String (status.reachDescription);
+
+    return "Recording and monitoring only. Other apps can't see these mics.";
+}
+
+const std::vector<std::string>& Application::getOutputDeviceNames() const
+{
+    // §2: enumeration happens on the OS device-change notification, never on a
+    // timer. The Advanced panel repaints at 2 Hz and must read this cache
+    // rather than go back to the driver each time.
+    return outputDeviceNames;
+}
+
+juce::String Application::getClockMasterName() const
+{
+    if (const auto* master = deviceManager.selectDefaultMaster())
+        return juce::String (master->displayName);
+
+    return {};
+}
+
+juce::String Application::getDriftReport() const
+{
+    juce::StringArray lines;
+
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        // §3.1: drift is not claimed until 60 seconds of measurement exist.
+        // Showing a number before then would be showing noise.
+        lines.add (juce::String (d.displayName) + ": "
+                   + (d.hasDriftMeasurement
+                          ? juce::String (d.measuredDriftPpm, 1) + " PPM"
+                          : juce::String ("measuring...")));
+    }
+
+    if (lines.isEmpty())
+        return "No microphones connected.";
+
+    return lines.joinIntoString ("\n");
+}
+
+void Application::setOutputDeviceByName (const juce::String& displayName)
+{
+    if (audioBackend == nullptr)
+        return;
+
+    // A user action, not a timer, so enumerating here is what §2 allows -- and
+    // it is the only way to recover the device's stable id from its name.
+    for (const auto& d : audioBackend->enumerateOutputDevices())
+    {
+        if (juce::String (d.name) != displayName)
+            continue;
+
+        // §5.3: an explicit choice is remembered and outranks the automatic
+        // priority order from then on.
+        rememberedOutputDeviceId = d.usbLocationId.empty() ? d.name : d.usbLocationId;
+        reselectOutputDevice();
+        restartCapture();
+        return;
+    }
+}
+
+void Application::setClockMasterByName (const juce::String& displayName)
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included || juce::String (d.displayName) != displayName)
+            continue;
+
+        deviceManager.setPreferredMaster (d.identity.key());
+        return;
+    }
+}
+
+void Application::setDestinationFolder (const juce::File& folder)
+{
+    if (! folder.isDirectory())
+        return;
+
+    destinationFolder = folder.getFullPathName().toStdString();
+
+    // §6.4: a new volume is an unbenchmarked volume.
+    beginPreflightForDestination();
+}
+
+juce::String Application::createMirrorFolder (const juce::String& sessionFolderName)
+{
+    // §6.3: the mirror lives on the internal drive, which is the whole point --
+    // a card failure must not take both copies with it.
+    const auto root = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                          .getChildFile ("RECORDINGS-MIRROR")
+                          .getChildFile (sessionFolderName);
+
+    if (! root.createDirectory().wasOk())
+        return {};
+
+    return root.getFullPathName();
+}
+
+void Application::writeSessionMetadata (bool sessionHasStopped)
+{
+    if (currentSessionFolder.isEmpty())
+        return;
+
+    SessionMetadata meta;
+    meta.appVersion = JUCE_STRINGIFY (JUCE_APP_VERSION);
+    meta.startTimestampIso = sessionStartIso.toStdString();
+    meta.stopTimestampIso = sessionHasStopped
+                                ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
+                                : std::string();
+    meta.sampleRate = currentSampleRate;
+    meta.bitDepth = currentBitDepth;
+    meta.bufferSizeSamples = bufferLadder.getCurrentSize();
+    meta.measuredLatencyMs = measuredLatencyMs;
+
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        DeviceRecord record;
+        record.name = d.displayName;
+        record.usbId = d.identity.key();
+
+        if (const auto persisted = portIdentityStore.get (d.identity))
+            record.trimDb = persisted->trimDb;
+
+        meta.devices.push_back (std::move (record));
+
+        // §3.2: drift is only claimed once 60 seconds of measurement exist.
+        if (d.hasDriftMeasurement)
+            meta.driftLog.push_back ({ getElapsedRecordingSeconds(), d.identity.key(), d.measuredDriftPpm });
+    }
+
+    // §5.4 requires every buffer step logged.
+    for (const auto& change : bufferLadder.getChangeLog())
+        meta.bufferChanges.push_back ({ change.atSeconds, change.fromSamples, change.toSamples });
+
+    meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
+    meta.mirrorActive = capture != nullptr && capture->isMirroring();
+    meta.mirrorPath = currentMirrorFolder.toStdString();
+
+    // §6.3: a mirror that stopped mid-take must be visible in the record --
+    // otherwise the copy looks complete and is not.
+    if (mirrorPolicy.wasStoppedForSpace())
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Local backup copy stopped: the internal drive ran low on space." });
+
+    if (capture != nullptr && capture->getFramesDropped() > 0)
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Dropped " + std::to_string (capture->getFramesDropped())
+                                       + " frames: the drive could not keep up." });
+
+    // Written to the card copy and the mirror alike, so either one stands alone.
+    const auto json = meta.toJsonString();
+    juce::File (currentSessionFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
+
+    if (currentMirrorFolder.isNotEmpty())
+        juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
+}
+
+juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
+{
+    // §8.1: the detectors only see anything if the per-block peaks reach them,
+    // so this is where the §10.5 advice actually gets its input.
+    const int micCount = getIncludedMicCount();
+    std::vector<float> peaksDb;
+    peaksDb.reserve (static_cast<size_t> (micCount));
+
+    for (int i = 0; i < micCount; ++i)
+    {
+        auto* meter = getChannelMetering (i);
+        peaksDb.push_back (meter != nullptr ? static_cast<float> (meter->getPeakHoldDb())
+                                            : static_cast<float> (Metering::kMinDb));
+    }
+
+    updateSetupAdvisorLevels (peaksDb, sinceLastCallSeconds);
+
+    // §6.3: the mirror is re-judged during the take, and once it stops it never
+    // restarts within the same recording.
+    if (capture != nullptr && capture->isMirroring())
+    {
+        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+
+        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
+            == MirrorState::StoppedLowSpace)
+        {
+            capture->stopMirroring();
+            return "The local backup copy stopped -- this drive is low on space. "
+                   "The recording itself is unaffected.";
+        }
+    }
+
+    // §6.5 first: running out of room stops the take, which outranks everything.
+    switch (pollCapacityWarning())
+    {
+        case RemainingTimeWarning::Exhausted:
+            return "The drive is full. Recording has stopped -- free some space or choose another drive.";
+        case RemainingTimeWarning::TwoMinutes:
+            return "About two minutes of room left. Wrap up or switch drives now.";
+        case RemainingTimeWarning::TenMinutes:
+            return "About ten minutes of room left on this drive.";
+        case RemainingTimeWarning::None:
+            break;
+    }
+
+    // §6.6 next: warned before it causes dropouts, not after.
+    const auto load = capture != nullptr ? capture->getAudioCallbackLoad() : 0.0;
+
+    switch (updatePerformance (load, false))
+    {
+        case PerformanceWarning::ThermalThrottling:
+            return "This machine is overheating and is about to drop audio. Close other apps.";
+        case PerformanceWarning::SustainedCpuPressure:
+            return "This machine is working hard. Close other apps before it starts dropping audio.";
+        case PerformanceWarning::None:
+            break;
+    }
+
+    // §10.5 last: hardware guidance, most serious first.
+    const auto advice = getSetupAdvice();
+
+    if (! advice.empty())
+        return juce::String (advice.front().message);
+
+    return {};
 }
 
 void Application::exportDiagnostics (const juce::File& destinationZip)
@@ -579,6 +989,9 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 
 void Application::shutdown()
 {
+    if (preflightThread.joinable())
+        preflightThread.join();
+
     // Ordered: drain the writer, then close the streams the callback runs on.
     if (capture != nullptr)
     {

@@ -41,6 +41,12 @@ public:
     /// Returns nullptr if there are no included devices.
     const MicDeviceState* selectDefaultMaster() const;
 
+    /// §3.1: the user may override the automatic choice from the Advanced
+    /// panel. The override holds until that device leaves the rig, at which
+    /// point §3.3 failover takes over again from the automatic rule.
+    void setPreferredMaster (const std::string& identityKey);
+    const std::string& getPreferredMaster() const { return preferredMasterKey; }
+
     /// §3.3: on master unplug, promote the remaining device with the lowest
     /// measured drift; tiebreak by enumeration order. Returns nullptr if no
     /// devices remain.
@@ -53,6 +59,7 @@ public:
 
 private:
     std::vector<MicDeviceState> devices;
+    std::string preferredMasterKey;
 
     static bool lowerDrift (const MicDeviceState& a, const MicDeviceState& b);
 };

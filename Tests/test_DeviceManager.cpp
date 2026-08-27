@@ -114,3 +114,58 @@ TEST_CASE (DeviceManager_UnpluggingFreesASlotForTheNinthMic)
 
     REQUIRE (ninthNowIncluded);
 }
+
+TEST_CASE (DeviceManager_PreferredMasterOverridesTheLowestDriftRule)
+{
+    DeviceManager m;
+
+    MicDeviceState a;
+    a.identity.locationId = "port-a";
+    a.displayName = "A";
+    a.enumerationOrder = 0;
+    a.measuredDriftPpm = 1.0;
+    a.hasDriftMeasurement = true;
+    m.addDevice (a);
+
+    MicDeviceState b;
+    b.identity.locationId = "port-b";
+    b.displayName = "B";
+    b.enumerationOrder = 1;
+    b.measuredDriftPpm = 50.0;
+    b.hasDriftMeasurement = true;
+    m.addDevice (b);
+
+    // §3.1 automatic rule picks the lowest drift.
+    REQUIRE (m.selectDefaultMaster()->displayName == "A");
+
+    // §3.1 also lets the user say otherwise from the Advanced panel.
+    m.setPreferredMaster ("port-b");
+    REQUIRE (m.selectDefaultMaster()->displayName == "B");
+}
+
+TEST_CASE (DeviceManager_PreferredMasterThatLeavesFallsBackToTheRule)
+{
+    DeviceManager m;
+
+    MicDeviceState a;
+    a.identity.locationId = "port-a";
+    a.displayName = "A";
+    m.addDevice (a);
+
+    MicDeviceState b;
+    b.identity.locationId = "port-b";
+    b.displayName = "B";
+    b.enumerationOrder = 1;
+    m.addDevice (b);
+
+    m.setPreferredMaster ("port-b");
+    REQUIRE (m.selectDefaultMaster()->displayName == "B");
+
+    // §3.3: unplugging the chosen master must leave a master, not none.
+    PortIdentity gone;
+    gone.locationId = "port-b";
+    m.removeDevice (gone);
+
+    REQUIRE (m.selectDefaultMaster() != nullptr);
+    REQUIRE (m.selectDefaultMaster()->displayName == "A");
+}

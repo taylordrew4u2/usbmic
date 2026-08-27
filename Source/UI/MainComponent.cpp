@@ -28,6 +28,48 @@ MainComponent::MainComponent (Application& app)
 
     mainScreen.onAdvancedClicked = [this] { toggleAdvanced(); };
 
+    // §10.3: everything behind the one door is optional, but none of it is
+    // decorative -- each control below reaches the engine it names.
+    advancedPanel.onTrimChanged = [this] (int index, float trimDb) {
+        application.setChannelTrimDb (index, trimDb);
+    };
+
+    advancedPanel.onClockMasterChanged = [this] (const juce::String& name) {
+        application.setClockMasterByName (name);
+    };
+
+    advancedPanel.onOutputDeviceChanged = [this] (const juce::String& name) {
+        application.setOutputDeviceByName (name);
+    };
+
+    advancedPanel.onMirrorToggled = [this] (bool enabled) {
+        application.setMirrorEnabled (enabled);
+    };
+
+    advancedPanel.onDestinationFolderClicked = [this] {
+        folderChooser = std::make_unique<juce::FileChooser> ("Choose where recordings are saved",
+                                                             juce::File (application.getDestinationFolder()));
+
+        folderChooser->launchAsync (juce::FileBrowserComponent::openMode
+                                        | juce::FileBrowserComponent::canSelectDirectories,
+                                    [this] (const juce::FileChooser& chooser) {
+                                        const auto result = chooser.getResult();
+
+                                        if (result.isDirectory())
+                                        {
+                                            application.setDestinationFolder (result);
+                                            refreshAdvanced();
+                                        }
+                                    });
+    };
+
+    advancedPanel.onDiagnosticsExportClicked = [this] {
+        // §11: logs, recent session.json files and the device inventory. Never audio.
+        const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+                                     .getNonexistentChildFile ("MultiMicAggregator-diagnostics", ".zip");
+        application.exportDiagnostics (destination);
+    };
+
     setSize (720, 480);
 
     // §8.1: meters and status are live from launch, not from record.
@@ -103,12 +145,55 @@ void MainComponent::refreshStatus()
             monitorProblem = juce::String (application.getOutputSelectionProblem());
 
         mainScreen.setMonitorProblemText (monitorProblem);
+
+        // §10.5/§6.5/§6.6 guidance. On the slow tick because it stats the
+        // destination volume and runs the level detectors.
+        mainScreen.setAdviceText (application.pollStatusAdvice (1.0 / kStatusRefreshHz));
+
+        if (advancedVisible)
+            refreshAdvanced();
+    }
+}
+
+void MainComponent::refreshAdvanced()
+{
+    advancedPanel.setSampleRate (application.getSampleRate());
+    advancedPanel.setBitDepth (application.getBitDepth());
+    advancedPanel.setBufferSize (application.getCurrentBufferSize());
+    advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
+    advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
+    advancedPanel.setDriftReport (application.getDriftReport());
+    advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
+
+    juce::StringArray outputs;
+    for (const auto& name : application.getOutputDeviceNames())
+        outputs.add (juce::String (name));
+
+    advancedPanel.setOutputDevices (outputs, {});
+
+    const int micCount = application.getIncludedMicCount();
+    juce::StringArray micNames;
+    for (int i = 0; i < micCount; ++i)
+        micNames.add (application.getMicDisplayName (i));
+
+    advancedPanel.setClockMasters (micNames, application.getClockMasterName());
+
+    // Rebuilt only when the mic set changes: doing it every tick would reset a
+    // slider out from under the user mid-drag.
+    if (micCount != lastAdvancedMicCount)
+    {
+        advancedPanel.setTrimChannels (micNames, [this] (int i) { return application.getChannelTrimDb (i); });
+        lastAdvancedMicCount = micCount;
     }
 }
 
 void MainComponent::toggleAdvanced()
 {
     advancedVisible = ! advancedVisible;
+
+    if (advancedVisible)
+        refreshAdvanced();
+
     advancedPanel.setVisible (advancedVisible);
     mainScreen.setVisible (! advancedVisible);
     resized();

@@ -66,8 +66,21 @@ bool DeviceManager::lowerDrift (const MicDeviceState& a, const MicDeviceState& b
     return a.enumerationOrder < b.enumerationOrder; // tiebreak
 }
 
+void DeviceManager::setPreferredMaster (const std::string& identityKey)
+{
+    preferredMasterKey = identityKey;
+}
+
 const MicDeviceState* DeviceManager::selectDefaultMaster() const
 {
+    // §3.1: an explicit choice wins over the lowest-drift rule, but only while
+    // that device is actually present and included -- otherwise the rig would
+    // have no master at all.
+    if (! preferredMasterKey.empty())
+        for (const auto& d : devices)
+            if (d.included && d.identity.key() == preferredMasterKey)
+                return &d;
+
     const MicDeviceState* best = nullptr;
     for (const auto& d : devices)
     {

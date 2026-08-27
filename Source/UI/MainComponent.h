@@ -31,9 +31,14 @@ private:
     AdvancedPanel advancedPanel;
     bool advancedVisible = false;
     int lastMicCount = -1;
+    int lastAdvancedMicCount = -1;
     int framesUntilStatusRefresh = 1;
 
     void toggleAdvanced();
+    /// §10.3 panel contents. Refreshed on the slow tick and whenever the panel
+    /// is opened, so it is never showing a stale rig.
+    void refreshAdvanced();
+    std::unique_ptr<juce::FileChooser> folderChooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
