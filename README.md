@@ -88,6 +88,30 @@ and Windows:
 | `DeadChannelDetector` — silence against an active reference channel | §8.1 | 4 |
 | `SessionMetadata` + JSON | §6.2 | 4 |
 
+### Executed, not just compiled
+
+`Tools/e2e_capture` drives the real capture path with synthetic audio — two
+mics on mismatched clocks, recorded to disk, then the WAVs are decoded and
+checked by Goertzel that each stem holds its own microphone's tone and the mix
+holds both. `Tools/soak_drift` is the §3.4 gate above. Neither is a unit test:
+they take minutes, and they answer questions unit tests cannot.
+
+Both found real bugs that the 237-test suite did not:
+
+- **Integral windup.** The PI loop's integral saturated at the ±200 PPM clamp
+  long before the deliberately slow 5 PPM/s slew could deliver it, so every
+  crossing had to unwind from saturation. Over hours the loop swung between
+  +140 and −45 PPM instead of settling, starved rings, and failed §3.4 at
+  3.04 ms. Integration now pauses whenever the output is rate- or clamp-limited.
+- **Pre-roll sized from ring capacity.** Playout started at half the ring, which
+  meant 1024 samples — **21 ms of monitor latency**, on its own more than twice
+  the entire §5.4 budget. Pre-roll is now a fixed two blocks, and the monitor
+  path measures 5.33 ms end to end against the 10 ms ceiling.
+
+A third, smaller one: the output clock starts before any device has delivered,
+so the first pull of every take underran. That is normal startup rather than
+lost audio, and counting it made the §0.1 metric untrustworthy.
+
 ### Compiled, but never exercised against hardware
 
 The full application builds and links in CI on Linux, macOS and Windows, so
@@ -150,13 +174,14 @@ software:
 The entire §12 validation matrix is outstanding. Nothing here has seen a real
 microphone. In particular:
 
-- **§3.4 is the gate on everything else** — a 4-hour take with four dissimilar
-  USB microphones finishing under 1 ms inter-channel drift. §3.2 compensation is
-  now wired (`DeviceInputStream`: one ring and one PI loop per device, pulled
-  onto the master's timebase by the output clock), and its behaviour is covered
-  by unit tests — the correction direction, the ±200 PPM clamp, the master
-  bypass, underrun counting. What no test can establish is whether four real
-  crystals stay inside 1 ms over four hours. That still needs the hardware.
+- **§3.4 passes against simulated clocks, and only those.** `Tools/soak_drift`
+  runs four dissimilar clocks (0 / +100 / −80 / +45 PPM) for four hours and
+  measures inter-channel drift at the end: **1 sample = 0.021 ms** against the
+  1 ms ceiling, zero underruns, each loop settling within 0.4 PPM of its true
+  offset. Simulated offsets are steady, though; real crystals wander with
+  temperature and load, so the hardware run is still owed. What this does
+  retire is the question of whether the *software* holds alignment — it does,
+  and it did not before the two bugs below were found.
 - **§5.4 latency ceiling** — the 10 ms ceiling must be confirmed by loopback on
   macOS, Windows ASIO, and Windows WASAPI exclusive.
 - Hostile-event matrix, card throughput on real slow media, bus-power

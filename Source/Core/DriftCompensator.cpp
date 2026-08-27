@@ -19,28 +19,34 @@ void DriftCompensator::reset() noexcept
 
 void DriftCompensator::update (double fillError, int blockSizeSamples) noexcept
 {
-    integralTerm += kKi * fillError;
+    const double maxDeviation = kMaxRatioDeviationPpm * 1.0e-6;
 
     const double proportional = kKp * fillError;
-    double target = proportional + integralTerm;
+    const double candidateIntegral = std::clamp (integralTerm + kKi * fillError,
+                                                 -maxDeviation, maxDeviation);
 
-    // Clamp to the +/-200ppm ratio deviation ceiling (in fractional-ratio units).
-    const double maxDeviation = kMaxRatioDeviationPpm * 1.0e-6;
-    target = std::clamp (target, -maxDeviation, maxDeviation);
+    const double target = std::clamp (proportional + candidateIntegral, -maxDeviation, maxDeviation);
 
     // Never correct instantaneously: limit slew to 5 PPM/second, expressed per this block.
     const double blockSeconds = (sampleRate > 0.0) ? (static_cast<double> (blockSizeSamples) / sampleRate) : 0.0;
     const double maxStep = (kMaxSlewPpmPerSecond * 1.0e-6) * blockSeconds;
 
     double currentRatioDeviation = currentPpm * 1.0e-6;
-    const double delta = std::clamp (target - currentRatioDeviation, -maxStep, maxStep);
-    currentRatioDeviation += delta;
-    currentRatioDeviation = std::clamp (currentRatioDeviation, -maxDeviation, maxDeviation);
+    const double wanted = target - currentRatioDeviation;
+    const double delta = std::clamp (wanted, -maxStep, maxStep);
 
+    // Anti-windup. The actuator is deliberately rate limited, so while it is
+    // still slewing towards target the loop cannot deliver what the integral is
+    // asking for. Integrating anyway stores up correction that has to be
+    // unwound later -- at the same 5 PPM/s -- and the result is a loop that
+    // swings past target every time instead of settling on it. Integration
+    // therefore pauses whenever the output is rate- or clamp-limited, which is
+    // what makes this a PI controller rather than a PI controller's arithmetic.
+    if (delta == wanted)
+        integralTerm = candidateIntegral;
+
+    currentRatioDeviation = std::clamp (currentRatioDeviation + delta, -maxDeviation, maxDeviation);
     currentPpm = currentRatioDeviation * 1.0e6;
-
-    // Keep the integral term consistent with the clamped output so it doesn't wind up unboundedly.
-    integralTerm = std::clamp (integralTerm, -maxDeviation, maxDeviation);
 }
 
 void DriftCompensator::updateSustainedDriftFlag (double elapsedSeconds) noexcept

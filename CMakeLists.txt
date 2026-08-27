@@ -114,3 +114,23 @@ if (MMA_BUILD_APP)
         target_link_libraries(MultiMicAggregator PRIVATE avrt)
     endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Harnesses that drive the real capture path with synthetic audio. Not unit
+# tests: they take minutes and answer questions unit tests cannot -- whether
+# the §3.2 loop actually settles, and whether §3.4's 1 ms bound holds over a
+# four-hour take. Both found real bugs (integral windup, and a pre-roll that
+# was costing 21 ms of the §5.4 monitor budget).
+#
+#   ./e2e_capture <dir>   two mics, mismatched clocks, decode and check the WAVs
+#   ./soak_drift  <hours> four dissimilar clocks, inter-channel drift at the end
+# ---------------------------------------------------------------------------
+option(MMA_BUILD_TOOLS "Build the capture harnesses (see Tools/)" ON)
+
+if (MMA_BUILD_TOOLS)
+    add_executable(e2e_capture Tools/e2e_capture.cpp)
+    target_link_libraries(e2e_capture PRIVATE mma_core)
+
+    add_executable(soak_drift Tools/soak_drift.cpp)
+    target_link_libraries(soak_drift PRIVATE mma_core)
+endif()
