@@ -110,3 +110,57 @@ TEST_CASE (MonitorBus_FeedbackDetectionDoesNotTriggerWhenFarFromBroadbandPeak)
     REQUIRE_FALSE (triggered);
     REQUIRE_FALSE (bus.isRunawayMuted());
 }
+
+TEST_CASE (MonitorBus_DefaultMasterVolumeIsSeventy)
+{
+    MonitorBus bus (48000.0);
+    REQUIRE_NEAR (bus.getMasterVolume(), MonitorBus::kDefaultMonitorVolume, 1e-9);
+}
+
+TEST_CASE (MonitorBus_MasterVolumeIsClampedToZeroHundred)
+{
+    MonitorBus bus (48000.0);
+
+    bus.setMasterVolume (250.0);
+    REQUIRE_NEAR (bus.getMasterVolume(), 100.0, 1e-9);
+
+    bus.setMasterVolume (-40.0);
+    REQUIRE_NEAR (bus.getMasterVolume(), 0.0, 1e-9);
+}
+
+TEST_CASE (MonitorBus_MasterVolumeNeverAffectsTheBusItself)
+{
+    // §5.4: nothing on the monitor bus but summing, trim and the safety limiter.
+    // Changing the listening level must not move the summed value or the ceiling.
+    MonitorBus loud (48000.0), quiet (48000.0);
+    loud.setMasterVolume (100.0);
+    quiet.setMasterVolume (5.0);
+
+    const std::vector<float> in { 0.2f, 0.1f };
+    REQUIRE_NEAR (loud.processSample (in), quiet.processSample (in), 1e-9);
+}
+
+TEST_CASE (MonitorBus_MasterVolumeScalesTheOutputStageMonotonically)
+{
+    MonitorBus bus (48000.0);
+
+    bus.setMasterVolume (100.0);
+    const float atFull = bus.applyMasterVolume (0.5f);
+
+    bus.setMasterVolume (50.0);
+    const float atHalf = bus.applyMasterVolume (0.5f);
+
+    bus.setMasterVolume (0.0);
+    const float atZero = bus.applyMasterVolume (0.5f);
+
+    REQUIRE (atFull > atHalf);
+    REQUIRE (atHalf > atZero);
+    REQUIRE_NEAR (atZero, 0.0f, 1e-6);
+}
+
+TEST_CASE (MonitorBus_MasterVolumeAtFullIsUnityGain)
+{
+    MonitorBus bus (48000.0);
+    bus.setMasterVolume (100.0);
+    REQUIRE_NEAR (bus.applyMasterVolume (0.5f), 0.5f, 1e-4);
+}

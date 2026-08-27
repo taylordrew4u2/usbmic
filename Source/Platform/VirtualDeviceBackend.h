@@ -1,4 +1,8 @@
 #pragma once
+
+// Defines JUCE_MAC / JUCE_WINDOWS -- see the note in IAudioBackend.h.
+#include <juce_core/juce_core.h>
+
 #include <string>
 #include <vector>
 
