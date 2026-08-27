@@ -13,6 +13,8 @@
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/CapacityMonitor.h"
+#include "../Core/BufferLadder.h"
+#include "../Core/CpuPressureMonitor.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 
@@ -71,6 +73,18 @@ public:
     /// crossed, so the caller can poll it every frame without re-warning.
     RemainingTimeWarning pollCapacityWarning();
 
+    /// §5.4: report a callback overrun. Returns true when it pushed the buffer
+    /// up a rung, so the caller can tell the user why latency just changed.
+    bool noteCallbackOverrun();
+    int getCurrentBufferSize() const { return bufferLadder.getCurrentSize(); }
+
+    /// §5.4 requires every buffer step logged in session.json.
+    const std::vector<BufferSizeChange>& getBufferSizeChanges() const { return bufferLadder.getChangeLog(); }
+
+    /// §6.6: called with the current load so pressure is warned about before it
+    /// causes dropouts rather than after.
+    PerformanceWarning updatePerformance (double cpuLoad, bool thermallyThrottled);
+
     /// §8.1: one meter per microphone plus one for the shared mix. These are
     /// owned here so they outlive any UI rebuild when mics come and go.
     Metering* getChannelMetering (int index);
@@ -94,13 +108,16 @@ private:
     std::string outputSelectionProblem;
     std::string rememberedOutputDeviceId;
     CapacityMonitor capacityMonitor;
+    BufferLadder bufferLadder;
+    CpuPressureMonitor cpuPressureMonitor;
     int outputConnectionCounter = 0;
     bool haveEnumeratedOutputsOnce = false;
 
     double recordingStartMs = 0.0;
     double currentSampleRate = 48000.0;
     int currentBitDepth = 24;
-    int currentBufferSize = 64;
+    // Buffer size lives in bufferLadder, which is the only thing allowed to
+    // change it (§5.4). Keeping a second copy here would let the two disagree.
     std::string destinationFolder;
     bool mirrorEnabled = true;
 

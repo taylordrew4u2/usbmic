@@ -125,6 +125,20 @@ void Application::reselectOutputDevice()
     outputSelectionProblem = selection.explanation;
 }
 
+bool Application::noteCallbackOverrun()
+{
+    // §5.4 requires every step logged. The ladder keeps that log itself and
+    // getBufferSizeChanges() hands it to whoever writes session.json, so the
+    // history is not duplicated into a second place that could disagree.
+    return bufferLadder.noteOverrun (juce::Time::getMillisecondCounterHiRes() / 1000.0);
+}
+
+PerformanceWarning Application::updatePerformance (double cpuLoad, bool thermallyThrottled)
+{
+    return cpuPressureMonitor.update (cpuLoad, thermallyThrottled,
+                                      juce::Time::getMillisecondCounterHiRes() / 1000.0);
+}
+
 RemainingTimeWarning Application::pollCapacityWarning()
 {
     if (recordingEngine.getState() != RecordingState::Recording)
