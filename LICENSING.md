@@ -1,48 +1,43 @@
-# Licensing — one decision is still yours
+# Licensing
 
-This project has **no LICENSE file**, deliberately. Choosing one is a decision
-about your rights that shouldn't be made on your behalf, and the JUCE
-dependency makes it a real choice rather than a formality.
+This project is released under the **GNU General Public License v3** — see
+[`LICENSE`](LICENSE). GPLv3 was chosen because it is the one licence that works
+unconditionally with the JUCE dependency: JUCE 7 permits GPLv3 distribution at
+no cost and with **no revenue limit**, whereas every other arrangement is tied
+to a paid tier or a revenue ceiling.
 
-## What JUCE requires
+## What GPLv3 means here
 
-The app links **JUCE 7.0.12**, which is tier-licensed (see
-`LICENSE.md` in the fetched JUCE source, or <https://www.juce.com/juce-7-licence>):
+- You may use, build, modify and redistribute the app and its source freely.
+- If you distribute binaries, you must make the corresponding source available
+  under the same licence. The source archive shipped alongside each release
+  already satisfies this.
+- No revenue limit, no fees, no JUCE tier to track.
 
-| Tier | Cost | Revenue limit | Can you keep your source closed? |
+## If you ever want a closed-source build instead
+
+That is possible without touching this repository's history: JUCE's paid tiers
+(Personal under 50K USD revenue is free; Indie/Pro above that) allow proprietary
+distribution. As the copyright holder of this code you can dual-license your own
+work; only the JUCE terms for that build would change.
+
+## The JUCE tier table, for reference
+
+| Tier | Cost | Revenue limit | Closed source allowed |
 |---|---|---|---|
 | Personal | free | under 50K USD | yes |
 | Indie | $40/month | under 500K USD | yes |
 | Pro | $130/month | none | yes |
 | Educational | free | none (bona fide institutions) | yes |
-| — | free | none | **only if you release under GPLv3** |
-
-So there are two workable paths:
-
-1. **Stay under the JUCE Personal revenue limit** and license this project
-   however you like — MIT, proprietary, anything. Nothing here forces your hand.
-2. **Release under GPLv3**, which JUCE permits at no cost and with no revenue
-   limit, at the price of publishing source for anything you distribute.
-
-Until you pick, the code is under default copyright: you can use and build it,
-and nobody else may redistribute it.
-
-## To choose
-
-Drop the text into `LICENSE` at the repo root. GPLv3's authoritative text is at
-<https://www.gnu.org/licenses/gpl-3.0.txt>; on most Linux systems it is also at
-`/usr/share/common-licenses/GPL-3`. The release workflow picks up a `LICENSE`
-file automatically if one exists.
+| GPLv3 (this project's choice) | free | none | no — source must ship |
 
 ## Unrelated to JUCE
 
 Nothing else in this repository carries a third-party licence obligation. The
 test framework (`Tests/TestFramework.h`) and the JSON reader/writer
-(`Source/Core/Json.h`) were written here rather than vendored in, specifically
-so that `Source/Core` and the test suite have **no external dependencies at
-all** — that is why they build on a machine with no network.
+(`Source/Core/Json.h`) were written here rather than vendored in, so
+`Source/Core` and the test suite have no external dependencies at all.
 
-The §7 virtual-device backends are a separate matter and are not licensing
-decisions you need to make now: backend C would bundle a commercially licensed
-third-party driver, and backend D needs an EV certificate. Both are documented
-in the README as unimplemented for exactly that reason.
+The §7 virtual-device backends remain separate: backend C would bundle a
+commercially licensed third-party driver and backend D needs an EV certificate;
+both are documented in the README as unimplemented for exactly that reason.

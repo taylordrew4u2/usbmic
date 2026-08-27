@@ -27,7 +27,11 @@ Builds for macOS, Windows and Linux are produced by the
   (`workflow_dispatch`) and download the artifacts it uploads. Same build, no
   tag required.
 
-Each archive contains the application, this README, and `LICENSING.md`.
+Each archive contains the application, this README, `LICENSE` and
+`LICENSING.md`.
+
+The Blue Yeti in the spec is reference hardware only: the code filters on
+nothing device-specific, so any standard USB audio class microphone works.
 
 §1 names macOS and Windows as the shipping targets, and those are the two with
 real audio backends. The Linux build exists because it is what the engine, the
@@ -43,10 +47,10 @@ is unsigned rather than quietly claiming otherwise.
 
 ### Licence
 
-There is deliberately no `LICENSE` file: the JUCE tier you use decides what
-your options are, and that is your decision to make. See
-[`LICENSING.md`](LICENSING.md) — it is a short read and it matters before you
-distribute anything.
+**GPLv3** — see [`LICENSE`](LICENSE). Chosen because it is the one licence that
+works unconditionally with the JUCE dependency (free, no revenue limit).
+[`LICENSING.md`](LICENSING.md) explains the choice and the closed-source
+alternative JUCE's paid tiers would allow.
 
 ## Layout
 
