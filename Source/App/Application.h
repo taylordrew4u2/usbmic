@@ -16,6 +16,7 @@
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
+#include "../Core/SetupAdvisor.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 
@@ -92,6 +93,17 @@ public:
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
 
+    /// §10.5 physical setup guidance: everything currently worth telling the
+    /// user about their hardware, in plain language, most serious first.
+    std::vector<SetupAdvice> getSetupAdvice() const;
+
+    /// §14.2: report an enumeration failure or a device dropping off the bus,
+    /// which is how bus-power exhaustion actually presents.
+    void noteDeviceDropout();
+
+    /// §8.1: per-block channel peaks, so silent channels are noticed.
+    void updateSetupAdvisorLevels (const std::vector<float>& peaksDb, double blockSeconds);
+
     /// §8.1: one meter per microphone plus one for the shared mix. These are
     /// owned here so they outlive any UI rebuild when mics come and go.
     Metering* getChannelMetering (int index);
@@ -127,6 +139,7 @@ private:
     // change it (§5.4). Keeping a second copy here would let the two disagree.
     std::string destinationFolder;
     MirrorPolicy mirrorPolicy;
+    SetupAdvisor setupAdvisor;
 
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::unique_ptr<Metering> mixMeter;
