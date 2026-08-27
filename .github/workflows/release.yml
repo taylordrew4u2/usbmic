@@ -64,12 +64,6 @@ jobs:
       - name: Install
         run: cmake --install build --prefix out --config Release
 
-      # LICENSE is absent on purpose -- see LICENSING.md -- so it is copied
-      # only if the owner has since chosen one.
-      - name: Include a licence if one has been chosen
-        shell: bash
-        run: '[ -f LICENSE ] && cp LICENSE out/ || true'
-
       - name: Check the artifact is not empty
         shell: bash
         run: |
