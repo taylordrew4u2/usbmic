@@ -27,6 +27,10 @@ private:
     void timerCallback() override;
     bool keyPressed (const juce::KeyPress& key) override;
     void refreshStatus();
+    /// Rebinds every Metering pointer the meters hold. Called from
+    /// Application::onCaptureRebuilt in the same call stack that destroyed the
+    /// old ones, so no timer can dereference a freed Metering in between.
+    void rebindMeters();
     Application& application;
     MainScreen mainScreen;
     AdvancedPanel advancedPanel;

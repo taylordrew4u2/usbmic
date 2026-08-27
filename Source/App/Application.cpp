@@ -49,7 +49,22 @@ void Application::initialise()
         captureRate = currentSampleRate;
         captureBufferSize = bufferLadder.getCurrentSize();
 
-        audioBackend->setDeviceChangeCallback ([this] { onDeviceListChanged(); });
+        // OS device-change notifications arrive on the backend's own thread --
+        // a CoreAudio listener thread on macOS, the COM notification thread on
+        // Windows. Everything onDeviceListChanged touches (DeviceManager, the
+        // meters, the coordinator) belongs to the message thread, so the
+        // callback only queues the work. The token keeps a callback that is
+        // already queued at quit time from firing into a destroyed Application.
+        std::weak_ptr<int> alive = aliveToken;
+
+        audioBackend->setDeviceChangeCallback ([this, alive]
+        {
+            juce::MessageManager::callAsync ([this, alive]
+            {
+                if (alive.lock() != nullptr)
+                    onDeviceListChanged();
+            });
+        });
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
     }
 
@@ -129,14 +144,27 @@ void Application::restartCapture()
     if (channels.empty())
     {
         capture->stopMonitoring();
+
+        if (onCaptureRebuilt)
+            onCaptureRebuilt();
+
         return;
     }
 
-    if (! capture->startMonitoring (channels, selectedOutputDeviceId))
-        return;
+    const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
 
-    applyClockMaster();
-    driftMeasuredSeconds = 0.0;
+    if (started)
+    {
+        applyClockMaster();
+        driftMeasuredSeconds = 0.0;
+    }
+
+    // Fired on success AND failure: either way the old meters are gone, and a
+    // UI still holding pointers into them would read freed memory on its very
+    // next timer tick. This runs on the message thread, in the same call
+    // stack as the rebuild, so no timer can interleave.
+    if (onCaptureRebuilt)
+        onCaptureRebuilt();
 }
 
 void Application::applyClockMaster()
@@ -687,6 +715,10 @@ void Application::runPreflight (const std::string& destination, int channelCount
 
             while (written < PreflightThroughputTest::kTestFileBytes)
             {
+                // Quit must not wait for a slow card to swallow 200 MB.
+                if (preflightAbort.load())
+                    break;
+
                 if (! out.write (chunk.data(), kChunkBytes))
                     break;
 
@@ -721,10 +753,13 @@ void Application::runPreflight (const std::string& destination, int channelCount
 
     testFile.deleteFile();
 
-    result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
-                                                currentSampleRate, bytesPerSample);
-
+    // An aborted run proved nothing about the card; caching its verdict would
+    // wrongly condemn the volume on the next launch of this session.
+    if (! preflightAbort.load())
     {
+        result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
+                                                    currentSampleRate, bytesPerSample);
+
         std::lock_guard<std::mutex> lock (preflightMutex);
         preflightResults[destination] = result;
     }
@@ -1219,6 +1254,8 @@ juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) con
 
 void Application::shutdown()
 {
+    preflightAbort.store (true);
+
     if (preflightThread.joinable())
         preflightThread.join();
 

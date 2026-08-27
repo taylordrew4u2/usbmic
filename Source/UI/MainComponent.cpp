@@ -47,6 +47,11 @@ MainComponent::MainComponent (Application& app)
     // §5.1: spacebar is the instant mute, so the window has to take keys.
     setWantsKeyboardFocus (true);
 
+    // A capture rebuild destroys the Metering objects the skull meters point
+    // at, and each skull's own timer dereferences its pointer on the next
+    // tick. Rebinding inside the rebuild's call stack closes that window.
+    application.onCaptureRebuilt = [this] { rebindMeters(); };
+
     mainScreen.onAdvancedClicked = [this] { toggleAdvanced(); };
 
     // §10.3: everything behind the one door is optional, but none of it is
@@ -100,6 +105,10 @@ MainComponent::MainComponent (Application& app)
 
 MainComponent::~MainComponent()
 {
+    // The window is torn down before Application::shutdown(), and a queued
+    // device-change can still fire in between -- it must not call into a
+    // destroyed component.
+    application.onCaptureRebuilt = nullptr;
     stopTimer();
 }
 
@@ -156,22 +165,10 @@ void MainComponent::refreshStatus()
         lastMicCount = micCount;
     }
 
-    // Rebound every frame rather than only on a count change: a hot-plug or a
-    // sample-rate renegotiation rebuilds the meters the audio thread feeds
-    // without the count moving, and a stale pointer here would outlive them.
-    mainScreen.setMixMetering (application.getMixMetering());
-
-    for (int i = 0; i < micCount; ++i)
-    {
-        if (auto* skull = mainScreen.getSkullMeter (i))
-        {
-            skull->setMetering (application.getChannelMetering (i));
-
-            // Every frame, not only on a count change: a rename must show up
-            // without waiting for a mic to come or go.
-            skull->setMicName (application.getMicDisplayName (i));
-        }
-    }
+    // Belt and braces on top of onCaptureRebuilt: rebinding every frame means
+    // even a rebuild path that forgets the callback cannot leave a stale
+    // pointer alive for more than one tick.
+    rebindMeters();
 
     // §14.6: light the skull of whoever was just heard alone.
     mainScreen.setHighlightedMic (application.getTappedChannel());
@@ -227,6 +224,22 @@ void MainComponent::refreshStatus()
 
         if (advancedVisible)
             refreshAdvanced();
+    }
+}
+
+void MainComponent::rebindMeters()
+{
+    mainScreen.setMixMetering (application.getMixMetering());
+
+    const int micCount = application.getIncludedMicCount();
+
+    for (int i = 0; i < micCount; ++i)
+    {
+        if (auto* skull = mainScreen.getSkullMeter (i))
+        {
+            skull->setMetering (application.getChannelMetering (i));
+            skull->setMicName (application.getMicDisplayName (i));
+        }
     }
 }
 

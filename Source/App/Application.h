@@ -11,6 +11,7 @@
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/PreflightThroughputTest.h"
 #include <atomic>
+#include <functional>
 #include <map>
 #include <thread>
 #include <mutex>
@@ -149,6 +150,12 @@ public:
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
 
+    /// Fired on the message thread whenever the capture coordinator's meters
+    /// have been destroyed and rebuilt (rename, hot-plug, output change, rate
+    /// change). The UI must rebind every Metering pointer inside this callback
+    /// -- its own timers dereference them on the very next tick.
+    std::function<void()> onCaptureRebuilt;
+
     /// §10.5 physical setup guidance: everything currently worth telling the
     /// user about their hardware, in plain language, most serious first.
     std::vector<SetupAdvice> getSetupAdvice() const;
@@ -189,6 +196,9 @@ private:
     int captureBufferSize = 0;
     double measuredLatencyMs = 0.0;
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
+
+    // Lifetime token for callbacks marshalled from OS threads; see initialise().
+    std::shared_ptr<int> aliveToken = std::make_shared<int> (0);
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
     juce::String sessionName;      // §6.2, set by the user before a take
     juce::String lastSessionFolder;
@@ -203,6 +213,7 @@ private:
     // §6.4 preflight. Keyed by destination path so switching back to a card
     // already benchmarked does not re-run the test.
     std::atomic<bool> preflightRunning { false };
+    std::atomic<bool> preflightAbort { false };
     std::map<std::string, PreflightResult> preflightResults;
     // mutable: getRecordDisabledReason() is const and must read the result.
     mutable std::mutex preflightMutex;
