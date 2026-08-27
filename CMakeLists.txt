@@ -32,6 +32,8 @@ add_library(mma_core STATIC
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
     Source/Core/RecordingEngine.cpp
+    Source/Core/OutputDeviceSelector.cpp
+    Source/Core/CapacityMonitor.cpp
 )
 target_include_directories(mma_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Source

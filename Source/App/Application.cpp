@@ -82,6 +82,55 @@ void Application::onDeviceListChanged()
     currentSampleRate = rateResult.chosenRate;
 
     rebuildMeters();
+
+    // A device change can add or remove an output too, so §5.3 is re-run here
+    // rather than only at launch (§6.5: output device disappears -> re-select).
+    reselectOutputDevice();
+}
+
+void Application::reselectOutputDevice()
+{
+    if (audioBackend == nullptr)
+        return;
+
+    std::vector<OutputDeviceCandidate> candidates;
+
+    for (const auto& d : audioBackend->enumerateOutputDevices())
+    {
+        OutputDeviceCandidate c;
+        c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
+        c.displayName = d.name;
+        c.hasPhysicalHeadphoneJack = d.hasPhysicalHeadphoneJack;
+
+        // §5.2: a microphone's own playback endpoint is never a monitor output.
+        c.isMicrophonePlaybackEndpoint = d.isMicrophone;
+
+        // §5.5: refuse to route output to a device that is also a capture device.
+        for (const auto& mic : deviceManager.getDevices())
+            if (mic.included && ! d.usbLocationId.empty() && mic.identity.locationId == d.usbLocationId)
+                c.isAlsoSelectedInput = true;
+
+        // Anything seen after the first enumeration is something the user just
+        // plugged in (§5.3 priority 2).
+        c.appearedAfterLaunch = haveEnumeratedOutputsOnce;
+        c.connectionOrder = ++outputConnectionCounter;
+
+        candidates.push_back (std::move (c));
+    }
+
+    haveEnumeratedOutputsOnce = true;
+
+    const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
+    selectedOutputDeviceId = selection.id;
+    outputSelectionProblem = selection.explanation;
+}
+
+RemainingTimeWarning Application::pollCapacityWarning()
+{
+    if (recordingEngine.getState() != RecordingState::Recording)
+        return RemainingTimeWarning::None;
+
+    return capacityMonitor.evaluateRemaining (getRemainingRecordingSeconds());
 }
 
 void Application::rebuildMeters()
@@ -149,7 +198,13 @@ void Application::toggleRecording()
             channels.push_back (c);
         }
         if (recordingEngine.start (std::move (channels)))
+        {
             recordingStartMs = juce::Time::getMillisecondCounterHiRes();
+
+            // Each take gets its own warnings; a previous one must not leave the
+            // ten-minute warning already spent.
+            capacityMonitor.reset();
+        }
     }
     else
     {
