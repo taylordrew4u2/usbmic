@@ -16,6 +16,73 @@ using Microsoft::WRL::ComPtr;
 
 namespace mma {
 
+/// §2 hotplug on Windows: the OS tells us, we never poll. This is the
+/// counterpart to the CoreAudio property listener on macOS -- without it a mic
+/// plugged in after launch is simply never noticed, because nothing else in the
+/// app ever re-enumerates on its own.
+///
+/// Deliberately minimal: every notification funnels to the same callback, which
+/// re-runs enumeration. Distinguishing "added" from "state changed" here would
+/// duplicate logic DeviceManager already owns.
+class DeviceNotificationClient : public IMMNotificationClient
+{
+public:
+    explicit DeviceNotificationClient (DeviceChangeCallback* target) : callback (target) {}
+
+    // IUnknown. Reference counted because the enumerator holds a reference for
+    // as long as the registration lives.
+    ULONG STDMETHODCALLTYPE AddRef() override { return refCount.fetch_add (1) + 1; }
+
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        const auto remaining = refCount.fetch_sub (1) - 1;
+        if (remaining == 0)
+            delete this;
+        return remaining;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface (REFIID riid, void** object) override
+    {
+        if (object == nullptr)
+            return E_POINTER;
+
+        if (riid == __uuidof (IUnknown) || riid == __uuidof (IMMNotificationClient))
+        {
+            *object = static_cast<IMMNotificationClient*> (this);
+            AddRef();
+            return S_OK;
+        }
+
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded (LPCWSTR) override { return fire(); }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved (LPCWSTR) override { return fire(); }
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged (LPCWSTR, DWORD) override { return fire(); }
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged (EDataFlow, ERole, LPCWSTR) override { return fire(); }
+
+    // Property changes fire constantly (volume, mute, jack presence) and none
+    // of them alter the device list, so re-enumerating on them would be the
+    // polling §2 rules out, just triggered by a different clock.
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged (LPCWSTR, const PROPERTYKEY) override { return S_OK; }
+
+private:
+    HRESULT fire()
+    {
+        // These arrive on an OS-owned thread. The callback only marks the
+        // device list dirty for the message thread to pick up; it must not do
+        // enumeration work here.
+        if (callback != nullptr && *callback)
+            (*callback)();
+
+        return S_OK;
+    }
+
+    DeviceChangeCallback* callback;
+    std::atomic<ULONG> refCount { 1 };
+};
+
 struct WasapiStream
 {
     ComPtr<IAudioClient> client;
@@ -196,6 +263,7 @@ WasapiAsioBackend::WasapiAsioBackend()
 
 WasapiAsioBackend::~WasapiAsioBackend()
 {
+    unregisterNotificationClient();
     closeAllStreams();
     CoUninitialize();
 }
@@ -287,9 +355,46 @@ std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateOutputDevices()
 void WasapiAsioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
 {
     deviceChangeCallback = std::move (callback);
-    // TODO: implement IMMNotificationClient and register via
-    // IMMDeviceEnumerator::RegisterEndpointNotificationCallback so hotplug is
-    // OS-notified, never polled (§2).
+
+    unregisterNotificationClient();
+
+    if (! deviceChangeCallback)
+        return;
+
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (FAILED (CoCreateInstance (__uuidof (MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  IID_PPV_ARGS (&enumerator))))
+        return;
+
+    auto* client = new DeviceNotificationClient (&deviceChangeCallback);
+
+    if (SUCCEEDED (enumerator->RegisterEndpointNotificationCallback (client)))
+    {
+        notificationClient = client;   // the enumerator holds its own reference
+    }
+    else
+    {
+        client->Release();
+    }
+}
+
+void WasapiAsioBackend::unregisterNotificationClient()
+{
+    if (notificationClient == nullptr)
+        return;
+
+    auto* client = static_cast<DeviceNotificationClient*> (notificationClient);
+
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (SUCCEEDED (CoCreateInstance (__uuidof (MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                     IID_PPV_ARGS (&enumerator))))
+        enumerator->UnregisterEndpointNotificationCallback (client);
+
+    // Must outlive the registration: the OS can be mid-notification on another
+    // thread when this runs, and releasing our reference is the only safe way
+    // to hand ownership back to the reference count.
+    client->Release();
+    notificationClient = nullptr;
 }
 
 ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const std::string& outputDeviceId,

@@ -9,6 +9,45 @@ The full build specification lives in [`docs/SPEC.md`](docs/SPEC.md) and is the
 source of truth for every constant and behavior in this codebase. Where the code
 implements a spec rule, the section number is cited in a comment.
 
+> **Read [Current status](#current-status) before running this on anything you
+> care about.** The engine is complete and measured; the two platform audio
+> backends have never executed against real hardware, because no build
+> environment here has an audio device. That is stated precisely below rather
+> than glossed.
+
+## Download
+
+Builds for macOS, Windows and Linux are produced by the
+[Release workflow](.github/workflows/release.yml):
+
+- **Tagged releases** — attached to the
+  [Releases page](../../releases) as `MultiMicAggregator-macOS.zip`,
+  `-Windows.zip` and `-Linux.zip`.
+- **Any commit** — run the Release workflow from the Actions tab
+  (`workflow_dispatch`) and download the artifacts it uploads. Same build, no
+  tag required.
+
+Each archive contains the application, this README, and `LICENSING.md`.
+
+§1 names macOS and Windows as the shipping targets, and those are the two with
+real audio backends. The Linux build exists because it is what the engine, the
+tests and the harnesses are developed against — it runs, but `Source/Platform`
+has no Linux backend, so it will not find a microphone.
+
+Neither the macOS nor the Windows build is code-signed. macOS will refuse a
+first launch from Finder; open it once from the right-click menu, or run
+`xattr -dr com.apple.quarantine "Multi-Mic Aggregator.app"`. Windows SmartScreen
+will warn once. Signing needs an Apple Developer account and an EV certificate
+respectively — neither is obtainable from source code, which is why the release
+is unsigned rather than quietly claiming otherwise.
+
+### Licence
+
+There is deliberately no `LICENSE` file: the JUCE tier you use decides what
+your options are, and that is your decision to make. See
+[`LICENSING.md`](LICENSING.md) — it is a short read and it matters before you
+distribute anything.
+
 ## Layout
 
 ```
@@ -17,6 +56,7 @@ Source/Platform/    audio backends (CoreAudio, WASAPI/ASIO) + virtual device bac
 Source/UI/          JUCE components: skull meters, main screen, advanced panel
 Source/App/         composition root wiring devices + engine + monitor + UI
 Tests/              headless unit tests for Source/Core
+Tools/              capture harnesses: e2e_capture, soak_drift (see Building)
 docs/SPEC.md        the build specification, verbatim
 ```
 
@@ -34,8 +74,7 @@ cmake --build build -j
 ./build/Tests/mma_core_tests
 ```
 
-**The full GUI application** (requires network access to fetch JUCE 7.0.12, and
-a macOS or Windows host):
+**The full GUI application** (requires network access to fetch JUCE 7.0.12):
 
 ```sh
 cmake -B build -DMMA_BUILD_APP=ON
@@ -43,6 +82,33 @@ cmake --build build -j
 ```
 
 `MMA_BUILD_APP` is `OFF` by default so the engine and its tests build anywhere.
+
+**Packaging a build to hand to someone:**
+
+```sh
+cmake -B build -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j
+cmake --install build --prefix dist --config Release   # a clean tree
+cmake --build build --config Release --target package  # or a .zip
+```
+
+**The capture harnesses** (`Tools/`, built by default alongside the engine).
+Neither is a unit test: they take minutes and answer questions unit tests
+cannot. Both found real bugs — see [Executed, not just
+compiled](#executed-not-just-compiled).
+
+```sh
+./build/e2e_capture /tmp/take   # two mics, mismatched clocks, decode the WAVs
+./build/soak_drift 4.0          # §3.4: four clocks, four hours, drift at the end
+```
+
+Linux needs JUCE's usual dependencies for the GUI build:
+
+```sh
+sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev \
+  libxrandr-dev libxcursor-dev libxcomposite-dev libfreetype6-dev \
+  libfontconfig1-dev libgl1-mesa-dev
+```
 
 ## Continuous integration
 
@@ -119,17 +185,25 @@ The full application builds and links in CI on Linux, macOS and Windows, so
 
 - `CoreAudioBackend` — macOS, guarded by `JUCE_MAC`.
 - `WasapiAsioBackend` — Windows, guarded by `JUCE_WINDOWS`. Selects ASIO or
-  WASAPI exclusive; shared-mode WASAPI is refused outright per §5.4.
+  WASAPI exclusive; shared-mode WASAPI is refused outright per §5.4. Hotplug
+  goes through a registered `IMMNotificationClient`, the counterpart to the
+  CoreAudio property listener — §2 requires the OS to tell us, never a timer.
 - `SkullMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
 
 The app has also been run headless under Xvfb, where it renders the §1
 zero-microphone state and survives with its 60 Hz refresh running.
 
-What that does **not** establish is behaviour with real audio. Every code path
-that depends on an actual device — enumeration, the monitor stream, the write
-pipeline under load — has still never executed, because no build environment
-here has an audio device. Compiling and rendering are not the same as working.
+What that does **not** establish is behaviour with real audio. The OS calls
+themselves — `AudioDeviceStart`, `IAudioClient::Initialize` in exclusive mode,
+the hotplug notifications above — have never executed, because no build
+environment here has an audio device. Compiling and rendering are not the same
+as working.
+
+What *has* been established, by `Tools/`, is everything above those calls: the
+capture path, the drift loop, the write pipeline and the file format are driven
+with synthetic audio and the results decoded and checked. So the untested
+surface is now the two backend files, not the engine behind them.
 
 ### Wired but unreportable
 

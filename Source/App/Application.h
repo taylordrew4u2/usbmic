@@ -161,6 +161,10 @@ public:
     /// inventory. Never audio.
     void exportDiagnostics (const juce::File& destinationZip);
 
+    /// §11: where the running log lives. Public so Main.cpp can install the
+    /// logger before anything else has a chance to fail.
+    static juce::File getLogFile();
+
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
     std::unique_ptr<CaptureCoordinator> capture;
@@ -223,6 +227,8 @@ private:
     static juce::String createMirrorFolder (const juce::String& sessionFolderName);
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
+    /// §11: the newest session.json files under the destination, newest first.
+    juce::Array<juce::File> findRecentSessionMetadata (int maximum) const;
     void onDeviceListChanged();
     void chooseInitialDestination();
     void reselectOutputDevice();
