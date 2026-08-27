@@ -23,6 +23,11 @@ MainScreen::MainScreen()
     noMicsLabel.setVisible (false);
     addAndMakeVisible (noMicsLabel);
 
+    monitorProblemLabel.setJustificationType (juce::Justification::centred);
+    monitorProblemLabel.setColour (juce::Label::textColourId, juce::Colours::orange);
+    monitorProblemLabel.setVisible (false);
+    addAndMakeVisible (monitorProblemLabel);
+
     disabledReasonLabel.setJustificationType (juce::Justification::centred);
     disabledReasonLabel.setVisible (false);
     addAndMakeVisible (disabledReasonLabel);
@@ -74,6 +79,12 @@ void MainScreen::setRecording (bool isRecording)
     recordButton.setButtonText (recording ? "Recording. Tap to stop." : "Start recording");
 }
 
+void MainScreen::setMonitorProblemText (const juce::String& text)
+{
+    monitorProblemLabel.setText (text, juce::dontSendNotification);
+    monitorProblemLabel.setVisible (text.isNotEmpty());
+}
+
 void MainScreen::setNoMicsMessage (bool show)
 {
     noMicsLabel.setVisible (show);
@@ -119,6 +130,7 @@ void MainScreen::resized()
     remainingLabel.setBounds (statusRow);
 
     saveLocationLabel.setBounds (area.removeFromTop (20));
+    monitorProblemLabel.setBounds (area.removeFromTop (20));
     area.removeFromTop (8);
 
     auto bottomRow = area.removeFromTop (32);

@@ -53,19 +53,22 @@ void MainComponent::refreshStatus()
     {
         // §6.5: mics come and go without a dialog and without interrupting a take.
         mainScreen.setMicCount (micCount);
-        mainScreen.setMixMetering (application.getMixMetering());
 
         for (int i = 0; i < micCount; ++i)
-        {
             if (auto* skull = mainScreen.getSkullMeter (i))
-            {
-                skull->setMetering (application.getChannelMetering (i));
                 skull->setMicName (application.getMicDisplayName (i));
-            }
-        }
 
         lastMicCount = micCount;
     }
+
+    // Rebound every frame rather than only on a count change: a hot-plug or a
+    // sample-rate renegotiation rebuilds the meters the audio thread feeds
+    // without the count moving, and a stale pointer here would outlive them.
+    mainScreen.setMixMetering (application.getMixMetering());
+
+    for (int i = 0; i < micCount; ++i)
+        if (auto* skull = mainScreen.getSkullMeter (i))
+            skull->setMetering (application.getChannelMetering (i));
 
     // The meters tick their own ballistics as they paint, so a repaint is the poll.
     mainScreen.repaintMeters();
@@ -91,6 +94,15 @@ void MainComponent::refreshStatus()
 
         const auto reason = application.getRecordDisabledReason();
         mainScreen.setRecordButtonEnabled (reason.isEmpty(), reason);
+
+        // §5.4: if the low-latency monitor path could not be obtained, say so.
+        // §5.3: otherwise, if no headphone output could be chosen, say that.
+        auto monitorProblem = application.getMonitorProblem();
+
+        if (monitorProblem.isEmpty())
+            monitorProblem = juce::String (application.getOutputSelectionProblem());
+
+        mainScreen.setMonitorProblemText (monitorProblem);
     }
 }
 

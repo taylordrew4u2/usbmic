@@ -1,5 +1,6 @@
 #pragma once
 #include "IAudioBackend.h"
+#include "PlatformMacros.h"
 
 #if JUCE_MAC
 

@@ -33,6 +33,11 @@ public:
     void setNoMicsMessage (bool show);
     void setRecordButtonEnabled (bool enabled, const juce::String& disabledReason);
 
+    /// §5.3/§5.4: anything wrong with the listening path, in plain language.
+    /// Empty hides the line. Never leave this unshown -- the spec forbids
+    /// silently delivering a high-latency mix instead of saying so.
+    void setMonitorProblemText (const juce::String& text);
+
     std::function<void()> onRecordButtonClicked;
     std::function<void (double)> onVolumeChanged; // 0-100
     std::function<void()> onAdvancedClicked;
@@ -44,6 +49,7 @@ private:
 
     juce::TextButton recordButton { "Start recording" };
     juce::Label elapsedLabel, remainingLabel, saveLocationLabel, noMicsLabel, disabledReasonLabel;
+    juce::Label monitorProblemLabel;
     juce::Slider volumeSlider;
     juce::ToggleButton muteButton { "Mute" };
     juce::TextButton advancedButton { "Advanced" };
