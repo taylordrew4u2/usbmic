@@ -227,3 +227,119 @@ TEST_CASE (WritePipeline_FillFractionRisesWithUndrainedAudio)
     REQUIRE (p.getFillFraction() <= 1.0);
     p.stop();
 }
+
+TEST_CASE (WritePipeline_LiveTrimChangeMovesTheMixNotTheStem)
+{
+    const auto dir = tempDir();
+
+    std::vector<WriteChannelSpec> channels = { { "live_stem", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> a (512, 0.5f);
+    const float* chans[] = { a.data() };
+
+    // §4: the user turns the mic down mid-take. The mix must follow; the stem
+    // must not, because the stem is the raw material the take exists for.
+    p.setChannelTrimDb (0, -20.0f);
+    REQUIRE (p.pushBlock (chans, 1, 512));
+    p.stop();
+
+    auto firstSample = [] (const std::string& path)
+    {
+        std::ifstream f (path, std::ios::binary);
+        REQUIRE (f.is_open());
+        f.seekg (kAudioDataOffset);
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        return static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+    };
+
+    REQUIRE (firstSample (dir + "/live_stem.wav") > 12000); // unity, ~16384
+    REQUIRE (firstSample (dir + "/MIX.wav") < 6000);        // -20 dB, ~1638
+}
+
+TEST_CASE (WritePipeline_MirrorWritesASecondCompleteCopy)
+{
+    const auto dir = tempDir();
+    const auto mirror = tempDir();
+
+    std::vector<WriteChannelSpec> channels = { { "01_A", 0.0f }, { "02_B", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z", mirror));
+    REQUIRE (p.isMirroring());
+
+    std::vector<float> a (512, 0.5f), b (512, 0.25f);
+    const float* chans[] = { a.data(), b.data() };
+    REQUIRE (p.pushBlock (chans, 2, 512));
+    p.stop();
+
+    // §6.3: the mirror turns most card failures from data loss into
+    // inconvenience, which requires every file to be there, not just the mix.
+    for (const char* name : { "/01_A.wav", "/02_B.wav", "/MIX.wav" })
+    {
+        std::ifstream card (dir + name, std::ios::binary);
+        std::ifstream copy (mirror + name, std::ios::binary);
+        REQUIRE (card.is_open());
+        REQUIRE (copy.is_open());
+
+        // Byte-identical: both are written from the same drained scratch, so a
+        // divergence here would mean the copy is not a copy.
+        const std::string cardBytes ((std::istreambuf_iterator<char> (card)), std::istreambuf_iterator<char>());
+        const std::string copyBytes ((std::istreambuf_iterator<char> (copy)), std::istreambuf_iterator<char>());
+        REQUIRE (cardBytes == copyBytes);
+        REQUIRE (cardBytes.size() > 602);
+    }
+}
+
+TEST_CASE (WritePipeline_NoMirrorFolderMeansCardOnly)
+{
+    const auto dir = tempDir();
+
+    std::vector<WriteChannelSpec> channels = { { "01_A", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    // §6.3 is a default, not a requirement: card-only must be a working mode.
+    REQUIRE_FALSE (p.isMirroring());
+
+    std::vector<float> a (256, 0.5f);
+    const float* chans[] = { a.data() };
+    REQUIRE (p.pushBlock (chans, 1, 256));
+    p.stop();
+
+    std::ifstream f (dir + "/01_A.wav", std::ios::binary);
+    REQUIRE (f.is_open());
+}
+
+TEST_CASE (WritePipeline_StoppingTheMirrorLeavesTheRecordingIntact)
+{
+    const auto dir = tempDir();
+    const auto mirror = tempDir();
+
+    std::vector<WriteChannelSpec> channels = { { "01_A", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z", mirror));
+
+    std::vector<float> a (512, 0.5f);
+    const float* chans[] = { a.data() };
+    REQUIRE (p.pushBlock (chans, 1, 512));
+
+    // §6.3: the internal drive ran low. The copy stops; the take does not.
+    p.stopMirroring();
+    REQUIRE_FALSE (p.isMirroring());
+
+    REQUIRE (p.pushBlock (chans, 1, 512));
+    p.stop();
+
+    std::ifstream card (dir + "/01_A.wav", std::ios::binary);
+    REQUIRE (card.is_open());
+
+    // Both blocks reached the card even though the mirror stopped between them.
+    REQUIRE (readU32LE (card, kDataSizeOffset) == 1024 * 2);
+}

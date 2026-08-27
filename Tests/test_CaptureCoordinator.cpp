@@ -389,3 +389,67 @@ TEST_CASE (CaptureCoordinator_TrimAffectsTheMonitorMix)
     REQUIRE (out[0] < 0.20f);
     REQUIRE (out[0] > 0.10f);
 }
+
+TEST_CASE (CaptureCoordinator_TrimCanBeChangedWhileRunning)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    std::vector<float> a (64, 0.10f), b (64, 0.10f);
+    const float* ins[] = { a.data(), b.data() };
+
+    std::vector<float> before (64, 0.0f), after (64, 0.0f);
+    float* outBefore[] = { before.data() };
+    float* outAfter[] = { after.data() };
+
+    c.processAudioBlock (ins, 2, outBefore, 1, 64);
+
+    // §4: the user turns one mic down mid-session and the monitor follows
+    // immediately -- no restart, no gap.
+    c.setChannelTrimDb (1, -20.0f);
+    c.processAudioBlock (ins, 2, outAfter, 1, 64);
+
+    REQUIRE (after[0] < before[0]);
+    REQUIRE_NEAR (c.getChannelTrimDb (1), -20.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelTrimDb (0), 0.0f, 1e-6);
+}
+
+TEST_CASE (CaptureCoordinator_OutOfRangeTrimIndexIsIgnored)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // Must not write past the end: the UI can outlive a channel that just
+    // disappeared, and a stray index here would corrupt the audio thread's
+    // gain table.
+    c.setChannelTrimDb (-1, -6.0f);
+    c.setChannelTrimDb (99, -6.0f);
+
+    REQUIRE_NEAR (c.getChannelTrimDb (0), 0.0f, 1e-6);
+    REQUIRE_NEAR (c.getChannelTrimDb (1), 0.0f, 1e-6);
+}
+
+TEST_CASE (CaptureCoordinator_ReportsAudioCallbackLoad)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (64, 0.10f), b (64, 0.10f);
+    std::vector<float> out (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { out.data() };
+
+    for (int i = 0; i < 50; ++i)
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+
+    // §6.6 needs a real load figure to warn from. A 64-sample block at 48k has
+    // 1.33ms to work with and this does almost nothing, so the load must be a
+    // sane fraction rather than zero or nonsense.
+    const auto load = c.getAudioCallbackLoad();
+    REQUIRE (load > 0.0);
+    REQUIRE (load < 1.0);
+}

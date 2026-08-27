@@ -10,6 +10,10 @@
 #include "../Core/SessionMetadata.h"
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/PreflightThroughputTest.h"
+#include <atomic>
+#include <map>
+#include <thread>
+#include <mutex>
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/CapacityMonitor.h"
@@ -41,6 +45,7 @@ public:
 
     DeviceManager& getDeviceManager() { return deviceManager; }
     RecordingEngine& getRecordingEngine() { return recordingEngine; }
+    /// Null only on a build with no platform audio backend.
     MonitorBus* getMonitorBus();
 
     /// §5.4: empty while the low-latency monitor path is healthy; otherwise the
@@ -66,11 +71,41 @@ public:
     /// reason is shown next to it. Empty string means enabled.
     juce::String getRecordDisabledReason() const;
 
+    /// §6.4: benchmarks the destination volume by writing a 200 MB file and
+    /// measuring the sustained -- never average -- throughput. Runs on its own
+    /// thread; the record button stays disabled until it passes. Cached per
+    /// volume for 30 days, so a card is benchmarked once and not on every launch.
+    void beginPreflightForDestination();
+    bool isPreflightRunning() const { return preflightRunning.load(); }
+
     /// §5.1 master monitor volume, 0-100. Recorded files are unaffected.
     void setMasterVolume (double volume0to100);
     double getMasterVolume() const;
 
     int getIncludedMicCount() const;
+
+    /// §4 per-microphone trim, -20..+20 dB in 0.5 dB steps. Persisted against
+    /// the physical port so it follows the mic across a replug, and applied
+    /// live to the monitor mix and the mix file -- never to the stems.
+    void setChannelTrimDb (int index, float trimDb);
+    float getChannelTrimDb (int index) const;
+
+    /// §10.3 Advanced panel contents.
+    double getSampleRate() const { return currentSampleRate; }
+    int getBitDepth() const { return currentBitDepth; }
+    double getMeasuredLatencyMs() const { return measuredLatencyMs; }
+    juce::String getActiveBackendDescription() const;
+    /// Display names of every candidate monitor output, and of every mic that
+    /// could serve as §3.1 clock master.
+    const std::vector<std::string>& getOutputDeviceNames() const;
+    juce::String getClockMasterName() const;
+    /// §3.2 per-device drift, one line per mic, or a plain line saying the
+    /// 60-second measurement window has not elapsed yet (§3.1).
+    juce::String getDriftReport() const;
+    void setOutputDeviceByName (const juce::String& displayName);
+    /// §3.1: an explicit clock-master choice, by display name.
+    void setClockMasterByName (const juce::String& displayName);
+    void setDestinationFolder (const juce::File& folder);
 
     /// §5.3 output selection result for the Advanced panel, and the plain-language
     /// line to show when nothing could be selected.
@@ -103,6 +138,12 @@ public:
     /// user about their hardware, in plain language, most serious first.
     std::vector<SetupAdvice> getSetupAdvice() const;
 
+    /// Runs the §6.5 capacity check, the §6.6 performance check and the §10.5
+    /// level-based detectors from the UI tick, and returns the single most
+    /// serious thing worth saying right now -- empty when there is nothing.
+    /// §10.6: what happened then what to do, never a code.
+    juce::String pollStatusAdvice (double sinceLastCallSeconds);
+
     /// §14.2: report an enumeration failure or a device dropping off the bus,
     /// which is how bus-power exhaustion actually presents.
     void noteDeviceDropout();
@@ -127,16 +168,28 @@ private:
     // tell a plain channel-set change from one that needs a new coordinator.
     double captureRate = 0.0;
     int captureBufferSize = 0;
+    double measuredLatencyMs = 0.0;
+    juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
+
+    // §6.4 preflight. Keyed by destination path so switching back to a card
+    // already benchmarked does not re-run the test.
+    std::atomic<bool> preflightRunning { false };
+    std::map<std::string, PreflightResult> preflightResults;
+    // mutable: getRecordDisabledReason() is const and must read the result.
+    mutable std::mutex preflightMutex;
+    std::thread preflightThread;
+    std::string preflightTargetPath;
+    void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
 
     DeviceManager deviceManager;
     RecordingEngine recordingEngine;
-    std::unique_ptr<MonitorBus> monitorBus;
     PortIdentityStore portIdentityStore;
 
     std::string selectedOutputDeviceId;
     std::string outputSelectionProblem;
     std::string rememberedOutputDeviceId;
+    std::vector<std::string> outputDeviceNames; // §2: refreshed on device change only
     CapacityMonitor capacityMonitor;
     BufferLadder bufferLadder;
     CpuPressureMonitor cpuPressureMonitor;
@@ -152,10 +205,10 @@ private:
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
 
-    std::vector<std::unique_ptr<Metering>> channelMeters;
-    std::unique_ptr<Metering> mixMeter;
+    // §5.1 listening level. Owned here, not on the bus, because the coordinator
+    // that owns the bus is rebuilt on a rate or buffer change.
+    double masterVolume = MonitorBus::kDefaultMonitorVolume;
 
-    void rebuildMeters();
     /// (Re)opens the streams for the current mic set and output device. §5.1
     /// makes monitoring live from launch, and a hot-plug changes the channel
     /// set, so this runs at startup and on every device-list change.
@@ -163,6 +216,10 @@ private:
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 destination folder for a new take, created on disk. Empty on failure.
     juce::String createSessionFolder (juce::Time now) const;
+    /// §6.3 local backup folder for a take, created on disk. Empty on failure.
+    static juce::String createMirrorFolder (const juce::String& sessionFolderName);
+    /// §6.2 session.json, written at start and rewritten at stop.
+    void writeSessionMetadata (bool sessionHasStopped);
     void onDeviceListChanged();
     void chooseInitialDestination();
     void reselectOutputDevice();

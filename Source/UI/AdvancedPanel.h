@@ -1,5 +1,7 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
+#include <vector>
 
 namespace mma {
 
@@ -20,7 +22,20 @@ public:
     void setBufferSize (int samples) { bufferSizeValue.setText (juce::String (samples) + " samples", juce::dontSendNotification); }
     void setMeasuredLatency (double ms) { latencyValue.setText (juce::String (ms, 1) + " ms", juce::dontSendNotification); }
     void setActiveBackendDescription (const juce::String& text) { backendValue.setText (text, juce::dontSendNotification); }
+    void setDriftReport (const juce::String& text) { driftLabel.setText (text, juce::dontSendNotification); }
+    void setDestinationFolderText (const juce::String& text) { destinationFolderLabel.setText (text, juce::dontSendNotification); }
 
+    /// Fills a combo without firing onChange -- otherwise refreshing the list
+    /// would read back as the user having picked something.
+    void setOutputDevices (const juce::StringArray& names, const juce::String& selected);
+    void setClockMasters (const juce::StringArray& names, const juce::String& selected);
+
+    /// §4: one trim slider per microphone, rebuilt when the mic set changes.
+    /// currentTrimDb supplies each row's starting value.
+    void setTrimChannels (const juce::StringArray& micNames,
+                          const std::function<float (int)>& currentTrimDb);
+
+    std::function<void (int, float)> onTrimChanged; // channel index, dB
     std::function<void()> onDiagnosticsExportClicked;
     std::function<void (bool)> onMirrorToggled;
     std::function<void()> onDestinationFolderClicked;
@@ -37,6 +52,9 @@ private:
     juce::Label driftLabel; // per-device drift in PPM, populated externally as a multi-line label
     juce::Viewport trimViewport; // per-microphone trim sliders, one row per device
     juce::Component trimContainer;
+    std::vector<std::unique_ptr<juce::Label>> trimNameLabels;
+    std::vector<std::unique_ptr<juce::Slider>> trimSliders;
+    void layOutTrimRows();
     juce::Label outputDeviceLabel;
     juce::ComboBox outputDeviceCombo;
     juce::Label backendLabel, backendValue;

@@ -1,5 +1,6 @@
 #include "CaptureCoordinator.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace mma {
@@ -90,8 +91,15 @@ void CaptureCoordinator::stopMonitoring()
     monitoring = false;
 }
 
+void CaptureCoordinator::stopMirroring()
+{
+    if (pipeline != nullptr)
+        pipeline->stopMirroring();
+}
+
 bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int bitDepth,
-                                         const std::string& originTimestamp)
+                                         const std::string& originTimestamp,
+                                         const std::string& mirrorFolder)
 {
     if (channels.empty() || isRecording())
         return false;
@@ -104,7 +112,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 
     auto p = std::make_unique<WritePipeline>();
 
-    if (! p->start (sessionFolder, specs, sampleRate, bitDepth, originTimestamp))
+    if (! p->start (sessionFolder, specs, sampleRate, bitDepth, originTimestamp, mirrorFolder))
         return false;
 
     // Published only once fully started, so the audio thread never sees a
@@ -136,6 +144,30 @@ void CaptureCoordinator::setChannelLive (const std::string& deviceId, bool live)
     }
 }
 
+void CaptureCoordinator::setChannelTrimDb (int index, float trimDb) noexcept
+{
+    if (index < 0 || index >= static_cast<int> (channels.size())
+        || index >= static_cast<int> (trimGains.size()))
+        return;
+
+    channels[static_cast<size_t> (index)].trimDb = trimDb;
+
+    // One aligned float store, so the callback either sees the old gain or the
+    // new one -- never a torn value and never a resized vector (§11).
+    trimGains[static_cast<size_t> (index)] = MonitorBus::trimDbToLinearGain (trimDb);
+
+    if (pipeline != nullptr)
+        pipeline->setChannelTrimDb (index, trimDb);
+}
+
+float CaptureCoordinator::getChannelTrimDb (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (channels.size()))
+        return 0.0f;
+
+    return channels[static_cast<size_t> (index)].trimDb;
+}
+
 Metering* CaptureCoordinator::getChannelMetering (int index) noexcept
 {
     if (index < 0 || index >= static_cast<int> (channelMeters.size()))
@@ -151,6 +183,10 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     if (numSamples <= 0)
         return;
 
+    // A clock read, not a syscall, on both shipping platforms -- no allocation,
+    // no lock, nothing §11 forbids.
+    const auto callbackStart = std::chrono::steady_clock::now();
+
     const int channelCount = std::min (numInputs, static_cast<int> (channels.size()));
 
     // §6: recording gets the raw inputs. §4 keeps stems at unity and applies
@@ -164,18 +200,18 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
             channelMeters[static_cast<size_t> (ch)]->processAudioBlock (inputs[ch], numSamples);
 
     if (outputs == nullptr || numOutputs <= 0)
-        return;
+        return noteCallbackLoad (callbackStart, numSamples);
 
     // §5.1: one mix, containing every microphone including the listener's own,
     // summed at unity with no attenuation for channel count.
     const size_t needed = static_cast<size_t> (numSamples);
 
     if (mixScratch.size() < needed)
-        return; // sized at startMonitoring(); never grow here (§11)
+        return noteCallbackLoad (callbackStart, numSamples); // sized at startMonitoring() (§11)
 
     if (static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
-        return; // sized at startMonitoring(); never grow here (§11)
+        return noteCallbackLoad (callbackStart, numSamples); // sized at startMonitoring() (§11)
 
     for (int s = 0; s < numSamples; ++s)
     {
@@ -199,6 +235,28 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     for (int ch = 0; ch < numOutputs; ++ch)
         if (outputs[ch] != nullptr)
             std::copy (mixScratch.begin(), mixScratch.begin() + numSamples, outputs[ch]);
+
+    noteCallbackLoad (callbackStart, numSamples);
+}
+
+void CaptureCoordinator::noteCallbackLoad (std::chrono::steady_clock::time_point start,
+                                           int numSamples) noexcept
+{
+    if (sampleRate <= 0.0)
+        return;
+
+    const auto elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+    const auto available = static_cast<double> (numSamples) / sampleRate;
+
+    if (available <= 0.0)
+        return;
+
+    // Smoothed a little: a single long callback is normal, a sustained high
+    // average is what §6.6 warns about.
+    const auto instant = elapsed / available;
+    const auto previous = callbackLoad.load (std::memory_order_relaxed);
+
+    callbackLoad.store (previous + 0.05 * (instant - previous), std::memory_order_relaxed);
 }
 
 } // namespace mma
