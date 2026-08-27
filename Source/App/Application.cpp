@@ -10,6 +10,8 @@
 #include "../Platform/CoreAudioBackend.h"
 #elif JUCE_WINDOWS
 #include "../Platform/WasapiAsioBackend.h"
+#elif defined(__linux__) && ! defined(MMA_NO_ALSA)
+#include "../Platform/AlsaBackend.h"
 #endif
 
 namespace mma {
@@ -23,6 +25,8 @@ std::unique_ptr<IAudioBackend> Application::createPlatformBackend()
     return std::make_unique<CoreAudioBackend>();
 #elif JUCE_WINDOWS
     return std::make_unique<WasapiAsioBackend>();
+#elif defined(__linux__) && ! defined(MMA_NO_ALSA)
+    return std::make_unique<AlsaBackend>();
 #else
     return nullptr; // unsupported platform for real audio I/O; Core/ logic still runs
 #endif

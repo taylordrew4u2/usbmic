@@ -43,7 +43,22 @@ add_library(mma_core STATIC
     Source/Core/PermissionGuidance.cpp
     Source/Core/CaptureCoordinator.cpp
     Source/Core/DeviceInputStream.cpp
+    Source/Platform/AlsaBackend.cpp
 )
+# ALSA on Linux: the backend is part of mma_core rather than the app target so
+# the headless harnesses can drive a REAL OS audio API. It is guarded on
+# __linux__, so on macOS and Windows the translation unit is empty.
+if (UNIX AND NOT APPLE)
+    find_package(ALSA)
+
+    if (ALSA_FOUND)
+        target_link_libraries(mma_core PUBLIC ALSA::ALSA)
+    else()
+        message(STATUS "ALSA not found: the Linux audio backend will be unavailable")
+        target_compile_definitions(mma_core PUBLIC MMA_NO_ALSA=1)
+    endif()
+endif()
+
 target_include_directories(mma_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Source
     ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty
@@ -177,4 +192,11 @@ if (MMA_BUILD_TOOLS)
 
     add_executable(soak_drift Tools/soak_drift.cpp)
     target_link_libraries(soak_drift PRIVATE mma_core)
+
+    # Linux only: drives the real ALSA backend against the virtual devices
+    # Tools/setup_alsa_fixture.sh creates.
+    if (UNIX AND NOT APPLE AND ALSA_FOUND)
+        add_executable(live_capture Tools/live_capture.cpp)
+        target_link_libraries(live_capture PRIVATE mma_core)
+    endif()
 endif()

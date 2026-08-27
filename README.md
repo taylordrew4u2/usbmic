@@ -33,10 +33,10 @@ Each archive contains the application, this README, `LICENSE` and
 The Blue Yeti in the spec is reference hardware only: the code filters on
 nothing device-specific, so any standard USB audio class microphone works.
 
-§1 names macOS and Windows as the shipping targets, and those are the two with
-real audio backends. The Linux build exists because it is what the engine, the
-tests and the harnesses are developed against — it runs, but `Source/Platform`
-has no Linux backend, so it will not find a microphone.
+§1 names macOS and Windows as the shipping targets. Linux now has a real ALSA
+backend too, so the Linux build finds and records from microphones rather than
+being a development shell — what it lacks is the §7 combined-device support,
+which needs a driver on every platform but macOS.
 
 Step-by-step setup is in [Installing](#installing) below.
 
@@ -90,9 +90,9 @@ The steps below include it.
    chmod +x "bin/Multi-Mic Aggregator"   # zip extraction can drop the execute bit
    "bin/Multi-Mic Aggregator"
    ```
-3. Expect the UI but no microphones: `Source/Platform` has no Linux audio
-   backend (see [Download](#download)). This build exists for development and
-   for running the engine, tests and harnesses.
+3. Microphones are found through ALSA. If none appear, check that your user is
+   in the `audio` group. For a machine with no sound hardware,
+   `Tools/setup_alsa_fixture.sh` creates virtual microphones to try it with.
 
 ### Using it
 
@@ -189,6 +189,9 @@ compiled](#executed-not-just-compiled).
 ```sh
 ./build/e2e_capture /tmp/take   # two mics, mismatched clocks, decode the WAVs
 ./build/soak_drift 4.0          # §3.4: four clocks, four hours, drift at the end
+
+./Tools/setup_alsa_fixture.sh   # Linux: virtual mics carrying known tones
+./build/live_capture /tmp/live  # ...then the REAL ALSA backend, end to end
 ```
 
 Linux needs JUCE's usual dependencies for the GUI build:
@@ -233,6 +236,7 @@ and Windows:
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 8 |
 | `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 8 |
 | `DeviceInputStream` — per-device ring, drift loop, resampler onto the master clock | §3.2, §3.3 | 8 |
+| `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | live_capture |
 | `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 8 |
 | `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 7 |
 | `Metering` — ballistics, peak hold, clip latch | §8.1 | 7 |
@@ -266,6 +270,28 @@ Both found real bugs that the 237-test suite did not:
 A third, smaller one: the output clock starts before any device has delivered,
 so the first pull of every take underran. That is normal startup rather than
 lost audio, and counting it made the §0.1 metric untrustworthy.
+
+### Exercised against a real OS audio API
+
+`Source/Platform/AlsaBackend.cpp` is a real Linux backend on ALSA, and
+`Tools/live_capture` drives it: the OS enumerates the devices, ALSA opens them,
+libasound delivers the audio on threads the backend creates, and the harness
+checks what comes out. `Tools/setup_alsa_fixture.sh` builds file-backed virtual
+microphones carrying known tones, so this runs on a machine with no sound
+hardware — including in CI, on every commit.
+
+Measured, five runs identical: each device delivers its own tone at 0.2000
+magnitude with 0.0001 leakage of the other — a 2000:1 separation — and §5.4
+correctly refuses a shared (`default`) output by name.
+
+This does **not** make CoreAudio or WASAPI verified; those are different APIs.
+What it retires is the broader claim that `IAudioBackend`'s contract had never
+met a real audio system: it has, and it holds. Two honest limits of the fixture:
+ALSA's `file` plugin delivers as fast as it is read rather than at 48 kHz, so
+the timing is not real-time and the capture ring floods (which is why the
+full-stack layer asserts frame-locked files and signal, not per-stem tone
+coherence); and it cannot refuse a sample format, so the fixture must be
+written in whatever format the backend negotiates.
 
 ### Compiled, but never exercised against hardware
 
