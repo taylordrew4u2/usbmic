@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <vector>
 
@@ -77,6 +78,7 @@ void check (bool ok, const char* what) {
 
 int main (int argc, char** argv) {
     const std::string dir = argc > 1 ? argv[1] : "/tmp/e2e";
+    std::filesystem::create_directories (dir); // the app creates its session folders; so does the harness
     const double rate = 48000.0;
     const int block = 64;
     const int seconds = 3;

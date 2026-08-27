@@ -17,6 +17,9 @@ public:
         setUsingNativeTitleBar (true);
         setContentOwned (new MainComponent (app), true);
         setResizable (true, false);
+        // Small enough for a laptop half-screen, never small enough to crush
+        // the meters into unreadability.
+        setResizeLimits (560, 420, 4096, 4096);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
     }

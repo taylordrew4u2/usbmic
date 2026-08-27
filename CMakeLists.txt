@@ -89,6 +89,8 @@ if (MMA_BUILD_APP)
         Source/Platform/CoreAudioBackend.cpp
         Source/Platform/WasapiAsioBackend.cpp
         Source/Platform/NullBackend.cpp
+        Source/Platform/MacSystemAggregateDevice.cpp
+        Source/Platform/NullSystemAggregateDevice.cpp
         Source/Platform/AsioOutputBackend.cpp
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp

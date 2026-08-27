@@ -37,9 +37,26 @@ void SkullMeterComponent::timerCallback()
 
 void SkullMeterComponent::mouseUp (const juce::MouseEvent&)
 {
-    // Tap the clip eyes to acknowledge and clear the latch (§9.1).
+    // Tap the clip eyes to acknowledge and clear the latch (§9.1). Clearing a
+    // clip is the click's first meaning; renaming takes the click only when
+    // there is nothing to clear.
     if (metering != nullptr && currentClip)
+    {
         metering->acknowledgeClip();
+        return;
+    }
+
+    if (onNameClicked)
+        onNameClicked();
+}
+
+void SkullMeterComponent::setHighlighted (bool shouldHighlight)
+{
+    if (highlighted == shouldHighlight)
+        return;
+
+    highlighted = shouldHighlight;
+    repaint();
 }
 
 juce::Colour SkullMeterComponent::fillColourForLevel (float levelDb) const
@@ -80,6 +97,14 @@ void SkullMeterComponent::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
     g.fillAll (kPanel);
+
+    // §14.6: this mic is the one being heard right now. A ring rather than a
+    // fill so it reads at a glance without fighting the level display.
+    if (highlighted)
+    {
+        g.setColour (kBone); // §9.2 palette, same bone white as the peak bar
+        g.drawRoundedRectangle (bounds.reduced (1.5f), 6.0f, 3.0f);
+    }
 
     auto skullBounds = bounds.withTrimmedBottom (bounds.getHeight() * 0.3f).reduced (4.0f);
     juce::Path silhouette = buildSkullSilhouette (skullBounds);

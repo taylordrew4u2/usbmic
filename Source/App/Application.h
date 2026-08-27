@@ -11,6 +11,7 @@
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/PreflightThroughputTest.h"
 #include <atomic>
+#include <functional>
 #include <map>
 #include <thread>
 #include <mutex>
@@ -22,8 +23,10 @@
 #include "../Core/MirrorPolicy.h"
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
+#include "../Core/TapToNameDetector.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
+#include "../Platform/SystemAggregateDevice.h"
 
 namespace mma {
 
@@ -84,11 +87,31 @@ public:
 
     int getIncludedMicCount() const;
 
+    /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
+    /// highlights that skull so a user can see which meter is which person --
+    /// four identical USB mics enumerate with the same product string.
+    int getTappedChannel() const noexcept { return tappedChannel; }
+
+    /// §14.6 / §2.4: names a microphone. Persisted against the physical port so
+    /// the name follows the mic across replug, shown on its skull, and used in
+    /// its stem filename (§6.2).
+    void setMicAssignedName (int index, const juce::String& name);
+
+    /// §6.2: the user's name for the next take -- "2026-08-27_1030_<name>".
+    /// Empty falls back to "Session". Sanitized by SessionFolderNaming.
+    void setSessionName (const juce::String& name) { sessionName = name; }
+
     /// §4 per-microphone trim, -20..+20 dB in 0.5 dB steps. Persisted against
     /// the physical port so it follows the mic across a replug, and applied
     /// live to the monitor mix and the mix file -- never to the stems.
     void setChannelTrimDb (int index, float trimDb);
     float getChannelTrimDb (int index) const;
+
+    /// The combined device other apps see (macOS: a real CoreAudio aggregate).
+    /// The name is the user's -- it is what shows up in Zoom's input list.
+    void setAggregateDeviceName (const juce::String& name);
+    juce::String getAggregateStatus() const;
+    juce::String getAggregateDeviceName() const { return aggregateName; }
 
     /// §10.3 Advanced panel contents.
     double getSampleRate() const { return currentSampleRate; }
@@ -134,6 +157,12 @@ public:
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
 
+    /// Fired on the message thread whenever the capture coordinator's meters
+    /// have been destroyed and rebuilt (rename, hot-plug, output change, rate
+    /// change). The UI must rebind every Metering pointer inside this callback
+    /// -- its own timers dereference them on the very next tick.
+    std::function<void()> onCaptureRebuilt;
+
     /// §10.5 physical setup guidance: everything currently worth telling the
     /// user about their hardware, in plain language, most serious first.
     std::vector<SetupAdvice> getSetupAdvice() const;
@@ -174,11 +203,24 @@ private:
     int captureBufferSize = 0;
     double measuredLatencyMs = 0.0;
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
+
+    // Lifetime token for callbacks marshalled from OS threads; see initialise().
+    std::shared_ptr<int> aliveToken = std::make_shared<int> (0);
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
+    juce::String sessionName;      // §6.2, set by the user before a take
+    juce::String lastSessionFolder;
+    double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
+
+    // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
+    // fixed-width detectors in SetupAdvisor.
+    std::unique_ptr<TapToNameDetector> tapDetector;
+    int tapDetectorChannels = 0;
+    int tappedChannel = -1;
 
     // §6.4 preflight. Keyed by destination path so switching back to a card
     // already benchmarked does not re-run the test.
     std::atomic<bool> preflightRunning { false };
+    std::atomic<bool> preflightAbort { false };
     std::map<std::string, PreflightResult> preflightResults;
     // mutable: getRecordDisabledReason() is const and must read the result.
     mutable std::mutex preflightMutex;
@@ -186,6 +228,14 @@ private:
     std::string preflightTargetPath;
     void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
+    std::unique_ptr<SystemAggregateDevice> systemAggregate;
+    juce::String aggregateName { "Multi-Mic Aggregator" };
+    // What was last published, so device-change churn republishes only on a
+    // real difference -- destroying a device another app is recording from is
+    // justified when hardware changed, never as a side effect of a no-op.
+    std::vector<std::string> publishedUids;
+    std::string publishedMaster, publishedNameStd;
+    void publishAggregateDevice();
 
     DeviceManager deviceManager;
     RecordingEngine recordingEngine;

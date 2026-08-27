@@ -94,6 +94,29 @@ The steps below include it.
    backend (see [Download](#download)). This build exists for development and
    for running the engine, tests and harnesses.
 
+### Using it
+
+- **One device for other apps (macOS)** — the app publishes a combined input
+  device containing every connected microphone, created through CoreAudio's
+  public aggregate-device API: no driver, no signing. It appears in every
+  app's input list (Zoom, OBS, a DAW) under a name you set in **Advanced →
+  Combined device name**, with one channel per mic and the same §3.1 clock
+  master the app itself uses. It tracks hot-plug and is removed when the app
+  quits. On Windows this needs the §7 virtual-device driver — the Advanced
+  panel says so rather than pretending.
+
+- **Tell your mics apart** — tap (or speak into) a microphone and its skull
+  lights up. Click a skull to name that mic; the name sticks to the physical
+  port across replug and goes into that mic's recording filename.
+- **Name the take** — type into the *Session name* box before pressing record;
+  the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
+- **Spacebar** mutes and unmutes the headphones instantly. Recording is never
+  affected by muting.
+- If the sound ever cuts out on its own, that is the feedback protection —
+  the mute button becomes **Unmute (sound was cut)** and pressing it brings
+  the sound back.
+- After you stop, the screen says exactly where the take was saved.
+
 ### First run — where things go, on every platform
 
 - **Recordings** default to a `RECORDINGS` folder in your home directory.
@@ -286,9 +309,14 @@ is correct and permanently quiet rather than wrong:
 
 ### Deliberately stubbed
 
-Virtual device backends per §7. The interface is real; the implementations
-behind B, C and D are not, because each is gated on something that cannot be
-obtained from source code:
+Virtual device backends per §7 — with one carve-out that ships: on macOS the
+combined device needs no driver at all, because CoreAudio's public
+`AudioHardwareCreateAggregateDevice` API publishes a system-wide aggregate
+(`Source/Platform/MacSystemAggregateDevice.cpp`). Other apps see one named
+multi-channel input containing every mic, with per-sub-device drift
+compensation handled by the HAL. What remains stubbed is Windows, and the
+§7 "virtual cable carrying the summed mix" use case; each is gated on
+something that cannot be obtained from source code:
 
 | Backend | State | Blocked on |
 |---|---|---|

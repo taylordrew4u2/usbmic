@@ -11,6 +11,8 @@ MainComponent::MainComponent (Application& app)
     addChildComponent (advancedPanel);
 
     mainScreen.onRecordButtonClicked = [this] {
+        // §6.2: whatever is in the name box when record is pressed names the take.
+        application.setSessionName (mainScreen.getSessionName());
         application.toggleRecording();
         mainScreen.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
     };
@@ -22,9 +24,33 @@ MainComponent::MainComponent (Application& app)
     };
 
     mainScreen.onMuteToggled = [this] {
-        if (auto* bus = application.getMonitorBus())
-            bus->setGlobalMute (! bus->isGloballyMuted());
+        auto* bus = application.getMonitorBus();
+
+        if (bus == nullptr)
+            return;
+
+        // §5: the runaway cut stays muted until the user says otherwise. The
+        // mute button is that path -- without this, a runaway cut is a dead
+        // end the user can only escape by restarting the app.
+        if (bus->isRunawayMuted())
+        {
+            bus->manuallyUnmute();
+            bus->setGlobalMute (false);
+            return;
+        }
+
+        bus->setGlobalMute (! bus->isGloballyMuted());
     };
+
+    mainScreen.onMicNameClicked = [this] (int index) { promptRenameMic (index); };
+
+    // §5.1: spacebar is the instant mute, so the window has to take keys.
+    setWantsKeyboardFocus (true);
+
+    // A capture rebuild destroys the Metering objects the skull meters point
+    // at, and each skull's own timer dereferences its pointer on the next
+    // tick. Rebinding inside the rebuild's call stack closes that window.
+    application.onCaptureRebuilt = [this] { rebindMeters(); };
 
     mainScreen.onAdvancedClicked = [this] { toggleAdvanced(); };
 
@@ -36,6 +62,10 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onClockMasterChanged = [this] (const juce::String& name) {
         application.setClockMasterByName (name);
+    };
+
+    advancedPanel.onAggregateNameChanged = [this] (const juce::String& name) {
+        application.setAggregateDeviceName (name);
     };
 
     advancedPanel.onOutputDeviceChanged = [this] (const juce::String& name) {
@@ -79,12 +109,52 @@ MainComponent::MainComponent (Application& app)
 
 MainComponent::~MainComponent()
 {
+    // The window is torn down before Application::shutdown(), and a queued
+    // device-change can still fire in between -- it must not call into a
+    // destroyed component.
+    application.onCaptureRebuilt = nullptr;
     stopTimer();
 }
 
 void MainComponent::timerCallback()
 {
     refreshStatus();
+}
+
+bool MainComponent::keyPressed (const juce::KeyPress& key)
+{
+    // §5.1: spacebar mutes and unmutes the monitor instantly. A focused text
+    // field never reaches here -- it consumes its own keys -- so typing a
+    // space into the session name does not silence the room.
+    if (key == juce::KeyPress::spaceKey)
+    {
+        if (mainScreen.onMuteToggled)
+            mainScreen.onMuteToggled();
+
+        return true;
+    }
+
+    return false;
+}
+
+void MainComponent::promptRenameMic (int index)
+{
+    // §14.6: click the skull that lit up when you tapped the mic, type who it
+    // is. The name follows the physical port across replug (§2.4).
+    auto* window = new juce::AlertWindow ("Name this microphone",
+                                          "The name goes on its skull and into its recording's filename.",
+                                          juce::MessageBoxIconType::QuestionIcon, this);
+    window->addTextEditor ("name", application.getMicDisplayName (index));
+    window->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    window->enterModalState (true,
+        juce::ModalCallbackFunction::create ([this, window, index] (int result)
+        {
+            if (result == 1)
+                application.setMicAssignedName (index, window->getTextEditorContents ("name"));
+        }),
+        true); // delete the window when dismissed
 }
 
 void MainComponent::refreshStatus()
@@ -96,21 +166,21 @@ void MainComponent::refreshStatus()
         // §6.5: mics come and go without a dialog and without interrupting a take.
         mainScreen.setMicCount (micCount);
 
-        for (int i = 0; i < micCount; ++i)
-            if (auto* skull = mainScreen.getSkullMeter (i))
-                skull->setMicName (application.getMicDisplayName (i));
-
         lastMicCount = micCount;
     }
 
-    // Rebound every frame rather than only on a count change: a hot-plug or a
-    // sample-rate renegotiation rebuilds the meters the audio thread feeds
-    // without the count moving, and a stale pointer here would outlive them.
-    mainScreen.setMixMetering (application.getMixMetering());
+    // Belt and braces on top of onCaptureRebuilt: rebinding every frame means
+    // even a rebuild path that forgets the callback cannot leave a stale
+    // pointer alive for more than one tick.
+    rebindMeters();
 
-    for (int i = 0; i < micCount; ++i)
-        if (auto* skull = mainScreen.getSkullMeter (i))
-            skull->setMetering (application.getChannelMetering (i));
+    // §14.6: light the skull of whoever was just heard alone.
+    mainScreen.setHighlightedMic (application.getTappedChannel());
+
+    // The mute button reflects the bus, including a §5 runaway cut it must
+    // be able to undo.
+    if (auto* bus = application.getMonitorBus())
+        mainScreen.setMuteState (bus->isMuted(), bus->isRunawayMuted());
 
     // The meters tick their own ballistics as they paint, so a repaint is the poll.
     mainScreen.repaintMeters();
@@ -139,7 +209,13 @@ void MainComponent::refreshStatus()
 
         // §5.4: if the low-latency monitor path could not be obtained, say so.
         // §5.3: otherwise, if no headphone output could be chosen, say that.
+        // A §5 runaway cut outranks both: the user is sitting in silence and
+        // the line has to say why and what to press.
         auto monitorProblem = application.getMonitorProblem();
+
+        if (auto* bus = application.getMonitorBus())
+            if (bus->isRunawayMuted())
+                monitorProblem = "Sound was cut to protect your ears from feedback. Press Unmute to bring it back.";
 
         if (monitorProblem.isEmpty())
             monitorProblem = juce::String (application.getOutputSelectionProblem());
@@ -155,6 +231,22 @@ void MainComponent::refreshStatus()
     }
 }
 
+void MainComponent::rebindMeters()
+{
+    mainScreen.setMixMetering (application.getMixMetering());
+
+    const int micCount = application.getIncludedMicCount();
+
+    for (int i = 0; i < micCount; ++i)
+    {
+        if (auto* skull = mainScreen.getSkullMeter (i))
+        {
+            skull->setMetering (application.getChannelMetering (i));
+            skull->setMicName (application.getMicDisplayName (i));
+        }
+    }
+}
+
 void MainComponent::refreshAdvanced()
 {
     advancedPanel.setSampleRate (application.getSampleRate());
@@ -163,6 +255,8 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
     advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
     advancedPanel.setDriftReport (application.getDriftReport());
+    advancedPanel.setAggregateStatus (application.getAggregateStatus());
+    advancedPanel.setAggregateName (application.getAggregateDeviceName());
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
 
     juce::StringArray outputs;
