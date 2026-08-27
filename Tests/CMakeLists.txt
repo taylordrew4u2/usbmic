@@ -16,6 +16,8 @@ add_executable(mma_core_tests
     test_SessionWriter.cpp
     test_OutputDeviceSelector.cpp
     test_CapacityMonitor.cpp
+    test_BufferLadder.cpp
+    test_CpuPressureMonitor.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)

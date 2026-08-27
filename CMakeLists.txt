@@ -34,6 +34,8 @@ add_library(mma_core STATIC
     Source/Core/RecordingEngine.cpp
     Source/Core/OutputDeviceSelector.cpp
     Source/Core/CapacityMonitor.cpp
+    Source/Core/BufferLadder.cpp
+    Source/Core/CpuPressureMonitor.cpp
 )
 target_include_directories(mma_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Source
