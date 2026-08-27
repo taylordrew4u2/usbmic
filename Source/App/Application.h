@@ -22,6 +22,7 @@
 #include "../Core/MirrorPolicy.h"
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
+#include "../Core/TapToNameDetector.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 
@@ -83,6 +84,20 @@ public:
     double getMasterVolume() const;
 
     int getIncludedMicCount() const;
+
+    /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
+    /// highlights that skull so a user can see which meter is which person --
+    /// four identical USB mics enumerate with the same product string.
+    int getTappedChannel() const noexcept { return tappedChannel; }
+
+    /// §14.6 / §2.4: names a microphone. Persisted against the physical port so
+    /// the name follows the mic across replug, shown on its skull, and used in
+    /// its stem filename (§6.2).
+    void setMicAssignedName (int index, const juce::String& name);
+
+    /// §6.2: the user's name for the next take -- "2026-08-27_1030_<name>".
+    /// Empty falls back to "Session". Sanitized by SessionFolderNaming.
+    void setSessionName (const juce::String& name) { sessionName = name; }
 
     /// §4 per-microphone trim, -20..+20 dB in 0.5 dB steps. Persisted against
     /// the physical port so it follows the mic across a replug, and applied
@@ -175,6 +190,15 @@ private:
     double measuredLatencyMs = 0.0;
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
+    juce::String sessionName;      // §6.2, set by the user before a take
+    juce::String lastSessionFolder;
+    double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
+
+    // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
+    // fixed-width detectors in SetupAdvisor.
+    std::unique_ptr<TapToNameDetector> tapDetector;
+    int tapDetectorChannels = 0;
+    int tappedChannel = -1;
 
     // §6.4 preflight. Keyed by destination path so switching back to a card
     // already benchmarked does not re-run the test.

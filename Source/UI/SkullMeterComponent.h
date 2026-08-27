@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../Core/Metering.h"
+#include <functional>
 
 namespace mma {
 
@@ -14,10 +15,22 @@ public:
     ~SkullMeterComponent() override;
 
     void setMetering (Metering* meteringSource) { metering = meteringSource; }
-    void setMicName (const juce::String& name) { micName = name; repaint(); }
+    void setMicName (const juce::String& name)
+    {
+        // Called every UI frame now; only a real change earns a repaint.
+        if (micName != name) { micName = name; repaint(); }
+    }
     void setDeviceName (const juce::String& name) { deviceName = name; repaint(); }
     void setNoSignal (bool isNoSignal) { noSignal = isNoSignal; repaint(); }
     void setReducedMotion (bool shouldReduceMotion) { reducedMotion = shouldReduceMotion; }
+
+    /// §14.6: lit while this mic is the one being heard, so a user with four
+    /// identical mics can see which skull is which person.
+    void setHighlighted (bool shouldHighlight);
+
+    /// Fired on click when there is no clip latch to acknowledge -- the rename
+    /// affordance. Clearing a clip stays the first click's job (§9.1).
+    std::function<void()> onNameClicked;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -30,6 +43,7 @@ private:
     juce::String micName, deviceName;
     bool noSignal = true;
     bool reducedMotion = false;
+    bool highlighted = false;
 
     float currentLevelDb = Metering::kMinDb;
     float currentPeakDb = Metering::kMinDb;

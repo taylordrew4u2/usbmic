@@ -94,6 +94,20 @@ The steps below include it.
    backend (see [Download](#download)). This build exists for development and
    for running the engine, tests and harnesses.
 
+### Using it
+
+- **Tell your mics apart** — tap (or speak into) a microphone and its skull
+  lights up. Click a skull to name that mic; the name sticks to the physical
+  port across replug and goes into that mic's recording filename.
+- **Name the take** — type into the *Session name* box before pressing record;
+  the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
+- **Spacebar** mutes and unmutes the headphones instantly. Recording is never
+  affected by muting.
+- If the sound ever cuts out on its own, that is the feedback protection —
+  the mute button becomes **Unmute (sound was cut)** and pressing it brings
+  the sound back.
+- After you stop, the screen says exactly where the take was saved.
+
 ### First run — where things go, on every platform
 
 - **Recordings** default to a `RECORDINGS` folder in your home directory.
