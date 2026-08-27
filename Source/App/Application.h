@@ -10,6 +10,10 @@
 #include "../Core/SessionMetadata.h"
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/PreflightThroughputTest.h"
+#include <atomic>
+#include <map>
+#include <thread>
+#include <mutex>
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/CapacityMonitor.h"
@@ -66,6 +70,13 @@ public:
     /// §10.4: the record button is disabled only for these two reasons, and the
     /// reason is shown next to it. Empty string means enabled.
     juce::String getRecordDisabledReason() const;
+
+    /// §6.4: benchmarks the destination volume by writing a 200 MB file and
+    /// measuring the sustained -- never average -- throughput. Runs on its own
+    /// thread; the record button stays disabled until it passes. Cached per
+    /// volume for 30 days, so a card is benchmarked once and not on every launch.
+    void beginPreflightForDestination();
+    bool isPreflightRunning() const { return preflightRunning.load(); }
 
     /// §5.1 master monitor volume, 0-100. Recorded files are unaffected.
     void setMasterVolume (double volume0to100);
@@ -158,6 +169,17 @@ private:
     double captureRate = 0.0;
     int captureBufferSize = 0;
     double measuredLatencyMs = 0.0;
+    juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
+
+    // §6.4 preflight. Keyed by destination path so switching back to a card
+    // already benchmarked does not re-run the test.
+    std::atomic<bool> preflightRunning { false };
+    std::map<std::string, PreflightResult> preflightResults;
+    // mutable: getRecordDisabledReason() is const and must read the result.
+    mutable std::mutex preflightMutex;
+    std::thread preflightThread;
+    std::string preflightTargetPath;
+    void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
 
     DeviceManager deviceManager;
@@ -194,6 +216,10 @@ private:
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 destination folder for a new take, created on disk. Empty on failure.
     juce::String createSessionFolder (juce::Time now) const;
+    /// §6.3 local backup folder for a take, created on disk. Empty on failure.
+    static juce::String createMirrorFolder (const juce::String& sessionFolderName);
+    /// §6.2 session.json, written at start and rewritten at stop.
+    void writeSessionMetadata (bool sessionHasStopped);
     void onDeviceListChanged();
     void chooseInitialDestination();
     void reselectOutputDevice();

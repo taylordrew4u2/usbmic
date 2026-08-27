@@ -149,10 +149,17 @@ software:
 The entire §12 validation matrix is outstanding. Nothing here has seen a real
 microphone. In particular:
 
+- **§3.2 drift compensation is not wired in.** `DriftCompensator` implements the
+  specified PI loop and passes its unit tests, but nothing calls it: correcting
+  drift needs a per-device fill error, and that requires per-device capture
+  callbacks and a resampler that the single shared callback in
+  `CaptureCoordinator` does not currently provide. Wiring it against hardware
+  that has never run would mean guessing at the backends' callback shape, so it
+  is left explicitly disconnected rather than plausibly wrong. §3.1 master
+  selection and §3.3 failover **are** wired; §3.2 correction is not.
 - **§3.4 is the gate on everything else** — a 4-hour take with four dissimilar
-  USB microphones finishing under 1 ms inter-channel drift. `DriftCompensator`
-  implements the specified loop and passes its unit tests, but unit tests cannot
-  substitute for that measurement.
+  USB microphones finishing under 1 ms inter-channel drift. That measurement
+  cannot even be attempted until the point above is resolved.
 - **§5.4 latency ceiling** — the 10 ms ceiling must be confirmed by loopback on
   macOS, Windows ASIO, and Windows WASAPI exclusive.
 - Hostile-event matrix, card throughput on real slow media, bus-power

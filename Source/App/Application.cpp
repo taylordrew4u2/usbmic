@@ -2,6 +2,7 @@
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <cstdio>
+#include <chrono>
 #include <cmath>
 #include <set>
 
@@ -53,6 +54,9 @@ void Application::initialise()
     }
 
     chooseInitialDestination();
+
+    // §6.4: benchmark before the user reaches for record, not at record time.
+    beginPreflightForDestination();
 
     // §5.1: monitoring is live from launch, independent of record state --
     // there is deliberately no "arm monitoring" step anywhere in this flow.
@@ -373,15 +377,30 @@ void Application::toggleRecording()
                 const auto now = juce::Time::getCurrentTime();
                 const auto folder = createSessionFolder (now);
 
+                // §6.3: the mirror decision was made just above, at arm time.
+                const auto mirror = mirrorPolicy.isMirroring()
+                                        ? createMirrorFolder (juce::File (folder).getFileName())
+                                        : juce::String();
+
                 if (folder.isEmpty()
                     || ! capture->startRecording (folder.toStdString(), currentBitDepth,
-                                                  now.toISO8601 (true).toStdString()))
+                                                  now.toISO8601 (true).toStdString(),
+                                                  mirror.toStdString()))
                 {
                     // Nothing was written, so the engine must not claim a take.
                     recordingEngine.stop();
                     recordingStartMs = 0.0;
                     return;
                 }
+
+                currentSessionFolder = folder;
+                currentMirrorFolder = mirror;
+                sessionStartIso = now.toISO8601 (true);
+
+                // §6.2: session.json is written at the start so a crash mid-take
+                // still leaves a record of what the rig was, and rewritten on
+                // stop to add the stop time and everything logged since.
+                writeSessionMetadata (false);
             }
 
             // Each take gets its own warnings; a previous one must not leave the
@@ -405,9 +424,17 @@ void Application::toggleRecording()
         if (capture != nullptr)
             capture->stopRecording();
 
+        // Written after stopRecording() so the frame counts and buffer log it
+        // records are the take's final ones -- and before recordingStartMs is
+        // cleared, or every timestamp inside it would read as zero.
+        writeSessionMetadata (true);
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
+
+        currentSessionFolder.clear();
+        currentMirrorFolder.clear();
     }
 }
 
@@ -513,9 +540,116 @@ juce::String Application::getRecordDisabledReason() const
     if (getIncludedMicCount() == 0)
         return "Plug in a microphone first.";
 
-    // §6.4: pre-flight blocks arming rather than degrading mid-take. Until a
-    // volume has been benchmarked, nothing else disables the button.
+    // §6.4: pre-flight blocks arming rather than degrading mid-take.
+    if (preflightRunning.load())
+        return "Checking this drive is fast enough...";
+
+    {
+        std::lock_guard<std::mutex> lock (preflightMutex);
+        const auto it = preflightResults.find (destinationFolder);
+
+        if (it != preflightResults.end() && ! it->second.passed)
+            return juce::String (it->second.reason);
+    }
+
     return {};
+}
+
+void Application::beginPreflightForDestination()
+{
+    if (preflightRunning.load() || destinationFolder.empty())
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock (preflightMutex);
+
+        // §6.4: cached per volume. Re-benchmarking a card the user already
+        // waited on, every launch, is exactly the friction §10.1 rules out.
+        if (preflightResults.count (destinationFolder) > 0)
+            return;
+    }
+
+    const int channelCount = std::max (1, getIncludedMicCount());
+    const auto target = destinationFolder;
+
+    if (preflightThread.joinable())
+        preflightThread.join();
+
+    preflightRunning.store (true);
+    preflightThread = std::thread ([this, target, channelCount] { runPreflight (target, channelCount); });
+}
+
+void Application::runPreflight (const std::string& destination, int channelCount)
+{
+    PreflightResult result;
+
+    const juce::File folder { juce::String (destination) };
+    folder.createDirectory();
+
+    const auto testFile = folder.getNonexistentChildFile ("preflight", ".tmp");
+
+    std::vector<double> rollingWindows;
+    const int bytesPerSample = currentBitDepth / 8;
+
+    {
+        // §6.4: 200 MB, written the way a take writes -- steadily, measuring the
+        // sustained floor rather than a burst into the OS cache.
+        juce::FileOutputStream out (testFile);
+
+        if (out.openedOk())
+        {
+            constexpr size_t kChunkBytes = 1024 * 1024;
+            const std::vector<char> chunk (kChunkBytes, 0);
+
+            size_t written = 0;
+            size_t writtenThisWindow = 0;
+            auto windowStart = std::chrono::steady_clock::now();
+
+            while (written < PreflightThroughputTest::kTestFileBytes)
+            {
+                if (! out.write (chunk.data(), kChunkBytes))
+                    break;
+
+                written += kChunkBytes;
+                writtenThisWindow += kChunkBytes;
+
+                const auto elapsed = std::chrono::duration<double> (
+                    std::chrono::steady_clock::now() - windowStart).count();
+
+                if (elapsed >= 1.0)
+                {
+                    rollingWindows.push_back (static_cast<double> (writtenThisWindow) / elapsed);
+                    writtenThisWindow = 0;
+                    windowStart = std::chrono::steady_clock::now();
+                }
+            }
+
+            out.flush();
+
+            // A card fast enough to finish inside one window still needs a
+            // sample, or the gate would see no data and fail a good drive.
+            if (rollingWindows.empty() && writtenThisWindow > 0)
+            {
+                const auto elapsed = std::chrono::duration<double> (
+                    std::chrono::steady_clock::now() - windowStart).count();
+
+                if (elapsed > 0.0)
+                    rollingWindows.push_back (static_cast<double> (writtenThisWindow) / elapsed);
+            }
+        }
+    }
+
+    testFile.deleteFile();
+
+    result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
+                                                currentSampleRate, bytesPerSample);
+
+    {
+        std::lock_guard<std::mutex> lock (preflightMutex);
+        preflightResults[destination] = result;
+    }
+
+    preflightRunning.store (false);
 }
 
 void Application::setMasterVolume (double volume0to100)
@@ -672,8 +806,89 @@ void Application::setClockMasterByName (const juce::String& displayName)
 
 void Application::setDestinationFolder (const juce::File& folder)
 {
-    if (folder.isDirectory())
-        destinationFolder = folder.getFullPathName().toStdString();
+    if (! folder.isDirectory())
+        return;
+
+    destinationFolder = folder.getFullPathName().toStdString();
+
+    // §6.4: a new volume is an unbenchmarked volume.
+    beginPreflightForDestination();
+}
+
+juce::String Application::createMirrorFolder (const juce::String& sessionFolderName)
+{
+    // §6.3: the mirror lives on the internal drive, which is the whole point --
+    // a card failure must not take both copies with it.
+    const auto root = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                          .getChildFile ("RECORDINGS-MIRROR")
+                          .getChildFile (sessionFolderName);
+
+    if (! root.createDirectory().wasOk())
+        return {};
+
+    return root.getFullPathName();
+}
+
+void Application::writeSessionMetadata (bool sessionHasStopped)
+{
+    if (currentSessionFolder.isEmpty())
+        return;
+
+    SessionMetadata meta;
+    meta.appVersion = JUCE_STRINGIFY (JUCE_APP_VERSION);
+    meta.startTimestampIso = sessionStartIso.toStdString();
+    meta.stopTimestampIso = sessionHasStopped
+                                ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
+                                : std::string();
+    meta.sampleRate = currentSampleRate;
+    meta.bitDepth = currentBitDepth;
+    meta.bufferSizeSamples = bufferLadder.getCurrentSize();
+    meta.measuredLatencyMs = measuredLatencyMs;
+
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        DeviceRecord record;
+        record.name = d.displayName;
+        record.usbId = d.identity.key();
+
+        if (const auto persisted = portIdentityStore.get (d.identity))
+            record.trimDb = persisted->trimDb;
+
+        meta.devices.push_back (std::move (record));
+
+        // §3.2: drift is only claimed once 60 seconds of measurement exist.
+        if (d.hasDriftMeasurement)
+            meta.driftLog.push_back ({ getElapsedRecordingSeconds(), d.identity.key(), d.measuredDriftPpm });
+    }
+
+    // §5.4 requires every buffer step logged.
+    for (const auto& change : bufferLadder.getChangeLog())
+        meta.bufferChanges.push_back ({ change.atSeconds, change.fromSamples, change.toSamples });
+
+    meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
+    meta.mirrorActive = capture != nullptr && capture->isMirroring();
+    meta.mirrorPath = currentMirrorFolder.toStdString();
+
+    // §6.3: a mirror that stopped mid-take must be visible in the record --
+    // otherwise the copy looks complete and is not.
+    if (mirrorPolicy.wasStoppedForSpace())
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Local backup copy stopped: the internal drive ran low on space." });
+
+    if (capture != nullptr && capture->getFramesDropped() > 0)
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Dropped " + std::to_string (capture->getFramesDropped())
+                                       + " frames: the drive could not keep up." });
+
+    // Written to the card copy and the mirror alike, so either one stands alone.
+    const auto json = meta.toJsonString();
+    juce::File (currentSessionFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
+
+    if (currentMirrorFolder.isNotEmpty())
+        juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
 }
 
 juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
@@ -692,6 +907,21 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     }
 
     updateSetupAdvisorLevels (peaksDb, sinceLastCallSeconds);
+
+    // §6.3: the mirror is re-judged during the take, and once it stops it never
+    // restarts within the same recording.
+    if (capture != nullptr && capture->isMirroring())
+    {
+        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+
+        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
+            == MirrorState::StoppedLowSpace)
+        {
+            capture->stopMirroring();
+            return "The local backup copy stopped -- this drive is low on space. "
+                   "The recording itself is unaffected.";
+        }
+    }
 
     // §6.5 first: running out of room stops the take, which outranks everything.
     switch (pollCapacityWarning())
@@ -759,6 +989,9 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 
 void Application::shutdown()
 {
+    if (preflightThread.joinable())
+        preflightThread.join();
+
     // Ordered: drain the writer, then close the streams the callback runs on.
     if (capture != nullptr)
     {

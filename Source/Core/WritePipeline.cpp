@@ -26,7 +26,8 @@ WritePipeline::~WritePipeline()
 bool WritePipeline::start (const std::string& sessionFolder,
                            const std::vector<WriteChannelSpec>& channels,
                            double rate, int bitDepth,
-                           const std::string& originTimestamp)
+                           const std::string& originTimestamp,
+                           const std::string& mirrorFolder)
 {
     if (running.load (std::memory_order_acquire) || channels.empty())
         return false;
@@ -55,6 +56,15 @@ bool WritePipeline::start (const std::string& sessionFolder,
     mixWriter = std::make_unique<SessionWriter>();
     if (! mixWriter->open (sessionFolder + "/MIX", rate, 1, bitDepth, originTimestamp))
         return false;
+
+    // §6.3: the mirror is a safety net, so failing to open it degrades to
+    // card-only rather than failing a take the user is waiting to start.
+    mirrorStemWriters.clear();
+    mirrorMixWriter.reset();
+    mirroring.store (false, std::memory_order_release);
+
+    if (! mirrorFolder.empty() && openMirrorWriters (mirrorFolder, channels, rate, bitDepth, originTimestamp))
+        mirroring.store (true, std::memory_order_release);
 
     // std::atomic is not copyable, so the vector is built in place.
     std::vector<std::atomic<bool>> live (static_cast<size_t> (numChannels));
@@ -126,9 +136,66 @@ void WritePipeline::setChannelLive (int channelIndex, bool live) noexcept
         channelLive[static_cast<size_t> (channelIndex)].store (live, std::memory_order_relaxed);
 }
 
+bool WritePipeline::openMirrorWriters (const std::string& mirrorFolder,
+                                       const std::vector<WriteChannelSpec>& channels,
+                                       double rate, int bitDepth,
+                                       const std::string& originTimestamp)
+{
+    for (const auto& spec : channels)
+    {
+        auto writer = std::make_unique<SessionWriter>();
+
+        if (! writer->open (mirrorFolder + "/" + spec.fileName, rate, 1, bitDepth, originTimestamp))
+        {
+            mirrorStemWriters.clear();
+            return false;
+        }
+
+        mirrorStemWriters.push_back (std::move (writer));
+    }
+
+    auto mix = std::make_unique<SessionWriter>();
+
+    if (! mix->open (mirrorFolder + "/MIX", rate, 1, bitDepth, originTimestamp))
+    {
+        mirrorStemWriters.clear();
+        return false;
+    }
+
+    mirrorMixWriter = std::move (mix);
+    return true;
+}
+
+void WritePipeline::stopMirroring()
+{
+    // Only flips the flag. The writer thread owns the files, so it closes them
+    // on its next pass rather than this being a cross-thread close.
+    mirroring.store (false, std::memory_order_release);
+}
+
 void WritePipeline::drainOnce (bool finalFlush)
 {
     const size_t framesCapacity = stemScratch.size();
+
+    // Read once per pass: if the mirror is stopped mid-drain, this pass still
+    // completes coherently and the next one closes the files.
+    const bool mirrorActiveForThisPass = mirroring.load (std::memory_order_acquire);
+
+    if (! mirrorActiveForThisPass && ! mirrorStemWriters.empty())
+    {
+        // §6.3: stopped for space, or stopped by the user. Close the partial
+        // copy properly so its headers are valid rather than truncated.
+        for (auto& w : mirrorStemWriters)
+            w->close();
+
+        mirrorStemWriters.clear();
+
+        if (mirrorMixWriter != nullptr)
+        {
+            mirrorMixWriter->close();
+            mirrorMixWriter.reset();
+        }
+    }
 
     for (;;)
     {
@@ -164,6 +231,11 @@ void WritePipeline::drainOnce (bool finalFlush)
             }
 
             stemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames);
+
+            // §6.3: same frames, second destination. Written from the same
+            // scratch so the copy cannot diverge from the original.
+            if (mirrorActiveForThisPass && ch < static_cast<int> (mirrorStemWriters.size()))
+                mirrorStemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames);
         }
 
         // §6.1: the mix file gets its own limiter instance at -1 dBFS, separate
@@ -173,10 +245,22 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         mixWriter->writeInterleaved (mixScratch.data(), frames);
 
+        if (mirrorActiveForThisPass && mirrorMixWriter != nullptr)
+            mirrorMixWriter->writeInterleaved (mixScratch.data(), frames);
+
         const double elapsed = static_cast<double> (frames) / sampleRate;
         for (auto& w : stemWriters)
             w->tick (elapsed);
         mixWriter->tick (elapsed);
+
+        if (mirrorActiveForThisPass)
+        {
+            for (auto& w : mirrorStemWriters)
+                w->tick (elapsed);
+
+            if (mirrorMixWriter != nullptr)
+                mirrorMixWriter->tick (elapsed);
+        }
 
         if (! finalFlush && frames < framesCapacity)
             return;
@@ -213,6 +297,20 @@ void WritePipeline::stop()
         mixWriter->close();
         mixWriter.reset();
     }
+
+    // §6.3: the mirror is closed last and the same way, so a take that ended
+    // normally leaves two complete, independently valid copies.
+    for (auto& w : mirrorStemWriters)
+        w->close();
+    mirrorStemWriters.clear();
+
+    if (mirrorMixWriter != nullptr)
+    {
+        mirrorMixWriter->close();
+        mirrorMixWriter.reset();
+    }
+
+    mirroring.store (false, std::memory_order_release);
 }
 
 } // namespace mma

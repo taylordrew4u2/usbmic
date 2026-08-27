@@ -46,8 +46,15 @@ public:
 
     /// §6: begins writing. Monitoring continues untouched -- §5.1 makes the two
     /// independent, and §6.1 keeps a monitor mute from silencing the recording.
+    /// mirrorFolder is §6.3's local copy; empty means card-only.
     bool startRecording (const std::string& sessionFolder, int bitDepth,
-                         const std::string& originTimestamp);
+                         const std::string& originTimestamp,
+                         const std::string& mirrorFolder = {});
+
+    /// §6.3: the internal drive ran low mid-take. Stops the copy and keeps the
+    /// card write going.
+    void stopMirroring();
+    bool isMirroring() const noexcept { return pipeline != nullptr && pipeline->isMirroring(); }
     void stopRecording();
     bool isRecording() const noexcept { return pipeline != nullptr && pipeline->isRunning(); }
 

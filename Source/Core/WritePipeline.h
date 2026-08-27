@@ -27,10 +27,20 @@ public:
 
     /// Opens one stem per channel plus MIX, all sharing a session origin so a
     /// DAW aligns them on import (§6.1).
+    /// mirrorFolder is §6.3's redundant local copy. Empty means no mirror.
+    /// A mirror that cannot be opened is not an error: §6.3 makes the mirror a
+    /// safety net, so losing it degrades to card-only rather than failing the
+    /// take.
     bool start (const std::string& sessionFolder,
                 const std::vector<WriteChannelSpec>& channels,
                 double sampleRate, int bitDepth,
-                const std::string& originTimestamp);
+                const std::string& originTimestamp,
+                const std::string& mirrorFolder = {});
+
+    /// §6.3: the mirror stops when the internal drive runs low, and never
+    /// restarts within the same take -- a copy with a hole in it is not a copy.
+    void stopMirroring();
+    bool isMirroring() const noexcept { return mirroring.load (std::memory_order_acquire); }
 
     /// Audio-thread entry point. Real-time safe: no allocation, no locking, no
     /// file I/O. Returns false when the ring buffer could not take the whole
@@ -66,6 +76,12 @@ private:
     RingBuffer ring { 1 };
     std::vector<std::unique_ptr<SessionWriter>> stemWriters;
     std::unique_ptr<SessionWriter> mixWriter;
+
+    // §6.3 mirror: a second, independent set of writers fed from the same
+    // drained frames, so the copy is byte-identical without a second read.
+    std::vector<std::unique_ptr<SessionWriter>> mirrorStemWriters;
+    std::unique_ptr<SessionWriter> mirrorMixWriter;
+    std::atomic<bool> mirroring { false };
     MixBusLimiter mixLimiter;
 
     std::vector<float> trimGains;      // linear, from WriteChannelSpec::trimDb
@@ -86,6 +102,10 @@ private:
 
     void runWriterThread();
     void drainOnce (bool finalFlush);
+    bool openMirrorWriters (const std::string& mirrorFolder,
+                            const std::vector<WriteChannelSpec>& channels,
+                            double rate, int bitDepth,
+                            const std::string& originTimestamp);
 };
 
 } // namespace mma

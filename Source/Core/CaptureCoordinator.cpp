@@ -91,8 +91,15 @@ void CaptureCoordinator::stopMonitoring()
     monitoring = false;
 }
 
+void CaptureCoordinator::stopMirroring()
+{
+    if (pipeline != nullptr)
+        pipeline->stopMirroring();
+}
+
 bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int bitDepth,
-                                         const std::string& originTimestamp)
+                                         const std::string& originTimestamp,
+                                         const std::string& mirrorFolder)
 {
     if (channels.empty() || isRecording())
         return false;
@@ -105,7 +112,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 
     auto p = std::make_unique<WritePipeline>();
 
-    if (! p->start (sessionFolder, specs, sampleRate, bitDepth, originTimestamp))
+    if (! p->start (sessionFolder, specs, sampleRate, bitDepth, originTimestamp, mirrorFolder))
         return false;
 
     // Published only once fully started, so the audio thread never sees a
