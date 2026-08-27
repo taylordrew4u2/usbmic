@@ -467,6 +467,7 @@ TEST_CASE (CaptureCoordinator_EachDeviceLandsInItsOwnChannel)
     // Each USB device delivers only its own audio on its own callback. Passing
     // one shared callback to every device -- which is what this replaces --
     // wrote every microphone into channel 0 and recorded one mic N times.
+    // Enough to clear pre-roll (§5.4: kPreRollBlocks of the 64-sample buffer).
     std::vector<float> loud (256, 0.8f), quiet (256, 0.1f);
     const float* loudIn[] = { loud.data() };
     const float* quietIn[] = { quiet.data() };

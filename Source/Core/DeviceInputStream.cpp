@@ -5,26 +5,27 @@
 namespace mma {
 
 DeviceInputStream::DeviceInputStream (double sampleRate) noexcept
-    : ring (kMinRingSamples), compensator (sampleRate)
+    : ring (static_cast<size_t> (kRingBlocks) * 64), compensator (sampleRate)
 {
 }
 
 void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
 {
-    const auto wanted = static_cast<size_t> (std::max (1, bufferSizeSamples))
-                        * static_cast<size_t> (kRingBlocks);
+    const auto block = static_cast<size_t> (std::max (1, bufferSizeSamples));
 
-    ring.reset (std::max (kMinRingSamples, wanted));
+    ring.reset (block * static_cast<size_t> (kRingBlocks));
 
-    // The loop steers fill toward half full, so there is equal room to absorb a
-    // device running fast and one running slow.
-    targetFillSamples = ring.capacity() / 2;
+    // §5.4: this is monitor latency, so it is a fixed small number of blocks
+    // rather than a fraction of the ring. The remaining six blocks of capacity
+    // are headroom the loop never intends to use.
+    targetFillSamples = block * static_cast<size_t> (kPreRollBlocks);
 
     compensator = DriftCompensator (sampleRate);
     previousSample = 0.0f;
     currentSample = 0.0f;
     phase = 0.0;
     primed = false;
+    started = false;
 
     driftPpm.store (0.0, std::memory_order_relaxed);
     excessDrift.store (false, std::memory_order_relaxed);
@@ -57,6 +58,20 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         // §6.5: the channel survives the mic leaving, and yields silence.
         std::fill (destination, destination + numSamples, 0.0f);
         return;
+    }
+
+    // Pre-roll. The output clock starts before any device has delivered, so
+    // consuming here would emit a click at the top of every take and count
+    // audio as lost that had simply not arrived yet.
+    if (! started)
+    {
+        if (ring.availableForRead() < targetFillSamples)
+        {
+            std::fill (destination, destination + numSamples, 0.0f);
+            return;
+        }
+
+        started = true;
     }
 
     // §3.2: fill error drives the loop. Positive means this device is producing
