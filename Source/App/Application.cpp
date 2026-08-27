@@ -1,6 +1,8 @@
 #include "Application.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
+#include <cstdio>
+#include <set>
 
 #if JUCE_MAC
 #include "../Platform/CoreAudioBackend.h"
@@ -43,6 +45,11 @@ void Application::initialise()
 
     if (audioBackend != nullptr)
     {
+        capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
+                                                        bufferLadder.getCurrentSize());
+        captureRate = currentSampleRate;
+        captureBufferSize = bufferLadder.getCurrentSize();
+
         audioBackend->setDeviceChangeCallback ([this] { onDeviceListChanged(); });
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
     }
@@ -51,6 +58,97 @@ void Application::initialise()
 
     // §5.1: monitoring is live from launch, independent of record state --
     // there is deliberately no "arm monitoring" step anywhere in this flow.
+    restartCapture();
+}
+
+std::vector<CaptureChannel> Application::buildCaptureChannels() const
+{
+    std::vector<CaptureChannel> channels;
+    int index = 0;
+
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        ++index;
+
+        // §4: trim and the assigned name are persisted against the physical
+        // port, so they follow the mic across replug rather than across slot.
+        const auto persisted = portIdentityStore.get (d.identity);
+
+        CaptureChannel c;
+        c.deviceId = d.identity.key();
+        c.displayName = (persisted.has_value() && ! persisted->assignedName.empty())
+                            ? persisted->assignedName : d.displayName;
+
+        // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name, so
+        // the stems sort in channel order in any file browser.
+        char prefix[4] = {};
+        std::snprintf (prefix, sizeof (prefix), "%02d", index);
+        c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
+        c.trimDb = persisted.has_value() ? persisted->trimDb : 0.0f;
+
+        channels.push_back (std::move (c));
+    }
+
+    return channels;
+}
+
+void Application::restartCapture()
+{
+    if (capture == nullptr)
+        return;
+
+    // §5.4 fixes the buffer size for the duration of a take, and reopening the
+    // streams would tear down the writer mid-file. A device change during a
+    // recording is handled by §6.5 instead: the channel stays and goes silent.
+    if (capture->isRecording())
+        return;
+
+    // §2.2 can settle on a different rate once the mics are enumerated, and
+    // §5.4 can move the buffer up a rung. Both are fixed at construction, so a
+    // change means a new coordinator -- carrying the listening level across,
+    // since the user did not ask for it to jump.
+    if (audioBackend != nullptr
+        && (captureRate != currentSampleRate || captureBufferSize != bufferLadder.getCurrentSize()))
+    {
+        const auto volume = capture->getMonitorBus().getMasterVolume();
+
+        capture->stopMonitoring();
+        capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
+                                                        bufferLadder.getCurrentSize());
+        capture->getMonitorBus().setMasterVolume (volume);
+
+        captureRate = currentSampleRate;
+        captureBufferSize = bufferLadder.getCurrentSize();
+    }
+
+    auto channels = buildCaptureChannels();
+
+    if (channels.empty())
+    {
+        capture->stopMonitoring();
+        return;
+    }
+
+    capture->startMonitoring (channels, selectedOutputDeviceId);
+}
+
+MonitorBus* Application::getMonitorBus()
+{
+    // The coordinator owns the bus the audio callback actually runs, so the UI
+    // must reach that one. monitorBus is the fallback for a build with no
+    // platform backend, where there is no callback to own it.
+    return capture != nullptr ? &capture->getMonitorBus() : monitorBus.get();
+}
+
+juce::String Application::getMonitorProblem() const
+{
+    if (capture == nullptr)
+        return {};
+
+    return juce::String (capture->getMonitorProblem());
 }
 
 void Application::onDeviceListChanged()
@@ -113,6 +211,24 @@ void Application::onDeviceListChanged()
 
     setupAdvisor.setChannelNames (std::move (names));
     setupAdvisor.updateControllerTopology (topology);
+
+    if (capture != nullptr && capture->isRecording())
+    {
+        // §6.5: mid-take, a mic that has gone away keeps its channel and writes
+        // silence. Dropping or renumbering the channel would corrupt the take,
+        // so the take's channel list is fixed and only its liveness moves.
+        std::set<std::string> present;
+        for (const auto& d : deviceManager.getDevices())
+            if (d.included)
+                present.insert (d.identity.key());
+
+        for (const auto& ch : capture->getChannels())
+            capture->setChannelLive (ch.deviceId, present.count (ch.deviceId) > 0);
+
+        return;
+    }
+
+    restartCapture();
 }
 
 void Application::reselectOutputDevice()
@@ -204,10 +320,20 @@ void Application::rebuildMeters()
 
 Metering* Application::getChannelMetering (int index)
 {
+    // Same reasoning as getMonitorBus(): the meters the audio thread feeds live
+    // in the coordinator, so the UI has to read those and not a second set.
+    if (capture != nullptr)
+        return capture->getChannelMetering (index);
+
     if (index < 0 || static_cast<size_t> (index) >= channelMeters.size())
         return nullptr;
 
     return channelMeters[static_cast<size_t> (index)].get();
+}
+
+Metering* Application::getMixMetering()
+{
+    return capture != nullptr ? &capture->getMixMetering() : mixMeter.get();
 }
 
 juce::String Application::getMicDisplayName (int index) const
@@ -258,6 +384,24 @@ void Application::toggleRecording()
         {
             recordingStartMs = juce::Time::getMillisecondCounterHiRes();
 
+            // §6: this is what actually opens the stem files and starts the
+            // writer thread. Without it the record button only changes state.
+            if (capture != nullptr)
+            {
+                const auto now = juce::Time::getCurrentTime();
+                const auto folder = createSessionFolder (now);
+
+                if (folder.isEmpty()
+                    || ! capture->startRecording (folder.toStdString(), currentBitDepth,
+                                                  now.toISO8601 (true).toStdString()))
+                {
+                    // Nothing was written, so the engine must not claim a take.
+                    recordingEngine.stop();
+                    recordingStartMs = 0.0;
+                    return;
+                }
+            }
+
             // Each take gets its own warnings; a previous one must not leave the
             // ten-minute warning already spent.
             capacityMonitor.reset();
@@ -274,10 +418,39 @@ void Application::toggleRecording()
     }
     else
     {
+        // §6.1: stop the writer first so every buffered frame reaches the files
+        // before the engine reports the take finished.
+        if (capture != nullptr)
+            capture->stopRecording();
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
     }
+}
+
+juce::String Application::createSessionFolder (juce::Time now) const
+{
+    const juce::File root (destinationFolder);
+
+    // §6.2: never overwrite, never prompt -- collisions get _2, _3, ...
+    const auto desired = SessionFolderNaming::buildFolderName (now.getYear(), now.getMonth() + 1,
+                                                               now.getDayOfMonth(), now.getHours(),
+                                                               now.getMinutes(),
+                                                               SessionFolderNaming::kDefaultName);
+
+    const auto resolved = SessionFolderNaming::resolveCollision (desired,
+        [&root] (const std::string& candidate)
+        {
+            return root.getChildFile (juce::String (candidate)).exists();
+        });
+
+    const auto folder = root.getChildFile (juce::String (resolved));
+
+    if (! folder.createDirectory().wasOk())
+        return {};
+
+    return folder.getFullPathName();
 }
 
 double Application::getElapsedRecordingSeconds() const
@@ -406,6 +579,13 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 
 void Application::shutdown()
 {
+    // Ordered: drain the writer, then close the streams the callback runs on.
+    if (capture != nullptr)
+    {
+        capture->stopRecording();
+        capture->stopMonitoring();
+    }
+
     if (recordingEngine.getState() == RecordingState::Recording)
         recordingEngine.stop();
     if (audioBackend != nullptr)

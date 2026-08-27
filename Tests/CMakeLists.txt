@@ -23,6 +23,7 @@ add_executable(mma_core_tests
     test_WritePipeline.cpp
     test_TapToNameDetector.cpp
     test_PermissionGuidance.cpp
+    test_CaptureCoordinator.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)

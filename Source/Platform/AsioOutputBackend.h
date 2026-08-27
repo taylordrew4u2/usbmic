@@ -1,5 +1,6 @@
 #pragma once
 #include "VirtualDeviceBackend.h"
+#include "PlatformMacros.h"
 
 #if JUCE_WINDOWS
 
