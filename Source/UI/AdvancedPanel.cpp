@@ -20,6 +20,7 @@ AdvancedPanel::AdvancedPanel()
     driftLabel.setJustificationType (juce::Justification::topLeft);
     outputDeviceLabel.setText ("Output device", juce::dontSendNotification);
     backendLabel.setText ("Virtual device backend", juce::dontSendNotification);
+    aggregateNameLabel.setText ("Combined device name", juce::dontSendNotification);
     destinationFolderLabel.setText ("Destination folder", juce::dontSendNotification);
 
     for (auto* c : { &sampleRateLabel, &sampleRateValue, &bitDepthLabel, &bitDepthValue,
@@ -52,6 +53,17 @@ AdvancedPanel::AdvancedPanel()
 
     diagnosticsExportButton.onClick = [this] { if (onDiagnosticsExportClicked) onDiagnosticsExportClicked(); };
     addAndMakeVisible (diagnosticsExportButton);
+
+    // The name other apps see this rig under. Applied when typing finishes,
+    // not per keystroke -- each change replaces a device other apps may be
+    // recording from.
+    addAndMakeVisible (aggregateNameLabel);
+    aggregateNameEditor.setTextToShowWhenEmpty ("Multi-Mic Aggregator", juce::Colours::grey);
+    aggregateNameEditor.onReturnKey = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
+    aggregateNameEditor.onFocusLost = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
+    addAndMakeVisible (aggregateNameEditor);
+    aggregateStatusLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (aggregateStatusLabel);
 }
 
 AdvancedPanel::~AdvancedPanel() = default;
@@ -162,6 +174,9 @@ void AdvancedPanel::resized()
 
     row (outputDeviceLabel, outputDeviceCombo);
     row (backendLabel, backendValue);
+    row (aggregateNameLabel, aggregateNameEditor);
+    aggregateStatusLabel.setBounds (area.removeFromTop (20));
+    area.removeFromTop (4);
 
     mirrorToggle.setBounds (area.removeFromTop (26));
     area.removeFromTop (4);

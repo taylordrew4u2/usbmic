@@ -40,6 +40,7 @@ void Application::initialise()
 {
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
+    systemAggregate = createSystemAggregateDevice();
 
     if (audioBackend != nullptr)
     {
@@ -49,7 +50,22 @@ void Application::initialise()
         captureRate = currentSampleRate;
         captureBufferSize = bufferLadder.getCurrentSize();
 
-        audioBackend->setDeviceChangeCallback ([this] { onDeviceListChanged(); });
+        // OS device-change notifications arrive on the backend's own thread --
+        // a CoreAudio listener thread on macOS, the COM notification thread on
+        // Windows. Everything onDeviceListChanged touches (DeviceManager, the
+        // meters, the coordinator) belongs to the message thread, so the
+        // callback only queues the work. The token keeps a callback that is
+        // already queued at quit time from firing into a destroyed Application.
+        std::weak_ptr<int> alive = aliveToken;
+
+        audioBackend->setDeviceChangeCallback ([this, alive]
+        {
+            juce::MessageManager::callAsync ([this, alive]
+            {
+                if (alive.lock() != nullptr)
+                    onDeviceListChanged();
+            });
+        });
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
     }
 
@@ -129,14 +145,68 @@ void Application::restartCapture()
     if (channels.empty())
     {
         capture->stopMonitoring();
+
+        if (onCaptureRebuilt)
+            onCaptureRebuilt();
+
         return;
     }
 
-    if (! capture->startMonitoring (channels, selectedOutputDeviceId))
+    const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
+
+    if (started)
+    {
+        applyClockMaster();
+        driftMeasuredSeconds = 0.0;
+    }
+
+    // Fired on success AND failure: either way the old meters are gone, and a
+    // UI still holding pointers into them would read freed memory on its very
+    // next timer tick. This runs on the message thread, in the same call
+    // stack as the rebuild, so no timer can interleave.
+    if (onCaptureRebuilt)
+        onCaptureRebuilt();
+}
+
+void Application::publishAggregateDevice()
+{
+    if (systemAggregate == nullptr)
         return;
 
-    applyClockMaster();
-    driftMeasuredSeconds = 0.0;
+    std::vector<std::string> uids;
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            uids.push_back (d.identity.locationId); // the CoreAudio device UID on macOS
+
+    // §3.1: same clock master as the in-app capture path, so the aggregate and
+    // the app agree about whose crystal is the truth.
+    std::string master;
+    if (const auto* m = deviceManager.selectDefaultMaster())
+        master = m->identity.locationId;
+
+    const auto name = aggregateName.toStdString();
+
+    // Republishing destroys the device other apps may be recording from, so it
+    // happens only when something real changed.
+    if (uids == publishedUids && master == publishedMaster && name == publishedNameStd)
+        return;
+
+    systemAggregate->publish (name, uids, master);
+    publishedUids = std::move (uids);
+    publishedMaster = std::move (master);
+    publishedNameStd = name;
+}
+
+void Application::setAggregateDeviceName (const juce::String& name)
+{
+    const auto trimmed = name.trim();
+    aggregateName = trimmed.isEmpty() ? juce::String ("Multi-Mic Aggregator") : trimmed;
+    publishAggregateDevice();
+}
+
+juce::String Application::getAggregateStatus() const
+{
+    return systemAggregate != nullptr ? juce::String (systemAggregate->getStatus()) : juce::String();
 }
 
 void Application::applyClockMaster()
@@ -247,6 +317,11 @@ void Application::onDeviceListChanged()
 
     setupAdvisor.setChannelNames (std::move (names));
     setupAdvisor.updateControllerTopology (topology);
+
+    // The combined device other apps see tracks the rig -- §2: on the OS
+    // notification, never a timer. Safe during a take: our own capture reads
+    // the per-device streams, not the aggregate.
+    publishAggregateDevice();
 
     if (capture != nullptr && capture->isRecording())
     {
@@ -369,12 +444,45 @@ juce::String Application::getMicDisplayName (int index) const
             continue;
 
         if (seen == index)
+        {
+            // The name the user gave this port wins over the product string --
+            // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
+            if (const auto persisted = portIdentityStore.get (d.identity))
+                if (! persisted->assignedName.empty())
+                    return juce::String (persisted->assignedName);
+
             return juce::String (d.displayName);
+        }
 
         ++seen;
     }
 
     return {};
+}
+
+void Application::setMicAssignedName (int index, const juce::String& name)
+{
+    int seen = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (seen++ != index)
+            continue;
+
+        auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
+        settings.assignedName = SessionFolderNaming::sanitizeName (name.toStdString());
+        portIdentityStore.put (d.identity, settings);
+
+        // The capture channels carry the display name into the stem filenames
+        // (§6.2), so they are rebuilt -- but never mid-take, where §6.5 fixes
+        // the channel list for the duration of the recording.
+        if (capture != nullptr && ! capture->isRecording())
+            restartCapture();
+
+        return;
+    }
 }
 
 void Application::chooseInitialDestination()
@@ -467,6 +575,11 @@ void Application::toggleRecording()
         // cleared, or every timestamp inside it would read as zero.
         writeSessionMetadata (true);
 
+        // §10.6: the outcome is stated, not implied. Ten seconds is enough to
+        // read without becoming furniture.
+        lastSessionFolder = currentSessionFolder;
+        savedNoticeSeconds = 10.0;
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
@@ -481,10 +594,14 @@ juce::String Application::createSessionFolder (juce::Time now) const
     const juce::File root (destinationFolder);
 
     // §6.2: never overwrite, never prompt -- collisions get _2, _3, ...
+    // §6.2: the user's session name, sanitized; "Session" when they gave none.
+    auto cleaned = SessionFolderNaming::sanitizeName (sessionName.toStdString());
+    if (cleaned.empty())
+        cleaned = SessionFolderNaming::kDefaultName;
+
     const auto desired = SessionFolderNaming::buildFolderName (now.getYear(), now.getMonth() + 1,
                                                                now.getDayOfMonth(), now.getHours(),
-                                                               now.getMinutes(),
-                                                               SessionFolderNaming::kDefaultName);
+                                                               now.getMinutes(), cleaned);
 
     const auto resolved = SessionFolderNaming::resolveCollision (desired,
         [&root] (const std::string& candidate)
@@ -645,6 +762,10 @@ void Application::runPreflight (const std::string& destination, int channelCount
 
             while (written < PreflightThroughputTest::kTestFileBytes)
             {
+                // Quit must not wait for a slow card to swallow 200 MB.
+                if (preflightAbort.load())
+                    break;
+
                 if (! out.write (chunk.data(), kChunkBytes))
                     break;
 
@@ -679,10 +800,13 @@ void Application::runPreflight (const std::string& destination, int channelCount
 
     testFile.deleteFile();
 
-    result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
-                                                currentSampleRate, bytesPerSample);
-
+    // An aborted run proved nothing about the card; caching its verdict would
+    // wrongly condemn the volume on the next launch of this session.
+    if (! preflightAbort.load())
     {
+        result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
+                                                    currentSampleRate, bytesPerSample);
+
         std::lock_guard<std::mutex> lock (preflightMutex);
         preflightResults[destination] = result;
     }
@@ -932,6 +1056,11 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
 
 juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 {
+    // Cleared first, not inside the tap block: a capacity or performance
+    // warning returns early below, and a stale index would leave one skull
+    // lit indefinitely.
+    tappedChannel = -1;
+
     // §8.1: the detectors only see anything if the per-block peaks reach them,
     // so this is where the §10.5 advice actually gets its input.
     const int micCount = getIncludedMicCount();
@@ -1019,6 +1148,41 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             return "This machine is working hard. Close other apps before it starts dropping audio.";
         case PerformanceWarning::None:
             break;
+    }
+
+    // §14.6: which mic was just heard alone. Not an error and not a message --
+    // the UI highlights that skull, which is how a user with four identical
+    // mics learns which meter is which person. Runs only outside a take, when
+    // naming actually happens.
+    if (capture == nullptr || ! capture->isRecording())
+    {
+        if (tapDetector == nullptr || tapDetectorChannels != micCount)
+        {
+            tapDetector = micCount > 0 ? std::make_unique<TapToNameDetector> (micCount) : nullptr;
+            tapDetectorChannels = micCount;
+        }
+
+        if (tapDetector != nullptr)
+        {
+            const auto result = tapDetector->processBlock (peaksDb, sinceLastCallSeconds);
+
+            if (result == TapResult::ChannelIdentified)
+                tappedChannel = tapDetector->getTappedChannel();
+
+            // Latch consumed; listen for the next tap. The meter's 2-second
+            // peak hold keeps re-identifying while the sound decays, which is
+            // what makes the highlight linger long enough to see.
+            if (result != TapResult::Listening)
+                tapDetector->reset();
+        }
+    }
+
+    // §10.6: after a take, say where it went. Outranks ambient advice because
+    // it answers the question the user actually has right now.
+    if (savedNoticeSeconds > 0.0)
+    {
+        savedNoticeSeconds -= sinceLastCallSeconds;
+        return "Saved to " + lastSessionFolder;
     }
 
     // §10.5 last: hardware guidance, most serious first.
@@ -1137,6 +1301,12 @@ juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) con
 
 void Application::shutdown()
 {
+    // Other apps must not be left holding a combined device whose owner is gone.
+    if (systemAggregate != nullptr)
+        systemAggregate->remove();
+
+    preflightAbort.store (true);
+
     if (preflightThread.joinable())
         preflightThread.join();
 

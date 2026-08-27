@@ -41,8 +41,15 @@ MainScreen::MainScreen()
     volumeSlider.onValueChange = [this] { if (onVolumeChanged) onVolumeChanged (volumeSlider.getValue()); };
     addAndMakeVisible (volumeSlider);
 
+    muteButton.setClickingTogglesState (false); // state comes from the bus, not the click
     muteButton.onClick = [this] { if (onMuteToggled) onMuteToggled(); };
     addAndMakeVisible (muteButton);
+
+    // §6.2: naming the take is optional and never a gate -- the placeholder
+    // says what happens if it is left alone.
+    sessionNameEditor.setTextToShowWhenEmpty ("Session name (optional)", juce::Colours::grey);
+    sessionNameEditor.setJustification (juce::Justification::centredLeft);
+    addAndMakeVisible (sessionNameEditor);
 
     advancedButton.onClick = [this] { if (onAdvancedClicked) onAdvancedClicked(); };
     addAndMakeVisible (advancedButton);
@@ -64,6 +71,7 @@ void MainScreen::setMicCount (int count)
     for (int i = 0; i < count; ++i)
     {
         auto* meter = new SkullMeterComponent();
+        meter->onNameClicked = [this, i] { if (onMicNameClicked) onMicNameClicked (i); };
         addAndMakeVisible (meter);
         skullMeters.add (meter);
     }
@@ -81,6 +89,22 @@ void MainScreen::setRecording (bool isRecording)
     recording = isRecording;
     // §10.4/§10.6: buttons say what happens. "Start recording" -> "Recording."
     recordButton.setButtonText (recording ? "Recording. Tap to stop." : "Start recording");
+}
+
+void MainScreen::setHighlightedMic (int index)
+{
+    for (int i = 0; i < skullMeters.size(); ++i)
+        skullMeters[i]->setHighlighted (i == index);
+}
+
+void MainScreen::setMuteState (bool muted, bool runawayMuted)
+{
+    muteButton.setToggleState (muted, juce::dontSendNotification);
+
+    // §10.6: the button says what pressing it will do. After a runaway cut it
+    // is the recovery control, and it must say so.
+    muteButton.setButtonText (runawayMuted ? "Unmute (sound was cut)"
+                                           : (muted ? "Unmute" : "Mute"));
 }
 
 void MainScreen::setAdviceText (const juce::String& text)
@@ -131,6 +155,8 @@ void MainScreen::resized()
     mixBar.setBounds (area.removeFromTop (28));
     area.removeFromTop (8);
 
+    sessionNameEditor.setBounds (area.removeFromTop (26).reduced (area.getWidth() / 5, 0));
+    area.removeFromTop (4);
     recordButton.setBounds (area.removeFromTop (56));
     disabledReasonLabel.setBounds (area.removeFromTop (20));
     area.removeFromTop (8);

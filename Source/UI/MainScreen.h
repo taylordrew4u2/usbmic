@@ -33,6 +33,16 @@ public:
     void setNoMicsMessage (bool show);
     void setRecordButtonEnabled (bool enabled, const juce::String& disabledReason);
 
+    /// §14.6: light the skull of the mic currently being heard (-1 for none).
+    void setHighlightedMic (int index);
+
+    /// The mute button always tells the truth about the bus, including the
+    /// §5 runaway cut, which the user must be able to undo from here.
+    void setMuteState (bool muted, bool runawayMuted);
+
+    /// §6.2: the user's name for the next take. Empty is fine.
+    juce::String getSessionName() const { return sessionNameEditor.getText(); }
+
     /// §10.5/§6.5/§6.6: the single most serious thing worth telling the user
     /// about the rig right now. Empty hides the line.
     void setAdviceText (const juce::String& text);
@@ -46,6 +56,7 @@ public:
     std::function<void (double)> onVolumeChanged; // 0-100
     std::function<void()> onAdvancedClicked;
     std::function<void()> onMuteToggled;
+    std::function<void (int)> onMicNameClicked; // skull index
 
 private:
     juce::OwnedArray<SkullMeterComponent> skullMeters;
@@ -55,6 +66,7 @@ private:
     juce::Label elapsedLabel, remainingLabel, saveLocationLabel, noMicsLabel, disabledReasonLabel;
     juce::Label monitorProblemLabel, adviceLabel;
     juce::Slider volumeSlider;
+    juce::TextEditor sessionNameEditor;
     juce::ToggleButton muteButton { "Mute" };
     juce::TextButton advancedButton { "Advanced" };
 
