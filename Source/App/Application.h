@@ -169,6 +169,7 @@ private:
     double captureRate = 0.0;
     int captureBufferSize = 0;
     double measuredLatencyMs = 0.0;
+    double driftMeasuredSeconds = 0.0; // §3.1 60-second window
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
 
     // §6.4 preflight. Keyed by destination path so switching back to a card
@@ -213,6 +214,8 @@ private:
     /// makes monitoring live from launch, and a hot-plug changes the channel
     /// set, so this runs at startup and on every device-list change.
     void restartCapture();
+    /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
+    void applyClockMaster();
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 destination folder for a new take, created on disk. Empty on failure.
     juce::String createSessionFolder (juce::Time now) const;

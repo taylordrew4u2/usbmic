@@ -71,6 +71,23 @@ void DeviceManager::setPreferredMaster (const std::string& identityKey)
     preferredMasterKey = identityKey;
 }
 
+void DeviceManager::updateMeasuredDrift (const std::string& identityKey, double driftPpm,
+                                         double measuredForSeconds)
+{
+    for (auto& d : devices)
+    {
+        if (d.identity.key() != identityKey)
+            continue;
+
+        d.measuredDriftPpm = driftPpm;
+
+        // §3.1: reporting a number before the window has elapsed would make
+        // master selection chase a settling loop.
+        d.hasDriftMeasurement = measuredForSeconds >= kDriftMeasurementSeconds;
+        return;
+    }
+}
+
 const MicDeviceState* DeviceManager::selectDefaultMaster() const
 {
     // §3.1: an explicit choice wins over the lowest-drift rule, but only while
