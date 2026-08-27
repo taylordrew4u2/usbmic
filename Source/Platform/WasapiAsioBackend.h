@@ -3,7 +3,14 @@
 
 #if JUCE_WINDOWS
 
+#include <memory>
+
 namespace mma {
+
+/// One open WASAPI exclusive-mode stream: its IAudioClient, service interface,
+/// event handle and worker thread. Defined in the .cpp so <audioclient.h> stays
+/// out of this header.
+struct WasapiStream;
 
 /// Windows implementation of IAudioBackend. Prefers ASIO drivers when
 /// present (lowest, most predictable latency, and JUCE's AudioIODeviceType
@@ -44,6 +51,8 @@ private:
     // object is defined in the .cpp to avoid pulling <mmdeviceapi.h> into
     // every translation unit that includes this header.
     void* notificationClient = nullptr;
+
+    std::vector<std::unique_ptr<WasapiStream>> openStreams;
 
     bool hasAnyAsioDriverInstalled() const;
     std::vector<AudioDeviceDescriptor> enumerateWasapiDevices (bool wantInput) const;
