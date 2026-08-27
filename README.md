@@ -38,12 +38,7 @@ real audio backends. The Linux build exists because it is what the engine, the
 tests and the harnesses are developed against — it runs, but `Source/Platform`
 has no Linux backend, so it will not find a microphone.
 
-Neither the macOS nor the Windows build is code-signed. macOS will refuse a
-first launch from Finder; open it once from the right-click menu, or run
-`xattr -dr com.apple.quarantine "Multi-Mic Aggregator.app"`. Windows SmartScreen
-will warn once. Signing needs an Apple Developer account and an EV certificate
-respectively — neither is obtainable from source code, which is why the release
-is unsigned rather than quietly claiming otherwise.
+Step-by-step setup is in [Installing](#installing) below.
 
 ### Licence
 
@@ -51,6 +46,73 @@ is unsigned rather than quietly claiming otherwise.
 works unconditionally with the JUCE dependency (free, no revenue limit).
 [`LICENSING.md`](LICENSING.md) explains the choice and the closed-source
 alternative JUCE's paid tiers would allow.
+
+## Installing
+
+No installer is needed on any platform — the app is self-contained. Neither
+the macOS nor the Windows build is code-signed (signing needs an Apple
+Developer account and an EV certificate respectively, neither obtainable from
+source code), so each OS asks for one extra confirmation on first launch.
+The steps below include it.
+
+### macOS
+
+1. Unzip `MultiMicAggregator-macOS.zip`.
+2. Drag `Multi-Mic Aggregator.app` into **Applications** (or run it from
+   anywhere — location doesn't matter).
+3. First launch only: **right-click the app → Open → Open**. A plain
+   double-click will be refused because the build is unsigned. Terminal
+   alternative:
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
+   ```
+4. macOS will ask for **microphone permission** — allow it, or every meter
+   stays silent. If you declined by accident: System Settings → Privacy &
+   Security → Microphone → enable Multi-Mic Aggregator.
+5. Plug in your USB microphones and headphones. Monitoring is live from
+   launch; there is nothing to arm.
+
+### Windows
+
+1. Unzip `MultiMicAggregator-Windows.zip` anywhere (e.g. a folder in
+   `Program Files` or your Desktop).
+2. Run `bin\Multi-Mic Aggregator.exe` from the unzipped folder. SmartScreen
+   will warn once about an unrecognised app: click **More info → Run anyway**.
+3. If no microphones appear: Settings → Privacy & security → Microphone →
+   make sure **Let desktop apps access your microphone** is on.
+4. Plug in mics and headphones; monitoring is live from launch.
+
+### Linux
+
+1. Unzip `MultiMicAggregator-Linux.zip`.
+2. From the unzipped folder, run it:
+   ```sh
+   chmod +x "bin/Multi-Mic Aggregator"   # zip extraction can drop the execute bit
+   "bin/Multi-Mic Aggregator"
+   ```
+3. Expect the UI but no microphones: `Source/Platform` has no Linux audio
+   backend (see [Download](#download)). This build exists for development and
+   for running the engine, tests and harnesses.
+
+### First run — where things go, on every platform
+
+- **Recordings** default to a `RECORDINGS` folder in your home directory.
+  Change the destination from **Advanced → Destination folder** — pointing it
+  at an external card is the intended setup, and the app benchmarks a new
+  destination before enabling the record button (§6.4).
+- **A local backup copy** of each take is kept by default in
+  `RECORDINGS-MIRROR` in your home directory, so a card failure is an
+  inconvenience rather than data loss. Toggle it in the Advanced panel.
+- **The log** lives at `MultiMicAggregator/log.txt` under your user
+  application-data directory (`~/Library` on macOS, `%APPDATA%` on Windows,
+  `~/.config` on Linux). **Export diagnostics** in the Advanced panel bundles
+  it with the last five sessions' metadata — never audio.
+
+### Uninstalling
+
+Delete the app. The only things it leaves behind are your recordings
+(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log folder above — remove those
+too if you want nothing left.
 
 ## Layout
 
