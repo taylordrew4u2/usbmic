@@ -218,12 +218,22 @@ void Application::toggleRecording()
             // Each take gets its own warnings; a previous one must not leave the
             // ten-minute warning already spent.
             capacityMonitor.reset();
+            mirrorPolicy.reset();
+
+            // §6.3: the mirror only starts when the internal drive has room for
+            // the whole projected session plus headroom.
+            const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+            mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
+
+            // §5.4: buffer size is fixed for the duration of a take.
+            bufferLadder.setRecording (true);
         }
     }
     else
     {
         recordingEngine.stop();
         recordingStartMs = 0.0;
+        bufferLadder.setRecording (false);
     }
 }
 
@@ -245,14 +255,29 @@ int Application::getIncludedMicCount() const
     return count;
 }
 
-double Application::getRemainingRecordingSeconds() const
+double Application::bytesPerSecondOfAudio() const
 {
     const int channels = std::max (1, getIncludedMicCount());
     const int bytesPerSample = std::max (1, currentBitDepth / 8);
 
     // Stems plus the mix file, matching the pre-flight required-rate figure (§6.4).
-    const double bytesPerSecond = static_cast<double> (channels) * currentSampleRate
-                                * static_cast<double> (bytesPerSample) * 2.0;
+    return static_cast<double> (channels) * currentSampleRate
+         * static_cast<double> (bytesPerSample) * 2.0;
+}
+
+int64_t Application::projectedSessionBytes() const
+{
+    // §6.3 needs a size to reserve for the mirror before the take starts, and
+    // nothing knows how long the user will record. An hour is the planning
+    // figure: long enough that a typical session fits, short enough that the
+    // mirror is not refused on a drive that could hold it.
+    constexpr double kProjectedSessionSeconds = 60.0 * 60.0;
+    return static_cast<int64_t> (bytesPerSecondOfAudio() * kProjectedSessionSeconds);
+}
+
+double Application::getRemainingRecordingSeconds() const
+{
+    const double bytesPerSecond = bytesPerSecondOfAudio();
 
     if (bytesPerSecond <= 0.0)
         return -1.0;
