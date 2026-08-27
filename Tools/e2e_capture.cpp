@@ -12,6 +12,11 @@ using namespace mma;
 
 namespace {
 
+// Not M_PI: that is a POSIX extension rather than standard C++, and MSVC does
+// not define it from <cmath> without _USE_MATH_DEFINES. Relying on it is how
+// this harness broke the Windows build.
+constexpr double kTwoPi = 6.283185307179586476925286766559;
+
 class Fake : public IAudioBackend {
 public:
     std::vector<AudioCallback> inputs;
@@ -55,7 +60,7 @@ std::vector<double> decode16 (const std::string& path, uint32_t& dataBytes) {
 double toneEnergy (const std::vector<double>& x, double freq, double rate) {
     if (x.size() < 512) return 0.0;
     const size_t n = x.size();
-    const double w = 2.0 * M_PI * freq / rate;
+    const double w = kTwoPi * freq / rate;
     const double coeff = 2.0 * std::cos (w);
     double s0 = 0, s1 = 0, s2 = 0;
     for (size_t i = 0; i < n; ++i) { s0 = x[i] + coeff * s1 - s2; s2 = s1; s1 = s0; }
@@ -104,7 +109,7 @@ int main (int argc, char** argv) {
     for (int i = 0; i < blocks; ++i) {
         for (int s = 0; s < block; ++s) {
             a[s] = static_cast<float> (0.4 * std::sin (phaseA));
-            phaseA += 2.0 * M_PI * 440.0 / rate;
+            phaseA += kTwoPi * 440.0 / rate;
         }
         const float* aIn[] = { a.data() };
         backend.inputs[0] (aIn, 1, nullptr, 0, block);
@@ -114,7 +119,7 @@ int main (int argc, char** argv) {
         if (bDebt >= 1.0) { bCount += 1; bDebt -= 1.0; }
         for (int s = 0; s < bCount; ++s) {
             b[s] = static_cast<float> (0.4 * std::sin (phaseB));
-            phaseB += 2.0 * M_PI * 1000.0 / rate;
+            phaseB += kTwoPi * 1000.0 / rate;
         }
         const float* bIn[] = { b.data() };
         backend.inputs[1] (bIn, 1, nullptr, 0, bCount);
