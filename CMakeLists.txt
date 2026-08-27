@@ -39,6 +39,8 @@ add_library(mma_core STATIC
     Source/Core/MirrorPolicy.cpp
     Source/Core/SetupAdvisor.cpp
     Source/Core/WritePipeline.cpp
+    Source/Core/TapToNameDetector.cpp
+    Source/Core/PermissionGuidance.cpp
 )
 target_include_directories(mma_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Source
