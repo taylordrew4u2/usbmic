@@ -6,6 +6,7 @@
 #include <vector>
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
+#include "DeviceInputStream.h"
 #include "Metering.h"
 #include "WritePipeline.h"
 
@@ -84,10 +85,33 @@ public:
     uint64_t getFramesDropped() const noexcept { return pipeline != nullptr ? pipeline->getFramesDropped() : 0; }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
 
-    /// The audio-thread entry point, public so tests can drive it directly.
+    /// One microphone's audio callback (§3.2). Separate USB devices run on
+    /// independent clocks, so each one delivers on its own thread and into its
+    /// own ring rather than as one aligned block.
+    void pushDeviceBlock (int deviceIndex, const float* samples, int numSamples) noexcept;
+
+    /// The output device's callback, which is the clock everything else is
+    /// pulled onto (§3.1). Sums the drift-corrected mics, meters them, feeds the
+    /// writer, and fills the headphone buffers.
+    void processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept;
+
+    /// Aggregate-device path: every channel arriving in one already-aligned
+    /// callback, as a CoreAudio aggregate or an ASIO device delivers it. No
+    /// drift correction is applied because the OS has already done it.
     /// §11: no allocation, locking, logging or file I/O in here.
     void processAudioBlock (const float* const* inputs, int numInputs,
                             float* const* outputs, int numOutputs, int numSamples) noexcept;
+
+    /// §3.1 / §3.3: which channel defines the timebase. Every other device is
+    /// resampled onto it; the master itself never is. Out-of-range clears it.
+    void setMasterChannel (int index) noexcept;
+    int getMasterChannel() const noexcept { return masterChannel; }
+
+    /// §3.3 drift reporting, driven from the UI tick rather than the callback.
+    void tickDriftReporting (double elapsedSeconds) noexcept;
+    double getChannelDriftPpm (int index) const noexcept;
+    bool hasSustainedExcessDrift (int index) const noexcept;
+    uint64_t getUnderrunSamples (int index) const noexcept;
 
 private:
     IAudioBackend& backend;
@@ -97,6 +121,8 @@ private:
     std::vector<CaptureChannel> channels;
     MonitorBus monitorBus;
     std::vector<std::unique_ptr<Metering>> channelMeters;
+    std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
+    int masterChannel = -1;
     Metering mixMeter;
     std::unique_ptr<WritePipeline> pipeline;
 
@@ -110,11 +136,22 @@ private:
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
 
+    // Per-device pulled audio and the pointer table the writer wants, both
+    // sized at startMonitoring(). The output callback fills these every block
+    // and §11 forbids it allocating them there.
+    std::vector<float> deviceScratch;      // channelCount * bufferSize, contiguous per channel
+    std::vector<const float*> devicePointers;
+
     // Written by the audio thread, read by the UI. Relaxed because a stale
     // reading for one frame is harmless and a lock here would not be (§11).
     std::atomic<double> callbackLoad { 0.0 };
 
     void noteCallbackLoad (std::chrono::steady_clock::time_point start, int numSamples) noexcept;
+
+    /// Shared by both capture paths: sum, meter, record and publish one already
+    /// time-aligned frame block. Real-time safe.
+    void mixAndPublish (const float* const* inputs, int channelCount,
+                        float* const* outputs, int numOutputs, int numSamples) noexcept;
 };
 
 } // namespace mma

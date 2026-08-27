@@ -42,6 +42,7 @@ add_library(mma_core STATIC
     Source/Core/TapToNameDetector.cpp
     Source/Core/PermissionGuidance.cpp
     Source/Core/CaptureCoordinator.cpp
+    Source/Core/DeviceInputStream.cpp
 )
 target_include_directories(mma_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Source

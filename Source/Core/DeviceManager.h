@@ -45,6 +45,14 @@ public:
     /// panel. The override holds until that device leaves the rig, at which
     /// point §3.3 failover takes over again from the automatic rule.
     void setPreferredMaster (const std::string& identityKey);
+
+    /// §3.1: drift is only claimed once 60 seconds of running measurement
+    /// exists -- before that the loop is still settling and the number is
+    /// noise. The caller reports elapsed measurement time so this class owns
+    /// that rule rather than each caller reimplementing it.
+    static constexpr double kDriftMeasurementSeconds = 60.0;
+    void updateMeasuredDrift (const std::string& identityKey, double driftPpm,
+                              double measuredForSeconds);
     const std::string& getPreferredMaster() const { return preferredMasterKey; }
 
     /// §3.3: on master unplug, promote the remaining device with the lowest

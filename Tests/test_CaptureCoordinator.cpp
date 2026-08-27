@@ -46,7 +46,8 @@ public:
     int inputStreamsOpened = 0;
     int outputStreamsOpened = 0;
     int closeAllCalls = 0;
-    AudioCallback captured;
+    AudioCallback captured;              // the output stream's callback (the clock)
+    std::vector<AudioCallback> inputCallbacks; // one per device, in open order
 
     std::string getBackendName() const override { return "Fake"; }
     std::vector<AudioDeviceDescriptor> enumerateInputDevices() override { return {}; }
@@ -75,6 +76,7 @@ public:
         if (failInputOpen)
             return false;
         ++inputStreamsOpened;
+        inputCallbacks.push_back (cb);
         captured = std::move (cb);
         return true;
     }
@@ -452,4 +454,128 @@ TEST_CASE (CaptureCoordinator_ReportsAudioCallbackLoad)
     const auto load = c.getAudioCallbackLoad();
     REQUIRE (load > 0.0);
     REQUIRE (load < 1.0);
+}
+
+TEST_CASE (CaptureCoordinator_EachDeviceLandsInItsOwnChannel)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    REQUIRE (backend.inputCallbacks.size() == 2);
+
+    // Each USB device delivers only its own audio on its own callback. Passing
+    // one shared callback to every device -- which is what this replaces --
+    // wrote every microphone into channel 0 and recorded one mic N times.
+    std::vector<float> loud (256, 0.8f), quiet (256, 0.1f);
+    const float* loudIn[] = { loud.data() };
+    const float* quietIn[] = { quiet.data() };
+
+    backend.inputCallbacks[0] (loudIn, 1, nullptr, 0, 256);
+    backend.inputCallbacks[1] (quietIn, 1, nullptr, 0, 256);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    c.processOutputBlock (outs, 1, 64);
+
+    for (int i = 0; i < 10; ++i)
+    {
+        c.getChannelMetering (0)->tick (1.0 / 60.0);
+        c.getChannelMetering (1)->tick (1.0 / 60.0);
+    }
+
+    // Channel 0 got the loud mic and channel 1 the quiet one -- not the same
+    // mic twice, which is what the shared callback produced.
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb()
+             > c.getChannelMetering (1)->getDisplayedLevelDb() + 6.0f);
+}
+
+TEST_CASE (CaptureCoordinator_OutputClockPullsEveryDeviceIntoTheMix)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    std::vector<float> a (256, 0.10f), b (256, 0.20f);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+
+    backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 256);
+    backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 256);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    c.processOutputBlock (outs, 1, 64);
+
+    // §5.1: the mix contains every mic, summed at unity, so it must exceed
+    // either one alone.
+    REQUIRE (out[0] > 0.20f);
+}
+
+TEST_CASE (CaptureCoordinator_FirstMicIsTheClockMasterByDefault)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // §3.1: a rig with no master would resample every device against nothing.
+    REQUIRE (c.getMasterChannel() == 0);
+
+    c.setMasterChannel (1);
+    REQUIRE (c.getMasterChannel() == 1);
+
+    // Out of range clears it rather than silently keeping a stale index -- the
+    // master can leave the rig (§3.3).
+    c.setMasterChannel (99);
+    REQUIRE (c.getMasterChannel() == -1);
+}
+
+TEST_CASE (CaptureCoordinator_MasterReportsNoDriftAgainstItself)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.setMasterChannel (0);
+
+    std::vector<float> a (2048, 0.1f);
+    const float* aIn[] = { a.data() };
+    backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 2048);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    for (int i = 0; i < 100; ++i)
+        c.processOutputBlock (outs, 1, 64);
+
+    // §3.1: the timebase is never corrected against itself, however its ring
+    // happens to sit.
+    REQUIRE_NEAR (c.getChannelDriftPpm (0), 0.0, 1e-12);
+}
+
+TEST_CASE (CaptureCoordinator_UnpluggedDeviceStillYieldsItsChannel)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (512, 0.5f), b (512, 0.5f);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 512);
+    backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 512);
+
+    // §6.5: the mic goes away mid-session; its channel does not.
+    c.setChannelLive ("dev-b", false);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    c.processOutputBlock (outs, 1, 64);
+
+    for (int i = 0; i < 10; ++i)
+        c.getChannelMetering (1)->tick (1.0 / 60.0);
+
+    // Channel 1 is present and silent, not gone and not replaying stale audio.
+    REQUIRE (c.getChannelMetering (1) != nullptr);
+    REQUIRE_NEAR (c.getChannelMetering (1)->getDisplayedLevelDb(), Metering::kMinDb, 1.0f);
 }

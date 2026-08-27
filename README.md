@@ -77,6 +77,7 @@ and Windows:
 | `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 9 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 8 |
 | `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 8 |
+| `DeviceInputStream` — per-device ring, drift loop, resampler onto the master clock | §3.2, §3.3 | 8 |
 | `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 8 |
 | `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 7 |
 | `Metering` — ballistics, peak hold, clip latch | §8.1 | 7 |
@@ -149,17 +150,13 @@ software:
 The entire §12 validation matrix is outstanding. Nothing here has seen a real
 microphone. In particular:
 
-- **§3.2 drift compensation is not wired in.** `DriftCompensator` implements the
-  specified PI loop and passes its unit tests, but nothing calls it: correcting
-  drift needs a per-device fill error, and that requires per-device capture
-  callbacks and a resampler that the single shared callback in
-  `CaptureCoordinator` does not currently provide. Wiring it against hardware
-  that has never run would mean guessing at the backends' callback shape, so it
-  is left explicitly disconnected rather than plausibly wrong. §3.1 master
-  selection and §3.3 failover **are** wired; §3.2 correction is not.
 - **§3.4 is the gate on everything else** — a 4-hour take with four dissimilar
-  USB microphones finishing under 1 ms inter-channel drift. That measurement
-  cannot even be attempted until the point above is resolved.
+  USB microphones finishing under 1 ms inter-channel drift. §3.2 compensation is
+  now wired (`DeviceInputStream`: one ring and one PI loop per device, pulled
+  onto the master's timebase by the output clock), and its behaviour is covered
+  by unit tests — the correction direction, the ±200 PPM clamp, the master
+  bypass, underrun counting. What no test can establish is whether four real
+  crystals stay inside 1 ms over four hours. That still needs the hardware.
 - **§5.4 latency ceiling** — the 10 ms ceiling must be confirmed by loopback on
   macOS, Windows ASIO, and Windows WASAPI exclusive.
 - Hostile-event matrix, card throughput on real slow media, bus-power
