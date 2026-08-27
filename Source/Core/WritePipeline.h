@@ -41,6 +41,10 @@ public:
     /// changing the file layout mid-recording.
     void setChannelLive (int channelIndex, bool live) noexcept;
 
+    /// §4: trim moves the mix file, never the stems. Live, because the user can
+    /// turn a mic down mid-take and the mix should follow.
+    void setChannelTrimDb (int channelIndex, float trimDb) noexcept;
+
     void stop();
 
     bool isRunning() const noexcept { return running.load (std::memory_order_acquire); }

@@ -110,6 +110,16 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
     return true;
 }
 
+void WritePipeline::setChannelTrimDb (int channelIndex, float trimDb) noexcept
+{
+    if (channelIndex < 0 || channelIndex >= static_cast<int> (trimGains.size()))
+        return;
+
+    // Single float store into an already-sized vector: the writer thread reads
+    // either the old gain or the new one, never a torn or reallocated value.
+    trimGains[static_cast<size_t> (channelIndex)] = dbToGain (trimDb);
+}
+
 void WritePipeline::setChannelLive (int channelIndex, bool live) noexcept
 {
     if (channelIndex >= 0 && channelIndex < static_cast<int> (channelLive.size()))

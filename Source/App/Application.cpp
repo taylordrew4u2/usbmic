@@ -2,6 +2,7 @@
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <cstdio>
+#include <cmath>
 #include <set>
 
 #if JUCE_MAC
@@ -39,14 +40,11 @@ void Application::initialise()
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
 
-    monitorBus = std::make_unique<MonitorBus> (currentSampleRate);
-    mixMeter = std::make_unique<Metering> (currentSampleRate);
-    rebuildMeters();
-
     if (audioBackend != nullptr)
     {
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         bufferLadder.getCurrentSize());
+        capture->getMonitorBus().setMasterVolume (masterVolume);
         captureRate = currentSampleRate;
         captureBufferSize = bufferLadder.getCurrentSize();
 
@@ -113,12 +111,10 @@ void Application::restartCapture()
     if (audioBackend != nullptr
         && (captureRate != currentSampleRate || captureBufferSize != bufferLadder.getCurrentSize()))
     {
-        const auto volume = capture->getMonitorBus().getMasterVolume();
-
         capture->stopMonitoring();
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         bufferLadder.getCurrentSize());
-        capture->getMonitorBus().setMasterVolume (volume);
+        capture->getMonitorBus().setMasterVolume (masterVolume);
 
         captureRate = currentSampleRate;
         captureBufferSize = bufferLadder.getCurrentSize();
@@ -137,10 +133,10 @@ void Application::restartCapture()
 
 MonitorBus* Application::getMonitorBus()
 {
-    // The coordinator owns the bus the audio callback actually runs, so the UI
-    // must reach that one. monitorBus is the fallback for a build with no
-    // platform backend, where there is no callback to own it.
-    return capture != nullptr ? &capture->getMonitorBus() : monitorBus.get();
+    // The coordinator owns the bus the audio callback actually runs, so this is
+    // the only bus there is. A second one kept here as a "fallback" is what let
+    // the volume slider write to a bus nothing was listening to.
+    return capture != nullptr ? &capture->getMonitorBus() : nullptr;
 }
 
 juce::String Application::getMonitorProblem() const
@@ -178,8 +174,6 @@ void Application::onDeviceListChanged()
     // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
     currentSampleRate = rateResult.chosenRate;
-
-    rebuildMeters();
 
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
@@ -237,9 +231,15 @@ void Application::reselectOutputDevice()
         return;
 
     std::vector<OutputDeviceCandidate> candidates;
+    outputDeviceNames.clear();
 
     for (const auto& d : audioBackend->enumerateOutputDevices())
     {
+        // §5.2: a mic's own playback endpoint is never offered as a monitor
+        // output, so it does not belong in the Advanced panel's list either.
+        if (! d.isMicrophone)
+            outputDeviceNames.push_back (d.name);
+
         OutputDeviceCandidate c;
         c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
         c.displayName = d.name;
@@ -306,34 +306,16 @@ RemainingTimeWarning Application::pollCapacityWarning()
     return capacityMonitor.evaluateRemaining (getRemainingRecordingSeconds());
 }
 
-void Application::rebuildMeters()
-{
-    const auto needed = static_cast<size_t> (getIncludedMicCount());
-
-    // Keep existing meters so ballistics and clip latches survive a hot-plug.
-    while (channelMeters.size() > needed)
-        channelMeters.pop_back();
-
-    while (channelMeters.size() < needed)
-        channelMeters.push_back (std::make_unique<Metering> (currentSampleRate));
-}
-
 Metering* Application::getChannelMetering (int index)
 {
     // Same reasoning as getMonitorBus(): the meters the audio thread feeds live
     // in the coordinator, so the UI has to read those and not a second set.
-    if (capture != nullptr)
-        return capture->getChannelMetering (index);
-
-    if (index < 0 || static_cast<size_t> (index) >= channelMeters.size())
-        return nullptr;
-
-    return channelMeters[static_cast<size_t> (index)].get();
+    return capture != nullptr ? capture->getChannelMetering (index) : nullptr;
 }
 
 Metering* Application::getMixMetering()
 {
-    return capture != nullptr ? &capture->getMixMetering() : mixMeter.get();
+    return capture != nullptr ? &capture->getMixMetering() : nullptr;
 }
 
 juce::String Application::getMicDisplayName (int index) const
@@ -538,14 +520,212 @@ juce::String Application::getRecordDisabledReason() const
 
 void Application::setMasterVolume (double volume0to100)
 {
-    if (monitorBus != nullptr)
-        monitorBus->setMasterVolume (volume0to100);
+    // Held here rather than only on the bus: §2.2 and §5.4 can both rebuild the
+    // coordinator underneath us, and the listening level must not jump back to
+    // the default when they do.
+    masterVolume = volume0to100;
+
+    if (auto* bus = getMonitorBus())
+        bus->setMasterVolume (masterVolume);
 }
 
 double Application::getMasterVolume() const
 {
-    return monitorBus != nullptr ? monitorBus->getMasterVolume()
-                                 : MonitorBus::kDefaultMonitorVolume;
+    return masterVolume;
+}
+
+void Application::setChannelTrimDb (int index, float trimDb)
+{
+    // §4: clamped to the stated range and quantised to the stated step, so the
+    // value that gets persisted is one the UI can round-trip exactly.
+    const auto clamped = juce::jlimit (static_cast<float> (MonitorBus::kMinTrimDb),
+                                       static_cast<float> (MonitorBus::kMaxTrimDb), trimDb);
+    const auto step = static_cast<float> (MonitorBus::kTrimStepDb);
+    const auto quantised = std::round (clamped / step) * step;
+
+    int seen = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (seen++ != index)
+            continue;
+
+        // §4 persists trim against the physical port, not the slot, so it
+        // follows the mic when it is unplugged and moved.
+        auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
+        settings.trimDb = quantised;
+        portIdentityStore.put (d.identity, settings);
+        break;
+    }
+
+    if (capture != nullptr)
+        capture->setChannelTrimDb (index, quantised);
+}
+
+float Application::getChannelTrimDb (int index) const
+{
+    int seen = 0;
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        if (seen++ != index)
+            continue;
+
+        if (const auto settings = portIdentityStore.get (d.identity))
+            return settings->trimDb;
+
+        return 0.0f;
+    }
+
+    return 0.0f;
+}
+
+juce::String Application::getActiveBackendDescription() const
+{
+    if (virtualDeviceBackend == nullptr)
+        return "None";
+
+    const auto status = virtualDeviceBackend->getStatus();
+
+    // §7/§10.3: say what other apps can see, not which driver model is in use.
+    if (! status.reachDescription.empty())
+        return juce::String (status.reachDescription);
+
+    return "Recording and monitoring only. Other apps can't see these mics.";
+}
+
+const std::vector<std::string>& Application::getOutputDeviceNames() const
+{
+    // §2: enumeration happens on the OS device-change notification, never on a
+    // timer. The Advanced panel repaints at 2 Hz and must read this cache
+    // rather than go back to the driver each time.
+    return outputDeviceNames;
+}
+
+juce::String Application::getClockMasterName() const
+{
+    if (const auto* master = deviceManager.selectDefaultMaster())
+        return juce::String (master->displayName);
+
+    return {};
+}
+
+juce::String Application::getDriftReport() const
+{
+    juce::StringArray lines;
+
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included)
+            continue;
+
+        // §3.1: drift is not claimed until 60 seconds of measurement exist.
+        // Showing a number before then would be showing noise.
+        lines.add (juce::String (d.displayName) + ": "
+                   + (d.hasDriftMeasurement
+                          ? juce::String (d.measuredDriftPpm, 1) + " PPM"
+                          : juce::String ("measuring...")));
+    }
+
+    if (lines.isEmpty())
+        return "No microphones connected.";
+
+    return lines.joinIntoString ("\n");
+}
+
+void Application::setOutputDeviceByName (const juce::String& displayName)
+{
+    if (audioBackend == nullptr)
+        return;
+
+    // A user action, not a timer, so enumerating here is what §2 allows -- and
+    // it is the only way to recover the device's stable id from its name.
+    for (const auto& d : audioBackend->enumerateOutputDevices())
+    {
+        if (juce::String (d.name) != displayName)
+            continue;
+
+        // §5.3: an explicit choice is remembered and outranks the automatic
+        // priority order from then on.
+        rememberedOutputDeviceId = d.usbLocationId.empty() ? d.name : d.usbLocationId;
+        reselectOutputDevice();
+        restartCapture();
+        return;
+    }
+}
+
+void Application::setClockMasterByName (const juce::String& displayName)
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (! d.included || juce::String (d.displayName) != displayName)
+            continue;
+
+        deviceManager.setPreferredMaster (d.identity.key());
+        return;
+    }
+}
+
+void Application::setDestinationFolder (const juce::File& folder)
+{
+    if (folder.isDirectory())
+        destinationFolder = folder.getFullPathName().toStdString();
+}
+
+juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
+{
+    // §8.1: the detectors only see anything if the per-block peaks reach them,
+    // so this is where the §10.5 advice actually gets its input.
+    const int micCount = getIncludedMicCount();
+    std::vector<float> peaksDb;
+    peaksDb.reserve (static_cast<size_t> (micCount));
+
+    for (int i = 0; i < micCount; ++i)
+    {
+        auto* meter = getChannelMetering (i);
+        peaksDb.push_back (meter != nullptr ? static_cast<float> (meter->getPeakHoldDb())
+                                            : static_cast<float> (Metering::kMinDb));
+    }
+
+    updateSetupAdvisorLevels (peaksDb, sinceLastCallSeconds);
+
+    // §6.5 first: running out of room stops the take, which outranks everything.
+    switch (pollCapacityWarning())
+    {
+        case RemainingTimeWarning::Exhausted:
+            return "The drive is full. Recording has stopped -- free some space or choose another drive.";
+        case RemainingTimeWarning::TwoMinutes:
+            return "About two minutes of room left. Wrap up or switch drives now.";
+        case RemainingTimeWarning::TenMinutes:
+            return "About ten minutes of room left on this drive.";
+        case RemainingTimeWarning::None:
+            break;
+    }
+
+    // §6.6 next: warned before it causes dropouts, not after.
+    const auto load = capture != nullptr ? capture->getAudioCallbackLoad() : 0.0;
+
+    switch (updatePerformance (load, false))
+    {
+        case PerformanceWarning::ThermalThrottling:
+            return "This machine is overheating and is about to drop audio. Close other apps.";
+        case PerformanceWarning::SustainedCpuPressure:
+            return "This machine is working hard. Close other apps before it starts dropping audio.";
+        case PerformanceWarning::None:
+            break;
+    }
+
+    // §10.5 last: hardware guidance, most serious first.
+    const auto advice = getSetupAdvice();
+
+    if (! advice.empty())
+        return juce::String (advice.front().message);
+
+    return {};
 }
 
 void Application::exportDiagnostics (const juce::File& destinationZip)

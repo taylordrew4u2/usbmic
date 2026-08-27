@@ -33,6 +33,10 @@ public:
     void setNoMicsMessage (bool show);
     void setRecordButtonEnabled (bool enabled, const juce::String& disabledReason);
 
+    /// §10.5/§6.5/§6.6: the single most serious thing worth telling the user
+    /// about the rig right now. Empty hides the line.
+    void setAdviceText (const juce::String& text);
+
     /// §5.3/§5.4: anything wrong with the listening path, in plain language.
     /// Empty hides the line. Never leave this unshown -- the spec forbids
     /// silently delivering a high-latency mix instead of saying so.
@@ -49,7 +53,7 @@ private:
 
     juce::TextButton recordButton { "Start recording" };
     juce::Label elapsedLabel, remainingLabel, saveLocationLabel, noMicsLabel, disabledReasonLabel;
-    juce::Label monitorProblemLabel;
+    juce::Label monitorProblemLabel, adviceLabel;
     juce::Slider volumeSlider;
     juce::ToggleButton muteButton { "Mute" };
     juce::TextButton advancedButton { "Advanced" };

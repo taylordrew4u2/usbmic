@@ -227,3 +227,36 @@ TEST_CASE (WritePipeline_FillFractionRisesWithUndrainedAudio)
     REQUIRE (p.getFillFraction() <= 1.0);
     p.stop();
 }
+
+TEST_CASE (WritePipeline_LiveTrimChangeMovesTheMixNotTheStem)
+{
+    const auto dir = tempDir();
+
+    std::vector<WriteChannelSpec> channels = { { "live_stem", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> a (512, 0.5f);
+    const float* chans[] = { a.data() };
+
+    // §4: the user turns the mic down mid-take. The mix must follow; the stem
+    // must not, because the stem is the raw material the take exists for.
+    p.setChannelTrimDb (0, -20.0f);
+    REQUIRE (p.pushBlock (chans, 1, 512));
+    p.stop();
+
+    auto firstSample = [] (const std::string& path)
+    {
+        std::ifstream f (path, std::ios::binary);
+        REQUIRE (f.is_open());
+        f.seekg (kAudioDataOffset);
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        return static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+    };
+
+    REQUIRE (firstSample (dir + "/live_stem.wav") > 12000); // unity, ~16384
+    REQUIRE (firstSample (dir + "/MIX.wav") < 6000);        // -20 dB, ~1638
+}

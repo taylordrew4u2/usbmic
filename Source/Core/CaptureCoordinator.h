@@ -1,4 +1,6 @@
 #pragma once
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +54,12 @@ public:
     /// §6.5: an unplugged mic keeps its channel and writes silence.
     void setChannelLive (const std::string& deviceId, bool live);
 
+    /// §4: trim, live. Applies to the monitor mix and the mix file; the stems
+    /// stay at unity either way. Safe to call while the callback is running --
+    /// it stores one float per channel into an already-sized vector.
+    void setChannelTrimDb (int index, float trimDb) noexcept;
+    float getChannelTrimDb (int index) const noexcept;
+
     /// The channel list this take was opened with. §6.5 fixes it for the
     /// duration of a recording, so callers reacting to a hot-plug must work
     /// from this rather than from the current device list.
@@ -60,6 +68,11 @@ public:
     MonitorBus& getMonitorBus() noexcept { return monitorBus; }
     Metering* getChannelMetering (int index) noexcept;
     Metering& getMixMetering() noexcept { return mixMeter; }
+
+    /// §6.6: the fraction of each callback's available time actually spent in
+    /// it. This is the load that matters for dropouts -- overall machine CPU
+    /// can look calm while the audio thread is already missing its deadline.
+    double getAudioCallbackLoad() const noexcept { return callbackLoad.load (std::memory_order_relaxed); }
 
     uint64_t getFramesDropped() const noexcept { return pipeline != nullptr ? pipeline->getFramesDropped() : 0; }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
@@ -89,6 +102,12 @@ private:
     std::vector<float> mixScratch;
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
+
+    // Written by the audio thread, read by the UI. Relaxed because a stale
+    // reading for one frame is harmless and a lock here would not be (§11).
+    std::atomic<double> callbackLoad { 0.0 };
+
+    void noteCallbackLoad (std::chrono::steady_clock::time_point start, int numSamples) noexcept;
 };
 
 } // namespace mma

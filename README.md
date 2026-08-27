@@ -106,6 +106,19 @@ that depends on an actual device — enumeration, the monitor stream, the write
 pipeline under load — has still never executed, because no build environment
 here has an audio device. Compiling and rendering are not the same as working.
 
+### Wired but unreportable
+
+Two inputs have no source on either platform, so the code that consumes them
+is correct and permanently quiet rather than wrong:
+
+- **Thermal throttling** (§6.6). `CpuPressureMonitor` takes it as an argument
+  and acts on it; no backend reports it, so it is always passed `false`. The
+  CPU-pressure half of §6.6 is live, measured from the audio callback's own
+  deadline usage rather than from overall machine load.
+- **USB host-controller topology** (§14.3). `ControllerContentionDetector`
+  treats unknown topology as unjudgeable and stays silent, which is right —
+  guessing would warn people whose card reader is fine.
+
 ### Deliberately stubbed
 
 Virtual device backends per §7. The interface is real; the implementations
