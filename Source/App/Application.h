@@ -17,6 +17,7 @@
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
 #include "../Core/SetupAdvisor.h"
+#include "../Core/CaptureCoordinator.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 
@@ -40,7 +41,12 @@ public:
 
     DeviceManager& getDeviceManager() { return deviceManager; }
     RecordingEngine& getRecordingEngine() { return recordingEngine; }
-    MonitorBus* getMonitorBus() { return monitorBus.get(); }
+    MonitorBus* getMonitorBus();
+
+    /// §5.4: empty while the low-latency monitor path is healthy; otherwise the
+    /// plain-language reason it isn't, which the UI must show rather than
+    /// silently delivering a 40 ms mix.
+    juce::String getMonitorProblem() const;
 
     /// §10.4: record button behavior. Starts/stops immediately, no
     /// confirmation either direction.
@@ -107,7 +113,7 @@ public:
     /// §8.1: one meter per microphone plus one for the shared mix. These are
     /// owned here so they outlive any UI rebuild when mics come and go.
     Metering* getChannelMetering (int index);
-    Metering* getMixMetering() { return mixMeter.get(); }
+    Metering* getMixMetering();
     juce::String getMicDisplayName (int index) const;
 
     /// §11: diagnostics export -- logs, last 5 session.json files, device
@@ -116,6 +122,11 @@ public:
 
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
+    std::unique_ptr<CaptureCoordinator> capture;
+    // What the live coordinator was constructed with, so restartCapture() can
+    // tell a plain channel-set change from one that needs a new coordinator.
+    double captureRate = 0.0;
+    int captureBufferSize = 0;
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
 
     DeviceManager deviceManager;
@@ -145,6 +156,13 @@ private:
     std::unique_ptr<Metering> mixMeter;
 
     void rebuildMeters();
+    /// (Re)opens the streams for the current mic set and output device. §5.1
+    /// makes monitoring live from launch, and a hot-plug changes the channel
+    /// set, so this runs at startup and on every device-list change.
+    void restartCapture();
+    std::vector<CaptureChannel> buildCaptureChannels() const;
+    /// §6.2 destination folder for a new take, created on disk. Empty on failure.
+    juce::String createSessionFolder (juce::Time now) const;
     void onDeviceListChanged();
     void chooseInitialDestination();
     void reselectOutputDevice();
