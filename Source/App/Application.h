@@ -11,6 +11,8 @@
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/PreflightThroughputTest.h"
 #include "../Core/PortIdentity.h"
+#include "../Core/OutputDeviceSelector.h"
+#include "../Core/CapacityMonitor.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 
@@ -60,6 +62,15 @@ public:
 
     int getIncludedMicCount() const;
 
+    /// §5.3 output selection result for the Advanced panel, and the plain-language
+    /// line to show when nothing could be selected.
+    const std::string& getSelectedOutputDeviceId() const { return selectedOutputDeviceId; }
+    const std::string& getOutputSelectionProblem() const { return outputSelectionProblem; }
+
+    /// §6.5 capacity warnings. Returns a warning the first time each threshold is
+    /// crossed, so the caller can poll it every frame without re-warning.
+    RemainingTimeWarning pollCapacityWarning();
+
     /// §8.1: one meter per microphone plus one for the shared mix. These are
     /// owned here so they outlive any UI rebuild when mics come and go.
     Metering* getChannelMetering (int index);
@@ -79,6 +90,13 @@ private:
     std::unique_ptr<MonitorBus> monitorBus;
     PortIdentityStore portIdentityStore;
 
+    std::string selectedOutputDeviceId;
+    std::string outputSelectionProblem;
+    std::string rememberedOutputDeviceId;
+    CapacityMonitor capacityMonitor;
+    int outputConnectionCounter = 0;
+    bool haveEnumeratedOutputsOnce = false;
+
     double recordingStartMs = 0.0;
     double currentSampleRate = 48000.0;
     int currentBitDepth = 24;
@@ -92,6 +110,7 @@ private:
     void rebuildMeters();
     void onDeviceListChanged();
     void chooseInitialDestination();
+    void reselectOutputDevice();
     std::unique_ptr<IAudioBackend> createPlatformBackend();
     std::unique_ptr<VirtualDeviceBackend> createDefaultVirtualDeviceBackend();
 };
