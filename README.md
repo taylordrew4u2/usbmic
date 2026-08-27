@@ -29,6 +29,11 @@ Builds for macOS, Windows and Linux are produced by the
 
 Each archive contains the application, this README, and `LICENSING.md`.
 
+§1 names macOS and Windows as the shipping targets, and those are the two with
+real audio backends. The Linux build exists because it is what the engine, the
+tests and the harnesses are developed against — it runs, but `Source/Platform`
+has no Linux backend, so it will not find a microphone.
+
 Neither the macOS nor the Windows build is code-signed. macOS will refuse a
 first launch from Finder; open it once from the right-click menu, or run
 `xattr -dr com.apple.quarantine "Multi-Mic Aggregator.app"`. Windows SmartScreen
@@ -51,6 +56,7 @@ Source/Platform/    audio backends (CoreAudio, WASAPI/ASIO) + virtual device bac
 Source/UI/          JUCE components: skull meters, main screen, advanced panel
 Source/App/         composition root wiring devices + engine + monitor + UI
 Tests/              headless unit tests for Source/Core
+Tools/              capture harnesses: e2e_capture, soak_drift (see Building)
 docs/SPEC.md        the build specification, verbatim
 ```
 
