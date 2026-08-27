@@ -97,4 +97,11 @@ if (MMA_BUILD_APP)
         juce::juce_dsp
         juce::juce_gui_extra
     )
+
+    if (WIN32)
+        # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
+        # worker. Without it the OS will not wake a small exclusive-mode buffer
+        # reliably enough to hold the §5.4 latency budget.
+        target_link_libraries(MultiMicAggregator PRIVATE avrt)
+    endif()
 endif()
