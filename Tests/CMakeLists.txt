@@ -14,6 +14,8 @@ add_executable(mma_core_tests
     test_DeviceManager.cpp
     test_RecordingEngine.cpp
     test_SessionWriter.cpp
+    test_OutputDeviceSelector.cpp
+    test_CapacityMonitor.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)
