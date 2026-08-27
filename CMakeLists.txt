@@ -131,11 +131,13 @@ if (MMA_BUILD_APP)
     # bundle and leave the bundle behind.
     # -----------------------------------------------------------------------
     if (APPLE)
-        install(DIRECTORY
-            "$<TARGET_FILE_DIR:MultiMicAggregator>/../.."
-            DESTINATION .
-            USE_SOURCE_PERMISSIONS
-            FILES_MATCHING PATTERN "*")
+        # TARGET_BUNDLE_DIR names the .app itself. Deriving it from
+        # TARGET_FILE_DIR/../.. instead would install the bundle's *contents*
+        # loose into the prefix, because CMake takes the destination name from
+        # the last path component -- which would be "..".
+        install(DIRECTORY "$<TARGET_BUNDLE_DIR:MultiMicAggregator>"
+                DESTINATION .
+                USE_SOURCE_PERMISSIONS)
     else()
         install(PROGRAMS "$<TARGET_FILE:MultiMicAggregator>" DESTINATION bin)
     endif()

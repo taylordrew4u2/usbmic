@@ -58,24 +58,23 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - name: Package
-        shell: bash
-        run: cmake --install build --prefix dist --config Release || cmake --build build --config Release --target package
+      # The install tree IS the deliverable, so packaging exercises the same
+      # install() rules a local `cmake --install` uses rather than a second,
+      # parallel copy step that could drift away from them.
+      - name: Install
+        run: cmake --install build --prefix out --config Release
 
-      - name: Collect
+      # LICENSE is absent on purpose -- see LICENSING.md -- so it is copied
+      # only if the owner has since chosen one.
+      - name: Include a licence if one has been chosen
+        shell: bash
+        run: '[ -f LICENSE ] && cp LICENSE out/ || true'
+
+      - name: Check the artifact is not empty
         shell: bash
         run: |
-          mkdir -p out
-          cp README.md LICENSING.md out/
-          # LICENSE is optional on purpose -- see LICENSING.md.
-          [ -f LICENSE ] && cp LICENSE out/ || true
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cp -R "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator.app" out/
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            cp "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator.exe" out/
-          else
-            cp "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" out/
-          fi
+          ls -R out
+          test -n "$(find out -type f)"
 
       - uses: actions/upload-artifact@v4
         with:
