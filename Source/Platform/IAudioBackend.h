@@ -67,6 +67,13 @@ public:
     virtual bool openExclusiveOutputStream (const std::string& outputDeviceId, double sampleRate,
                                             int bufferSizeSamples, AudioCallback callback) = 0;
 
+    /// A user-facing explanation of why the most recent
+    /// openExclusiveOutputStream call returned false, or "" if the backend has
+    /// nothing more specific to add. Kept separate from the return value so
+    /// existing backends need not implement it, and so the message can name a
+    /// next step rather than leaving the user at a dead end.
+    virtual std::string getLastOpenError() const { return {}; }
+
     /// Opens one input device's capture stream.
     virtual bool openInputStream (const std::string& inputDeviceId, double sampleRate,
                                   int bufferSizeSamples, AudioCallback callback) = 0;
