@@ -42,6 +42,22 @@ jobs:
           ./Tools/setup_alsa_fixture.sh
           ./build/live_capture "${RUNNER_TEMP}/live"
 
+      # Threads and raw buffers, so the same runs again under sanitizers: a
+      # data race or an overrun in the backends is the class of bug that
+      # reaches a user as an intermittent crash rather than a failed check.
+      - name: Simulated backends under sanitizers
+        if: runner.os == 'Linux'
+        run: |
+          cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-asan --target sim_coreaudio sim_wasapi -j 4
+          ./build-asan/sim_coreaudio
+          ./build-asan/sim_wasapi
+
+          cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+          cmake --build build-tsan --target sim_wasapi -j 4
+          ./build-tsan/sim_wasapi
+
   app:
     name: App (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
