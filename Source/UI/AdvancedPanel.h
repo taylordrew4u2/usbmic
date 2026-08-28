@@ -2,6 +2,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <vector>
+#include <memory>
+#include <utility>
 
 namespace mma {
 
@@ -37,6 +39,9 @@ public:
     /// Fills a combo without firing onChange -- otherwise refreshing the list
     /// would read back as the user having picked something.
     void setOutputDevices (const juce::StringArray& names, const juce::String& selected);
+    /// The microphones the OS reports and whether each is currently selected.
+    void setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics);
+
     void setClockMasters (const juce::StringArray& names, const juce::String& selected);
 
     /// §4: one trim slider per microphone, rebuilt when the mic set changes.
@@ -55,6 +60,7 @@ public:
     std::function<void (bool)> onMirrorToggled;
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&)> onClockMasterChanged;
+    std::function<void (const juce::String&, bool)> onMicEnabledChanged;
     std::function<void (const juce::String&)> onOutputDeviceChanged;
 
 private:
@@ -81,6 +87,11 @@ private:
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
     juce::TextButton closeButton { "< Done" };
+
+    juce::Label micSelectionLabel;
+    juce::Label clockMasterHelpLabel;
+    std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;
+    juce::StringArray lastMicNames;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AdvancedPanel)
 };
