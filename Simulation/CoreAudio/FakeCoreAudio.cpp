@@ -2,6 +2,8 @@
 
 #include <CoreAudio/CoreAudio.h>
 
+#include <unistd.h> // pid_t, and getpid() where the platform has it
+
 #include <algorithm>
 #include <cstring>
 #include <map>

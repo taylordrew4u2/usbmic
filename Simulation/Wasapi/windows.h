@@ -89,6 +89,12 @@ template <typename T> void** ppvHelper (T** p) { return reinterpret_cast<void**>
 
 } // namespace mmasim
 
+// MSVC provides __uuidof as a compiler intrinsic and MinGW as a macro of its
+// own; a simulated build wants neither, so clear it first rather than redefine
+// over the top of one.
+#ifdef __uuidof
+ #undef __uuidof
+#endif
 #define __uuidof(T) (::mmasim::uuidOf<T>())
 
 /// Matches the SDK macro: expands to the interface's IID plus the void** the
