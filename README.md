@@ -249,7 +249,7 @@ to JUCE 8.
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 241 unit tests passing in CI on Linux, macOS
+All of `Source/Core`, covered by 246 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
@@ -322,11 +322,24 @@ written in whatever format the backend negotiates.
 The full application builds and links in CI on Linux, macOS and Windows, so
 `Source/Platform` and `Source/UI` are no longer unverified code:
 
-- `CoreAudioBackend` — macOS, guarded by `JUCE_MAC`.
+- `CoreAudioBackend` — macOS, guarded by `JUCE_MAC`. Accepts either buffer
+  shape the HAL uses (one channel per buffer, or one interleaved buffer), so a
+  stereo USB microphone records audio rather than silence; expands continuous
+  sample-rate ranges during §2.2 negotiation; tolerates a device that refuses a
+  rate change because it is already at that rate; and fails the monitor open,
+  with a message naming the next step, when hog mode is unavailable rather than
+  reporting an exclusive path it does not have.
 - `WasapiAsioBackend` — Windows, guarded by `JUCE_WINDOWS`. Selects ASIO or
-  WASAPI exclusive; shared-mode WASAPI is refused outright per §5.4. Hotplug
-  goes through a registered `IMMNotificationClient`, the counterpart to the
-  CoreAudio property listener — §2 requires the OS to tell us, never a timer.
+  WASAPI exclusive; shared-mode WASAPI is refused outright per §5.4. Exclusive
+  mode performs no format conversion, so the open negotiates float32, then
+  32-, 24- and 16-bit PCM, and the device's own channel count — most USB
+  microphones are 16- or 24-bit devices and would otherwise refuse to open at
+  all. The fixed-point conversion this requires lives in
+  `Source/Core/SampleFormat.h`, away from the Windows headers, and is covered
+  by unit tests that run on every platform.
+- Hotplug on Windows goes through a registered `IMMNotificationClient`, the
+  counterpart to the CoreAudio property listener — §2 requires the OS to tell
+  us, never a timer.
 - `SkullMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
 

@@ -5,6 +5,7 @@
 #if JUCE_MAC
 
 #include <memory>
+#include <string>
 
 namespace mma {
 
@@ -41,6 +42,8 @@ public:
 
     void closeAllStreams() override;
 
+    std::string getLastOpenError() const override { return lastOpenError; }
+
 private:
     DeviceChangeCallback deviceChangeCallback;
 
@@ -48,6 +51,7 @@ private:
     // the address handed to CoreAudio as clientData stays stable.
     std::vector<std::unique_ptr<CoreAudioStream>> openStreams;
 
+    std::string lastOpenError;
     uint32_t openOutputDeviceId = 0;
     bool outputStreamIsHogModeExclusive = false;
 

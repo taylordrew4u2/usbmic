@@ -44,7 +44,11 @@ public:
 
     void closeAllStreams() override;
 
+    std::string getLastOpenError() const override { return lastOpenError; }
+
 private:
+    std::string lastOpenError;
+
     bool preferAsio = false;
     DeviceChangeCallback deviceChangeCallback;
 
