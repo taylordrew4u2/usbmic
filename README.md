@@ -275,7 +275,7 @@ to JUCE 8.
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 246 unit tests passing in CI on Linux, macOS
+All of `Source/Core`, covered by 253 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
