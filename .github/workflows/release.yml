@@ -154,9 +154,14 @@ jobs:
           hdiutil create -volname "Multi-Mic Aggregator" -srcfolder "$staging" \
             -ov -format UDRW -fs HFS+ -size 250m "$rw"
 
-          mountpoint="${RUNNER_TEMP}/dmg-mount"
-          rm -rf "$mountpoint"; mkdir -p "$mountpoint"
-          hdiutil attach "$rw" -mountpoint "$mountpoint" -nobrowse
+          # Mount at the default /Volumes location, and WITHOUT -nobrowse.
+          # Finder only knows about disks it has been told to browse and that
+          # live under /Volumes: a custom mountpoint plus -nobrowse is invisible
+          # to it, which is exactly why the first attempt at this failed with
+          # `Finder got an error: Can't get disk "Multi-Mic Aggregator" (-1728)`
+          # and shipped a plain window.
+          mountpoint="/Volumes/Multi-Mic Aggregator"
+          hdiutil attach "$rw"
 
           # Lay the window out so opening the image *is* the instructions: the
           # app on the left, Applications on the right, and the background art
@@ -208,7 +213,19 @@ jobs:
             -mountpoint "$verify" -nobrowse -readonly
           codesign --verify --strict --verbose=2 "$verify/$appname"
           test -f "$verify/.background/background.png"
-          echo "Signature and window layout verified inside the mounted image."
+
+          # Report what is actually true. The previous version printed
+          # "window layout verified" unconditionally, while only checking that
+          # the background *file* was present -- so it said the layout was
+          # verified on a build where Finder had failed and the layout was not
+          # there at all. The layout lives in .DS_Store; its presence is the
+          # only evidence the window was actually arranged.
+          if [ -f "$verify/.DS_Store" ]; then
+            echo "Signature verified; window layout present in the image."
+          else
+            echo "::warning::Signature verified, but no window layout -- plain image"
+          fi
+
           hdiutil detach "$verify"
 
       - uses: actions/upload-artifact@v4
