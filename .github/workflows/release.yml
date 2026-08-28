@@ -88,17 +88,44 @@ jobs:
       # which is an account and a certificate rather than anything the source can
       # produce. Gatekeeper will therefore refuse the first launch until the user
       # right-clicks -> Open; the README says so in the same words.
-      - name: Package the macOS disk image
+      # macOS only, and the step that makes this downloadable rather than merely
+      # built: a .dmg is how macOS expects to hand someone an app. hdiutil ships
+      # only on macOS, so this cannot be deferred to the Linux release job.
+      #
+      # The image is NOT signed with a Developer ID -- that needs an Apple
+      # account and a certificate, not anything the source can produce. It IS
+      # ad-hoc signed, which is a different and mandatory thing: see below.
+      - name: Sign and package the macOS disk image
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
 
+          app="$(find out -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+
+          # Ad-hoc re-sign, and the reason this step exists at all.
+          #
+          # The linker ad-hoc signs every arm64 binary, because Apple Silicon
+          # refuses to execute one that carries no signature. But CMake's
+          # install(DIRECTORY) copies the bundle as ordinary files and does not
+          # preserve that signature, so what lands in out/ has a broken one.
+          # Gatekeeper reports a broken signature as *"is damaged and can't be
+          # opened"* -- a message that sounds like a corrupt download and sends
+          # people off re-downloading a file that was never the problem. And
+          # unlike an unsigned-but-intact app, right-click -> Open does not get
+          # past it. So re-sign here, after the install, where it sticks.
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
           staging="${RUNNER_TEMP}/dmg/Multi-Mic Aggregator"
           rm -rf "${RUNNER_TEMP}/dmg"
           mkdir -p "$staging"
 
-          cp -R out/*.app "$staging/"
+          # ditto, not cp -R. Only ditto preserves bundle structure, extended
+          # attributes and the signature; cp -R is what broke the signature the
+          # first time this shipped.
+          ditto "$app" "$staging/$(basename "$app")"
           cp out/README.md out/LICENSE out/LICENSING.md "$staging/"
 
           # Drag-to-install: the mounted window shows the app next to an
@@ -114,6 +141,18 @@ jobs:
           # A truncated or corrupt image fails to mount with a message that tells
           # the user nothing, so prove it mounts here instead of on their desk.
           hdiutil verify "MultiMicAggregator-macOS.dmg"
+
+          # And prove the signature survived the image round-trip, rather than
+          # assuming it did. This is the check that would have caught the
+          # "damaged" failure before anyone downloaded it.
+          mountpoint="${RUNNER_TEMP}/dmg-verify"
+          rm -rf "$mountpoint"
+          mkdir -p "$mountpoint"
+          hdiutil attach "MultiMicAggregator-macOS.dmg" \
+            -mountpoint "$mountpoint" -nobrowse -readonly
+          codesign --verify --strict --verbose=2 "$mountpoint/$(basename "$app")"
+          echo "Signature inside the mounted image verified."
+          hdiutil detach "$mountpoint"
 
       - uses: actions/upload-artifact@v4
         with:
