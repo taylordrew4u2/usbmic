@@ -93,6 +93,8 @@ MainComponent::MainComponent (Application& app)
                                     });
     };
 
+    advancedPanel.onCloseClicked = [this] { toggleAdvanced(); };
+
     advancedPanel.onDiagnosticsExportClicked = [this] {
         // §11: logs, recent session.json files and the device inventory. Never audio.
         const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)

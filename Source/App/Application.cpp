@@ -271,6 +271,9 @@ void Application::onDeviceListChanged()
     auto inputDevices = audioBackend->enumerateInputDevices();
 
     std::vector<DeviceRateCapability> rateCapabilities;
+    std::vector<MicDeviceState> seen;
+    seen.reserve (inputDevices.size());
+
     int order = 0;
     for (const auto& d : inputDevices)
     {
@@ -281,11 +284,19 @@ void Application::onDeviceListChanged()
 
         MicDeviceState state;
         state.identity.locationId = d.usbLocationId;
+        if (! d.serialNumber.empty())
+            state.identity.serial = d.serialNumber;
         state.displayName = d.name;
-        state.enumerationOrder = order;
-        deviceManager.addDevice (state);
+        state.isBuiltIn = d.isBuiltIn;
+        seen.push_back (std::move (state));
         ++order;
     }
+
+    // Reconcile against what the OS reports rather than appending each device
+    // again. macOS fires its device-list listener several times while a USB
+    // microphone initialises, and this handler previously called addDevice()
+    // per device per firing -- which is why one Yeti showed up five times.
+    deviceManager.syncToEnumeration (seen);
 
     // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);

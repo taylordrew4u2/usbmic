@@ -54,6 +54,9 @@ AdvancedPanel::AdvancedPanel()
     diagnosticsExportButton.onClick = [this] { if (onDiagnosticsExportClicked) onDiagnosticsExportClicked(); };
     addAndMakeVisible (diagnosticsExportButton);
 
+    closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
+    addAndMakeVisible (closeButton);
+
     // The name other apps see this rig under. Applied when typing finishes,
     // not per keystroke -- each change replaces a device other apps may be
     // recording from.
@@ -152,6 +155,13 @@ void AdvancedPanel::paint (juce::Graphics& g)
 void AdvancedPanel::resized()
 {
     auto area = getLocalBounds().reduced (12);
+
+    // Top-left and first in the layout, where a back control is looked for,
+    // and placed before anything else claims the space so it cannot be pushed
+    // off the bottom by a long device list.
+    closeButton.setBounds (area.removeFromTop (30).removeFromLeft (110));
+    area.removeFromTop (8);
+
     auto row = [&] (juce::Label& label, juce::Component& value) {
         auto r = area.removeFromTop (26);
         label.setBounds (r.removeFromLeft (r.getWidth() / 2));

@@ -12,6 +12,7 @@ struct AudioDeviceDescriptor
     std::string name;          // e.g. "Blue Yeti"
     std::string usbLocationId; // §2.4 identity
     std::string serialNumber;  // may be empty
+    bool isBuiltIn = false;    // the machine's own mic, not something plugged in
     int maxInputChannels = 0;
     std::vector<uint32_t> supportedSampleRates;
     std::vector<int> supportedBitDepths;
