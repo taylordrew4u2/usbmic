@@ -47,6 +47,30 @@ works unconditionally with the JUCE dependency (free, no revenue limit).
 [`LICENSING.md`](LICENSING.md) explains the choice and the closed-source
 alternative JUCE's paid tiers would allow.
 
+## What to expect on your platform
+
+This is a v0.2.0 release. The recording engine is mature — it is covered by 241
+automated tests plus three harnesses that run the real capture path and verify
+the resulting audio files, all on every commit. What differs by platform is how
+much of the *device* layer has been run against a live audio system.
+
+| Platform | Status | What this means for you |
+|---|---|---|
+| **Linux** | Device layer verified in CI | Enumeration, exclusive-mode selection, capture and hot-plug all execute against a live ALSA system on every commit. Expect it to work; report anything that does not. |
+| **macOS** | Device layer built, not yet run | The app, the engine and the combined-device support compile and link on macOS in CI, but the CoreAudio device code has not yet been executed on real hardware. Treat this release as a first run: it may work fully, and it may surface issues nobody has hit yet. |
+| **Windows** | Device layer built, not yet run | Same position as macOS, for WASAPI. |
+
+The reason for the split is availability, not design: the automated build
+environment has a working Linux audio system but no macOS or Windows machine
+with microphones attached, so those two code paths cannot yet be exercised
+automatically. The interface all three share is fully validated by the Linux
+implementation, so what remains unproven is platform-specific device behaviour
+rather than the architecture around it.
+
+**If you are on macOS or Windows and something misbehaves**, use *Advanced →
+Export diagnostics*. It bundles the log, recent session metadata and your device
+inventory — never audio — which is exactly what is needed to diagnose it.
+
 ## Installing
 
 No installer is needed on any platform — the app is self-contained. Neither
@@ -225,8 +249,8 @@ to JUCE 8.
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 99 unit tests passing in CI on Linux, macOS
-and Windows:
+All of `Source/Core`, covered by 241 unit tests passing in CI on Linux, macOS
+and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
 |---|---|---|
@@ -255,7 +279,7 @@ checked by Goertzel that each stem holds its own microphone's tone and the mix
 holds both. `Tools/soak_drift` is the §3.4 gate above. Neither is a unit test:
 they take minutes, and they answer questions unit tests cannot.
 
-Both found real bugs that the 237-test suite did not:
+Both found real bugs that the unit-test suite did not:
 
 - **Integral windup.** The PI loop's integral saturated at the ±200 PPM clamp
   long before the deliberately slow 5 PPM/s slew could deliver it, so every
@@ -309,16 +333,18 @@ The full application builds and links in CI on Linux, macOS and Windows, so
 The app has also been run headless under Xvfb, where it renders the §1
 zero-microphone state and survives with its 60 Hz refresh running.
 
-What that does **not** establish is behaviour with real audio. The OS calls
-themselves — `AudioDeviceStart`, `IAudioClient::Initialize` in exclusive mode,
-the hotplug notifications above — have never executed, because no build
-environment here has an audio device. Compiling and rendering are not the same
-as working.
+What that does **not** establish is behaviour with real audio on those two
+platforms: the OS calls themselves — `AudioDeviceStart`,
+`IAudioClient::Initialize` in exclusive mode, the hotplug notifications above —
+have not executed, because the build environment has no macOS or Windows host
+with an audio device. Compiling and rendering are not the same as working.
 
-What *has* been established, by `Tools/`, is everything above those calls: the
-capture path, the drift loop, the write pipeline and the file format are driven
-with synthetic audio and the results decoded and checked. So the untested
-surface is now the two backend files, not the engine behind them.
+Everything above those calls *is* established: the capture path, drift loop,
+write pipeline and file format are driven with real and synthetic audio and the
+results decoded and checked, and the interface those backends implement is
+validated end to end by the ALSA one. The unexercised surface is two files, not
+the engine behind them. See [What to expect on your
+platform](#what-to-expect-on-your-platform) for what that means in practice.
 
 ### Wired but unreportable
 
