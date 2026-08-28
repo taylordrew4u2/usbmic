@@ -49,7 +49,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is a v0.2.0 release. The recording engine is mature — it is covered by 241
+This is a v0.2.0 release. The recording engine is mature — it is covered by 246
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
@@ -59,6 +59,12 @@ much of the *device* layer has been run against a live audio system.
 | **Linux** | Device layer verified in CI | Enumeration, exclusive-mode selection, capture and hot-plug all execute against a live ALSA system on every commit. Expect it to work; report anything that does not. |
 | **macOS** | Device layer built, not yet run | The app, the engine and the combined-device support compile and link on macOS in CI, but the CoreAudio device code has not yet been executed on real hardware. Treat this release as a first run: it may work fully, and it may surface issues nobody has hit yet. |
 | **Windows** | Device layer built, not yet run | Same position as macOS, for WASAPI. |
+
+Both device layers have since been re-read specifically for the ways real
+hardware differs from the ideal case, and five defects were fixed — among them
+a stereo USB microphone recording silence on macOS, and a 16- or 24-bit
+microphone refusing to open at all on Windows. That is a reduction in risk, not
+a substitute for running them; the table above still stands.
 
 The reason for the split is availability, not design: the automated build
 environment has a working Linux audio system but no macOS or Windows machine
