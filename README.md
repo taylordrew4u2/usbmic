@@ -18,6 +18,10 @@ implements a spec rule, the section number is cited in a comment.
 
 ## Download
 
+**Latest release: [v0.3.0](../../releases/latest)** — the first tagged release
+this project has ever cut. Everything before it was a build off a branch.
+[`CHANGELOG.md`](CHANGELOG.md) lists what changed and what is still missing.
+
 Builds for macOS, Windows and Linux are produced by the
 [Release workflow](.github/workflows/release.yml):
 
@@ -28,10 +32,12 @@ Builds for macOS, Windows and Linux are produced by the
 - **Windows and Linux** — `MultiMicAggregator-Windows.zip` and
   `-Linux.zip`.
 - **Tagged releases** — all of the above are attached to the
-  [Releases page](../../releases).
+  [Releases page](../../releases). Start here; this is the supported download.
 - **Any commit** — run the Release workflow from the Actions tab
   (`workflow_dispatch`) and download the artifacts it uploads. Same build, no
-  tag required.
+  tag required. Artifacts are wrapped in an extra `.zip` by GitHub and expire
+  after 90 days, so prefer a release unless you specifically need an untagged
+  commit.
 
 Each archive and the disk image contain the application, this README, `LICENSE`
 and `LICENSING.md`.
@@ -62,7 +68,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is a v0.2.0 release. The recording engine is mature — it is covered by 253
+This is **v0.3.0**. The recording engine is mature — it is covered by 253
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
