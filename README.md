@@ -96,29 +96,48 @@ The steps below include it.
 
 ### macOS
 
-1. Double-click `MultiMicAggregator-macOS.dmg` to mount it. (From the `.zip`
-   instead? Unzip it and skip to step 3.)
-2. Drag `Multi-Mic Aggregator.app` onto the **Applications** alias in the same
-   window — or run it from anywhere; location doesn't matter.
-3. **Required, once:** clear the quarantine flag your browser attached to the
-   download.
-   ```sh
-   xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
-   ```
-   Then open the app normally.
+1. Double-click `MultiMicAggregator-macOS.dmg`. A window opens showing the app
+   and an arrow pointing at your **Applications** folder.
+2. Drag the skull onto **Applications**. That is the install.
+3. **First launch only:** Control-click (or right-click) the app in
+   Applications and choose **Open**, then **Open** again in the dialog. A plain
+   double-click is refused the first time.
 
-   This step is not optional and right-click → Open does **not** replace it. The
-   build carries an ad-hoc signature rather than an Apple Developer ID one, and
-   for that combination macOS refuses the app outright — with
-   *"Multi-Mic Aggregator is damaged and can't be opened. You should eject the
-   disk image."* Nothing is damaged and the download is fine; that is simply the
-   message Gatekeeper uses. Only a Developer ID — a paid Apple account plus a
-   certificate, neither obtainable from source code — removes the step.
+   macOS asks because the build is signed ad-hoc rather than with a paid Apple
+   Developer ID. On macOS 15 (Sequoia) and later there may be no Open button in
+   that dialog — go to **System Settings → Privacy & Security**, scroll down,
+   and click **Open Anyway**. If neither works, see
+   [Troubleshooting](#troubleshooting-macos) below.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable Multi-Mic Aggregator.
 5. Plug in your USB microphones and headphones. Monitoring is live from
    launch; there is nothing to arm.
+
+#### Troubleshooting (macOS)
+
+**"Multi-Mic Aggregator is damaged and can't be opened. You should eject the
+disk image."**
+
+Nothing is damaged and your download is fine — this is what Gatekeeper says
+when a quarantined app's signature does not satisfy it. Control-click → Open
+does *not* clear it. Run this once, in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
+```
+
+Then open the app normally. If you put the app somewhere other than
+Applications, point the command at wherever it actually is.
+
+This is also the fastest route if you would simply rather not click through
+dialogs: the command works regardless of macOS version, and is the only step
+needed after dragging the app across.
+
+The step exists at all because signing an app so macOS trusts it silently
+requires an Apple Developer ID — a paid account plus a certificate — which
+cannot be produced from source code. Any project distributing an unsigned build
+has this same step.
 
 ### Windows
 
