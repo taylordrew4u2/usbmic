@@ -36,10 +36,12 @@ Builds for macOS, Windows and Linux are produced by the
 Each archive and the disk image contain the application, this README, `LICENSE`
 and `LICENSING.md`.
 
-The macOS disk image is **not signed or notarized**. That needs an Apple
-Developer ID — an account and a certificate, not something the source can
-produce — so Gatekeeper refuses the first launch until you right-click → Open.
-[Installing → macOS](#macos) has the exact steps.
+The macOS disk image is **not signed with an Apple Developer ID or notarized**.
+That needs a paid Apple account and a certificate, not something the source can
+produce. So after downloading you must clear the quarantine flag with one
+`xattr` command before the app will open — right-click → Open is *not* enough,
+and skipping it produces a misleading *"is damaged"* message.
+[Installing → macOS](#macos) has the exact command.
 
 The Blue Yeti in the spec is reference hardware only: the code filters on
 nothing device-specific, so any standard USB audio class microphone works.
@@ -98,12 +100,20 @@ The steps below include it.
    instead? Unzip it and skip to step 3.)
 2. Drag `Multi-Mic Aggregator.app` onto the **Applications** alias in the same
    window — or run it from anywhere; location doesn't matter.
-3. First launch only: **right-click the app → Open → Open**. A plain
-   double-click will be refused because the build is unsigned. Terminal
-   alternative:
+3. **Required, once:** clear the quarantine flag your browser attached to the
+   download.
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
    ```
+   Then open the app normally.
+
+   This step is not optional and right-click → Open does **not** replace it. The
+   build carries an ad-hoc signature rather than an Apple Developer ID one, and
+   for that combination macOS refuses the app outright — with
+   *"Multi-Mic Aggregator is damaged and can't be opened. You should eject the
+   disk image."* Nothing is damaged and the download is fine; that is simply the
+   message Gatekeeper uses. Only a Developer ID — a paid Apple account plus a
+   certificate, neither obtainable from source code — removes the step.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable Multi-Mic Aggregator.
