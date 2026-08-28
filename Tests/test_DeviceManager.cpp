@@ -212,3 +212,124 @@ TEST_CASE (DeviceManager_MasterSelectionUsesMeasuredDriftOnceAvailable)
 
     REQUIRE (m.selectDefaultMaster()->displayName == "B");
 }
+
+namespace {
+
+MicDeviceState makeDevice (const std::string& uid, const std::string& name, bool builtIn = false)
+{
+    MicDeviceState d;
+    d.identity.locationId = uid;
+    d.displayName = name;
+    d.isBuiltIn = builtIn;
+    return d;
+}
+
+} // namespace
+
+TEST_CASE (DeviceManager_ReEnumerationDoesNotDuplicateDevices)
+{
+    // Regression, reported from real hardware: one Yeti appeared five times in
+    // the Advanced panel. macOS fires its device-list listener several times
+    // while a USB microphone initialises, and the handler called addDevice()
+    // for every enumerated device on every firing, appending unconditionally.
+    DeviceManager m;
+
+    const std::vector<MicDeviceState> enumeration {
+        makeDevice ("uid-builtin", "Built-in Microphone", true),
+        makeDevice ("uid-yeti-1", "Yeti Stereo Microphone"),
+    };
+
+    for (int firing = 0; firing < 5; ++firing)
+        m.syncToEnumeration (enumeration);
+
+    REQUIRE (m.getDevices().size() == 2);
+}
+
+TEST_CASE (DeviceManager_AddDeviceRejectsADuplicateIdentity)
+{
+    DeviceManager m;
+    REQUIRE (m.addDevice (makeDevice ("uid-a", "Yeti Stereo Microphone")));
+    REQUIRE_FALSE (m.addDevice (makeDevice ("uid-a", "Yeti Stereo Microphone")));
+    REQUIRE (m.getDevices().size() == 1);
+}
+
+TEST_CASE (DeviceManager_TwoIdenticalModelsStayDistinct)
+{
+    // Dedup keys on identity, never on name. Two Yetis report the same product
+    // name and must remain two devices.
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-yeti-1", "Yeti Stereo Microphone"),
+                           makeDevice ("uid-yeti-2", "Yeti Stereo Microphone") });
+
+    REQUIRE (m.getDevices().size() == 2);
+}
+
+TEST_CASE (DeviceManager_SyncAddsNewAndDropsRemovedDevices)
+{
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-b", "Yeti B") });
+    REQUIRE (m.getDevices().size() == 2);
+
+    // B unplugged, C plugged in.
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-c", "Yeti C") });
+    REQUIRE (m.getDevices().size() == 2);
+
+    bool hasA = false, hasB = false, hasC = false;
+    for (const auto& d : m.getDevices())
+    {
+        if (d.identity.locationId == "uid-a") hasA = true;
+        if (d.identity.locationId == "uid-b") hasB = true;
+        if (d.identity.locationId == "uid-c") hasC = true;
+    }
+    REQUIRE (hasA);
+    REQUIRE_FALSE (hasB);
+    REQUIRE (hasC);
+}
+
+TEST_CASE (DeviceManager_SurvivingDeviceKeepsItsEnumerationOrder)
+{
+    // A device that never left is not a new device: re-enumeration must not
+    // reshuffle it, or the 8-mic cap would reorder itself on every hotplug.
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-b", "Yeti B") });
+
+    int orderOfA = -1;
+    for (const auto& d : m.getDevices())
+        if (d.identity.locationId == "uid-a")
+            orderOfA = d.enumerationOrder;
+
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"),
+                           makeDevice ("uid-b", "Yeti B"),
+                           makeDevice ("uid-c", "Yeti C") });
+
+    for (const auto& d : m.getDevices())
+        if (d.identity.locationId == "uid-a")
+            REQUIRE (d.enumerationOrder == orderOfA);
+}
+
+TEST_CASE (DeviceManager_BuiltInMicIsNotChosenAsClockMaster)
+{
+    // Regression, reported from real hardware: "clock master is always the
+    // computer". CoreAudio enumerates the built-in microphone first, and with
+    // no drift measurement yet the default master fell back to enumeration
+    // order -- so the machine's own mic won on every Mac. §3.1 wants the
+    // timebase to be something the user plugged in.
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-builtin", "Built-in Microphone", true),
+                           makeDevice ("uid-yeti", "Yeti Stereo Microphone") });
+
+    const auto* master = m.selectDefaultMaster();
+    REQUIRE (master != nullptr);
+    REQUIRE (master->identity.locationId == "uid-yeti");
+}
+
+TEST_CASE (DeviceManager_BuiltInMicIsStillUsedWhenItIsTheOnlyDevice)
+{
+    // A built-in master beats no master at all.
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-builtin", "Built-in Microphone", true) });
+
+    const auto* master = m.selectDefaultMaster();
+    REQUIRE (master != nullptr);
+    REQUIRE (master->identity.locationId == "uid-builtin");
+}

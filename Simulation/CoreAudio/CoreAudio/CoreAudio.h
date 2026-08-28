@@ -67,6 +67,13 @@ constexpr AudioObjectPropertyElement kAudioObjectPropertyElementMain = 0;
 constexpr AudioObjectPropertySelector kAudioObjectPropertyName = mmaFourCC ('l', 'n', 'a', 'm');
 constexpr AudioObjectPropertySelector kAudioHardwarePropertyDevices = mmaFourCC ('d', 'e', 'v', '#');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyDeviceUID = mmaFourCC ('u', 'i', 'd', ' ');
+
+// §3.1 built-in detection. The simulation's devices are all stand-ins for
+// attached USB microphones, so the fake reports the USB transport and nothing
+// is treated as built in -- which is what the simulated rigs mean.
+constexpr AudioObjectPropertySelector kAudioDevicePropertyTransportType = mmaFourCC ('t', 'r', 'a', 'n');
+constexpr UInt32 kAudioDeviceTransportTypeBuiltIn = mmaFourCC ('b', 'l', 't', 'n');
+constexpr UInt32 kAudioDeviceTransportTypeUSB     = mmaFourCC ('u', 's', 'b', ' ');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyStreamConfiguration = mmaFourCC ('s', 'l', 'a', 'y');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyNominalSampleRate = mmaFourCC ('n', 's', 'r', 't');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyAvailableNominalSampleRates = mmaFourCC ('n', 's', 'r', '#');
