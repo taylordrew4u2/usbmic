@@ -57,6 +57,23 @@ AdvancedPanel::AdvancedPanel()
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
 
+    micSelectionLabel.setText ("Microphones to record", juce::dontSendNotification);
+    addAndMakeVisible (micSelectionLabel);
+
+    // §10.3 says nothing behind this door may be a gate the novice must pass,
+    // which makes an unexplained term worse than no term: someone who does not
+    // know what a clock master is cannot tell whether they need to care.
+    clockMasterHelpLabel.setText (
+        "Clock master: every USB microphone runs on its own crystal, and no two "
+        "tick at exactly the same rate. One is chosen as the reference and the "
+        "others are continuously nudged to match it, which is what keeps the "
+        "tracks lined up over a long take. Leave this alone unless one mic drifts "
+        "much more than the rest -- the app picks a sensible one for you.",
+        juce::dontSendNotification);
+    clockMasterHelpLabel.setJustificationType (juce::Justification::topLeft);
+    clockMasterHelpLabel.setMinimumHorizontalScale (1.0f);
+    addAndMakeVisible (clockMasterHelpLabel);
+
     // The name other apps see this rig under. Applied when typing finishes,
     // not per keystroke -- each change replaces a device other apps may be
     // recording from.
@@ -91,6 +108,40 @@ void fillCombo (juce::ComboBox& combo, const juce::StringArray& names, const juc
 void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce::String& selected)
 {
     fillCombo (outputDeviceCombo, names, selected);
+}
+
+void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics)
+{
+    // Rebuilt only when the set of names changes. The panel repaints at 2 Hz,
+    // and recreating the toggles every tick would fight the user's click.
+    juce::StringArray incoming;
+    for (const auto& m : mics)
+        incoming.add (m.first);
+
+    if (incoming != lastMicNames)
+    {
+        micToggles.clear();
+        lastMicNames = incoming;
+
+        for (const auto& m : mics)
+        {
+            auto toggle = std::make_unique<juce::ToggleButton> (m.first);
+            const auto name = m.first;
+            toggle->onClick = [this, name, raw = toggle.get()] {
+                if (onMicEnabledChanged)
+                    onMicEnabledChanged (name, raw->getToggleState());
+            };
+            addAndMakeVisible (*toggle);
+            micToggles.push_back (std::move (toggle));
+        }
+
+        resized();
+    }
+
+    // State is refreshed every tick regardless, so a change made elsewhere --
+    // the 8-mic cap, a device leaving -- shows up here.
+    for (size_t i = 0; i < micToggles.size() && i < mics.size(); ++i)
+        micToggles[i]->setToggleState (mics[i].second, juce::dontSendNotification);
 }
 
 void AdvancedPanel::setClockMasters (const juce::StringArray& names, const juce::String& selected)
@@ -173,7 +224,17 @@ void AdvancedPanel::resized()
     row (bitDepthLabel, bitDepthValue);
     row (bufferSizeLabel, bufferSizeValue);
     row (latencyLabel, latencyValue);
+    micSelectionLabel.setBounds (area.removeFromTop (22));
+    for (auto& toggle : micToggles)
+    {
+        toggle->setBounds (area.removeFromTop (24).reduced (8, 0));
+        area.removeFromTop (2);
+    }
+    area.removeFromTop (8);
+
     row (clockMasterLabel, clockMasterCombo);
+    clockMasterHelpLabel.setBounds (area.removeFromTop (76));
+    area.removeFromTop (6);
 
     driftLabel.setBounds (area.removeFromTop (60));
     area.removeFromTop (4);

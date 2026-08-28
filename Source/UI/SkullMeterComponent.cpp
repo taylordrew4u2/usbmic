@@ -106,7 +106,9 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         g.drawRoundedRectangle (bounds.reduced (1.5f), 6.0f, 3.0f);
     }
 
-    auto skullBounds = bounds.withTrimmedBottom (bounds.getHeight() * 0.3f).reduced (4.0f);
+    // Taller and narrower than before: the meter is now the vertical element of
+    // a channel strip rather than a square badge with a caption underneath.
+    auto skullBounds = bounds.withTrimmedBottom (bounds.getHeight() * 0.34f).reduced (3.0f);
     juce::Path silhouette = buildSkullSilhouette (skullBounds);
 
     if (noSignal)
@@ -169,21 +171,41 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         }
     }
 
-    // Text row below the skull: name, device, numeric dBFS, peak -- monospace
-    // so digits don't jitter (§9.3).
-    auto textArea = bounds.withTrimmedTop (bounds.getHeight() * 0.7f);
-    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
+    // Channel-strip footer: the level and the name stacked tight under the
+    // meter, the way a mixing desk labels a fader. This used to be three
+    // centred lines spread across the bottom 30% of a wide box, which read as
+    // a caption rather than as a channel.
+    auto textArea = bounds.withTrimmedTop (bounds.getHeight() * 0.66f);
 
-    g.setColour (kBone);
-    g.drawText (micName, textArea.removeFromTop (16.0f).toNearestInt(), juce::Justification::centred);
+    // Numeric level first and closest to the meter, because it is the thing
+    // that moves and the thing being read while levels are set.
+    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain));
+    g.setColour (noSignal ? kTertiaryText : kBone);
+    const juce::String levelText = noSignal ? juce::String ("--.-")
+                                            : juce::String (currentLevelDb, 1);
+    g.drawText (levelText, textArea.removeFromTop (13.0f).toNearestInt(),
+                juce::Justification::centred);
 
-    g.setColour (kSecondaryText);
-    g.drawText (deviceName, textArea.removeFromTop (14.0f).toNearestInt(), juce::Justification::centred);
-
+    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
     g.setColour (kTertiaryText);
-    juce::String levelText = noSignal ? juce::String ("--.- dBFS")
-                                       : juce::String (currentLevelDb, 1) + " dBFS  pk " + juce::String (currentPeakDb, 1);
-    g.drawText (levelText, textArea.removeFromTop (14.0f).toNearestInt(), juce::Justification::centred);
+    g.drawText (noSignal ? juce::String ("pk --.-") : ("pk " + juce::String (currentPeakDb, 1)),
+                textArea.removeFromTop (11.0f).toNearestInt(),
+                juce::Justification::centred);
+
+    textArea.removeFromTop (3.0f);
+
+    // The name last and largest of the labels: on a desk the strip is
+    // identified at its foot, and it is what someone points at when they say
+    // "turn that one down".
+    g.setFont (juce::Font (12.0f, juce::Font::bold));
+    g.setColour (kBone);
+    g.drawText (micName, textArea.removeFromTop (15.0f).toNearestInt(),
+                juce::Justification::centred, true);
+
+    g.setFont (juce::Font (9.0f, juce::Font::plain));
+    g.setColour (kSecondaryText);
+    g.drawText (deviceName, textArea.removeFromTop (11.0f).toNearestInt(),
+                juce::Justification::centred, true);
 }
 
 void SkullMeterComponent::resized() {}

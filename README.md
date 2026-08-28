@@ -18,9 +18,9 @@ implements a spec rule, the section number is cited in a comment.
 
 ## Download
 
-**Latest release: [v0.3.0](../../releases/latest)** — the first tagged release
-this project has ever cut. Everything before it was a build off a branch.
-[`CHANGELOG.md`](CHANGELOG.md) lists what changed and what is still missing.
+**Latest release: [the Releases page](../../releases/latest).**
+[`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
+missing.
 
 Builds for macOS, Windows and Linux are produced by the
 [Release workflow](.github/workflows/release.yml):
@@ -68,7 +68,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.3.0**. The recording engine is mature — it is covered by 253
+This is **v0.5.0**. The recording engine is mature — it is covered by 260
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
@@ -310,7 +310,7 @@ to JUCE 8.
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 253 unit tests passing in CI on Linux, macOS
+All of `Source/Core`, covered by 260 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
