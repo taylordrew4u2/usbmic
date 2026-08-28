@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <thread>
 
 namespace mma {
 
@@ -153,8 +154,11 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
         return false;
 
     // Published only once fully started, so the audio thread never sees a
-    // half-built pipeline.
+    // half-built pipeline. The release store pairs with the acquire load in
+    // mixAndPublish: a callback that sees the pointer also sees every write
+    // start() made to the object behind it.
     pipeline = std::move (p);
+    activePipeline.store (pipeline.get(), std::memory_order_release);
     return true;
 }
 
@@ -162,6 +166,16 @@ void CaptureCoordinator::stopRecording()
 {
     if (pipeline == nullptr)
         return;
+
+    // Retire the pointer first, then wait for any callback already past the
+    // load to finish with it. Without this the audio thread could be inside
+    // pushBlock while stop() joined the writer thread and freed the ring out
+    // from under it -- a use-after-free that would present as an intermittent
+    // crash on stopping a take, which is the worst possible moment for one.
+    activePipeline.store (nullptr, std::memory_order_release);
+
+    while (pipelineUsers.load (std::memory_order_acquire) != 0)
+        std::this_thread::yield();
 
     auto p = std::move (pipeline);
     p->stop();
@@ -282,8 +296,16 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
 
     // §6: recording gets the raw channels. §4 keeps stems at unity and applies
     // trim only to the mix, which the pipeline does itself.
-    if (pipeline != nullptr && channelCount == static_cast<int> (channels.size()))
-        pipeline->pushBlock (inputs, channelCount, numSamples);
+    //
+    // The busy count is taken before the load and released after the call, so
+    // stopRecording cannot free the pipeline between the two.
+    pipelineUsers.fetch_add (1, std::memory_order_acquire);
+
+    if (auto* activeWriter = activePipeline.load (std::memory_order_acquire))
+        if (channelCount == static_cast<int> (channels.size()))
+            activeWriter->pushBlock (inputs, channelCount, numSamples);
+
+    pipelineUsers.fetch_sub (1, std::memory_order_release);
 
     // §8.2: the audio thread does only max-abs per block into the meter.
     for (int ch = 0; ch < channelCount; ++ch)

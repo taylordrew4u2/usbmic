@@ -18,8 +18,14 @@ void RingBuffer::reset (size_t capacitySamples)
 
 size_t RingBuffer::availableForRead() const noexcept
 {
+    // Both loads acquire: this is called from the consumer (which must see the
+    // producer's samples before the index that publishes them) AND from the
+    // producer via availableForWrite (which must see the consumer's release of
+    // space). A relaxed load on the producer side was safe only by accident --
+    // it under-reported free space rather than over-reporting it -- but it left
+    // the pairing unspecified, which is not something to leave in an audio path.
     const size_t w = writeIndex.load (std::memory_order_acquire);
-    const size_t r = readIndex.load (std::memory_order_relaxed);
+    const size_t r = readIndex.load (std::memory_order_acquire);
     return (w >= r) ? (w - r) : (buffer.size() - r + w);
 }
 
@@ -33,13 +39,24 @@ size_t RingBuffer::write (const float* data, size_t numSamples) noexcept
 {
     const size_t capacity = buffer.size();
     const size_t toWrite = std::min (numSamples, availableForWrite());
+
+    if (toWrite == 0)
+        return 0;
+
     size_t w = writeIndex.load (std::memory_order_relaxed);
 
-    for (size_t i = 0; i < toWrite; ++i)
-    {
-        buffer[w] = data[i];
-        w = (w + 1) % capacity;
-    }
+    // Two memcpys rather than a per-sample loop with a modulo in it. This runs
+    // on the audio thread for every sample of every channel, and an integer
+    // division per sample is real time the callback does not have to spend.
+    const size_t firstChunk = std::min (toWrite, capacity - w);
+    std::memcpy (buffer.data() + w, data, firstChunk * sizeof (float));
+
+    if (toWrite > firstChunk)
+        std::memcpy (buffer.data(), data + firstChunk, (toWrite - firstChunk) * sizeof (float));
+
+    w += toWrite;
+    if (w >= capacity)
+        w -= capacity;
 
     writeIndex.store (w, std::memory_order_release);
     return toWrite;
@@ -49,13 +66,21 @@ size_t RingBuffer::read (float* data, size_t numSamples) noexcept
 {
     const size_t capacity = buffer.size();
     const size_t toRead = std::min (numSamples, availableForRead());
+
+    if (toRead == 0)
+        return 0;
+
     size_t r = readIndex.load (std::memory_order_relaxed);
 
-    for (size_t i = 0; i < toRead; ++i)
-    {
-        data[i] = buffer[r];
-        r = (r + 1) % capacity;
-    }
+    const size_t firstChunk = std::min (toRead, capacity - r);
+    std::memcpy (data, buffer.data() + r, firstChunk * sizeof (float));
+
+    if (toRead > firstChunk)
+        std::memcpy (data + firstChunk, buffer.data(), (toRead - firstChunk) * sizeof (float));
+
+    r += toRead;
+    if (r >= capacity)
+        r -= capacity;
 
     readIndex.store (r, std::memory_order_release);
     return toRead;
