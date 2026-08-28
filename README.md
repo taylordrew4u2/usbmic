@@ -10,10 +10,11 @@ source of truth for every constant and behavior in this codebase. Where the code
 implements a spec rule, the section number is cited in a comment.
 
 > **Read [Current status](#current-status) before running this on anything you
-> care about.** The engine is complete and measured; the two platform audio
-> backends have never executed against real hardware, because no build
-> environment here has an audio device. That is stated precisely below rather
-> than glossed.
+> care about.** The engine is complete and measured. The macOS and Windows audio
+> backends now execute on every commit against simulated CoreAudio and WASAPI
+> device layers, but have still never run against real hardware, because no
+> build environment here has an audio device. That distinction is stated
+> precisely below rather than glossed.
 
 ## Download
 
@@ -57,21 +58,17 @@ much of the *device* layer has been run against a live audio system.
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | Device layer verified in CI | Enumeration, exclusive-mode selection, capture and hot-plug all execute against a live ALSA system on every commit. Expect it to work; report anything that does not. |
-| **macOS** | Device layer built, not yet run | The app, the engine and the combined-device support compile and link on macOS in CI, but the CoreAudio device code has not yet been executed on real hardware. Treat this release as a first run: it may work fully, and it may surface issues nobody has hit yet. |
-| **Windows** | Device layer built, not yet run | Same position as macOS, for WASAPI. |
-
-Both device layers have since been re-read specifically for the ways real
-hardware differs from the ideal case, and five defects were fixed — among them
-a stereo USB microphone recording silence on macOS, and a 16- or 24-bit
-microphone refusing to open at all on Windows. That is a reduction in risk, not
-a substitute for running them; the table above still stands.
+| **macOS** | Device layer simulated in CI, not yet run on hardware | The CoreAudio code is executed on every commit against a simulated HAL that reproduces the awkward shapes real devices take — interleaved stereo buffers, continuous sample-rate ranges, refused hog mode, hotplug. What it has not met is a physical microphone. Treat this release as a first run on real hardware. |
+| **Windows** | Device layer simulated in CI, not yet run on hardware | Same position as macOS, for WASAPI: exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake all execute each commit, under sanitizers as well. |
 
 The reason for the split is availability, not design: the automated build
-environment has a working Linux audio system but no macOS or Windows machine
-with microphones attached, so those two code paths cannot yet be exercised
-automatically. The interface all three share is fully validated by the Linux
-implementation, so what remains unproven is platform-specific device behaviour
-rather than the architecture around it.
+environment has a working Linux audio system, and no macOS or Windows host with
+a microphone attached.
+
+What the simulation cannot reproduce is a real driver: its timing, its
+firmware quirks and its scheduling. So what remains unproven on macOS and
+Windows is how a physical device behaves, not whether the code that talks to it
+is correct.
 
 **If you are on macOS or Windows and something misbehaves**, use *Advanced →
 Export diagnostics*. It bundles the log, recent session metadata and your device
@@ -175,7 +172,9 @@ Source/Platform/    audio backends (CoreAudio, WASAPI/ASIO) + virtual device bac
 Source/UI/          JUCE components: skull meters, main screen, advanced panel
 Source/App/         composition root wiring devices + engine + monitor + UI
 Tests/              headless unit tests for Source/Core
-Tools/              capture harnesses: e2e_capture, soak_drift (see Building)
+Tools/              capture harnesses: e2e_capture, soak_drift, sim_* (see Building)
+Simulation/         stand-in CoreAudio and WASAPI headers + virtual device layers,
+                    so the macOS and Windows backends can be executed anywhere
 docs/SPEC.md        the build specification, verbatim
 ```
 
@@ -222,6 +221,16 @@ compiled](#executed-not-just-compiled).
 
 ./Tools/setup_alsa_fixture.sh   # Linux: virtual mics carrying known tones
 ./build/live_capture /tmp/live  # ...then the REAL ALSA backend, end to end
+```
+
+**The platform simulations** run the macOS and Windows backends — unmodified —
+against stand-in OS headers, so they execute on any machine rather than only on
+the one OS that can compile them natively. `ctest` runs both, so they are
+covered by the ordinary test command too.
+
+```sh
+./build/sim_coreaudio           # interleaved buffers, rate ranges, hog mode, hotplug
+./build/sim_wasapi              # exclusive-mode negotiation, PCM conversion, threading
 ```
 
 Linux needs JUCE's usual dependencies for the GUI build:
@@ -323,47 +332,81 @@ full-stack layer asserts frame-locked files and signal, not per-stem tone
 coherence); and it cannot refuse a sample format, so the fixture must be
 written in whatever format the backend negotiates.
 
-### Compiled, but never exercised against hardware
+### Executed against simulated CoreAudio and WASAPI
+
+`CoreAudioBackend.cpp` and `WasapiAsioBackend.cpp` can only be compiled on their
+own OS, so on every other machine they were unverified by construction — which
+is how five user-facing defects lived in them undetected, including a stereo USB
+microphone recording silence on macOS and a 16- or 24-bit microphone refusing to
+open at all on Windows.
+
+`Simulation/` closes that gap. It supplies stand-in OS headers — the ~10
+CoreAudio calls and ~30 WASAPI symbols these two files actually use — behind a
+configurable virtual device layer. `Tools/sim_coreaudio` and `Tools/sim_wasapi`
+then compile **the backend sources unmodified** against those headers and drive
+them. The code under test is the code that ships; only the operating system
+underneath it is fake.
+
+The devices are configured to be awkward on purpose, because the ideal case was
+never what failed:
+
+| Simulated | CoreAudio | WASAPI |
+|---|---|---|
+| Buffer shapes | interleaved and one-channel-per-buffer, input and output | interleaved, in every accepted wire format |
+| Formats | continuous and discrete sample-rate ranges | float32, 32-, 24- and 16-bit PCM; devices accepting only one |
+| Exclusivity | hog mode granted, denied, and held by another process | exclusive-only; a shared-mode request fails the simulation outright |
+| Refusals | a rate the device cannot reach; a rate it already holds | a rejected period the device renames; a device that accepts nothing |
+| Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
+| Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
+
+77 checks across both, run by `ctest` on Linux, macOS and Windows alike. The
+WASAPI backend's worker thread is a real thread doing a real event handshake, so
+that path is exercised rather than reasoned about; both run again under
+AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer on every
+commit, and are clean — no leak in the COM reference counting or the CFString
+handling, and no data race in the worker handshake.
+
+**Whether the simulation is worth anything was checked by breaking things.** Each
+of the five shipped defects was re-introduced, plus four more (a dropped
+`AUDCLNT_BUFFERFLAGS_SILENT` check, PCM writes that wrap instead of clip, a
+removed buffer-alignment retry, a removed hotplug registration). All nine turned
+the harnesses red:
+
+| Re-introduced defect | Checks failed |
+|---|---|
+| CoreAudio IOProc skips non-mono input buffers | 6 |
+| CoreAudio reads only the maximum of a rate range | 1 |
+| CoreAudio proceeds when hog mode is denied | 3 |
+| CoreAudio treats an already-correct rate as fatal | 2 |
+| WASAPI offers float32 only | 28 |
+| WASAPI ignores the SILENT flag | 1 |
+| WASAPI PCM writes wrap instead of clipping | 1 |
+| WASAPI drops the buffer-alignment retry | 2 |
+| WASAPI hotplug registration removed | 2 |
+
+Writing the simulation also found a bug in the simulation itself, which is worth
+recording because it is the failure mode this whole approach risks: `HRESULT`
+was first typed as `long`, which is 64-bit on Linux, so every `0x8889xxxx` error
+code came out positive and `FAILED()` read every WASAPI failure as success. The
+harness caught it as fifteen red checks rather than passing silently.
+
+**What this does not establish** is behaviour against a real driver — its
+timing, its firmware quirks, its scheduling. A simulation proves the code is
+correct against the API contract; it cannot prove the contract matches a
+particular piece of hardware. So the remaining unknown on macOS and Windows is
+the device, not the code that talks to it. See [What to expect on your
+platform](#what-to-expect-on-your-platform).
+
+### Compiled and rendered
 
 The full application builds and links in CI on Linux, macOS and Windows, so
-`Source/Platform` and `Source/UI` are no longer unverified code:
+`Source/UI` is not unverified code either:
 
-- `CoreAudioBackend` — macOS, guarded by `JUCE_MAC`. Accepts either buffer
-  shape the HAL uses (one channel per buffer, or one interleaved buffer), so a
-  stereo USB microphone records audio rather than silence; expands continuous
-  sample-rate ranges during §2.2 negotiation; tolerates a device that refuses a
-  rate change because it is already at that rate; and fails the monitor open,
-  with a message naming the next step, when hog mode is unavailable rather than
-  reporting an exclusive path it does not have.
-- `WasapiAsioBackend` — Windows, guarded by `JUCE_WINDOWS`. Selects ASIO or
-  WASAPI exclusive; shared-mode WASAPI is refused outright per §5.4. Exclusive
-  mode performs no format conversion, so the open negotiates float32, then
-  32-, 24- and 16-bit PCM, and the device's own channel count — most USB
-  microphones are 16- or 24-bit devices and would otherwise refuse to open at
-  all. The fixed-point conversion this requires lives in
-  `Source/Core/SampleFormat.h`, away from the Windows headers, and is covered
-  by unit tests that run on every platform.
-- Hotplug on Windows goes through a registered `IMMNotificationClient`, the
-  counterpart to the CoreAudio property listener — §2 requires the OS to tell
-  us, never a timer.
 - `SkullMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
 
 The app has also been run headless under Xvfb, where it renders the §1
 zero-microphone state and survives with its 60 Hz refresh running.
-
-What that does **not** establish is behaviour with real audio on those two
-platforms: the OS calls themselves — `AudioDeviceStart`,
-`IAudioClient::Initialize` in exclusive mode, the hotplug notifications above —
-have not executed, because the build environment has no macOS or Windows host
-with an audio device. Compiling and rendering are not the same as working.
-
-Everything above those calls *is* established: the capture path, drift loop,
-write pipeline and file format are driven with real and synthetic audio and the
-results decoded and checked, and the interface those backends implement is
-validated end to end by the ALSA one. The unexercised surface is two files, not
-the engine behind them. See [What to expect on your
-platform](#what-to-expect-on-your-platform) for what that means in practice.
 
 ### Wired but unreportable
 

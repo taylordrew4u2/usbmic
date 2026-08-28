@@ -199,4 +199,45 @@ if (MMA_BUILD_TOOLS)
         add_executable(live_capture Tools/live_capture.cpp)
         target_link_libraries(live_capture PRIVATE mma_core)
     endif()
+
+    # -----------------------------------------------------------------------
+    # Platform simulation.
+    #
+    # CoreAudioBackend and WasapiAsioBackend can only be compiled on their own
+    # OS, so on every other machine they were unverified by construction --
+    # which is how five user-facing defects lived in them undetected.
+    #
+    # Simulation/ supplies stand-in OS headers plus a configurable virtual
+    # device layer. These targets compile the backend sources UNMODIFIED against
+    # those headers, so the code under test is the code that ships; only the
+    # operating system underneath it is fake. They build and run anywhere,
+    # including on the OS the backend does not target.
+    #
+    #   ./sim_coreaudio   interleaved buffers, rate ranges, hog mode, hotplug
+    #   ./sim_wasapi      exclusive-mode format negotiation, PCM conversion
+    # -----------------------------------------------------------------------
+    add_executable(sim_coreaudio
+        Tools/sim_coreaudio.cpp
+        Source/Platform/CoreAudioBackend.cpp
+        Simulation/CoreAudio/FakeCoreAudio.cpp)
+    target_compile_definitions(sim_coreaudio PRIVATE MMA_SIMULATE_MAC=1)
+    target_include_directories(sim_coreaudio PRIVATE Simulation/CoreAudio Source)
+
+    add_executable(sim_wasapi
+        Tools/sim_wasapi.cpp
+        Source/Platform/WasapiAsioBackend.cpp
+        Simulation/Wasapi/FakeWasapi.cpp)
+    target_compile_definitions(sim_wasapi PRIVATE MMA_SIMULATE_WINDOWS=1)
+    target_include_directories(sim_wasapi PRIVATE Simulation/Wasapi Source)
+    find_package(Threads REQUIRED)
+    target_link_libraries(sim_wasapi PRIVATE Threads::Threads)
+
+    # Registered with ctest rather than run by hand, so they execute on every
+    # platform's CI job through the same command as the unit tests -- and so a
+    # regression in either backend fails the build on Linux, macOS and Windows
+    # alike, not only on the one OS that can compile it natively.
+    if (MMA_BUILD_TESTS)
+        add_test(NAME sim_coreaudio COMMAND sim_coreaudio)
+        add_test(NAME sim_wasapi COMMAND sim_wasapi)
+    endif()
 endif()
