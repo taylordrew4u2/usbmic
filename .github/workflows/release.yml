@@ -80,10 +80,53 @@ jobs:
           ls -R out
           test -n "$(find out -type f)"
 
+      # macOS only, and the step that makes this downloadable rather than merely
+      # built: a .dmg is how macOS expects to hand someone an app. hdiutil ships
+      # only on macOS, so this cannot be deferred to the Linux release job.
+      #
+      # The image is NOT signed or notarized -- that needs an Apple Developer ID,
+      # which is an account and a certificate rather than anything the source can
+      # produce. Gatekeeper will therefore refuse the first launch until the user
+      # right-clicks -> Open; the README says so in the same words.
+      - name: Package the macOS disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          staging="${RUNNER_TEMP}/dmg/Multi-Mic Aggregator"
+          rm -rf "${RUNNER_TEMP}/dmg"
+          mkdir -p "$staging"
+
+          cp -R out/*.app "$staging/"
+          cp out/README.md out/LICENSE out/LICENSING.md "$staging/"
+
+          # Drag-to-install: the mounted window shows the app next to an
+          # Applications alias, which is the gesture Mac users already know.
+          ln -s /Applications "$staging/Applications"
+
+          hdiutil create \
+            -volname "Multi-Mic Aggregator" \
+            -srcfolder "$staging" \
+            -ov -format UDZO \
+            "MultiMicAggregator-macOS.dmg"
+
+          # A truncated or corrupt image fails to mount with a message that tells
+          # the user nothing, so prove it mounts here instead of on their desk.
+          hdiutil verify "MultiMicAggregator-macOS.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: out/
+          if-no-files-found: error
+
+      - name: Upload the disk image
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MultiMicAggregator-macOS-dmg
+          path: MultiMicAggregator-macOS.dmg
           if-no-files-found: error
 
   release:
@@ -100,6 +143,14 @@ jobs:
           cd artifacts
           for d in */; do
             name="${d%/}"
+
+            # A .dmg is already a distributable container. Zipping it would only
+            # make people unpack something before they can mount it.
+            if compgen -G "$d"/*.dmg > /dev/null; then
+              cp "$d"/*.dmg ../
+              continue
+            fi
+
             zip -r "../$name.zip" "$d"
           done
 
@@ -109,5 +160,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          files: '*.zip'
+          files: |
+            *.zip
+            *.dmg
           generate_release_notes: true

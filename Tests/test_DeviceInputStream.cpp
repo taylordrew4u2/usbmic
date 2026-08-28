@@ -205,3 +205,53 @@ TEST_CASE (DeviceInputStream_SustainedExcessDriftIsFlagged)
 
     REQUIRE (s.hasSustainedExcessDrift());
 }
+
+TEST_CASE (DeviceInputStream_UnderrunCountNeverExceedsWhatWasAskedFor)
+{
+    // Regression: when the ring ran dry mid-block, pull() broke out of the
+    // resampler's inner loop and let the outer loop run on. The ring was still
+    // dry on the next sample, so it re-entered the failure path and added
+    // (numSamples - i) again -- once per remaining sample. A single starved
+    // 64-sample block was reported as ~2,000 lost samples.
+    //
+    // §0.1 makes any non-zero underrun the one failure the user is shown, so an
+    // inflated count is a false alarm about the app's central promise. The count
+    // can never exceed the number of samples actually requested.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    s.setIsMaster (true);
+
+    // Enough to clear pre-roll (2 blocks) and prime the resampler, and no more.
+    std::vector<float> in (128, 0.5f);
+    s.pushBlock (in.data(), 128);
+
+    std::vector<float> out (64, 0.0f);
+
+    const int blocks = 20;
+    for (int i = 0; i < blocks; ++i)
+        s.pull (out.data(), 64);   // starves after the first couple of blocks
+
+    const uint64_t requested = static_cast<uint64_t> (blocks) * 64;
+    REQUIRE (s.getUnderrunSamples() <= requested);
+}
+
+TEST_CASE (DeviceInputStream_StarvedBlockHoldsRatherThanClicking)
+{
+    // The held-sample fill must cover the whole remainder of the block. A gap of
+    // stale or zeroed samples in the middle of an otherwise-held block is the
+    // click the hold exists to avoid.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    s.setIsMaster (true);
+
+    std::vector<float> in (128, 0.75f);
+    s.pushBlock (in.data(), 128);
+
+    std::vector<float> out (64, -99.0f);
+    s.pull (out.data(), 64);
+    s.pull (out.data(), 64);
+    s.pull (out.data(), 64);   // by here the ring is dry
+
+    for (float sample : out)
+        REQUIRE (std::abs (sample - 0.75f) < 1e-4f);
+}

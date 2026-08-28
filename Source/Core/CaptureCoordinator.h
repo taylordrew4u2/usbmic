@@ -124,7 +124,24 @@ private:
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
     int masterChannel = -1;
     Metering mixMeter;
+
+    // Owned by the UI thread. The audio thread never reads this handle -- it
+    // reads activePipeline below, which is a plain pointer it can load
+    // atomically. A std::unique_ptr is three words with no atomicity guarantee
+    // of any kind, so the callback testing `pipeline != nullptr` while
+    // startRecording/stopRecording moved it was a data race that could hand the
+    // audio thread a pointer to a pipeline being destroyed underneath it.
     std::unique_ptr<WritePipeline> pipeline;
+
+    // The audio thread's view of the pipeline: published with release once the
+    // pipeline is fully started, cleared with release before it is torn down.
+    std::atomic<WritePipeline*> activePipeline { nullptr };
+
+    // Non-zero while a callback is inside the region that dereferences
+    // activePipeline. stopRecording waits for this to drain before destroying
+    // the pipeline, so a callback that loaded the pointer just before the store
+    // still finishes against a live object.
+    std::atomic<int> pipelineUsers { 0 };
 
     bool monitoring = false;
     std::string monitorProblem;

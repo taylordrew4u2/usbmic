@@ -116,12 +116,30 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
 
             if (! readOne (currentSample))
             {
-                // Nothing left to interpolate towards. Hold the last sample
-                // rather than emitting a click, and count what was missing.
+                // Nothing left to interpolate towards. Hold the last sample for
+                // the remainder of the block rather than emitting a click, count
+                // the shortfall exactly once, and stop.
+                //
+                // The previous version broke out of the inner loop and let the
+                // outer one continue, which re-entered here on the very next
+                // sample -- the ring was still dry -- and added (numSamples - i)
+                // again each time. A single dry 64-sample block was reported as
+                // ~2000 lost samples instead of the few dozen that were actually
+                // missing. §0.1 makes any non-zero underrun the failure the user
+                // is shown, so an inflated count is a false alarm about the one
+                // thing this app promises not to do.
                 currentSample = previousSample;
-                underruns.fetch_add (static_cast<uint64_t> (numSamples - i), std::memory_order_relaxed);
                 phase = 0.0;
-                break;
+
+                const int remaining = numSamples - (i + 1);
+
+                if (remaining > 0)
+                {
+                    std::fill (destination + i + 1, destination + numSamples, previousSample);
+                    underruns.fetch_add (static_cast<uint64_t> (remaining), std::memory_order_relaxed);
+                }
+
+                return;
             }
 
             phase -= 1.0;
