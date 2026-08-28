@@ -140,16 +140,32 @@ void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
 
-    auto skullRow = area.removeFromTop (160);
+    // Channel strips: tall and narrow, sitting side by side like a mixing
+    // desk, rather than short wide boxes stretched to fill the width.
+    auto skullRow = area.removeFromTop (230);
     if (skullMeters.isEmpty())
     {
         noMicsLabel.setBounds (skullRow);
     }
     else
     {
-        const int meterWidth = juce::jmax (60, skullRow.getWidth() / juce::jmax (1, skullMeters.size()));
+        // A strip has a natural width and keeps it. Dividing the full width by
+        // the channel count made two microphones render as two enormous panels
+        // and eight as slivers; a desk's channels are the same size whether
+        // four are in use or twenty.
+        constexpr int kStripWidth = 84;
+        const int available = skullRow.getWidth();
+        const int wanted = kStripWidth * juce::jmax (1, skullMeters.size());
+        const int meterWidth = wanted <= available
+                                   ? kStripWidth
+                                   : juce::jmax (44, available / juce::jmax (1, skullMeters.size()));
+
+        // Centred as a block, so a rig of two sits in the middle rather than
+        // hugging the left edge.
+        if (wanted < available)
+            skullRow.removeFromLeft ((available - wanted) / 2);
         for (auto* meter : skullMeters)
-            meter->setBounds (skullRow.removeFromLeft (meterWidth).reduced (4));
+            meter->setBounds (skullRow.removeFromLeft (meterWidth).reduced (2, 0));
     }
 
     mixBar.setBounds (area.removeFromTop (28));

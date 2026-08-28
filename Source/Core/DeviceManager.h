@@ -21,6 +21,12 @@ struct MicDeviceState
     /// poor timebase, and CoreAudio enumerates it first, so without this the
     /// computer wins master selection on every Mac.
     bool isBuiltIn = false;
+
+    /// §1 caps the rig at 8; this is the user's own choice on top of that.
+    /// Deselecting a microphone excludes it from capture, monitoring, metering
+    /// and drift exactly as the cap does, because `included` is the single flag
+    /// every one of those paths already consults.
+    bool userEnabled = true;
 };
 
 /// §1 8-mic cap, §3.1 master selection, §3.3 master failover. Pure logic over
@@ -89,6 +95,11 @@ public:
     /// enumeration order (earliest 8 included mics win; opt-out is never used
     /// to pick a favorite -- purely first-come per §1).
     void reapplyCapacityLimit();
+
+    /// The user ticking or clearing a microphone in the Advanced panel.
+    /// Returns true if the flag actually changed, so the caller can avoid
+    /// tearing down and rebuilding the audio streams for a no-op.
+    bool setUserEnabled (const std::string& identityKey, bool enabled);
 
 private:
     std::vector<MicDeviceState> devices;

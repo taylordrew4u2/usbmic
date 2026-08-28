@@ -969,6 +969,33 @@ void Application::setOutputDeviceByName (const juce::String& displayName)
     }
 }
 
+std::vector<Application::MicSelection> Application::getMicSelections() const
+{
+    std::vector<MicSelection> out;
+
+    for (const auto& d : deviceManager.getDevices())
+        out.push_back ({ juce::String (d.displayName), d.userEnabled, d.isBuiltIn });
+
+    return out;
+}
+
+void Application::setMicEnabledByName (const juce::String& displayName, bool enabled)
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        // Matched on display name because that is what the panel shows. Not on
+        // `included`: a deselected microphone is excluded, and looking only at
+        // included ones would make it impossible to tick back on.
+        if (juce::String (d.displayName) != displayName)
+            continue;
+
+        if (deviceManager.setUserEnabled (d.identity.key(), enabled))
+            restartCapture(); // the channel set changed, so the streams must be reopened
+
+        return;
+    }
+}
+
 void Application::setClockMasterByName (const juce::String& displayName)
 {
     for (const auto& d : deviceManager.getDevices())

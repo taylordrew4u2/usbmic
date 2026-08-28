@@ -95,6 +95,10 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onCloseClicked = [this] { toggleAdvanced(); };
 
+    advancedPanel.onMicEnabledChanged = [this] (const juce::String& name, bool enabled) {
+        application.setMicEnabledByName (name, enabled);
+    };
+
     advancedPanel.onDiagnosticsExportClicked = [this] {
         // §11: logs, recent session.json files and the device inventory. Never audio.
         const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
@@ -271,6 +275,11 @@ void MainComponent::refreshAdvanced()
     juce::StringArray micNames;
     for (int i = 0; i < micCount; ++i)
         micNames.add (application.getMicDisplayName (i));
+
+    std::vector<std::pair<juce::String, bool>> micSelections;
+    for (const auto& m : application.getMicSelections())
+        micSelections.push_back ({ m.displayName, m.enabled });
+    advancedPanel.setMicSelections (micSelections);
 
     advancedPanel.setClockMasters (micNames, application.getClockMasterName());
 
