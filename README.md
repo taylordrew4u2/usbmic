@@ -21,15 +21,25 @@ implements a spec rule, the section number is cited in a comment.
 Builds for macOS, Windows and Linux are produced by the
 [Release workflow](.github/workflows/release.yml):
 
-- **Tagged releases** — attached to the
-  [Releases page](../../releases) as `MultiMicAggregator-macOS.zip`,
-  `-Windows.zip` and `-Linux.zip`.
+- **macOS** — `MultiMicAggregator-macOS.dmg`, a normal drag-to-install disk
+  image: mount it and drag the app onto the Applications alias beside it.
+  `MultiMicAggregator-macOS.zip` carries the same `.app` for anyone who would
+  rather not mount an image.
+- **Windows and Linux** — `MultiMicAggregator-Windows.zip` and
+  `-Linux.zip`.
+- **Tagged releases** — all of the above are attached to the
+  [Releases page](../../releases).
 - **Any commit** — run the Release workflow from the Actions tab
   (`workflow_dispatch`) and download the artifacts it uploads. Same build, no
   tag required.
 
-Each archive contains the application, this README, `LICENSE` and
-`LICENSING.md`.
+Each archive and the disk image contain the application, this README, `LICENSE`
+and `LICENSING.md`.
+
+The macOS disk image is **not signed or notarized**. That needs an Apple
+Developer ID — an account and a certificate, not something the source can
+produce — so Gatekeeper refuses the first launch until you right-click → Open.
+[Installing → macOS](#macos) has the exact steps.
 
 The Blue Yeti in the spec is reference hardware only: the code filters on
 nothing device-specific, so any standard USB audio class microphone works.
@@ -50,7 +60,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is a v0.2.0 release. The recording engine is mature — it is covered by 246
+This is a v0.2.0 release. The recording engine is mature — it is covered by 253
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
@@ -84,9 +94,10 @@ The steps below include it.
 
 ### macOS
 
-1. Unzip `MultiMicAggregator-macOS.zip`.
-2. Drag `Multi-Mic Aggregator.app` into **Applications** (or run it from
-   anywhere — location doesn't matter).
+1. Double-click `MultiMicAggregator-macOS.dmg` to mount it. (From the `.zip`
+   instead? Unzip it and skip to step 3.)
+2. Drag `Multi-Mic Aggregator.app` onto the **Applications** alias in the same
+   window — or run it from anywhere; location doesn't matter.
 3. First launch only: **right-click the app → Open → Open**. A plain
    double-click will be refused because the build is unsigned. Terminal
    alternative:

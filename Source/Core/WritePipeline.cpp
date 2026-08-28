@@ -47,15 +47,31 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
         // §6.1: stems are mono, one file per microphone, at unity gain.
         if (! writer->open (sessionFolder + "/" + spec.fileName, rate, 1, bitDepth, originTimestamp))
+        {
+            // Close what did open. A take that failed to start must not leave
+            // half-written headers on the card for the recovery pass to find.
+            for (auto& opened : stemWriters)
+                opened->close();
+
+            stemWriters.clear();
             return false;
+        }
 
         stemWriters.push_back (std::move (writer));
         trimGains.push_back (dbToGain (spec.trimDb));
     }
 
     mixWriter = std::make_unique<SessionWriter>();
+
     if (! mixWriter->open (sessionFolder + "/MIX", rate, 1, bitDepth, originTimestamp))
+    {
+        for (auto& opened : stemWriters)
+            opened->close();
+
+        stemWriters.clear();
+        mixWriter.reset();
         return false;
+    }
 
     // §6.3: the mirror is a safety net, so failing to open it degrades to
     // card-only rather than failing a take the user is waiting to start.
@@ -71,6 +87,9 @@ bool WritePipeline::start (const std::string& sessionFolder,
     for (auto& l : live)
         l.store (true, std::memory_order_relaxed);
     channelLive = std::move (live);
+
+    // Audio-thread scratch, sized once here so pushBlock never allocates (§11).
+    interleaveScratch.assign (kInterleaveChunkFrames * static_cast<size_t> (numChannels), 0.0f);
 
     // Writer-thread scratch, sized once here so the drain loop never allocates.
     const size_t drainFrames = 4096;
@@ -104,16 +123,38 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
         return false;
     }
 
-    for (int f = 0; f < numSamples; ++f)
+    // Interleave in chunks. The whole block is known to fit -- that was checked
+    // above, and this is the ring's only producer -- so every chunk lands whole.
+    //
+    // The per-sample ring.write this replaces cost a modulo and an atomic
+    // release-store for every sample of every channel: at 8 mics and 48 kHz that
+    // is 384,000 release-stores a second, on the one thread that must never miss
+    // its deadline.
+    int frameOffset = 0;
+
+    while (frameOffset < numSamples)
     {
-        for (int ch = 0; ch < numChannels; ++ch)
+        const int chunkFrames = std::min (static_cast<int> (kInterleaveChunkFrames),
+                                          numSamples - frameOffset);
+        float* destination = interleaveScratch.data();
+
+        for (int f = 0; f < chunkFrames; ++f)
         {
-            // §6.5: an unplugged mic writes silence into its existing channel
-            // rather than the file layout changing mid-recording.
-            const bool live = channelLive[static_cast<size_t> (ch)].load (std::memory_order_relaxed);
-            const float sample = (live && channelData[ch] != nullptr) ? channelData[ch][f] : 0.0f;
-            ring.write (&sample, 1);
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                // §6.5: an unplugged mic writes silence into its existing channel
+                // rather than the file layout changing mid-recording.
+                const bool live = channelLive[static_cast<size_t> (ch)].load (std::memory_order_relaxed);
+                *destination++ = (live && channelData[ch] != nullptr)
+                                     ? channelData[ch][frameOffset + f]
+                                     : 0.0f;
+            }
         }
+
+        ring.write (interleaveScratch.data(),
+                    static_cast<size_t> (chunkFrames) * static_cast<size_t> (numChannels));
+
+        frameOffset += chunkFrames;
     }
 
     framesAccepted.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);

@@ -95,6 +95,13 @@ private:
     int numChannels = 0;
     double sampleRate = 48000.0;
 
+    // Audio-thread scratch, allocated at start(). pushBlock interleaves into
+    // this and hands the ring whole chunks, so the callback pays two memcpys per
+    // chunk instead of one indexed store, one modulo and one release-store per
+    // sample per channel.
+    static constexpr size_t kInterleaveChunkFrames = 512;
+    std::vector<float> interleaveScratch;
+
     // Writer-thread scratch, allocated at start() so the drain loop does not.
     std::vector<float> drainBuffer;
     std::vector<float> stemScratch;

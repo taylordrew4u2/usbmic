@@ -164,3 +164,75 @@ TEST_CASE (MonitorBus_MasterVolumeAtFullIsUnityGain)
     bus.setMasterVolume (100.0);
     REQUIRE_NEAR (bus.applyMasterVolume (0.5f), 0.5f, 1e-4);
 }
+
+TEST_CASE (MonitorBus_SeparateBurstsDoNotCombineIntoARunawayCut)
+{
+    // Regression: kLimiterReleaseSeconds was declared and never used. Instead of
+    // clearing 1 ms after the last clip, the engagement accumulator drained one
+    // sample-time per quiet sample -- so it took as long to unwind as it took to
+    // build. An engagement that ended long ago kept most of its credit, and the
+    // next unrelated burst resumed from there.
+    //
+    // Two 300 ms bursts 10 ms apart is the case: neither is anywhere near the
+    // §5 threshold of 500 ms *continuous* engagement, but the old accumulator
+    // only shed 10 ms in the gap and crossed 500 ms partway through the second
+    // burst -- cutting the monitor and forcing a manual unmute, mid-take, over
+    // two ordinary loud moments.
+    MonitorBus bus (48000.0);
+
+    const int burstSamples = static_cast<int> (48000.0 * 0.3);   // 300 ms, under the threshold
+    const int gapSamples   = static_cast<int> (48000.0 * 0.01);  // 10 ms, well over the 1 ms release
+
+    for (int i = 0; i < burstSamples; ++i)
+        bus.processSample ({ 5.0f });
+
+    REQUIRE_FALSE (bus.isRunawayMuted());
+
+    for (int i = 0; i < gapSamples; ++i)
+        bus.processSample ({ 0.0f });
+
+    for (int i = 0; i < burstSamples; ++i)
+        bus.processSample ({ 5.0f });
+
+    // The gap ended the first engagement outright, so the second burst is judged
+    // on its own 300 ms and must not cut.
+    REQUIRE_FALSE (bus.isRunawayMuted());
+}
+
+TEST_CASE (MonitorBus_ClippingSurvivesGapsShorterThanTheRelease)
+{
+    // The flip side: a gap shorter than the 1 ms release is part of the same
+    // engagement, so genuinely sustained overload still cuts even though it is
+    // not clipping on literally every sample.
+    MonitorBus bus (48000.0);
+
+    // 10 clipped samples, then 4 quiet ones (~83 us, well inside the 1 ms
+    // release), repeated well past 500 ms of accumulated engagement.
+    const int cycles = 60000;
+    for (int c = 0; c < cycles && ! bus.isRunawayMuted(); ++c)
+    {
+        for (int i = 0; i < 10; ++i)
+            bus.processSample ({ 5.0f });
+        for (int i = 0; i < 4; ++i)
+            bus.processSample ({ 0.0f });
+    }
+
+    REQUIRE (bus.isRunawayMuted());
+}
+
+TEST_CASE (MonitorBus_MasterVolumeGainTracksTheSetting)
+{
+    // applyMasterVolume now reads a cached gain rather than recomputing a
+    // std::pow per sample; the cache must follow every setMasterVolume call.
+    MonitorBus bus (48000.0);
+
+    bus.setMasterVolume (100.0);
+    REQUIRE_NEAR (bus.applyMasterVolume (1.0f), 1.0f, 1e-4);
+
+    bus.setMasterVolume (0.0);
+    REQUIRE_NEAR (bus.applyMasterVolume (1.0f), 0.0f, 1e-6);
+
+    bus.setMasterVolume (70.0);
+    REQUIRE_NEAR (bus.applyMasterVolume (1.0f),
+                  MonitorBus::monitorVolumeToLinearGain (70.0), 1e-6);
+}
