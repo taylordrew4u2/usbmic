@@ -21,15 +21,27 @@ implements a spec rule, the section number is cited in a comment.
 Builds for macOS, Windows and Linux are produced by the
 [Release workflow](.github/workflows/release.yml):
 
-- **Tagged releases** — attached to the
-  [Releases page](../../releases) as `MultiMicAggregator-macOS.zip`,
-  `-Windows.zip` and `-Linux.zip`.
+- **macOS** — `MultiMicAggregator-macOS.dmg`, a normal drag-to-install disk
+  image: mount it and drag the app onto the Applications alias beside it.
+  `MultiMicAggregator-macOS.zip` carries the same `.app` for anyone who would
+  rather not mount an image.
+- **Windows and Linux** — `MultiMicAggregator-Windows.zip` and
+  `-Linux.zip`.
+- **Tagged releases** — all of the above are attached to the
+  [Releases page](../../releases).
 - **Any commit** — run the Release workflow from the Actions tab
   (`workflow_dispatch`) and download the artifacts it uploads. Same build, no
   tag required.
 
-Each archive contains the application, this README, `LICENSE` and
-`LICENSING.md`.
+Each archive and the disk image contain the application, this README, `LICENSE`
+and `LICENSING.md`.
+
+The macOS disk image is **not signed with an Apple Developer ID or notarized**.
+That needs a paid Apple account and a certificate, not something the source can
+produce. So after downloading you must clear the quarantine flag with one
+`xattr` command before the app will open — right-click → Open is *not* enough,
+and skipping it produces a misleading *"is damaged"* message.
+[Installing → macOS](#macos) has the exact command.
 
 The Blue Yeti in the spec is reference hardware only: the code filters on
 nothing device-specific, so any standard USB audio class microphone works.
@@ -50,7 +62,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is a v0.2.0 release. The recording engine is mature — it is covered by 246
+This is a v0.2.0 release. The recording engine is mature — it is covered by 253
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
@@ -84,15 +96,24 @@ The steps below include it.
 
 ### macOS
 
-1. Unzip `MultiMicAggregator-macOS.zip`.
-2. Drag `Multi-Mic Aggregator.app` into **Applications** (or run it from
-   anywhere — location doesn't matter).
-3. First launch only: **right-click the app → Open → Open**. A plain
-   double-click will be refused because the build is unsigned. Terminal
-   alternative:
+1. Double-click `MultiMicAggregator-macOS.dmg` to mount it. (From the `.zip`
+   instead? Unzip it and skip to step 3.)
+2. Drag `Multi-Mic Aggregator.app` onto the **Applications** alias in the same
+   window — or run it from anywhere; location doesn't matter.
+3. **Required, once:** clear the quarantine flag your browser attached to the
+   download.
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
    ```
+   Then open the app normally.
+
+   This step is not optional and right-click → Open does **not** replace it. The
+   build carries an ad-hoc signature rather than an Apple Developer ID one, and
+   for that combination macOS refuses the app outright — with
+   *"Multi-Mic Aggregator is damaged and can't be opened. You should eject the
+   disk image."* Nothing is damaged and the download is fine; that is simply the
+   message Gatekeeper uses. Only a Developer ID — a paid Apple account plus a
+   certificate, neither obtainable from source code — removes the step.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable Multi-Mic Aggregator.
@@ -264,7 +285,7 @@ to JUCE 8.
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 246 unit tests passing in CI on Linux, macOS
+All of `Source/Core`, covered by 253 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |

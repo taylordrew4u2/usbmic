@@ -70,9 +70,22 @@ private:
     double sampleRate;
     bool limiterEngaged = false;
     double limiterEngagedSeconds = 0.0;
+
+    // How long the limiter has been *below* the ceiling within the current
+    // engagement. The run is only broken once this passes the 1 ms release; a
+    // gap shorter than that is part of the same continuous engagement, which is
+    // what §5 means by "500 ms continuous".
+    double limiterReleasedSeconds = 0.0;
+
     bool runawayMuted = false;
     bool globallyMuted = false;
     double masterVolume = kDefaultMonitorVolume;
+
+    // Precomputed so the audio callback never calls std::pow. processSample and
+    // applyMasterVolume both run once per sample per block, and a transcendental
+    // in there is time taken directly out of the callback's deadline (§11).
+    float ceilingLinear;
+    float masterGain;
 
     // Feedback detector state: level at the start of the current growth window.
     double feedbackWindowStartDb = -200.0;

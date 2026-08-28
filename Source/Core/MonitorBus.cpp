@@ -5,7 +5,9 @@
 namespace mma {
 
 MonitorBus::MonitorBus (double sampleRateIn) noexcept
-    : sampleRate (sampleRateIn)
+    : sampleRate (sampleRateIn),
+      ceilingLinear (std::pow (10.0f, kLimiterCeilingDb / 20.0f)),
+      masterGain (monitorVolumeToLinearGain (kDefaultMonitorVolume))
 {
 }
 
@@ -35,8 +37,9 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     for (auto s : trimmedInputSamples)
         sum += s; // unity sum, no per-channel attenuation with channel count
 
-    const float ceilingLinear = std::pow (10.0f, kLimiterCeilingDb / 20.0f);
-    const float sampleSeconds = (sampleRate > 0.0) ? static_cast<float> (1.0 / sampleRate) : 0.0f;
+    // ceilingLinear is a member computed once at construction. It used to be a
+    // std::pow evaluated on every sample of every block.
+    const double sampleSeconds = (sampleRate > 0.0) ? (1.0 / sampleRate) : 0.0;
 
     float output = sum;
     bool engagedThisSample = false;
@@ -52,21 +55,33 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     if (engagedThisSample)
     {
         limiterEngaged = true;
+        limiterReleasedSeconds = 0.0;
         limiterEngagedSeconds += sampleSeconds;
+
         if (limiterEngagedSeconds >= kRunawayCutSeconds)
             runawayMuted = true;
     }
-    else
+    else if (limiterEngaged)
     {
-        // 1ms release: engagement clears kLimiterReleaseSeconds after the last clip.
-        if (limiterEngaged)
+        // §5: the runaway cut is for 500 ms of *continuous* engagement, and
+        // kLimiterReleaseSeconds is what "continuous" tolerates -- a gap shorter
+        // than the 1 ms release is the same engagement, a longer one ends it.
+        //
+        // This previously drained the accumulator one sample-time per quiet
+        // sample and never consulted kLimiterReleaseSeconds at all, so unwinding
+        // an engagement took as long as building it. An engagement that had
+        // ended seconds ago still carried most of its credit into the next,
+        // unrelated one: two 300 ms bursts 10 ms apart -- neither close to the
+        // threshold -- combined past 500 ms and cut the monitor. That is a false
+        // alarm that silences someone's headphones mid-take and needs a manual
+        // unmute, so a gap longer than the release now ends the run outright.
+        limiterReleasedSeconds += sampleSeconds;
+
+        if (limiterReleasedSeconds >= kLimiterReleaseSeconds)
         {
-            limiterEngagedSeconds -= sampleSeconds;
-            if (limiterEngagedSeconds <= 0.0)
-            {
-                limiterEngaged = false;
-                limiterEngagedSeconds = 0.0;
-            }
+            limiterEngaged = false;
+            limiterEngagedSeconds = 0.0;
+            limiterReleasedSeconds = 0.0;
         }
     }
 
@@ -79,17 +94,22 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
 void MonitorBus::setMasterVolume (double volume0to100) noexcept
 {
     masterVolume = std::max (0.0, std::min (100.0, volume0to100));
+
+    // One aligned float store the callback picks up on its next sample, instead
+    // of a std::pow per sample inside applyMasterVolume.
+    masterGain = monitorVolumeToLinearGain (masterVolume);
 }
 
 float MonitorBus::applyMasterVolume (float busSample) const noexcept
 {
-    return busSample * monitorVolumeToLinearGain (masterVolume);
+    return busSample * masterGain;
 }
 
 void MonitorBus::manuallyUnmute() noexcept
 {
     runawayMuted = false;
     limiterEngagedSeconds = 0.0;
+    limiterReleasedSeconds = 0.0;
     limiterEngaged = false;
 }
 
