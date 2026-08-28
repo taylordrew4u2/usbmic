@@ -2,6 +2,8 @@
 
 #if JUCE_WINDOWS
 
+#include "../Core/SampleFormat.h"
+
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -94,6 +96,12 @@ struct WasapiStream
     int channels = 0;
     bool isInput = false;
 
+    // The format the device actually accepted. Exclusive mode does no
+    // conversion, so whatever this ends up being is what the worker has to
+    // read and write byte for byte.
+    int bytesPerSample = 4;
+    bool sampleIsFloat = true;
+
     AudioCallback callback;
     std::thread worker;
     std::atomic<bool> running { false };
@@ -161,6 +169,26 @@ WAVEFORMATEXTENSIBLE makeFloat32Format (double sampleRate, int channels)
     return format;
 }
 
+/// Fixed-point PCM in the same layout. Most USB microphones and many consumer
+/// interfaces expose only 16- or 24-bit PCM in exclusive mode and refuse float
+/// outright, so this is not an exotic fallback -- it is the common case.
+WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int containerBits, int validBits)
+{
+    WAVEFORMATEXTENSIBLE format {};
+    format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    format.Format.nChannels = static_cast<WORD> (channels);
+    format.Format.nSamplesPerSec = static_cast<DWORD> (sampleRate);
+    format.Format.wBitsPerSample = static_cast<WORD> (containerBits);
+    format.Format.nBlockAlign = static_cast<WORD> (channels * (containerBits / 8));
+    format.Format.nAvgBytesPerSec = format.Format.nSamplesPerSec * format.Format.nBlockAlign;
+    format.Format.cbSize = sizeof (WAVEFORMATEXTENSIBLE) - sizeof (WAVEFORMATEX);
+    format.Samples.wValidBitsPerSample = static_cast<WORD> (validBits);
+    format.dwChannelMask = channels == 1 ? SPEAKER_FRONT_CENTER
+                                         : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+    format.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+    return format;
+}
+
 /// The audio worker. Waits on the client's event and services one buffer per
 /// wake. §11: no allocation, locking, logging or file I/O in here.
 void runStreamThread (WasapiStream* stream)
@@ -205,12 +233,13 @@ void runStreamThread (WasapiStream* stream)
                 }
                 else
                 {
-                    const auto* interleaved = reinterpret_cast<const float*> (data);
+                    const int bytes = stream->bytesPerSample;
+                    const bool isFloat = stream->sampleIsFloat;
 
                     for (UINT32 f = 0; f < frames; ++f)
                         for (int ch = 0; ch < channels; ++ch)
                             stream->channelPointers[static_cast<size_t> (ch)][f] =
-                                interleaved[f * channels + ch];
+                                SampleFormat::read (data, static_cast<size_t> (f) * channels + ch, bytes, isFloat);
                 }
 
                 stream->callback (stream->channelPointers.data(), channels,
@@ -239,11 +268,13 @@ void runStreamThread (WasapiStream* stream)
                               stream->channelPointers.data(), channels,
                               static_cast<int> (frames));
 
-            auto* interleaved = reinterpret_cast<float*> (data);
+            const int bytes = stream->bytesPerSample;
+            const bool isFloat = stream->sampleIsFloat;
+
             for (UINT32 f = 0; f < frames; ++f)
                 for (int ch = 0; ch < channels; ++ch)
-                    interleaved[f * channels + ch] =
-                        stream->channelPointers[static_cast<size_t> (ch)][f];
+                    SampleFormat::write (data, static_cast<size_t> (f) * channels + ch, bytes, isFloat,
+                                 stream->channelPointers[static_cast<size_t> (ch)][f]);
 
             stream->render->ReleaseBuffer (frames, 0);
         }
@@ -457,6 +488,8 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     if (! resolveDevice (deviceId, device) || device == nullptr)
         return false;
 
+    lastOpenError.clear();
+
     auto stream = std::make_unique<WasapiStream>();
     stream->callback = std::move (callback);
     stream->isInput = isInput;
@@ -465,15 +498,68 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
                                   reinterpret_cast<void**> (stream->client.GetAddressOf()))))
         return false;
 
-    auto format = makeFloat32Format (sampleRate, isInput ? 1 : 2);
+    // §5.4: exclusive mode or nothing -- falling back to shared would deliver
+    // 40-100 ms and the product fails at that latency. But exclusive mode also
+    // performs no conversion, so the format has to be one the hardware speaks
+    // natively. Offering only float32 (as this once did) means most USB
+    // microphones, which are 16- or 24-bit PCM devices, simply refuse to open.
+    // Try the engine's own format first, then descend through the fixed-point
+    // layouts, and try the device's native channel count before giving up.
+    WAVEFORMATEXTENSIBLE format {};
+    bool formatFound = false;
 
-    // §5.4: exclusive mode or nothing. A format the device will not take in
-    // exclusive mode is a hard failure -- falling back to shared would deliver
-    // 40-100 ms and the product fails at that latency.
-    if (FAILED (stream->client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                                   reinterpret_cast<const WAVEFORMATEX*> (&format),
-                                                   nullptr)))
+    int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
+    int numChannelCandidates = 2;
+
+    // The device's own mix format names the channel count it prefers; if it is
+    // neither 1 nor 2 it would otherwise never be tried.
+    {
+        WAVEFORMATEX* mixFormat = nullptr;
+
+        if (SUCCEEDED (stream->client->GetMixFormat (&mixFormat)) && mixFormat != nullptr)
+        {
+            const int mixChannels = static_cast<int> (mixFormat->nChannels);
+
+            if (mixChannels > 0 && mixChannels != channelCandidates[0] && mixChannels != channelCandidates[1])
+                channelCandidates[numChannelCandidates++] = mixChannels;
+
+            CoTaskMemFree (mixFormat);
+        }
+    }
+
+    for (int c = 0; c < numChannelCandidates && ! formatFound; ++c)
+    {
+        const int channels = channelCandidates[c];
+
+        // Container bits, valid bits; 0 valid bits marks the float candidate.
+        const int layouts[5][2] = { { 32, 0 }, { 32, 32 }, { 32, 24 }, { 24, 24 }, { 16, 16 } };
+
+        for (const auto& layout : layouts)
+        {
+            const auto candidate = layout[1] == 0
+                ? makeFloat32Format (sampleRate, channels)
+                : makePcmFormat (sampleRate, channels, layout[0], layout[1]);
+
+            if (SUCCEEDED (stream->client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                                              reinterpret_cast<const WAVEFORMATEX*> (&candidate),
+                                                              nullptr)))
+            {
+                format = candidate;
+                formatFound = true;
+                break;
+            }
+        }
+    }
+
+    if (! formatFound)
+    {
+        lastOpenError = "This device won't accept a low-latency connection at " + std::to_string ((int) sampleRate)
+                      + " Hz. Try a different sample rate, or a different device, in Advanced.";
         return false;
+    }
+
+    stream->bytesPerSample = format.Format.wBitsPerSample / 8;
+    stream->sampleIsFloat = (format.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
 
     // Exclusive mode wants the buffer expressed as a duration in 100 ns units.
     const REFERENCE_TIME duration =

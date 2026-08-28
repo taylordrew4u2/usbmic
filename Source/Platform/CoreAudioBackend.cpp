@@ -5,6 +5,9 @@
 #include <CoreAudio/CoreAudio.h>
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
+#include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace mma {
 
@@ -20,6 +23,30 @@ struct CoreAudioStream
     static constexpr int kMaxChannels = 64;
     const float* inputPointers[kMaxChannels] = {};
     float* outputPointers[kMaxChannels] = {};
+
+    // Deinterleave scratch. Many USB microphones present one buffer carrying
+    // N interleaved channels rather than N single-channel buffers; without
+    // somewhere to unpack them the callback can only handle the second shape.
+    // Sized at open time because §11 forbids allocating in the IOProc.
+    std::vector<float> deinterleaveScratch;
+    int maxFramesPerCallback = 0;
+
+    // The mirror of the above for playback. An interface that presents its
+    // output as one interleaved buffer needs the callback's per-channel writes
+    // packed back together before the IOProc returns; without this the monitor
+    // mix is silent on exactly the hardware most people plug in.
+    std::vector<float> interleaveScratch;
+
+    struct PendingInterleave
+    {
+        float* destination;   // the device's own interleaved buffer
+        int firstChannel;     // index into interleaveScratch slices
+        int channels;
+        int frames;
+    };
+
+    PendingInterleave pendingInterleave[kMaxChannels] = {};
+    int numPendingInterleave = 0;
 };
 
 namespace {
@@ -73,9 +100,29 @@ std::vector<uint32_t> querySupportedSampleRates (AudioObjectID device)
     if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, ranges.data()) != noErr)
         return {};
 
+    // A device may report discrete rates (mMinimum == mMaximum) or a
+    // continuous range. Reporting only mMaximum, as this once did, hides every
+    // rate a range covers -- so a device advertising 44100-96000 would look
+    // like it could not do 48000, and §2.2 would negotiate around it.
+    static constexpr uint32_t kCommonRates[] = { 44100, 48000, 88200, 96000, 176400, 192000 };
+
     std::vector<uint32_t> rates;
+
     for (const auto& r : ranges)
-        rates.push_back (static_cast<uint32_t> (r.mMaximum));
+    {
+        if (r.mMinimum == r.mMaximum)
+        {
+            rates.push_back (static_cast<uint32_t> (r.mMaximum));
+            continue;
+        }
+
+        for (auto rate : kCommonRates)
+            if (static_cast<double> (rate) >= r.mMinimum && static_cast<double> (rate) <= r.mMaximum)
+                rates.push_back (rate);
+    }
+
+    std::sort (rates.begin(), rates.end());
+    rates.erase (std::unique (rates.begin(), rates.end()), rates.end());
     return rates;
 }
 
@@ -114,13 +161,55 @@ AudioObjectID findDeviceByUID (const std::string& uid)
     return kAudioObjectUnknown;
 }
 
-bool setNominalSampleRate (AudioObjectID device, double sampleRate)
+double getNominalSampleRate (AudioObjectID device)
 {
     AudioObjectPropertyAddress address { kAudioDevicePropertyNominalSampleRate,
                                          kAudioObjectPropertyScopeGlobal,
                                          kAudioObjectPropertyElementMain };
+    Float64 rate = 0.0;
+    UInt32 size = sizeof (rate);
+
+    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &rate) != noErr)
+        return 0.0;
+
+    return static_cast<double> (rate);
+}
+
+bool setNominalSampleRate (AudioObjectID device, double sampleRate)
+{
+    // Ask first. A device another process already holds -- or one whose rate is
+    // fixed in hardware -- refuses the write even when it is already running at
+    // exactly the rate we want, and treating that as a failure turns a working
+    // microphone into one that will not open.
+    if (std::abs (getNominalSampleRate (device) - sampleRate) < 1.0)
+        return true;
+
+    AudioObjectPropertyAddress address { kAudioDevicePropertyNominalSampleRate,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
     Float64 rate = sampleRate;
-    return AudioObjectSetPropertyData (device, &address, 0, nullptr, sizeof (rate), &rate) == noErr;
+
+    if (AudioObjectSetPropertyData (device, &address, 0, nullptr, sizeof (rate), &rate) != noErr)
+        return false;
+
+    // The HAL applies the change asynchronously and may land on a neighbouring
+    // rate. Confirm rather than assume: the callers negotiate one common rate
+    // (§2.2) and a device quietly running at a different one is a drift source.
+    return std::abs (getNominalSampleRate (device) - sampleRate) < 1.0;
+}
+
+int getBufferFrameSize (AudioObjectID device)
+{
+    AudioObjectPropertyAddress address { kAudioDevicePropertyBufferFrameSize,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 value = 0;
+    UInt32 size = sizeof (value);
+
+    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &value) != noErr)
+        return 0;
+
+    return static_cast<int> (value);
 }
 
 bool setBufferFrameSize (AudioObjectID device, int frames)
@@ -175,13 +264,43 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
         {
             const auto& buffer = inputData->mBuffers[i];
 
-            // Deinterleaved (one channel per buffer) is what CoreAudio gives for
-            // USB class-compliant devices; anything else is not handled here.
-            if (buffer.mNumberChannels != 1)
+            if (buffer.mData == nullptr || buffer.mNumberChannels == 0)
                 continue;
 
-            stream->inputPointers[numInputChannels++] = static_cast<const float*> (buffer.mData);
-            numSamples = static_cast<int> (buffer.mDataByteSize / sizeof (float));
+            const int channelsHere = static_cast<int> (buffer.mNumberChannels);
+            const int framesHere = static_cast<int> (buffer.mDataByteSize
+                                                     / (sizeof (float) * buffer.mNumberChannels));
+
+            if (channelsHere == 1)
+            {
+                // One channel per buffer: hand the device's own memory straight
+                // through, no copy.
+                stream->inputPointers[numInputChannels++] = static_cast<const float*> (buffer.mData);
+                numSamples = framesHere;
+                continue;
+            }
+
+            // Interleaved. Unpacking is required, and skipping it -- as this
+            // once did -- means a stereo USB microphone records pure silence
+            // with no error anywhere.
+            if (framesHere > stream->maxFramesPerCallback
+                || numInputChannels + channelsHere > CoreAudioStream::kMaxChannels)
+                continue; // scratch was sized for less; dropping beats overrunning it
+
+            const auto* source = static_cast<const float*> (buffer.mData);
+
+            for (int ch = 0; ch < channelsHere; ++ch)
+            {
+                float* dest = stream->deinterleaveScratch.data()
+                            + static_cast<size_t> (numInputChannels) * stream->maxFramesPerCallback;
+
+                for (int f = 0; f < framesHere; ++f)
+                    dest[f] = source[f * channelsHere + ch];
+
+                stream->inputPointers[numInputChannels++] = dest;
+            }
+
+            numSamples = framesHere;
         }
     }
 
@@ -193,11 +312,40 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
         {
             auto& buffer = outputData->mBuffers[i];
 
-            if (buffer.mNumberChannels != 1)
+            if (buffer.mData == nullptr || buffer.mNumberChannels == 0)
                 continue;
 
-            stream->outputPointers[numOutputChannels++] = static_cast<float*> (buffer.mData);
-            numSamples = static_cast<int> (buffer.mDataByteSize / sizeof (float));
+            const int channelsHere = static_cast<int> (buffer.mNumberChannels);
+            const int framesHere = static_cast<int> (buffer.mDataByteSize
+                                                     / (sizeof (float) * buffer.mNumberChannels));
+
+            if (channelsHere == 1)
+            {
+                stream->outputPointers[numOutputChannels++] = static_cast<float*> (buffer.mData);
+                numSamples = framesHere;
+                continue;
+            }
+
+            // Both the scratch and the channel table must hold the whole
+            // buffer: a partial take would repack with the wrong stride.
+            if (framesHere > stream->maxFramesPerCallback
+                || numOutputChannels + channelsHere > CoreAudioStream::kMaxChannels)
+                continue;
+
+            auto& pending = stream->pendingInterleave[stream->numPendingInterleave++];
+            pending.destination = static_cast<float*> (buffer.mData);
+            pending.firstChannel = numOutputChannels;
+            pending.channels = 0;
+            pending.frames = framesHere;
+
+            for (int ch = 0; ch < channelsHere; ++ch)
+            {
+                stream->outputPointers[numOutputChannels++] = stream->interleaveScratch.data()
+                    + static_cast<size_t> (pending.firstChannel + ch) * stream->maxFramesPerCallback;
+                ++pending.channels;
+            }
+
+            numSamples = framesHere;
         }
     }
 
@@ -205,6 +353,24 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
         stream->callback (stream->inputPointers, numInputChannels,
                           stream->outputPointers, numOutputChannels,
                           numSamples);
+
+    // Pack whatever the callback wrote into the scratch back into the device's
+    // interleaved buffers. Done after the callback so it sees a flat layout.
+    for (int i = 0; i < stream->numPendingInterleave; ++i)
+    {
+        const auto& pending = stream->pendingInterleave[i];
+
+        for (int ch = 0; ch < pending.channels; ++ch)
+        {
+            const float* source = stream->interleaveScratch.data()
+                                + static_cast<size_t> (pending.firstChannel + ch) * stream->maxFramesPerCallback;
+
+            for (int f = 0; f < pending.frames; ++f)
+                pending.destination[f * pending.channels + ch] = source[f];
+        }
+    }
+
+    stream->numPendingInterleave = 0;
 
     return noErr;
 }
@@ -340,6 +506,18 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     stream->callback = std::move (callback);
     stream->isOutput = isOutput;
 
+    // Size the de/interleave scratch from the size the device actually granted,
+    // not the size we asked for, and leave headroom: the HAL is allowed to hand
+    // the IOProc a larger slice than the nominal buffer. §11 forbids allocating
+    // in the callback, so anything not covered here has to be dropped there.
+    const int granted = std::max (getBufferFrameSize (device), bufferSizeSamples);
+    stream->maxFramesPerCallback = std::max (granted * 2, 4096);
+
+    const size_t scratchSamples = static_cast<size_t> (CoreAudioStream::kMaxChannels)
+                                * static_cast<size_t> (stream->maxFramesPerCallback);
+    stream->deinterleaveScratch.assign (scratchSamples, 0.0f);
+    stream->interleaveScratch.assign (scratchSamples, 0.0f);
+
     if (AudioDeviceCreateIOProcID (device, ioProcTrampoline, stream.get(), &stream->ioProcId) != noErr
         || stream->ioProcId == nullptr)
         return false;
@@ -366,7 +544,20 @@ bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDevic
     // other processes into this device. §5.4 requires the monitor path be
     // exclusive, and §5.4 also requires naming the cause when it is not -- so
     // record whether we actually got it rather than assuming we did.
+    lastOpenError.clear();
     outputStreamIsHogModeExclusive = takeHogMode (device);
+
+    // §5.4: this method promises an exclusive monitor path, and the caller
+    // (CaptureCoordinator) branches on that promise. Reporting success without
+    // hog mode hands the user a shared output while the app believes otherwise,
+    // so fail here and let checkExclusiveModeCapability name the cause.
+    if (! outputStreamIsHogModeExclusive)
+    {
+        lastOpenError = "This sound output won't give this app exclusive use, which live monitoring needs. "
+                        "Pick a different output in Advanced -- a USB or Thunderbolt interface usually works, "
+                        "Bluetooth headphones usually don't.";
+        return false;
+    }
 
     if (! openStream (outputDeviceId, sampleRate, bufferSizeSamples, std::move (callback), true))
     {

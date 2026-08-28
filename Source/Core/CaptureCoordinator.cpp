@@ -83,7 +83,12 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     if (! outputDeviceId.empty()
         && ! backend.openExclusiveOutputStream (outputDeviceId, sampleRate, bufferSize, outputCallback))
     {
-        monitorProblem = "Couldn't open your headphones for low-latency playback.";
+        // Prefer whatever the backend can say about the specific device; the
+        // generic line leaves the user with no next step.
+        const auto backendReason = backend.getLastOpenError();
+        monitorProblem = backendReason.empty()
+            ? std::string ("Couldn't open your headphones for low-latency playback.")
+            : backendReason;
         backend.closeAllStreams();
         return false;
     }
