@@ -23,6 +23,24 @@ bool DeviceManager::addDevice (MicDeviceState device)
     return true;
 }
 
+bool DeviceManager::setUserEnabled (const std::string& identityKey, bool enabled)
+{
+    for (auto& d : devices)
+    {
+        if (d.identity.key() != identityKey)
+            continue;
+
+        if (d.userEnabled == enabled)
+            return false;
+
+        d.userEnabled = enabled;
+        reapplyCapacityLimit();
+        return true;
+    }
+
+    return false;
+}
+
 bool DeviceManager::syncToEnumeration (const std::vector<MicDeviceState>& seen)
 {
     bool changed = false;
@@ -106,6 +124,16 @@ void DeviceManager::reapplyCapacityLimit()
     int includedCount = 0;
     for (auto* d : byOrder)
     {
+        // A microphone the user has cleared is excluded outright and does not
+        // consume one of the eight slots -- deselecting a mic you are not using
+        // should make room for one you are.
+        if (! d->userEnabled)
+        {
+            d->included = false;
+            d->exclusionReason = "Not selected. Tick it in Settings to record it.";
+            continue;
+        }
+
         if (includedCount < kMaxMicrophones)
         {
             d->included = true;

@@ -128,6 +128,21 @@ public:
     void setOutputDeviceByName (const juce::String& displayName);
     /// §3.1: an explicit clock-master choice, by display name.
     void setClockMasterByName (const juce::String& displayName);
+
+    /// Every microphone the OS reports, in enumeration order, with whether the
+    /// user currently has it selected. Includes deselected ones -- the point of
+    /// the list is to let them be turned back on.
+    struct MicSelection
+    {
+        juce::String displayName;
+        bool enabled = true;
+        bool isBuiltIn = false;
+    };
+    std::vector<MicSelection> getMicSelections() const;
+
+    /// Ticking or clearing a microphone in Settings. Rebuilds the audio streams
+    /// only when the flag actually changed.
+    void setMicEnabledByName (const juce::String& displayName, bool enabled);
     void setDestinationFolder (const juce::File& folder);
 
     /// §5.3 output selection result for the Advanced panel, and the plain-language

@@ -333,3 +333,95 @@ TEST_CASE (DeviceManager_BuiltInMicIsStillUsedWhenItIsTheOnlyDevice)
     REQUIRE (master != nullptr);
     REQUIRE (master->identity.locationId == "uid-builtin");
 }
+
+TEST_CASE (DeviceManager_DeselectedMicIsExcludedWithAReason)
+{
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-b", "Yeti B") });
+
+    REQUIRE (m.setUserEnabled ("uid-a", false));
+
+    for (const auto& d : m.getDevices())
+    {
+        if (d.identity.locationId != "uid-a")
+            continue;
+
+        // `included` is the flag every capture, metering and drift path already
+        // consults, so clearing it is what actually stops the mic being recorded.
+        REQUIRE_FALSE (d.included);
+        REQUIRE_FALSE (d.exclusionReason.empty());
+    }
+}
+
+TEST_CASE (DeviceManager_SettingTheSameSelectionTwiceReportsNoChange)
+{
+    // The caller tears down and rebuilds the audio streams on a change, which
+    // is far too expensive to do for a click that changed nothing.
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A") });
+
+    REQUIRE (m.setUserEnabled ("uid-a", false));
+    REQUIRE_FALSE (m.setUserEnabled ("uid-a", false));
+    REQUIRE (m.setUserEnabled ("uid-a", true));
+}
+
+TEST_CASE (DeviceManager_DeselectedMicDoesNotConsumeOneOfTheEightSlots)
+{
+    // Deselecting a mic you are not using should make room for one you are.
+    DeviceManager m;
+    std::vector<MicDeviceState> nine;
+    for (int i = 0; i < 9; ++i)
+        nine.push_back (makeDevice ("uid-" + std::to_string (i), "Mic " + std::to_string (i)));
+
+    m.syncToEnumeration (nine);
+
+    int included = 0;
+    for (const auto& d : m.getDevices())
+        if (d.included)
+            ++included;
+    REQUIRE (included == DeviceManager::kMaxMicrophones);
+
+    // Turning the first one off should let the ninth in.
+    m.setUserEnabled ("uid-0", false);
+
+    bool ninthIncluded = false;
+    included = 0;
+    for (const auto& d : m.getDevices())
+    {
+        if (d.included)
+            ++included;
+        if (d.identity.locationId == "uid-8" && d.included)
+            ninthIncluded = true;
+    }
+
+    REQUIRE (included == DeviceManager::kMaxMicrophones);
+    REQUIRE (ninthIncluded);
+}
+
+TEST_CASE (DeviceManager_SelectionSurvivesReEnumeration)
+{
+    // A hotplug elsewhere in the rig must not silently re-enable a microphone
+    // the user turned off.
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-b", "Yeti B") });
+    m.setUserEnabled ("uid-a", false);
+
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"),
+                           makeDevice ("uid-b", "Yeti B"),
+                           makeDevice ("uid-c", "Yeti C") });
+
+    for (const auto& d : m.getDevices())
+        if (d.identity.locationId == "uid-a")
+            REQUIRE_FALSE (d.userEnabled);
+}
+
+TEST_CASE (DeviceManager_DeselectedMicIsNotChosenAsClockMaster)
+{
+    DeviceManager m;
+    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-b", "Yeti B") });
+    m.setUserEnabled ("uid-a", false);
+
+    const auto* master = m.selectDefaultMaster();
+    REQUIRE (master != nullptr);
+    REQUIRE (master->identity.locationId == "uid-b");
+}
