@@ -2,6 +2,22 @@
 
 ## v0.5.0 — 2026-08-28
 
+### Added — from the first working session
+
+- **Choose which microphones to record.** Settings now lists every microphone
+  the OS reports, with a checkbox each. Previously everything enumerated was
+  recorded, which on a Mac meant the machine's own microphone was always a
+  track. A deselected mic also gives its slot back, so turning off one you are
+  not using makes room for a ninth you are.
+- **The clock master is explained**, in the terms that matter to someone
+  recording: each USB mic runs on its own crystal, no two tick at quite the same
+  rate, one is the reference and the rest are nudged to match it, and that is
+  what keeps a long take aligned.
+- **Channel-strip meters.** The meters were short wide boxes stretched to fill
+  the window, so two mics rendered as two enormous panels and eight as slivers.
+  They are now fixed-width vertical strips laid side by side like a mixing desk,
+  with the level, peak and name stacked tight beneath each meter.
+
 ### Fixed — four bugs from the first session with real microphones
 
 The first time this app met physical hardware it produced four faults. None had
