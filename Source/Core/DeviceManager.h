@@ -15,6 +15,12 @@ struct MicDeviceState
     bool hasDriftMeasurement = false; // false until 60s of running measurement exists (§3.1)
     bool included = true;       // false only for the 9th+ mic, per §1
     std::string exclusionReason;
+
+    /// True for a machine's own built-in microphone rather than something the
+    /// user plugged in. §3.1 needs this: a built-in mic is a fine input but a
+    /// poor timebase, and CoreAudio enumerates it first, so without this the
+    /// computer wins master selection on every Mac.
+    bool isBuiltIn = false;
 };
 
 /// §1 8-mic cap, §3.1 master selection, §3.3 master failover. Pure logic over
@@ -28,7 +34,26 @@ public:
     /// Adds a newly-enumerated microphone. If this is the 9th+ mic (by
     /// enumeration order among currently-included mics), it is enumerated and
     /// displayed but excluded from capture with a stated reason (§1).
-    void addDevice (MicDeviceState device);
+    ///
+    /// Returns false and changes nothing if a device with this identity is
+    /// already known. It used to append unconditionally, which meant every
+    /// re-enumeration added a second copy of every device already in the list.
+    bool addDevice (MicDeviceState device);
+
+    /// Reconciles the whole list against what the OS currently reports: adds
+    /// devices that are new, drops devices that are gone, and leaves devices
+    /// that are still present exactly as they are -- same enumeration order,
+    /// same drift history, same inclusion.
+    ///
+    /// This is what a device-change notification must call. Looping over the
+    /// enumeration calling addDevice() is what produced five copies of one
+    /// microphone: macOS fires its device-list listener several times while a
+    /// USB mic initialises, and each firing re-added every device already
+    /// present.
+    ///
+    /// Returns true if the set of devices actually changed, so callers can skip
+    /// the work a no-op notification does not require.
+    bool syncToEnumeration (const std::vector<MicDeviceState>& seen);
 
     /// Removes a device (unplug). Returns true if the removed device was the
     /// current clock master, which the caller must react to via promoteFailoverMaster().
@@ -68,6 +93,10 @@ public:
 private:
     std::vector<MicDeviceState> devices;
     std::string preferredMasterKey;
+
+    // Monotonic, so a device unplugged and replugged sorts after the ones that
+    // stayed rather than reclaiming its old priority.
+    int nextEnumerationOrder = 0;
 
     static bool lowerDrift (const MicDeviceState& a, const MicDeviceState& b);
 };
