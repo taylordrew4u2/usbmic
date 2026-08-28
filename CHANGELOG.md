@@ -1,9 +1,37 @@
 # Changelog
 
-## v0.3.0 — 2026-08-28
+## v0.5.0 — 2026-08-28
 
-The first tagged release. Everything before this was a build off a branch, and
-the README's claim of a "v0.2.0 release" never corresponded to a tag.
+### Fixed — four bugs from the first session with real microphones
+
+The first time this app met physical hardware it produced four faults. None had
+been caught by any test or by the CoreAudio simulation, because all of them
+depend on how a real OS enumerates real devices.
+
+- **Each microphone appeared several times** — one Yeti was listed five times.
+  The device-change handler called `addDevice` for every enumerated device on
+  every notification, and `addDevice` appended with no duplicate check. macOS
+  fires that listener several times while a USB microphone initialises, so each
+  firing re-added everything already present. Enumeration is now reconciled:
+  new devices added, departed ones dropped, and devices that never left keep
+  their enumeration order, drift history and inclusion untouched.
+- **The clock master was always the computer.** Before any drift measurement
+  exists, master selection fell back to enumeration order — and CoreAudio
+  enumerates the machine's built-in microphone first, so it won on every Mac
+  however many USB mics were attached. §3.1 now prefers a device the user
+  plugged in, falling back to the built-in only when it is the only one.
+- **Microphones were not recognised promptly.** The same defect as the first:
+  the notification did arrive, and each arrival grew the list rather than
+  reflecting it.
+- **Settings had no way back.** Opening the Advanced panel hides the main
+  screen, and the button that opens it lives on that screen, so nothing on
+  display could return. The panel now has a Done button, laid out first so a
+  long device list cannot push it out of view.
+
+Deduplication keys on device identity, never on name: two Yetis report the same
+product name and must remain two devices.
+
+## v0.4.0 — 2026-08-28
 
 ### Fixed — five defects on the audio thread
 
@@ -17,46 +45,43 @@ regression test confirmed to fail against the old code.
   §0.1 makes any non-zero underrun the one failure the user is shown, so this
   was a false alarm about the app's central promise.
 - **The monitor's runaway cut fired on unrelated bursts.** `kLimiterReleaseSeconds`
-  was declared and never used, so an engagement took as long to unwind as it took
-  to build and carried its credit into the next one. Two 300 ms bursts 10 ms
-  apart — neither close to the 500 ms threshold — combined past it and cut the
-  monitor mid-take, requiring a manual unmute.
+  was declared and never used, so an engagement took as long to unwind as it
+  took to build and carried its credit into the next one. Two 300 ms bursts
+  10 ms apart — neither close to the 500 ms threshold — combined past it and cut
+  the monitor mid-take.
 - **Use-after-free between the audio callback and `stopRecording`.** The callback
-  read a `std::unique_ptr` while another thread moved and then destroyed it, so
-  the ring could be freed underneath a callback already inside `pushBlock`. The
+  read a `std::unique_ptr` while another thread moved and then destroyed it. The
   audio thread now reads an atomic pointer published with release, and teardown
   waits for in-flight callbacks.
-- **Three `std::pow` calls per sample in the callback.** The monitor ceiling, the
-  master-volume curve and the mix limiter's ceiling were each recomputed per
-  sample from operands that never change. All are now computed once.
-- **The ring buffer copied one sample at a time.** `RingBuffer::write`/`::read`
-  looped with a modulo per sample, and `WritePipeline::pushBlock` called
-  `write()` once per sample per channel — 384,000 atomic release-stores a second
-  at 8 microphones. Both now move data in two `memcpy` chunks.
+- **Three `std::pow` calls per sample in the callback**, from operands that never
+  change. All are now computed once.
+- **The ring buffer copied one sample at a time** — 384,000 atomic release-stores
+  a second at 8 microphones. Both read and write now move data in two `memcpy`
+  chunks.
 
-Also: a failed `WritePipeline::start` now closes the stems it already opened, so
-an aborted take leaves no half-written headers on the card.
+### Added — installable rather than merely built
 
-### Added — the app is now installable rather than merely built
-
-- **macOS `.dmg`**, ad-hoc signed and drag-to-install. The first attempt at this
-  shipped a bundle Gatekeeper refused as *"is damaged"*: CMake's
-  `install(DIRECTORY)` and `cp -R` both discard the ad-hoc signature that Apple
-  Silicon requires. Packaging now re-signs after the install, stages with
-  `ditto`, and verifies the signature **inside the mounted image**.
+- **macOS `.dmg`**, ad-hoc signed and drag-to-install. The first attempt shipped a
+  bundle Gatekeeper refused as *"is damaged"*: `install(DIRECTORY)` and `cp -R`
+  both discard the ad-hoc signature Apple Silicon requires. Packaging now
+  re-signs after the install, stages with `ditto`, and verifies the signature
+  inside the mounted image.
 - **An application icon**, generated by `Tools/make_icon.py` from the app's own
-  §9.2 palette rather than committed as an opaque binary. CI fails the build if
-  `Icon.icns` is absent from the bundle, because `juceaide` only generates icon
-  containers on macOS and Windows and a broken icon survives every Linux check.
+  §9.2 palette. CI fails the build if `Icon.icns` is absent from the bundle.
 - **A laid-out disk-image window** — the app, an arrow, and the Applications
   folder, with the first-launch step written on the background art.
 
-### Known limitations
+## v0.3.0 and earlier
+
+`v0.1.0`, `v0.2.0`, `v0.2.1` and `v0.3.0` were cut before this changelog
+existed. See the [Releases page](../../releases) for what each contained.
+
+## Known limitations
 
 - The macOS build is **not signed with an Apple Developer ID and not notarized**.
   That requires a paid Apple account and a certificate, which cannot be produced
-  from source. Clearing the quarantine flag after download remains necessary; see
-  Troubleshooting in the README.
-- **No build has ever been run against a physical microphone.** The macOS and
-  Windows device layers execute every commit against simulated CoreAudio and
-  WASAPI backends; the entire §12 hardware validation matrix is outstanding.
+  from source. Clearing the quarantine flag after download remains necessary;
+  see Troubleshooting in the README.
+- The §12 hardware validation matrix is still outstanding. v0.5.0 fixes the
+  first four faults a real session found, but the matrix itself has not been
+  worked through.
