@@ -26,7 +26,12 @@ struct IoProcRegistration
 struct Device
 {
     fakeca::DeviceSpec spec;
-    bool hogHeld = false;
+
+    /// The pid holding hog mode, or -1 for unowned -- the same encoding
+    /// CoreAudio uses, so the backend's own comparison against getpid() is
+    /// what decides whether the device is ours.
+    int hogOwner = -1;
+
     std::vector<IoProcRegistration> procs;
 };
 
@@ -125,6 +130,15 @@ void fireDeviceListListeners()
 }
 
 } // namespace
+
+#if defined (_WIN32)
+pid_t getpid()
+{
+    // Any stable non-negative value works: the backend only ever compares this
+    // against the owner the hog-mode property reports back.
+    return 4242;
+}
+#endif
 
 // --- CoreFoundation ---------------------------------------------------------
 
@@ -272,7 +286,12 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
         {
             // -1 means unowned. A device the harness marked unavailable reports
             // a foreign pid, which is what another app holding it looks like.
-            const int owner = device->hogHeld ? 4242 : (device->spec.allowHogMode ? -1 : 9999);
+            // A device the harness marked unavailable reports a foreign pid,
+            // which is what another app holding it looks like.
+            constexpr int kSomeOtherProcess = 9999;
+            const int owner = device->hogOwner != -1
+                            ? device->hogOwner
+                            : (device->spec.allowHogMode ? -1 : kSomeOtherProcess);
             return deliver (&owner, sizeof (owner), ioSize, outData);
         }
 
@@ -336,14 +355,14 @@ OSStatus AudioObjectSetPropertyData (AudioObjectID object,
 
             if (owner == -1)
             {
-                device->hogHeld = false;
+                device->hogOwner = -1;
                 return noErr;
             }
 
             if (! device->spec.allowHogMode)
                 return kAudioHardwareUnspecifiedError;
 
-            device->hogHeld = true;
+            device->hogOwner = owner;
             return noErr;
         }
 
@@ -456,7 +475,7 @@ void reset()
 AudioObjectID addDevice (const DeviceSpec& spec)
 {
     const AudioObjectID id = state().nextId++;
-    state().devices[id] = Device { spec, false, {} };
+    state().devices[id] = Device { spec, -1, {} };
     state().order.push_back (id);
     fireDeviceListListeners();
     return id;
@@ -489,7 +508,7 @@ double nominalRate (AudioObjectID device)
 bool hogModeHeld (AudioObjectID device)
 {
     auto* d = find (device);
-    return d != nullptr && d->hogHeld;
+    return d != nullptr && d->hogOwner != -1;
 }
 
 int bufferFrameSize (AudioObjectID device)

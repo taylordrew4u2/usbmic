@@ -359,7 +359,7 @@ never what failed:
 | Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
 | Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
 
-77 checks across both, run by `ctest` on Linux, macOS and Windows alike. The
+79 checks across both, run by `ctest` on Linux, macOS and Windows alike. The
 WASAPI backend's worker thread is a real thread doing a real event handshake, so
 that path is exercised rather than reasoned about; both run again under
 AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer on every

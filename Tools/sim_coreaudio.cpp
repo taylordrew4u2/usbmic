@@ -300,6 +300,30 @@ void hogModeIsTakenAndReleased()
     check (! fakeca::hogModeHeld (id), "and released on close, so other apps get the device back");
 }
 
+/// Re-checking an output this app already holds must report it as available.
+/// The hog-mode property reports an owning pid, and "owned by us" and "owned by
+/// someone else" are the same value shape -- so telling them apart is the
+/// difference between a working monitor and a false "another app has it".
+void anOutputWeAlreadyHoldIsStillReportedAsAvailable()
+{
+    std::printf ("\nRe-checking an output this app already holds\n");
+    fakeca::reset();
+
+    fakeca::addDevice (headphones ("Held Out", "uid-held", 2, fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+
+    check (backend.openExclusiveOutputStream ("uid-held", 48000.0, 256,
+                                              [] (const float* const*, int, float* const*, int, int) {}),
+           "the output opens and takes hog mode");
+
+    const auto capability = backend.checkExclusiveModeCapability ("uid-held", 48000.0, 256);
+    check (capability.exclusiveModeAvailable,
+           "a second check sees our own hog mode as ours, not as another app's");
+
+    backend.closeAllStreams();
+}
+
 /// §2: hotplug arrives from the OS, never from a timer. The backend registers a
 /// property listener, so adding a device must reach it without anything polling.
 void hotplugArrivesThroughTheOsListener()
@@ -409,6 +433,7 @@ int main()
     aDeviceThatCannotReachTheRateIsRefused();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
+    anOutputWeAlreadyHoldIsStillReportedAsAvailable();
     hotplugArrivesThroughTheOsListener();
     aLargerThanRequestedCallbackIsStillDelivered();
     eightMicrophonesEachKeepTheirOwnAudio();

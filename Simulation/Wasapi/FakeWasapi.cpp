@@ -83,14 +83,29 @@ Endpoint* findEndpoint (const std::string& id)
     return it == world().endpoints.end() ? nullptr : it->second;
 }
 
+// Explicit element-wise conversion. The iterator-pair constructors narrow
+// implicitly, which MSVC rightly warns about; the endpoint ids and device names
+// here are ASCII, so a byte-for-byte widening is the whole of what is needed.
 std::wstring toWide (const std::string& s)
 {
-    return std::wstring (s.begin(), s.end());
+    std::wstring out;
+    out.reserve (s.size());
+
+    for (char c : s)
+        out.push_back (static_cast<wchar_t> (static_cast<unsigned char> (c)));
+
+    return out;
 }
 
 std::string toNarrow (const std::wstring& s)
 {
-    return std::string (s.begin(), s.end());
+    std::string out;
+    out.reserve (s.size());
+
+    for (wchar_t c : s)
+        out.push_back (static_cast<char> (c));
+
+    return out;
 }
 
 int bytesPerSample (const Format& f) { return f.containerBits / 8; }
