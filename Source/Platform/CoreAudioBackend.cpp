@@ -138,6 +138,24 @@ OSStatus deviceListChanged (AudioObjectID, UInt32, const AudioObjectPropertyAddr
     return noErr;
 }
 
+/// The device's transport, used only to tell a built-in microphone from an
+/// attached one. Unknown transports read as "not built in", which is the safe
+/// answer: a device wrongly treated as attachable can still be chosen as the
+/// timebase, whereas wrongly excluding one could leave a rig with no master.
+UInt32 readTransportType (AudioObjectID device)
+{
+    AudioObjectPropertyAddress address { kAudioDevicePropertyTransportType,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 transport = 0;
+    UInt32 size = sizeof (transport);
+
+    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &transport) != noErr)
+        return 0;
+
+    return transport;
+}
+
 /// Resolves a device UID (the stable identifier §2.4 stores) to a live
 /// AudioObjectID. Returns kAudioObjectUnknown when the device is not present,
 /// which is the normal case after an unplug.
@@ -413,6 +431,13 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         // stable CoreAudio UID string here as the practical stand-in since it
         // already encodes enough to distinguish ports across reconnects.
         d.usbLocationId = readStringProperty (deviceId, kAudioDevicePropertyDeviceUID);
+
+        // §3.1 needs to tell the machine's own microphone apart from one the
+        // user plugged in. CoreAudio enumerates the built-in first, so without
+        // this it wins clock-master selection on enumeration order and the
+        // Advanced panel reads "clock master: <the computer>" no matter how
+        // many USB mics are attached.
+        d.isBuiltIn = (readTransportType (deviceId) == kAudioDeviceTransportTypeBuiltIn);
         d.maxInputChannels = wantInput ? channels : 0;
         d.supportedSampleRates = querySupportedSampleRates (deviceId);
         d.isMicrophone = wantInput;

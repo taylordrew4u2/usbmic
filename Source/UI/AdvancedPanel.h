@@ -47,6 +47,11 @@ public:
     std::function<void (int, float)> onTrimChanged; // channel index, dB
     std::function<void (const juce::String&)> onAggregateNameChanged;
     std::function<void()> onDiagnosticsExportClicked;
+
+    /// §10.3 says one door. A door has to open both ways: showing this panel
+    /// hides the main screen, and the button that opened it lives there, so
+    /// without this the panel is a dead end with no way back.
+    std::function<void()> onCloseClicked;
     std::function<void (bool)> onMirrorToggled;
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&)> onClockMasterChanged;
@@ -75,6 +80,7 @@ private:
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
+    juce::TextButton closeButton { "< Done" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AdvancedPanel)
 };

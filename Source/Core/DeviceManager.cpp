@@ -3,10 +3,77 @@
 
 namespace mma {
 
-void DeviceManager::addDevice (MicDeviceState device)
+bool DeviceManager::addDevice (MicDeviceState device)
 {
+    // Reject a device we already know. This used to append unconditionally, so
+    // a caller that re-enumerated -- which is exactly what a hotplug
+    // notification does -- got a second copy of every device already present.
+    for (const auto& existing : devices)
+        if (existing.identity.key() == device.identity.key())
+            return false;
+
+    // The caller owns enumerationOrder on this path -- that is the documented
+    // contract and several callers rely on it. Only keep the internal counter
+    // ahead of it, so devices added later by syncToEnumeration (which does
+    // assign its own) cannot collide with one supplied here.
+    nextEnumerationOrder = std::max (nextEnumerationOrder, device.enumerationOrder + 1);
+
     devices.push_back (std::move (device));
     reapplyCapacityLimit();
+    return true;
+}
+
+bool DeviceManager::syncToEnumeration (const std::vector<MicDeviceState>& seen)
+{
+    bool changed = false;
+
+    // Drop anything the OS no longer reports.
+    const auto stillPresent = [&seen] (const MicDeviceState& d)
+    {
+        for (const auto& s : seen)
+            if (s.identity.key() == d.identity.key())
+                return true;
+        return false;
+    };
+
+    const auto before = devices.size();
+    devices.erase (std::remove_if (devices.begin(), devices.end(),
+                                   [&] (const MicDeviceState& d) { return ! stillPresent (d); }),
+                   devices.end());
+    changed = (devices.size() != before);
+
+    for (const auto& s : seen)
+    {
+        auto it = std::find_if (devices.begin(), devices.end(), [&] (const MicDeviceState& d) {
+            return d.identity.key() == s.identity.key();
+        });
+
+        if (it == devices.end())
+        {
+            MicDeviceState added = s;
+            added.enumerationOrder = nextEnumerationOrder++;
+            devices.push_back (std::move (added));
+            changed = true;
+            continue;
+        }
+
+        // Already known: refresh only what the OS owns. Everything the app has
+        // learned since -- enumeration order, drift history, inclusion, the
+        // name the user typed -- survives, because a device that never left is
+        // not a new device.
+        if (it->displayName != s.displayName)
+        {
+            it->displayName = s.displayName;
+            changed = true;
+        }
+
+        it->isBuiltIn = s.isBuiltIn;
+    }
+
+    if (changed)
+        reapplyCapacityLimit();
+
+    return changed;
 }
 
 bool DeviceManager::removeDevice (const PortIdentity& identity)
@@ -98,7 +165,24 @@ const MicDeviceState* DeviceManager::selectDefaultMaster() const
             if (d.included && d.identity.key() == preferredMasterKey)
                 return &d;
 
+    // §3.1: prefer something the user plugged in. A machine's built-in
+    // microphone is a legitimate input but a poor timebase, and CoreAudio
+    // enumerates it first, so before any drift measurement exists it would win
+    // on enumeration order alone -- which is why the clock master read as the
+    // computer on every Mac regardless of how many USB mics were attached.
     const MicDeviceState* best = nullptr;
+    for (const auto& d : devices)
+    {
+        if (! d.included || d.isBuiltIn)
+            continue;
+        if (best == nullptr || lowerDrift (d, *best))
+            best = &d;
+    }
+
+    if (best != nullptr)
+        return best;
+
+    // Only if there is nothing else. A built-in master beats no master at all.
     for (const auto& d : devices)
     {
         if (! d.included)
