@@ -127,9 +127,20 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
         {
             auto toggle = std::make_unique<juce::ToggleButton> (m.first);
             const auto name = m.first;
+
+            // Deferred rather than called straight through. Ticking a box
+            // rebuilds the audio streams, and a rebuild can reach back into
+            // this panel; destroying a button from inside its own click
+            // handler is a crash JUCE gives no warning about. Reading the
+            // state here and doing the work on the next message keeps the
+            // button alive for the whole of its own callback.
             toggle->onClick = [this, name, raw = toggle.get()] {
-                if (onMicEnabledChanged)
-                    onMicEnabledChanged (name, raw->getToggleState());
+                const bool state = raw->getToggleState();
+                juce::MessageManager::callAsync (
+                    [safe = juce::Component::SafePointer<AdvancedPanel> (this), name, state] {
+                        if (safe != nullptr && safe->onMicEnabledChanged)
+                            safe->onMicEnabledChanged (name, state);
+                    });
             };
             addAndMakeVisible (*toggle);
             micToggles.push_back (std::move (toggle));
