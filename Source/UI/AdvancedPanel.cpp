@@ -147,11 +147,18 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
             // button alive for the whole of its own callback.
             toggle->onClick = [this, name, raw = toggle.get()] {
                 const bool state = raw->getToggleState();
-                juce::MessageManager::callAsync (
-                    [safe = juce::Component::SafePointer<AdvancedPanel> (this), name, state] {
-                        if (safe != nullptr && safe->onMicEnabledChanged)
-                            safe->onMicEnabledChanged (name, state);
-                    });
+
+                // The SafePointer is built here and captured by copy, rather
+                // than constructed in the inner lambda's init-capture. Inside a
+                // nested lambda MSVC resolves `this` to the enclosing closure
+                // object instead of the panel, so the init-capture form
+                // compiled on Clang and GCC and failed on Windows.
+                juce::Component::SafePointer<AdvancedPanel> safe (this);
+
+                juce::MessageManager::callAsync ([safe, name, state] {
+                    if (safe != nullptr && safe->onMicEnabledChanged)
+                        safe->onMicEnabledChanged (name, state);
+                });
             };
             addAndMakeVisible (*toggle);
             micToggles.push_back (std::move (toggle));
