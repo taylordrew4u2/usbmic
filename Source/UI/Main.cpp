@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include "AppLookAndFeel.h"
 #include "../App/Application.h"
 
 namespace mma {
@@ -59,6 +60,11 @@ public:
         juce::Logger::writeToLog ("Starting up.");
 
         application = std::make_unique<Application>();
+        // Installed before any window exists, so every control is painted in the
+        // §9.2 palette from its first frame rather than flashing JUCE's default
+        // blue and being recoloured afterwards.
+        juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
+
         application->initialise();
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *application);
     }
@@ -66,6 +72,10 @@ public:
     void shutdown() override
     {
         mainWindow.reset();
+
+        // Cleared before the look-and-feel goes out of scope: JUCE asserts if a
+        // component outlives the look-and-feel it points at.
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
 
         if (application != nullptr)
             application->shutdown();
@@ -86,6 +96,10 @@ public:
 private:
     std::unique_ptr<juce::FileLogger> logger;
     std::unique_ptr<Application> application;
+    // Declared before mainWindow, so it is destroyed after it. Members are
+    // destroyed in reverse declaration order, and JUCE asserts if a component
+    // outlives the look-and-feel it points at.
+    AppLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
 };
 
