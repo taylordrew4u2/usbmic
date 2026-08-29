@@ -25,10 +25,6 @@ public:
     /// pointers need this to size the set before they bind, never after.
     int getMicCount() const;
 
-    /// Layout differs between the two states, so it is remembered rather than
-    /// re-derived from a label's text.
-    bool recordingState = false;
-
     /// The height this screen's content needs. See AdvancedPanel for why a
     /// container asks rather than measures.
     int getRequiredHeight() const;
@@ -71,6 +67,10 @@ public:
     std::function<void (int)> onMicNameClicked; // skull index
 
 private:
+    /// Layout differs between the two states, so it is remembered rather than
+    /// re-derived from a label's text.
+    bool recordingState = false;
+
     juce::OwnedArray<SkullMeterComponent> skullMeters;
     MixBarComponent mixBar;
 
