@@ -115,6 +115,7 @@ if (MMA_BUILD_APP)
         Source/Platform/AsioOutputBackend.cpp
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp
+        Source/UI/AppLookAndFeel.cpp
         Source/UI/SkullMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/MainScreen.cpp
