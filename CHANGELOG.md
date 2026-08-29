@@ -1,6 +1,31 @@
 # Changelog
 
-## v0.5.0 — 2026-08-28
+## v0.5.0 — 2026-08-29
+
+### Changed — one visual language, and controls where they are looked for
+
+- **The app has a look of its own.** Every control was previously a JUCE
+  default in JUCE blue. A single `AppLookAndFeel` now carries the palette and
+  draws the buttons, sliders, scrollbars and tick boxes: flat, rounded, hairline
+  outlines on a dark ground. The record button is the one saturated element on
+  the screen and turns red while recording, so the state is never carried by
+  colour alone.
+- **The window opens at the height the screen needs.** It opened at 480 pixels
+  while the main screen needed 528, which put the monitor volume, the mute
+  button and the only way into Settings below the fold behind a scrollbar. Both
+  screens still scroll on a display too short for them.
+- **"Advanced" is now "Settings".** It is the one door out of the main screen
+  and it holds ordinary choices — which microphones to record, where the files
+  go. "Advanced" read as a warning to stay out of it.
+- **Where recordings go is the first thing in Settings**, directly under Done.
+  Picking an SD card before a take is what most people open the panel to do,
+  and it sat at the bottom, below four read-only format rows, the microphone
+  list and the drift report.
+- **The monitor slider says what it is.** Its value box read a bare `70`; it
+  now reads `Monitor 70`, naming the control in the space it already had.
+- `Tools/screenshot_app.sh` renders the app headless and captures it, so a
+  layout change can be looked at rather than reasoned about. `MMA_CLICK=x,y`
+  clicks before capturing, which is how the Settings screen gets captured.
 
 ### Added — from the first working session
 
