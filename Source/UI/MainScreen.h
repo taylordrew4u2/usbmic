@@ -20,6 +20,14 @@ public:
     /// Rebuilds the skull row for the given mic count. Ownership of the
     /// SkullMeterComponents stays with this class.
     void setMicCount (int count);
+
+    /// How many channel strips currently exist. Callers rebinding meter
+    /// pointers need this to size the set before they bind, never after.
+    int getMicCount() const;
+
+    /// The height this screen's content needs. See AdvancedPanel for why a
+    /// container asks rather than measures.
+    int getRequiredHeight() const;
     SkullMeterComponent* getSkullMeter (int index);
 
     void setMixMetering (Metering* meteringSource) { mixBar.setMetering (meteringSource); }

@@ -60,6 +60,17 @@ AdvancedPanel::AdvancedPanel()
     micSelectionLabel.setText ("Microphones to record", juce::dontSendNotification);
     addAndMakeVisible (micSelectionLabel);
 
+    storageLabel.setText ("Save recordings to", juce::dontSendNotification);
+    addAndMakeVisible (storageLabel);
+
+    storageCombo.onChange = [this] {
+        const int index = storageCombo.getSelectedItemIndex();
+
+        if (index >= 0 && index < storagePaths.size() && onStorageVolumeChosen)
+            onStorageVolumeChosen (storagePaths[index]);
+    };
+    addAndMakeVisible (storageCombo);
+
     // §10.3 says nothing behind this door may be a gate the novice must pass,
     // which makes an unexplained term worse than no term: someone who does not
     // know what a clock master is cannot tell whether they need to care.
@@ -127,9 +138,27 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
         {
             auto toggle = std::make_unique<juce::ToggleButton> (m.first);
             const auto name = m.first;
+
+            // Deferred rather than called straight through. Ticking a box
+            // rebuilds the audio streams, and a rebuild can reach back into
+            // this panel; destroying a button from inside its own click
+            // handler is a crash JUCE gives no warning about. Reading the
+            // state here and doing the work on the next message keeps the
+            // button alive for the whole of its own callback.
             toggle->onClick = [this, name, raw = toggle.get()] {
-                if (onMicEnabledChanged)
-                    onMicEnabledChanged (name, raw->getToggleState());
+                const bool state = raw->getToggleState();
+
+                // The SafePointer is built here and captured by copy, rather
+                // than constructed in the inner lambda's init-capture. Inside a
+                // nested lambda MSVC resolves `this` to the enclosing closure
+                // object instead of the panel, so the init-capture form
+                // compiled on Clang and GCC and failed on Windows.
+                juce::Component::SafePointer<AdvancedPanel> safe (this);
+
+                juce::MessageManager::callAsync ([safe, name, state] {
+                    if (safe != nullptr && safe->onMicEnabledChanged)
+                        safe->onMicEnabledChanged (name, state);
+                });
             };
             addAndMakeVisible (*toggle);
             micToggles.push_back (std::move (toggle));
@@ -142,6 +171,34 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
     // the 8-mic cap, a device leaving -- shows up here.
     for (size_t i = 0; i < micToggles.size() && i < mics.size(); ++i)
         micToggles[i]->setToggleState (mics[i].second, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
+{
+    juce::StringArray labels;
+    for (const auto& v : volumes)
+        labels.add (v.label);
+
+    // Rebuilt only when the set of volumes changes -- a card being plugged in
+    // or pulled out. Repopulating on every tick would close the menu under
+    // someone in the middle of choosing from it.
+    if (labels != lastStorageLabels)
+    {
+        lastStorageLabels = labels;
+        storagePaths.clear();
+        storageCombo.clear (juce::dontSendNotification);
+
+        int id = 1;
+        for (const auto& v : volumes)
+        {
+            storageCombo.addItem (v.label, id++);
+            storagePaths.add (v.path);
+        }
+    }
+
+    for (size_t i = 0; i < volumes.size(); ++i)
+        if (volumes[i].current)
+            storageCombo.setSelectedItemIndex (static_cast<int> (i), juce::dontSendNotification);
 }
 
 void AdvancedPanel::setClockMasters (const juce::StringArray& names, const juce::String& selected)
@@ -203,6 +260,34 @@ void AdvancedPanel::paint (juce::Graphics& g)
     g.fillAll (juce::Colour (0xFF1E1816));
 }
 
+int AdvancedPanel::getRequiredHeight() const
+{
+    // Mirrors resized() below. Kept as an explicit sum rather than measured
+    // from a trial layout, because resized() consumes the bounds it is given
+    // and cannot report what it would have wanted from a taller one.
+    constexpr int kMargins       = 12 * 2;
+    constexpr int kCloseButton   = 30 + 8;
+    constexpr int kRow           = 26 + 4;
+    constexpr int kMicListLabel  = 22;
+    constexpr int kMicToggle     = 24 + 2;
+    constexpr int kClockHelp     = 76 + 6;
+    constexpr int kDrift         = 60 + 4;
+    constexpr int kTrimViewport  = 100 + 4;
+    constexpr int kAggregate     = 20 + 4;
+    constexpr int kMirror        = 26 + 4;
+    constexpr int kDestination   = 26 + 8;
+    constexpr int kDiagnostics   = 30;
+
+    // sample rate, bit depth, buffer size, latency, clock master, output
+    // device, backend, aggregate name, save-to volume.
+    constexpr int kRowCount = 9;
+
+    return kMargins + kCloseButton + (kRow * kRowCount) + kMicListLabel
+         + static_cast<int> (micToggles.size()) * kMicToggle + 8
+         + kClockHelp + kDrift + kTrimViewport + kAggregate + kMirror
+         + kDestination + kDiagnostics;
+}
+
 void AdvancedPanel::resized()
 {
     auto area = getLocalBounds().reduced (12);
@@ -251,6 +336,8 @@ void AdvancedPanel::resized()
 
     mirrorToggle.setBounds (area.removeFromTop (26));
     area.removeFromTop (4);
+
+    row (storageLabel, storageCombo);
 
     {
         auto r = area.removeFromTop (26);
