@@ -127,6 +127,7 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
         {
             auto toggle = std::make_unique<juce::ToggleButton> (m.first);
             const auto name = m.first;
+<<<<<<< HEAD
 
             // Deferred rather than called straight through. Ticking a box
             // rebuilds the audio streams, and a rebuild can reach back into
@@ -141,6 +142,11 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
                         if (safe != nullptr && safe->onMicEnabledChanged)
                             safe->onMicEnabledChanged (name, state);
                     });
+=======
+            toggle->onClick = [this, name, raw = toggle.get()] {
+                if (onMicEnabledChanged)
+                    onMicEnabledChanged (name, raw->getToggleState());
+>>>>>>> origin/claude/project-bug-fixes-46edco
             };
             addAndMakeVisible (*toggle);
             micToggles.push_back (std::move (toggle));
