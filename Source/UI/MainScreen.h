@@ -67,6 +67,10 @@ public:
     std::function<void (int)> onMicNameClicked; // skull index
 
 private:
+    /// Layout differs between the two states, so it is remembered rather than
+    /// re-derived from a label's text.
+    bool recordingState = false;
+
     juce::OwnedArray<SkullMeterComponent> skullMeters;
     MixBarComponent mixBar;
 
@@ -76,7 +80,10 @@ private:
     juce::Slider volumeSlider;
     juce::TextEditor sessionNameEditor;
     juce::ToggleButton muteButton { "Mute" };
-    juce::TextButton advancedButton { "Advanced" };
+    // "Settings" rather than "Advanced": this is the only door out of the main
+    // screen, and it holds ordinary choices -- which mics are in use, where
+    // recordings go -- not expert ones. "Advanced" told users to stay out.
+    juce::TextButton advancedButton { "Settings" };
 
     bool recording = false;
 
