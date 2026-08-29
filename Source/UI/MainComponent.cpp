@@ -7,8 +7,16 @@ MainComponent::MainComponent (Application& app)
     : application (app)
 {
     addAndMakeVisible (mainScreen);
-    advancedPanel.setVisible (false);
-    addChildComponent (advancedPanel);
+    // Owned by this component, not by the viewports: `false` here means the
+    // viewport does not take ownership and will not delete them.
+    mainViewport.setViewedComponent (&mainScreen, false);
+    mainViewport.setScrollBarsShown (true, false);
+    addAndMakeVisible (mainViewport);
+
+    advancedViewport.setViewedComponent (&advancedPanel, false);
+    advancedViewport.setScrollBarsShown (true, false);
+    advancedViewport.setVisible (false);
+    addChildComponent (advancedViewport);
 
     mainScreen.onRecordButtonClicked = [this] {
         // §6.2: whatever is in the name box when record is pressed names the take.
@@ -91,6 +99,11 @@ MainComponent::MainComponent (Application& app)
                                             refreshAdvanced();
                                         }
                                     });
+    };
+
+    advancedPanel.onStorageVolumeChosen = [this] (const juce::String& path) {
+        application.setDestinationByPath (path);
+        refreshAdvanced();
     };
 
     advancedPanel.onCloseClicked = [this] { toggleAdvanced(); };
@@ -296,6 +309,23 @@ void MainComponent::refreshAdvanced()
         micSelections.push_back ({ m.displayName, m.enabled });
     advancedPanel.setMicSelections (micSelections);
 
+    // Adding or removing a microphone changes how tall the panel needs to be,
+    // and only this component can resize it inside its viewport. Guarded on the
+    // height actually changing, because refreshAdvanced runs on the UI tick and
+    // relaying out the whole panel twice a second would be churn for nothing.
+    const int requiredHeight = advancedPanel.getRequiredHeight();
+
+    if (requiredHeight != lastAdvancedHeight)
+    {
+        lastAdvancedHeight = requiredHeight;
+        resized();
+    }
+
+    std::vector<AdvancedPanel::VolumeChoice> volumes;
+    for (const auto& v : application.getStorageVolumes())
+        volumes.push_back ({ v.displayName, v.path, v.isCurrent });
+    advancedPanel.setStorageVolumes (volumes);
+
     advancedPanel.setClockMasters (micNames, application.getClockMasterName());
 
     // Rebuilt only when the mic set changes: doing it every tick would reset a
@@ -314,16 +344,40 @@ void MainComponent::toggleAdvanced()
     if (advancedVisible)
         refreshAdvanced();
 
-    advancedPanel.setVisible (advancedVisible);
-    mainScreen.setVisible (! advancedVisible);
+    advancedViewport.setVisible (advancedVisible);
+    mainViewport.setVisible (! advancedVisible);
+
+    // Back to the top on entry, so opening Settings never starts halfway down
+    // wherever it was last left.
+    if (advancedVisible)
+        advancedViewport.setViewPosition (0, 0);
+
     resized();
 }
 
 void MainComponent::resized()
 {
     auto bounds = getLocalBounds();
-    mainScreen.setBounds (bounds);
-    advancedPanel.setBounds (bounds);
+
+    mainViewport.setBounds (bounds);
+    advancedViewport.setBounds (bounds);
+
+    // Each screen is laid out at least as tall as its content needs, and at
+    // least as tall as the window -- so a short window scrolls and a tall one
+    // does not leave the content floating in a strip at the top. The width
+    // excludes the scrollbar when one is showing, or the content would sit
+    // underneath it.
+    const auto fit = [] (juce::Viewport& viewport, juce::Component& content, int requiredHeight)
+    {
+        const int width = viewport.getWidth()
+                        - (viewport.isVerticalScrollBarShown() ? viewport.getScrollBarThickness() : 0);
+
+        content.setSize (juce::jmax (1, width),
+                         juce::jmax (viewport.getHeight(), requiredHeight));
+    };
+
+    fit (mainViewport, mainScreen, mainScreen.getRequiredHeight());
+    fit (advancedViewport, advancedPanel, advancedPanel.getRequiredHeight());
 }
 
 } // namespace mma

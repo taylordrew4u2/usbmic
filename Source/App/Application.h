@@ -140,6 +140,22 @@ public:
     };
     std::vector<MicSelection> getMicSelections() const;
 
+    /// §10.1: somewhere to save to, chosen by pointing at it rather than by
+    /// navigating a file browser to find it. One entry per mounted volume the
+    /// app can actually write to, plus the home folder, so an SD card is a
+    /// click rather than a path someone has to know.
+    struct StorageVolume
+    {
+        juce::String displayName;   // "UNTITLED (SD card) - 29.8 GB free"
+        juce::String path;          // where recordings would go
+        bool isRemovable = false;
+        bool isCurrent = false;
+    };
+    std::vector<StorageVolume> getStorageVolumes() const;
+
+    /// Point the destination at one of the volumes above, by its path.
+    void setDestinationByPath (const juce::String& path);
+
     /// Ticking or clearing a microphone in Settings. Rebuilds the audio streams
     /// only when the flag actually changed.
     void setMicEnabledByName (const juce::String& displayName, bool enabled);

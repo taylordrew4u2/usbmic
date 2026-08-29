@@ -79,6 +79,13 @@ void MainScreen::setMicCount (int count)
     resized();
 }
 
+int MainScreen::getRequiredHeight() const
+{
+    // The channel-strip row plus every fixed row resized() lays out beneath it,
+    // and the margins around the lot.
+    return 504 + 24;
+}
+
 int MainScreen::getMicCount() const
 {
     return skullMeters.size();
