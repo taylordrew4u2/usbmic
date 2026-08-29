@@ -17,6 +17,12 @@ public:
     ~AdvancedPanel() override;
 
     void resized() override;
+
+    /// The height this panel's content needs at its current item count.
+    /// The panel is taller than most windows once a few microphones are
+    /// listed, so a container scrolls it rather than clipping it -- and a
+    /// container can only do that if it is told how tall to make it.
+    int getRequiredHeight() const;
     void paint (juce::Graphics& g) override;
 
     void setSampleRate (double rate) { sampleRateValue.setText (juce::String (rate, 0) + " Hz", juce::dontSendNotification); }
@@ -42,6 +48,11 @@ public:
     /// The microphones the OS reports and whether each is currently selected.
     void setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics);
 
+    /// Volumes to offer as save destinations: display name, path, and whether
+    /// it is the one currently in use.
+    struct VolumeChoice { juce::String label, path; bool current = false; };
+    void setStorageVolumes (const std::vector<VolumeChoice>& volumes);
+
     void setClockMasters (const juce::StringArray& names, const juce::String& selected);
 
     /// §4: one trim slider per microphone, rebuilt when the mic set changes.
@@ -61,6 +72,7 @@ public:
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&)> onClockMasterChanged;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
+    std::function<void (const juce::String&)> onStorageVolumeChosen;
     std::function<void (const juce::String&)> onOutputDeviceChanged;
 
 private:
@@ -89,6 +101,10 @@ private:
     juce::TextButton closeButton { "< Done" };
 
     juce::Label micSelectionLabel;
+    juce::Label storageLabel;
+    juce::ComboBox storageCombo;
+    juce::StringArray storagePaths;
+    juce::StringArray lastStorageLabels;
     juce::Label clockMasterHelpLabel;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;
     juce::StringArray lastMicNames;

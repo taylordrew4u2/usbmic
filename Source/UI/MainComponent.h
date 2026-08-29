@@ -34,6 +34,14 @@ private:
     Application& application;
     MainScreen mainScreen;
     AdvancedPanel advancedPanel;
+
+    // Both screens are taller than a small window -- Settings especially, once
+    // a few microphones are listed. Without these the overflow was simply
+    // clipped, with no scrollbar and no indication anything was missing.
+    int lastAdvancedHeight = 0;
+
+    juce::Viewport mainViewport;
+    juce::Viewport advancedViewport;
     bool advancedVisible = false;
     int lastMicCount = -1;
     int lastAdvancedMicCount = -1;

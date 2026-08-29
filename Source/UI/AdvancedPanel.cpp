@@ -60,6 +60,17 @@ AdvancedPanel::AdvancedPanel()
     micSelectionLabel.setText ("Microphones to record", juce::dontSendNotification);
     addAndMakeVisible (micSelectionLabel);
 
+    storageLabel.setText ("Save recordings to", juce::dontSendNotification);
+    addAndMakeVisible (storageLabel);
+
+    storageCombo.onChange = [this] {
+        const int index = storageCombo.getSelectedItemIndex();
+
+        if (index >= 0 && index < storagePaths.size() && onStorageVolumeChosen)
+            onStorageVolumeChosen (storagePaths[index]);
+    };
+    addAndMakeVisible (storageCombo);
+
     // §10.3 says nothing behind this door may be a gate the novice must pass,
     // which makes an unexplained term worse than no term: someone who does not
     // know what a clock master is cannot tell whether they need to care.
@@ -155,6 +166,34 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
         micToggles[i]->setToggleState (mics[i].second, juce::dontSendNotification);
 }
 
+void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
+{
+    juce::StringArray labels;
+    for (const auto& v : volumes)
+        labels.add (v.label);
+
+    // Rebuilt only when the set of volumes changes -- a card being plugged in
+    // or pulled out. Repopulating on every tick would close the menu under
+    // someone in the middle of choosing from it.
+    if (labels != lastStorageLabels)
+    {
+        lastStorageLabels = labels;
+        storagePaths.clear();
+        storageCombo.clear (juce::dontSendNotification);
+
+        int id = 1;
+        for (const auto& v : volumes)
+        {
+            storageCombo.addItem (v.label, id++);
+            storagePaths.add (v.path);
+        }
+    }
+
+    for (size_t i = 0; i < volumes.size(); ++i)
+        if (volumes[i].current)
+            storageCombo.setSelectedItemIndex (static_cast<int> (i), juce::dontSendNotification);
+}
+
 void AdvancedPanel::setClockMasters (const juce::StringArray& names, const juce::String& selected)
 {
     fillCombo (clockMasterCombo, names, selected);
@@ -214,6 +253,34 @@ void AdvancedPanel::paint (juce::Graphics& g)
     g.fillAll (juce::Colour (0xFF1E1816));
 }
 
+int AdvancedPanel::getRequiredHeight() const
+{
+    // Mirrors resized() below. Kept as an explicit sum rather than measured
+    // from a trial layout, because resized() consumes the bounds it is given
+    // and cannot report what it would have wanted from a taller one.
+    constexpr int kMargins       = 12 * 2;
+    constexpr int kCloseButton   = 30 + 8;
+    constexpr int kRow           = 26 + 4;
+    constexpr int kMicListLabel  = 22;
+    constexpr int kMicToggle     = 24 + 2;
+    constexpr int kClockHelp     = 76 + 6;
+    constexpr int kDrift         = 60 + 4;
+    constexpr int kTrimViewport  = 100 + 4;
+    constexpr int kAggregate     = 20 + 4;
+    constexpr int kMirror        = 26 + 4;
+    constexpr int kDestination   = 26 + 8;
+    constexpr int kDiagnostics   = 30;
+
+    // sample rate, bit depth, buffer size, latency, clock master, output
+    // device, backend, aggregate name, save-to volume.
+    constexpr int kRowCount = 9;
+
+    return kMargins + kCloseButton + (kRow * kRowCount) + kMicListLabel
+         + static_cast<int> (micToggles.size()) * kMicToggle + 8
+         + kClockHelp + kDrift + kTrimViewport + kAggregate + kMirror
+         + kDestination + kDiagnostics;
+}
+
 void AdvancedPanel::resized()
 {
     auto area = getLocalBounds().reduced (12);
@@ -262,6 +329,8 @@ void AdvancedPanel::resized()
 
     mirrorToggle.setBounds (area.removeFromTop (26));
     area.removeFromTop (4);
+
+    row (storageLabel, storageCombo);
 
     {
         auto r = area.removeFromTop (26);

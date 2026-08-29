@@ -500,6 +500,90 @@ void Application::setMicAssignedName (int index, const juce::String& name)
     }
 }
 
+std::vector<Application::StorageVolume> Application::getStorageVolumes() const
+{
+    std::vector<StorageVolume> volumes;
+    juce::StringArray seen;
+
+    const auto add = [&] (const juce::File& root, bool forceRemovable)
+    {
+        if (! root.isDirectory() || ! root.hasWriteAccess())
+            return;
+
+        const auto full = root.getFullPathName();
+
+        if (seen.contains (full))
+            return;
+
+        seen.add (full);
+
+        const auto freeBytes = root.getBytesFreeOnVolume();
+        const bool removable = forceRemovable || root.isOnRemovableDrive();
+
+        auto name = root.getVolumeLabel();
+        if (name.isEmpty())
+            name = root.getFileName();
+        if (name.isEmpty())
+            name = full;
+
+        juce::String label = name;
+        if (removable)
+            label += " (removable)";
+        if (freeBytes > 0)
+            label += " - " + juce::File::descriptionOfSizeInBytes (freeBytes) + " free";
+
+        // Recordings land in a folder on the volume rather than loose at its
+        // root, which is what someone expects when they hand a card to an
+        // editor and what keeps a card usable for anything else.
+        const auto destination = root.getChildFile ("RECORDINGS");
+
+        // destinationFolder is a std::string, so the comparison is made
+        // explicitly rather than left to an ambiguous mixed-type operator==.
+        const bool isCurrent =
+            destination.getFullPathName() == juce::String (destinationFolder);
+
+        volumes.push_back ({ label, destination.getFullPathName(), removable, isCurrent });
+    };
+
+    // Mounted volumes. On macOS every attached card and disk appears under
+    // /Volumes; on Windows the roots are the drive letters; on Linux the
+    // common mount points are covered by the roots plus /media and /mnt.
+    const juce::File volumesDir ("/Volumes");
+    if (volumesDir.isDirectory())
+        for (const auto& child : volumesDir.findChildFiles (juce::File::findDirectories, false))
+            add (child, false);
+
+    for (const auto& dir : { juce::File ("/media"), juce::File ("/mnt") })
+        if (dir.isDirectory())
+            for (const auto& child : dir.findChildFiles (juce::File::findDirectories, false))
+                add (child, true);
+
+    juce::Array<juce::File> roots;
+    juce::File::findFileSystemRoots (roots);
+    for (const auto& root : roots)
+        add (root, false);
+
+    // Always last, and always present: the one destination that cannot be
+    // unplugged mid-take.
+    add (juce::File::getSpecialLocation (juce::File::userHomeDirectory), false);
+
+    return volumes;
+}
+
+void Application::setDestinationByPath (const juce::String& path)
+{
+    const juce::File target (path);
+
+    // Created on selection rather than at record time, so an unwritable card is
+    // discovered while someone is looking at the setting, not when they press
+    // record.
+    if (! target.exists())
+        target.createDirectory();
+
+    if (target.isDirectory() && target.hasWriteAccess())
+        setDestinationFolder (target);
+}
+
 void Application::chooseInitialDestination()
 {
     // §10.1: destination defaults to a connected external card; falls back to
