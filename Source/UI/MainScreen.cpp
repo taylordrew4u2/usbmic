@@ -79,6 +79,11 @@ void MainScreen::setMicCount (int count)
     resized();
 }
 
+int MainScreen::getMicCount() const
+{
+    return skullMeters.size();
+}
+
 SkullMeterComponent* MainScreen::getSkullMeter (int index)
 {
     return skullMeters[index];

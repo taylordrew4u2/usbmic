@@ -243,6 +243,21 @@ void MainComponent::rebindMeters()
 
     const int micCount = application.getIncludedMicCount();
 
+    // Size the strip set BEFORE binding anything into it.
+    //
+    // Rebuilding the capture destroys every Metering object the existing strips
+    // point at -- CaptureCoordinator::startMonitoring clears and recreates the
+    // lot on every call. Binding only the first micCount strips therefore left
+    // any surplus strip from a larger set holding a pointer into freed memory,
+    // and the strips repaint at 60 Hz, so it was read long before the next
+    // timer tick could have tidied up.
+    //
+    // That window was survivable while the channel count only shrank on an
+    // unplug. Adding a checkbox to deselect a microphone made it reachable on
+    // demand, and it crashed.
+    if (mainScreen.getMicCount() != micCount)
+        mainScreen.setMicCount (micCount);
+
     for (int i = 0; i < micCount; ++i)
     {
         if (auto* skull = mainScreen.getSkullMeter (i))
