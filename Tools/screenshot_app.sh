@@ -5,6 +5,7 @@
 #   apt-get install -y xvfb imagemagick xdotool
 #
 # Usage:  Tools/screenshot_app.sh out.png [seconds-to-settle]
+#         MMA_CLICK=x,y Tools/screenshot_app.sh out.png   # click first
 #
 # Pair it with Tools/setup_alsa_fixture.sh to get virtual microphones, so the
 # channel strips render with devices present instead of the empty-rig state.
@@ -30,6 +31,16 @@ DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-screenshot-app.log 2>&1 &
 APP_PID=$!
 
 sleep "$SETTLE"
+
+# Optional: click somewhere before capturing, so screens behind a button --
+# Settings, most of all -- can be captured reproducibly instead of by an
+# ad-hoc xdotool invocation that is retyped from memory each time.
+#   MMA_CLICK=918,678 Tools/screenshot_app.sh settings.png
+if [ -n "${MMA_CLICK:-}" ]; then
+  DISPLAY="$DISPLAY_NUM" xdotool mousemove "${MMA_CLICK%%,*}" "${MMA_CLICK##*,}" click 1
+  sleep 2
+fi
+
 DISPLAY="$DISPLAY_NUM" import -window root "$OUT"
 
 kill "$APP_PID" 2>/dev/null || true

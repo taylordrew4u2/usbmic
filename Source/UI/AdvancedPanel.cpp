@@ -275,7 +275,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kTrimViewport  = 100 + 4;
     constexpr int kAggregate     = 20 + 4;
     constexpr int kMirror        = 26 + 4;
-    constexpr int kDestination   = 26 + 8;
+    constexpr int kDestination   = 26 + 12;
     constexpr int kDiagnostics   = 30;
 
     // sample rate, bit depth, buffer size, latency, clock master, output
@@ -304,6 +304,19 @@ void AdvancedPanel::resized()
         value.setBounds (r);
         area.removeFromTop (4);
     };
+
+    // Where recordings go comes first, above the read-only format rows. It is
+    // the choice a user comes in here to make -- picking an SD card before a
+    // take -- and at the bottom of the panel it was below the fold, found only
+    // by scrolling past four values nobody can change.
+    row (storageLabel, storageCombo);
+
+    {
+        auto r = area.removeFromTop (26);
+        destinationFolderLabel.setBounds (r.removeFromLeft (r.getWidth() / 2));
+        destinationFolderButton.setBounds (r);
+    }
+    area.removeFromTop (12);
 
     row (sampleRateLabel, sampleRateValue);
     row (bitDepthLabel, bitDepthValue);
@@ -336,15 +349,6 @@ void AdvancedPanel::resized()
 
     mirrorToggle.setBounds (area.removeFromTop (26));
     area.removeFromTop (4);
-
-    row (storageLabel, storageCombo);
-
-    {
-        auto r = area.removeFromTop (26);
-        destinationFolderLabel.setBounds (r.removeFromLeft (r.getWidth() / 2));
-        destinationFolderButton.setBounds (r);
-    }
-    area.removeFromTop (8);
 
     diagnosticsExportButton.setBounds (area.removeFromTop (30));
 }
