@@ -119,7 +119,11 @@ MainComponent::MainComponent (Application& app)
         application.exportDiagnostics (destination);
     };
 
-    setSize (720, 480);
+    // Tall enough that the whole main screen -- monitor volume, mute and the
+    // Settings button included -- is on screen at launch. At 480 the bottom
+    // row sat below the fold, so the one door into Settings was reachable
+    // only by scrolling. The viewport still scrolls on shorter displays.
+    setSize (720, mainScreen.getRequiredHeight() + 24);
 
     // §8.1: meters and status are live from launch, not from record.
     refreshStatus();
