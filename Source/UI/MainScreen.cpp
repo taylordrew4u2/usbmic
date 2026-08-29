@@ -55,6 +55,18 @@ MainScreen::MainScreen()
     disabledReasonLabel.setVisible (false);
     addAndMakeVisible (disabledReasonLabel);
 
+    // The bare number told a user nothing about what it controlled. Naming it
+    // inside the value box costs no layout and needs no separate label; a
+    // suffix would read "70 monitor", so the name goes in front.
+    volumeSlider.textFromValueFunction = [] (double value)
+    {
+        return "Monitor " + juce::String (juce::roundToInt (value));
+    };
+    volumeSlider.valueFromTextFunction = [] (const juce::String& text)
+    {
+        return text.retainCharacters ("0123456789").getDoubleValue();
+    };
+    volumeSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, true, 86, 20);
     volumeSlider.setRange (0.0, 100.0, 1.0);
     volumeSlider.setValue (70.0); // §5.1 default
     volumeSlider.onValueChange = [this] { if (onVolumeChanged) onVolumeChanged (volumeSlider.getValue()); };
