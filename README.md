@@ -88,7 +88,7 @@ firmware quirks and its scheduling. So what remains unproven on macOS and
 Windows is how a physical device behaves, not whether the code that talks to it
 is correct.
 
-**If you are on macOS or Windows and something misbehaves**, use *Advanced →
+**If you are on macOS or Windows and something misbehaves**, use *Settings →
 Export diagnostics*. It bundles the log, recent session metadata and your device
 inventory — never audio — which is exactly what is needed to diagnose it.
 
@@ -172,10 +172,10 @@ has this same step.
 - **One device for other apps (macOS)** — the app publishes a combined input
   device containing every connected microphone, created through CoreAudio's
   public aggregate-device API: no driver, no signing. It appears in every
-  app's input list (Zoom, OBS, a DAW) under a name you set in **Advanced →
+  app's input list (Zoom, OBS, a DAW) under a name you set in **Settings →
   Combined device name**, with one channel per mic and the same §3.1 clock
   master the app itself uses. It tracks hot-plug and is removed when the app
-  quits. On Windows this needs the §7 virtual-device driver — the Advanced
+  quits. On Windows this needs the §7 virtual-device driver — the Settings
   panel says so rather than pretending.
 
 - **Tell your mics apart** — tap (or speak into) a microphone and its skull
@@ -193,15 +193,15 @@ has this same step.
 ### First run — where things go, on every platform
 
 - **Recordings** default to a `RECORDINGS` folder in your home directory.
-  Change the destination from **Advanced → Destination folder** — pointing it
+  Change the destination from **Settings → Save recordings to** — pointing it
   at an external card is the intended setup, and the app benchmarks a new
   destination before enabling the record button (§6.4).
 - **A local backup copy** of each take is kept by default in
   `RECORDINGS-MIRROR` in your home directory, so a card failure is an
-  inconvenience rather than data loss. Toggle it in the Advanced panel.
+  inconvenience rather than data loss. Toggle it in the Settings panel.
 - **The log** lives at `MultiMicAggregator/log.txt` under your user
   application-data directory (`~/Library` on macOS, `%APPDATA%` on Windows,
-  `~/.config` on Linux). **Export diagnostics** in the Advanced panel bundles
+  `~/.config` on Linux). **Export diagnostics** in the Settings panel bundles
   it with the last five sessions' metadata — never audio.
 
 ### Uninstalling
