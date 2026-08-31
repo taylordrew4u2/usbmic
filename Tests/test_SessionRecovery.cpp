@@ -2,6 +2,7 @@
 #include "Core/SessionRecovery.h"
 #include "Core/SessionWriter.h"
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -12,6 +13,17 @@ namespace {
 
 std::string tmpPath (const char* name)
 {
+    // Windows has no /tmp, so fall back through the usual temp-dir variables
+    // before assuming a POSIX layout -- the same reasoning, and the same list,
+    // as tempBasePath() in test_SessionWriter.cpp.
+    for (const char* var : { "MMA_TEST_TMPDIR", "TMPDIR", "TMP", "TEMP" })
+    {
+        const char* dir = std::getenv (var);
+
+        if (dir != nullptr && *dir != '\0')
+            return std::string (dir) + "/mma-recovery-" + name;
+    }
+
     return std::string ("/tmp/mma-recovery-") + name;
 }
 
@@ -155,6 +167,7 @@ TEST_CASE (SessionRecovery_rubbishIsReportedEmptyRatherThanThrowing)
     REQUIRE (result.frames == 0u);
     REQUIRE (result.reportedEmpty);
     REQUIRE (result.fileName == std::string ("mma-recovery-rubbish.wav"));
+    REQUIRE (result.fileName.find ('/') == std::string::npos);
 
     std::remove (path.c_str());
 
