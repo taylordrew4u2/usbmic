@@ -62,8 +62,9 @@ files really are empty and the card says so instead of calling it saved.
 > [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh), against the virtual ALSA
 > microphones [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh)
 > creates. That rig serves file-backed devices, which §5.4's exclusive-mode gate
-> correctly refuses to record from — which is what the warning line is saying,
-> and why the meters read `--.-`. On real hardware the strips carry live levels.
+> correctly refuses to record from — which is what the warning line is saying.
+> The strips read `-60.0`, the floor, because those devices deliver no audio; on
+> real hardware they carry live levels.
 
 ## Download
 

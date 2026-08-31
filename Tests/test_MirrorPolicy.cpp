@@ -139,3 +139,67 @@ TEST_CASE (MirrorPolicy_theSettingIsReadableBeforeTheFirstArm)
     policy.setEnabledByUser (true);
     REQUIRE (policy.isEnabledByUser());
 }
+
+TEST_CASE (MirrorPolicy_AFailedWriteStopsTheMirrorAndIsReportedOnce)
+{
+    MirrorPolicy p;
+    p.setEnabledByUser (true);
+    REQUIRE (p.evaluateAtArm (100LL * 1024 * 1024 * 1024, 1024) == MirrorState::Active);
+
+    // The transition is the event: the caller says it once rather than on
+    // every poll for the rest of the take.
+    REQUIRE (p.noteWriteFailure());
+    REQUIRE_FALSE (p.noteWriteFailure());
+
+    REQUIRE (p.getState() == MirrorState::StoppedWriteFailed);
+    REQUIRE_FALSE (p.isMirroring());
+
+    // §6.3 requires the stop be visible in session.json, and the two reasons
+    // must not be confused for each other.
+    REQUIRE (p.wasStoppedForWriteFailure());
+    REQUIRE_FALSE (p.wasStoppedForSpace());
+}
+
+TEST_CASE (MirrorPolicy_AFailedWriteNeverRestartsTheMirror)
+{
+    MirrorPolicy p;
+    p.setEnabledByUser (true);
+    p.evaluateAtArm (100LL * 1024 * 1024 * 1024, 1024);
+    REQUIRE (p.noteWriteFailure());
+
+    // Plenty of room, and the volume may even be back -- but a copy with a
+    // hole in the middle is not a usable copy, so it stays stopped.
+    REQUIRE (p.evaluateDuringRecording (100LL * 1024 * 1024 * 1024)
+             == MirrorState::StoppedWriteFailed);
+    REQUIRE_FALSE (p.isMirroring());
+}
+
+TEST_CASE (MirrorPolicy_AMirrorThatNeverStartedCannotFail)
+{
+    // A write failure reported against a mirror that was never running is not
+    // an event, and must not produce a notice or overwrite why it is not running.
+    MirrorPolicy p;
+    p.setEnabledByUser (false);
+    REQUIRE_FALSE (p.noteWriteFailure());
+    REQUIRE (p.getState() == MirrorState::DisabledByUser);
+
+    MirrorPolicy q;
+    q.setEnabledByUser (true);
+    REQUIRE (q.evaluateAtArm (1024, 100LL * 1024 * 1024 * 1024) == MirrorState::NotStartedNoSpace);
+    REQUIRE_FALSE (q.noteWriteFailure());
+    REQUIRE (q.getState() == MirrorState::NotStartedNoSpace);
+}
+
+TEST_CASE (MirrorPolicy_ALowSpaceStopIsNotRelabelledAsAWriteFailure)
+{
+    MirrorPolicy p;
+    p.setEnabledByUser (true);
+    p.evaluateAtArm (100LL * 1024 * 1024 * 1024, 1024);
+    REQUIRE (p.evaluateDuringRecording (1024) == MirrorState::StoppedLowSpace);
+
+    // Writes to a stopped mirror can still fail; the reason the user is given
+    // must stay the first one, which is the one that actually stopped it.
+    REQUIRE_FALSE (p.noteWriteFailure());
+    REQUIRE (p.wasStoppedForSpace());
+    REQUIRE_FALSE (p.wasStoppedForWriteFailure());
+}

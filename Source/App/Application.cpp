@@ -1,4 +1,7 @@
 #include "Application.h"
+#include "../Core/TakeCompleteness.h"
+#include "../Platform/ReducedMotion.h"
+#include "../Core/ClockMasterResolver.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
@@ -17,7 +20,12 @@
 
 namespace mma {
 
-Application::Application() = default;
+Application::Application()
+    // §9.3, asked once. The setting does not change between meter repaints, and
+    // the alternative -- querying the OS per strip at 60Hz -- would be absurd.
+    : reducedMotionPreferred (prefersReducedMotionOnThisSystem())
+{
+}
 Application::~Application() { shutdown(); }
 
 std::unique_ptr<IAudioBackend> Application::createPlatformBackend()
@@ -297,91 +305,58 @@ void Application::applyClockMaster()
     if (capture == nullptr)
         return;
 
-    // §3.1 / §3.3: DeviceManager owns which mic is the timebase -- lowest
-    // measured drift, the user's override, or the failover pick after the
-    // master leaves. The coordinator only needs the resulting channel index.
-    const auto* master = deviceManager.selectDefaultMaster();
+    // §3.1 / §3.3: DeviceManager owns *which microphone* should be the timebase
+    // -- lowest measured drift, the user's override, or the next best after the
+    // master leaves. What it cannot own is which channel that is, because it
+    // tracks the devices the OS reports right now and a take's channel list is
+    // frozen (§6.5).
+    //
+    // This used to count included devices to find the index, which is the same
+    // number only until a microphone is unplugged mid-take. After that the
+    // device list is short one entry and every index past the gap is off by
+    // one, so setMasterChannel() named the wrong channel -- and the channel it
+    // named could be the unplugged one, writing silence, with every other
+    // microphone resampled onto it.
+    std::vector<std::string> rankedIds;
+    for (const auto* d : deviceManager.rankMasterCandidates())
+        rankedIds.push_back (d->identity.key());
 
-    if (master == nullptr)
+    // capture's own channel list, since that is exactly what setMasterChannel
+    // indexes into. Outside a take it tracks the device list; during one it is
+    // the frozen list, which is the point.
+    const bool recording = capture->isRecording();
+    std::vector<std::string> channelIds;
+    std::vector<bool> channelLive;
+
+    for (const auto& ch : capture->getChannels())
     {
-        capture->setMasterChannel (-1);
-        return;
+        channelIds.push_back (ch.deviceId);
+        channelLive.push_back (! recording || ! recordingEngine.isWritingSilence (ch.deviceId));
     }
 
-    int index = 0;
-    for (const auto& d : deviceManager.getDevices())
+    const auto resolved = resolveMasterChannel (channelIds, channelLive, rankedIds);
+    capture->setMasterChannel (resolved.channelIndex);
+
+    // §3.3: "Log the switchover timestamp in session.json." Only a change is
+    // worth a line -- this runs on every status poll, and re-confirming the
+    // same master is not an event.
+    if (recording && resolved.deviceId != appliedMasterDeviceId)
     {
-        if (! d.included)
-            continue;
+        if (! appliedMasterDeviceId.empty())
+            midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), resolved.deviceId,
+                                         resolved.deviceId.empty()
+                                             ? std::string ("Clock master lost: no live microphone is left to "
+                                                            "measure drift against. The channels stay corrected "
+                                                            "and the recording is unaffected.")
+                                             : std::string ("Clock master switched to this microphone after "
+                                                            "the previous one stopped delivering audio.") });
 
-        if (d.identity.key() == master->identity.key())
-        {
-            capture->setMasterChannel (index);
-            return;
-        }
-
-        ++index;
+        appliedMasterDeviceId = resolved.deviceId;
     }
-
-    capture->setMasterChannel (-1);
-}
-
-void Application::applyClockMasterDuringTake (const std::set<std::string>& present)
-{
-    if (capture == nullptr)
-        return;
-
-    const auto& takeChannels = capture->getChannels();
-
-    auto stillPresent = [&] (int index)
+    else if (! recording)
     {
-        return index >= 0 && index < static_cast<int> (takeChannels.size())
-               && present.count (takeChannels[static_cast<size_t> (index)].deviceId) > 0;
-    };
-
-    // The sitting master is still plugged in: §3.3 has nothing to fail over
-    // from, and re-picking would move the reference every time any unrelated
-    // device is touched.
-    if (stillPresent (capture->getMasterChannel()))
-        return;
-
-    // §3.1's rule decides who takes over -- lowest measured drift, the user's
-    // override, no built-in unless there is nothing else. It picks from the
-    // current device list, which mid-take may no longer match the take's own
-    // channel list, so the winner counts only if this take actually has a
-    // channel for it.
-    if (const auto* preferred = deviceManager.selectDefaultMaster())
-    {
-        for (size_t i = 0; i < takeChannels.size(); ++i)
-        {
-            if (takeChannels[i].deviceId != preferred->identity.key())
-                continue;
-
-            if (present.count (takeChannels[i].deviceId) > 0)
-                capture->setMasterChannel (static_cast<int> (i));
-
-            break;
-        }
-
-        if (stillPresent (capture->getMasterChannel()))
-            return;
+        appliedMasterDeviceId = resolved.deviceId;
     }
-
-    // §3.1's pick is not in this take -- it is a mic plugged in after recording
-    // started, which §6.5 keeps out of the file. Any channel still delivering
-    // beats quoting §3.3 against one that is not.
-    for (size_t i = 0; i < takeChannels.size(); ++i)
-    {
-        if (present.count (takeChannels[i].deviceId) > 0)
-        {
-            capture->setMasterChannel (static_cast<int> (i));
-            return;
-        }
-    }
-
-    // Every microphone in the take is gone. §6.5 keeps the take running and
-    // every channel writing silence; there is nothing left to quote drift
-    // against, so leave the reference where it is rather than inventing one.
 }
 
 MonitorBus* Application::getMonitorBus()
@@ -459,8 +434,6 @@ void Application::onDeviceListChanged()
         if (! d.included)
             continue;
 
-        names.push_back (d.displayName);
-
         ControllerContentionDetector::DeviceControllerInfo info;
         info.deviceId = d.identity.key();
         // controllerId is left empty: no backend reports USB host-controller
@@ -471,6 +444,14 @@ void Application::onDeviceListChanged()
         info.isMicrophone = true;
         topology.push_back (std::move (info));
     }
+
+    // The advisor is fed peaks per *channel* (see pollStatusAdvice), so its
+    // names have to be in that same space or every piece of §10.5 advice ends
+    // up addressed to the wrong person. Built from the take's channel list
+    // while one is running -- taking them from the device list meant that
+    // unplugging a microphone mid-take renamed everyone after it.
+    for (int i = 0, n = getIncludedMicCount(); i < n; ++i)
+        names.push_back (getMicDisplayName (i).toStdString());
 
     setupAdvisor.setChannelNames (std::move (names));
     setupAdvisor.updateControllerTopology (topology);
@@ -490,24 +471,64 @@ void Application::onDeviceListChanged()
             if (d.included)
                 present.insert (d.identity.key());
 
+        std::set<std::string> takeChannels;
         for (const auto& ch : capture->getChannels())
-            capture->setChannelLive (ch.deviceId, present.count (ch.deviceId) > 0);
+            takeChannels.insert (ch.deviceId);
+
+        for (const auto& ch : capture->getChannels())
+        {
+            const bool live = present.count (ch.deviceId) > 0;
+            capture->setChannelLive (ch.deviceId, live);
+
+            // §6.5: "Log the dropout" on an unplug, and log the reconnection
+            // too. RecordingEngine has always tracked both and nothing had ever
+            // told it anything, so a mic could fall out of a four-hour take and
+            // leave no trace anywhere.
+            if (! live && ! recordingEngine.isWritingSilence (ch.deviceId))
+            {
+                recordingEngine.onMicUnplugged (ch.deviceId);
+                midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                             "Microphone unplugged: writing silence to its channel." });
+            }
+            else if (live && recordingEngine.isWritingSilence (ch.deviceId))
+            {
+                recordingEngine.onMicReconnected (ch.deviceId);
+                midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                             "Microphone reconnected: its channel is live again." });
+            }
+        }
+
+        // §6.5: a microphone plugged in during a take joins nothing -- the
+        // channel list is fixed for the duration, and renumbering it would
+        // corrupt the take. What the spec asks for is that the user be told,
+        // in one line, rather than left believing it is being recorded.
+        for (const auto& d : deviceManager.getDevices())
+        {
+            if (! d.included || takeChannels.count (d.identity.key()) > 0)
+                continue;
+
+            midTakeNotice = juce::String (recordingEngine.onNewMicPluggedMidTake (d.identity.key(), true));
+            midTakeNoticeSeconds = 12.0;
+            break;
+        }
 
         // §6.5 "clock master unplugged": failover per §3.3, without touching
         // the channel set.
         //
-        // This is only a reference move, which is what makes it safe here.
-        // Every channel is corrected onto the output stream's clock (§3.2),
-        // master included, so the take's audio does not depend on which channel
-        // holds the title. What does depend on it is §3.3's drift figures, which
-        // are quoted relative to the master -- and a master that has gone silent
-        // stops updating, so leaving it would quote every remaining microphone
-        // against a frozen number for the rest of the take.
+        // applyClockMaster() already resolves against the take's frozen channel
+        // list and skips a candidate that is writing silence, so calling it
+        // here is the whole of the failover. It runs on the status poll too;
+        // doing it on the device-list notification as well is what makes the
+        // switch happen when the microphone actually leaves rather than up to a
+        // poll later.
         //
-        // The channel list stays exactly as it was: setMasterChannel takes an
-        // index into the take's own fixed list, so nothing about the file layout
-        // moves (§6.5).
-        applyClockMasterDuringTake (present);
+        // Only the reference moves. Every channel is corrected onto the output
+        // stream's clock (§3.2), master included, so no channel's resampling
+        // changes and the file layout is untouched (§6.5). What the move buys is
+        // §3.3's figures: they are quoted relative to the master, and a master
+        // that has gone silent stops updating, so leaving it there would quote
+        // every surviving microphone against a frozen number.
+        applyClockMaster();
         return;
     }
 
@@ -576,6 +597,21 @@ std::vector<SetupAdvice> Application::getSetupAdvice() const
     return setupAdvisor.getActiveAdvice (juce::Time::getMillisecondCounterHiRes() / 1000.0);
 }
 
+bool Application::isMicLive (int index) const
+{
+    // Outside a take every included mic is live by definition: §6.5's silence
+    // only applies to a channel already fixed into a recording.
+    if (capture == nullptr || ! capture->isRecording())
+        return true;
+
+    const auto& channels = capture->getChannels();
+
+    if (index < 0 || index >= static_cast<int> (channels.size()))
+        return true;
+
+    return ! recordingEngine.isWritingSilence (channels[static_cast<size_t> (index)].deviceId);
+}
+
 void Application::noteDeviceDropout()
 {
     setupAdvisor.noteDeviceDropout (juce::Time::getMillisecondCounterHiRes() / 1000.0,
@@ -607,8 +643,102 @@ Metering* Application::getMixMetering()
     return capture != nullptr ? &capture->getMixMetering() : nullptr;
 }
 
+juce::String Application::nameForDevice (const std::string& identityKey,
+                                         const juce::String& fallback) const
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (d.identity.key() != identityKey)
+            continue;
+
+        // The name the user gave this port wins over the product string --
+        // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
+        if (const auto persisted = portIdentityStore.get (d.identity))
+            if (! persisted->assignedName.empty())
+                return juce::String (persisted->assignedName);
+
+        return juce::String (d.displayName);
+    }
+
+    return fallback;
+}
+
+juce::String Application::getMicProductName (int index) const
+{
+    // §14.6: with four identical microphones on a desk, the name the user gave
+    // a port is what identifies it -- but the hardware's own name is what tells
+    // them which *kind* of thing it is. The strip has always reserved a line
+    // for it under the bold name and always drawn it empty, because
+    // setDeviceName() had no callers anywhere.
+    //
+    // Resolved in the take's channel space while one is running, for the same
+    // reason getMicDisplayName is: after a mid-take unplug the device list and
+    // the channel list are different lengths.
+    std::string key;
+    juce::String fallback;
+
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+
+        if (index < 0 || index >= static_cast<int> (channels.size()))
+            return {};
+
+        key = channels[static_cast<size_t> (index)].deviceId;
+        fallback = juce::String (channels[static_cast<size_t> (index)].displayName);
+    }
+    else
+    {
+        int seen = 0;
+        for (const auto& d : deviceManager.getDevices())
+        {
+            if (! d.included)
+                continue;
+
+            if (seen == index)
+            {
+                key = d.identity.key();
+                fallback = juce::String (d.displayName);
+                break;
+            }
+
+            ++seen;
+        }
+
+        if (key.empty())
+            return {};
+    }
+
+    juce::String product = fallback;
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.identity.key() == key)
+            product = juce::String (d.displayName);
+
+    // Nothing to add when the strip is already showing this exact text: an
+    // unnamed microphone would otherwise print its product string twice, once
+    // bold and once faint underneath.
+    return product == getMicDisplayName (index) ? juce::String() : product;
+}
+
 juce::String Application::getMicDisplayName (int index) const
 {
+    // Mid-take, resolve through the take's frozen channel list: the device the
+    // caller means is the one recording into channel `index`, which after an
+    // unplug is no longer "the index-th included device". The channel keeps the
+    // name it was opened with, so an unplugged microphone's strip still says
+    // whose it is rather than going blank.
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+
+        if (index < 0 || index >= static_cast<int> (channels.size()))
+            return {};
+
+        const auto& ch = channels[static_cast<size_t> (index)];
+        return nameForDevice (ch.deviceId, juce::String (ch.displayName));
+    }
+
     int seen = 0;
     for (const auto& d : deviceManager.getDevices())
     {
@@ -616,15 +746,7 @@ juce::String Application::getMicDisplayName (int index) const
             continue;
 
         if (seen == index)
-        {
-            // The name the user gave this port wins over the product string --
-            // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
-            if (const auto persisted = portIdentityStore.get (d.identity))
-                if (! persisted->assignedName.empty())
-                    return juce::String (persisted->assignedName);
-
-            return juce::String (d.displayName);
-        }
+            return nameForDevice (d.identity.key(), juce::String (d.displayName));
 
         ++seen;
     }
@@ -815,6 +937,10 @@ void Application::toggleRecording()
 
             // Each take gets its own warnings; a previous one must not leave the
             // ten-minute warning already spent.
+            midTakeDropouts.clear();
+            midTakeNotice.clear();
+            midTakeNoticeSeconds = 0.0;
+
             capacityMonitor.reset();
             mirrorPolicy.reset();
 
@@ -849,6 +975,18 @@ void Application::toggleRecording()
         lastSessionFolder = currentSessionFolder;
         lastMirrorFolder = currentMirrorFolder;
         savedNoticeSeconds = 10.0;
+
+        // Judged here, against the files as finalized, so the status line and
+        // the saved-take card cannot disagree. They used to: the card warned
+        // that every file was empty while this line said "Saved to ..." beside
+        // it, and the line is the one a user reads on their way out of the room.
+        {
+            std::vector<TakeFile> written;
+            for (const auto& f : listSessionFiles (lastSessionFolder))
+                written.push_back ({ f.name.toStdString(), f.sizeBytes });
+
+            lastTakeHeldNoAudio = takeHoldsNoAudio (written);
+        }
 
         // §6.2: the take is on disk and the UI has not shown where yet. Only
         // raised when a folder was actually opened -- a start that failed
@@ -1009,6 +1147,15 @@ double Application::getElapsedRecordingSeconds() const
 
 int Application::getIncludedMicCount() const
 {
+    // During a take this is the count the meters, the drift reports, the
+    // advisor and the skull strips are all indexed by, and every one of those
+    // reads out of capture. The device list is not the same length once a
+    // microphone is unplugged mid-take -- counting it there left the last
+    // channel's meter unread and shifted every name past the gap onto the
+    // wrong strip.
+    if (capture != nullptr && capture->isRecording())
+        return static_cast<int> (capture->getChannels().size());
+
     int count = 0;
     for (const auto& d : deviceManager.getDevices())
         if (d.included)
@@ -1501,6 +1648,10 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     meta.mirrorActive = capture != nullptr && capture->isMirroring();
     meta.mirrorPath = currentMirrorFolder.toStdString();
 
+    // §6.5's mid-recording row: every unplug and reconnection during this take.
+    for (const auto& entry : midTakeDropouts)
+        meta.dropouts.push_back (entry);
+
     // §6.5: "log the exact sample position of degradation." Recorded as a
     // dropout entry rather than a new field, because that is what it is: the
     // moment the stems stopped receiving audio they should have had.
@@ -1514,6 +1665,14 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     if (mirrorPolicy.wasStoppedForSpace())
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
                                    "Local backup copy stopped: the internal drive ran low on space." });
+
+    // §6.3 again, for the other way a mirror can stop. Without this line a
+    // backup copy truncated by a failed drive looks exactly like a complete
+    // one -- the file is simply shorter, and nothing says why.
+    if (mirrorPolicy.wasStoppedForWriteFailure())
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Local backup copy stopped: that drive stopped accepting writes. "
+                                   "The copy is incomplete from this point." });
 
     if (capture != nullptr && capture->getFramesDropped() > 0)
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
@@ -1556,16 +1715,19 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         capture->tickDriftReporting (sinceLastCallSeconds);
         driftMeasuredSeconds += sinceLastCallSeconds;
 
-        int index = 0;
-        for (const auto& d : deviceManager.getDevices())
+        // Walked over capture's channels rather than the device list: the two
+        // agree only until a microphone is unplugged mid-take, and after that
+        // this loop was attributing each channel's drift to whichever device
+        // had shifted into its position -- so the Advanced panel showed one
+        // microphone's PPM under another's name, and §3.3's 100 PPM flag could
+        // land on a device that was keeping perfect time.
         {
-            if (! d.included)
-                continue;
+            const auto& channels = capture->getChannels();
 
-            deviceManager.updateMeasuredDrift (d.identity.key(),
-                                               capture->getChannelDriftPpm (index),
-                                               driftMeasuredSeconds);
-            ++index;
+            for (size_t i = 0; i < channels.size(); ++i)
+                deviceManager.updateMeasuredDrift (channels[i].deviceId,
+                                                   capture->getChannelDriftPpm (static_cast<int> (i)),
+                                                   driftMeasuredSeconds);
         }
 
         // §3.1: the master is re-picked as measurements arrive, so a rig that
@@ -1580,21 +1742,6 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
             return juce::String (getMicDisplayName (i))
                    + " can't keep steady time with the others. Try a different USB port.";
-        }
-    }
-
-    // §6.3: the mirror is re-judged during the take, and once it stops it never
-    // restarts within the same recording.
-    if (capture != nullptr && capture->isMirroring())
-    {
-        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-
-        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
-            == MirrorState::StoppedLowSpace)
-        {
-            capture->stopMirroring();
-            return "The local backup copy stopped -- this drive is low on space. "
-                   "The recording itself is unaffected.";
         }
     }
 
@@ -1618,6 +1765,57 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         return juce::String (cardRemovalNotice.message);
     }
+
+    // §6.3: the mirror's destination failed -- unplugged, read-only, or dead.
+    //
+    // WritePipeline has always stopped mirroring on a failed write, and rightly
+    // leaves the card write alone (§6.3: the mirror must never take the
+    // recording down with it). What nothing ever did was *notice*, so pulling
+    // the backup drive mid-take stopped the copy in silence: no message, and
+    // nothing in session.json, because only the low-space stop was ever
+    // recorded. The user kept a truncated backup they had every reason to
+    // believe was complete.
+    //
+    // Checked outside the isMirroring() guard below, and deliberately so: the
+    // pipeline raises this flag and stops mirroring in the same breath, on its
+    // own writer thread. By the time this poll runs isMirroring() is already
+    // false, so nesting the check inside that guard would make it unreachable
+    // -- policy that exists and never runs, which is the whole shape of bug
+    // this series keeps finding. noteWriteFailure() is the idempotence: it
+    // fires only on the transition out of Active, so a mirror that never
+    // started, or one already stopped for space, produces nothing.
+    //
+    // capture->stopMirroring() is not called here because the pipeline has
+    // already done it; this only catches the policy up so session.json can say
+    // why the copy is short.
+    if (capture != nullptr && capture->hasMirrorWriteFailed()
+        && mirrorPolicy.noteWriteFailure())
+    {
+        return "The local backup copy stopped -- that drive stopped accepting writes. "
+               "The recording itself is unaffected and is still going to the card.";
+    }
+
+    // §6.3: the mirror is re-judged during the take, and once it stops it never
+    // restarts within the same recording.
+    if (capture != nullptr && capture->isMirroring())
+    {
+        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+
+        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
+            == MirrorState::StoppedLowSpace)
+        {
+            capture->stopMirroring();
+            return "The local backup copy stopped -- this drive is low on space. "
+                   "The recording itself is unaffected.";
+        }
+    }
+
+
+    // The notice's clock runs from here, not from the branch that shows it:
+    // decremented where it is returned, a warning outranking it for a few
+    // seconds would silently extend how long it lingers afterwards.
+    if (midTakeNoticeSeconds > 0.0)
+        midTakeNoticeSeconds -= sinceLastCallSeconds;
 
     // §6.5 buffer back-pressure, before the remaining-time warnings: the ring
     // filling up is audio about to be lost right now, where running low on
@@ -1678,6 +1876,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             break;
     }
 
+    // §6.5: a microphone plugged in mid-take joins nothing, and the user has to
+    // be told rather than left assuming it is being recorded. Ranked here, below
+    // everything that means audio is being lost or the take is about to end: it
+    // is information, not a problem, and it must never sit on top of a warning
+    // that the drive is failing.
+    if (midTakeNoticeSeconds > 0.0 && midTakeNotice.isNotEmpty())
+        return midTakeNotice;
+
     // §14.6: which mic was just heard alone. Not an error and not a message --
     // the UI highlights that skull, which is how a user with four identical
     // mics learns which meter is which person. Runs only outside a take, when
@@ -1710,6 +1916,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (savedNoticeSeconds > 0.0)
     {
         savedNoticeSeconds -= sinceLastCallSeconds;
+
+        // §0.1: never claim audio that is not there. A take whose files hold
+        // nothing but headers is where the take went, not what it saved, and
+        // saying "Saved" would be the one word the user needed to be false.
+        if (lastTakeHeldNoAudio)
+            return "Recording stopped, but the files in " + lastSessionFolder
+                   + " are empty -- no audio reached the drive.";
+
         return "Saved to " + lastSessionFolder;
     }
 

@@ -35,6 +35,8 @@ add_library(mma_core STATIC
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
+    Source/Core/ClockMasterResolver.cpp
+    Source/Core/TakeCompleteness.cpp
     Source/Core/RecordingEngine.cpp
     Source/Core/OutputDeviceSelector.cpp
     Source/Core/CapacityMonitor.cpp
@@ -121,6 +123,7 @@ if (MMA_BUILD_APP)
         Source/Platform/NullBackend.cpp
         Source/Platform/MacSystemAggregateDevice.cpp
         Source/Platform/NullSystemAggregateDevice.cpp
+        Source/Platform/ReducedMotion.cpp
         Source/Platform/AsioOutputBackend.cpp
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp
