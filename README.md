@@ -303,6 +303,11 @@ write, and its picture, live.
   switched off, where recordings go, the backup setting, the combined-device
   name, your cameras and their names — all of it is still there next time you
   open the app. Setting up once means setting up once.
+- **If the drive goes away mid-take, you are told immediately.** Pulling the
+  card stops the recording, closes every open file, and says so — and if the
+  backup copy was running, it gives you the folder that still holds a complete
+  copy. Until now those failed writes were discarded: the recording carried on
+  writing into nothing, with the elapsed time still climbing.
 - **If the app is killed mid-take, it hands the recording back.** On the next
   launch it checks the destination and the backup folder for takes that never
   got a stop timestamp, repairs their file headers from the audio actually on
@@ -676,6 +681,15 @@ microphone. In particular:
   macOS, Windows ASIO, and Windows WASAPI exclusive.
 - Hostile-event matrix, card throughput on real slow media, bus-power
   exhaustion, and the §10.7 novice acceptance test.
+- **The card-removal path is proven at the pipeline, not in the running app.**
+  `WritePipeline` noticing a failed write is tested against a real failing
+  write — the process's maximum file size is capped so the write returns EFBIG,
+  which is what a departed card looks like from inside `write()`. What has not
+  been exercised is the whole path in the app: the virtual-microphone rig here
+  produces no audio, so no bytes are written and no write can fail. Stopping
+  the take, finalizing, and showing the alert are wired to that flag and each
+  tested or exercised separately, but the four together need a real card to
+  pull out.
 - **No camera has been opened.** The camera path is type-checked on every
   runner (`sim_camera`) and executed on none. Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file

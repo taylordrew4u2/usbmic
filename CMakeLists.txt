@@ -31,6 +31,7 @@ add_library(mma_core STATIC
     Source/Core/CameraSelection.cpp
     Source/Core/AppSettings.cpp
     Source/Core/SessionRecovery.cpp
+    Source/Core/CardRemovalNotice.cpp
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp

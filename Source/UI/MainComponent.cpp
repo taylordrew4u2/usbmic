@@ -338,10 +338,26 @@ void MainComponent::showRecoveredTakes()
 
 void MainComponent::showSavedTake()
 {
+    // §6.5: consumed first and unconditionally, so the alert cannot be stranded
+    // by an early return further down.
+    CardRemovalNotice removal;
+    const bool driveWentAway = application.consumeCardRemovalNotice (removal);
+
     Application::SavedTake take;
 
     if (! application.consumeSavedTake (take))
         return;
+
+    // The card is gone, so its folder cannot be listed -- what survived is the
+    // mirror's copy, and that is the folder worth showing and worth opening.
+    if (driveWentAway && removal.aCompleteCopySurvives)
+    {
+        take.folder = juce::String (removal.survivingFolder);
+        take.mirrorFolder = {};
+        take.files = Application::listSessionFiles (take.folder);
+    }
+
+    savedTakePanel.setProblem (driveWentAway ? juce::String (removal.message) : juce::String());
 
     savedTakeFolder = take.folder;
 

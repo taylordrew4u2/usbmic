@@ -343,3 +343,139 @@ TEST_CASE (WritePipeline_StoppingTheMirrorLeavesTheRecordingIntact)
     // Both blocks reached the card even though the mirror stopped between them.
     REQUIRE (readU32LE (card, kDataSizeOffset) == 1024 * 2);
 }
+
+TEST_CASE (WritePipeline_AHealthyTakeNeverReportsAFailure)
+{
+    // The other half of the claim: the flag must stay down when nothing is
+    // wrong, or it would stop every take the moment it was wired to the UI.
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "healthy_card", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> block (4096, 0.2f);
+    const float* chans[] = { block.data() };
+    REQUIRE (p.pushBlock (chans, 1, 4096));
+    p.stop();
+
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+    REQUIRE_FALSE (p.hasMirrorWriteFailed());
+
+    std::remove ((dir + "/healthy_card.wav").c_str());
+}
+
+// -----------------------------------------------------------------------
+// §6.5 "target card removed". Making a real write fail without unplugging
+// real hardware: cap the process's maximum file size so the writer's own
+// file grows into a hard EFBIG, which is what a card that has gone away
+// looks like from inside a write() call. SIGXFSZ is ignored so the failure
+// arrives as a return value rather than killing the test runner -- the
+// return value being exactly what SessionWriter documents and what this
+// pipeline used to throw away.
+//
+// POSIX only: Windows has no equivalent, so these two are compiled out there
+// rather than faked. The healthy-take check above deliberately sits outside the
+// guard -- it needs nothing platform-specific, and "this flag stays down when
+// nothing is wrong" is worth asserting on every platform, since a false
+// positive there would stop every recording instantly.
+// -----------------------------------------------------------------------
+#if ! defined(_WIN32)
+
+#include <csignal>
+#include <sys/resource.h>
+
+namespace {
+
+class FileSizeCap
+{
+public:
+    explicit FileSizeCap (rlim_t bytes)
+    {
+        previousHandler = std::signal (SIGXFSZ, SIG_IGN);
+        getrlimit (RLIMIT_FSIZE, &previous);
+
+        rlimit capped { bytes, previous.rlim_max };
+        applied = setrlimit (RLIMIT_FSIZE, &capped) == 0;
+    }
+
+    ~FileSizeCap()
+    {
+        // Restored whatever happens: this is process-wide, and leaving it in
+        // place would silently break every test that writes a file after it.
+        if (applied)
+            setrlimit (RLIMIT_FSIZE, &previous);
+
+        std::signal (SIGXFSZ, previousHandler);
+    }
+
+    bool isApplied() const { return applied; }
+
+private:
+    rlimit previous {};
+    void (*previousHandler) (int) = nullptr;
+    bool applied = false;
+};
+
+} // namespace
+
+TEST_CASE (WritePipeline_ADestinationThatFailsMidTakeIsNoticed)
+{
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "pulled_card", 0.0f } };
+
+    WritePipeline p;
+    {
+        // Room for the BWF header and a little audio, then the wall.
+        FileSizeCap cap (4096);
+        REQUIRE (cap.isApplied());
+
+        REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+        // Nothing has gone wrong yet, and the pipeline must not cry off early.
+        REQUIRE_FALSE (p.hasCardWriteFailed());
+
+        std::vector<float> block (8192, 0.3f);
+        const float* chans[] = { block.data() };
+        REQUIRE (p.pushBlock (chans, 1, 8192));
+
+        // stop() does the final flush synchronously, so this does not depend on
+        // catching the writer thread mid-sleep.
+        p.stop();
+
+        // The point of the whole change: the card said no, and the pipeline
+        // heard it. Before this, every one of those return values was dropped
+        // and a pulled card was indistinguishable from a healthy take.
+        REQUIRE (p.hasCardWriteFailed());
+    }
+
+    std::remove ((dir + "/pulled_card.wav").c_str());
+}
+
+TEST_CASE (WritePipeline_AFreshTakeForgetsTheLastOnesFailure)
+{
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "reused", 0.0f } };
+
+    WritePipeline p;
+    {
+        FileSizeCap cap (4096);
+        REQUIRE (cap.isApplied());
+
+        REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+        std::vector<float> block (8192, 0.3f);
+        const float* chans[] = { block.data() };
+        p.pushBlock (chans, 1, 8192);
+        p.stop();
+        REQUIRE (p.hasCardWriteFailed());
+    }
+
+    // Cap gone: the next take is on a working card and must be allowed to say so.
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+    p.stop();
+
+    std::remove ((dir + "/reused.wav").c_str());
+}
+
+#endif // ! _WIN32

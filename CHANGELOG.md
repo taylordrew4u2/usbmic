@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Fixed -- a pulled card no longer fails silently
+
+- **Every failed write was being thrown away.** `SessionWriter::writeInterleaved`
+  returns false on an unrecoverable write and its own header says the caller
+  handles that per §6.5 "target card removed". `WritePipeline` was that caller,
+  and it discarded all four of those return values -- the stems, the mix, and
+  both mirror copies. So pulling the card mid-take wrote into the void: no stop,
+  no finalize, no alert, the elapsed time still climbing and the screen still
+  claiming to be recording. This is the data-loss case in the §12 hostile-event
+  matrix and it was unhandled.
+- **Now the take stops, finalizes and says so.** §6.5 in full: stop immediately,
+  close every open file, alert loudly, and -- when the mirror was still running
+  -- state that a complete copy survives and give its path. The panel that
+  appears at the end of a take carries the alert and lists what actually
+  survived, pointed at the mirror rather than the folder that is no longer
+  there.
+- **A mirror that fails never takes the recording with it.** §6.3 makes the
+  mirror a safety net, so a failed mirror write stops the mirror for the rest of
+  the take, exactly as running out of internal room does, and the card write
+  continues untouched. The mirror exists to turn a card failure into an
+  inconvenience; it must not become one.
+- **A mirror with a hole in it is never offered as a copy.** If the mirror had
+  already stopped earlier in the take, the alert does not name it -- a user told
+  a complete copy survives will trust it.
+- **Proven against a real failing write.** The process's maximum file size is
+  capped so the writer's own file grows into a hard EFBIG, which is what a
+  departed card looks like from inside `write()`, with SIGXFSZ ignored so the
+  failure arrives as the return value the pipeline has to notice. Paired with a
+  healthy take that must keep the flag down, so the test cannot pass by always
+  reporting failure.
+
+
 ### Fixed -- the card-speed gate now counts the video, and is answered fresh
 
 - **A camera could push a card past what it can sustain, and nothing checked.**

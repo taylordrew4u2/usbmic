@@ -28,6 +28,11 @@ public:
                   const juce::String& mirrorFolder,
                   const std::vector<FileRow>& files);
 
+    /// §6.5: the take was stopped by the drive going away rather than by the
+    /// user. Shown loudly above the file list, and the heading stops claiming
+    /// the take simply saved. Empty restores the ordinary "Saved." panel.
+    void setProblem (const juce::String& text);
+
     /// True when the panel is showing nothing but empty files, which is what a
     /// take that failed to write looks like. The owner uses this to say so
     /// rather than calling it saved.
@@ -60,6 +65,7 @@ private:
     std::vector<Row> rows;
     juce::Label mirrorValue;
     juce::Label emptyWarning;
+    juce::Label problemLabel;
 
     juce::TextButton openButton { "Open the folder" };
     juce::TextButton doneButton { "Done" };
