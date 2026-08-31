@@ -121,13 +121,23 @@ public:
     void processAudioBlock (const float* const* inputs, int numInputs,
                             float* const* outputs, int numOutputs, int numSamples) noexcept;
 
-    /// §3.1 / §3.3: which channel defines the timebase. Every other device is
-    /// resampled onto it; the master itself never is. Out-of-range clears it.
+    /// §3.1 / §3.3: which channel is the clock reference. Out-of-range clears it.
+    ///
+    /// This does not change what the capture path does to the audio. The stream
+    /// every device is pulled by is the output device's (§3.2), so all channels
+    /// are corrected onto that regardless -- exempting the master would leave it
+    /// uncorrected against a clock it has no relationship to, not make it the
+    /// timebase. What the reference selects is the channel §3.3's drift figures
+    /// are quoted against, and the clock source Application hands the OS
+    /// aggregate. Both are safe to move mid-take.
     void setMasterChannel (int index) noexcept;
     int getMasterChannel() const noexcept { return masterChannel; }
 
     /// §3.3 drift reporting, driven from the UI tick rather than the callback.
     void tickDriftReporting (double elapsedSeconds) noexcept;
+
+    /// §3.3, relative to the clock master: positive means this device runs fast
+    /// against it. The master reports zero against itself.
     double getChannelDriftPpm (int index) const noexcept;
     bool hasSustainedExcessDrift (int index) const noexcept;
     uint64_t getUnderrunSamples (int index) const noexcept;
@@ -183,6 +193,10 @@ private:
     std::atomic<double> callbackLoad { 0.0 };
 
     void noteCallbackLoad (std::chrono::steady_clock::time_point start, int numSamples) noexcept;
+
+    /// The reference channel's own correction against the output clock, which
+    /// every §3.3 figure is quoted relative to. Zero when there is no master.
+    double getMasterDriftPpm() const noexcept;
 
     /// Shared by both capture paths: sum, meter, record and publish one already
     /// time-aligned frame block. Real-time safe.

@@ -66,6 +66,15 @@ TEST_CASE (DeviceManager_DefaultMasterPrefersLowestMeasuredDrift)
 
 TEST_CASE (DeviceManager_FailoverPromotesLowestDriftAmongRemaining)
 {
+    // §3.3 failover, which needs no separate entry point: removeDevice() erases
+    // the master, so the ordinary §3.1 rule can no longer return it and the
+    // lowest-drift survivor wins by itself.
+    //
+    // There used to be a selectFailoverMaster() alongside this that took the
+    // removed master's identity and skipped it explicitly. It only ever
+    // excluded a device that was already gone, and it reimplemented §3.1
+    // incompletely while doing so -- see the two cases below, both of which it
+    // got wrong. It had no production callers and is removed.
     DeviceManager dm;
     dm.addDevice (makeDevice ("mic-a", 0, 2.0, true));
     dm.addDevice (makeDevice ("mic-b", 1, 30.0, true));
@@ -73,9 +82,55 @@ TEST_CASE (DeviceManager_FailoverPromotesLowestDriftAmongRemaining)
 
     PortIdentity removedMaster;
     removedMaster.locationId = "mic-a";
-    const auto* newMaster = dm.selectFailoverMaster (removedMaster);
+    REQUIRE (dm.removeDevice (removedMaster));
+
+    const auto* newMaster = dm.selectDefaultMaster();
     REQUIRE (newMaster != nullptr);
     REQUIRE (newMaster->identity.locationId == "mic-c");
+}
+
+TEST_CASE (DeviceManager_FailoverStillHonoursTheUsersChosenMaster)
+{
+    // §3.1: the Advanced-panel override holds until *that* device leaves the
+    // rig. Losing some other master must not quietly discard it.
+    DeviceManager dm;
+    dm.addDevice (makeDevice ("mic-a", 0, 2.0, true));
+    dm.addDevice (makeDevice ("mic-b", 1, 30.0, true));
+    dm.addDevice (makeDevice ("mic-c", 2, 10.0, true));
+
+    dm.setPreferredMaster ("mic-b");
+
+    PortIdentity gone;
+    gone.locationId = "mic-a";
+    REQUIRE (dm.removeDevice (gone));
+
+    // Not mic-c, which is what picking purely on drift would give.
+    REQUIRE (dm.selectDefaultMaster()->identity.locationId == "mic-b");
+}
+
+TEST_CASE (DeviceManager_FailoverStillPrefersAUsbMicOverTheBuiltIn)
+{
+    // §3.1: the machine's own microphone is a legitimate input and a poor
+    // timebase. Failing over is no reason to hand it the clock.
+    DeviceManager dm;
+
+    MicDeviceState builtIn;
+    builtIn.identity.locationId = "built-in";
+    builtIn.isBuiltIn = true;
+    builtIn.measuredDriftPpm = 1.0;
+    builtIn.hasDriftMeasurement = true;
+    dm.addDevice (builtIn);
+
+    dm.addDevice (makeDevice ("mic-a", 1, 2.0, true));
+    dm.addDevice (makeDevice ("mic-b", 2, 40.0, true));
+
+    PortIdentity gone;
+    gone.locationId = "mic-a";
+    REQUIRE (dm.removeDevice (gone));
+
+    // The built-in has the lowest measured drift of what is left, and still
+    // loses to the remaining USB mic.
+    REQUIRE (dm.selectDefaultMaster()->identity.locationId == "mic-b");
 }
 
 TEST_CASE (DeviceManager_RemoveDeviceReturnsTrueWhenFound)

@@ -580,3 +580,162 @@ TEST_CASE (CaptureCoordinator_UnpluggedDeviceStillYieldsItsChannel)
     REQUIRE (c.getChannelMetering (1) != nullptr);
     REQUIRE_NEAR (c.getChannelMetering (1)->getDisplayedLevelDb(), Metering::kMinDb, 1.0f);
 }
+
+namespace {
+
+/// Three mics on three crystals, driven for a simulated take. Optionally the
+/// clock master is unplugged a sixth of the way in (§6.5), and optionally the
+/// take fails over onto another channel.
+struct TakeResult
+{
+    double driftPpm[3] = { 0.0, 0.0, 0.0 };
+    uint64_t underruns[3] = { 0, 0, 0 };
+};
+
+TakeResult runTake (bool unplugMaster, int failoverTo, double seconds, double unplugAtSeconds = 5.0)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    const std::vector<CaptureChannel> mics = {
+        { "dev-a", "Kitchen", "01_Kitchen", 0.0f },
+        { "dev-b", "Couch",   "02_Couch",   0.0f },
+        { "dev-c", "Desk",    "03_Desk",    0.0f },
+    };
+
+    REQUIRE (c.startMonitoring (mics, "out-device"));
+    c.setMasterChannel (0);
+
+    // Three dissimilar USB crystals, which is the case §3 exists for.
+    const double ppm[3] = { 0.0, +40.0, -60.0 };
+    double owed[3] = { 0.0, 0.0, 0.0 };
+
+    std::vector<float> in (128, 0.25f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    const long long blocks = static_cast<long long> (seconds * 48000.0 / 64.0);
+    const long long unplugAt = static_cast<long long> (unplugAtSeconds * 48000.0 / 64.0);
+    bool unplugged = false;
+
+    for (long long i = 0; i < blocks; ++i)
+    {
+        if (unplugMaster && ! unplugged && i == unplugAt)
+        {
+            // §6.5: the channel stays and goes silent. The channel list is
+            // fixed for the take, so only liveness moves.
+            c.setChannelLive ("dev-a", false);
+
+            if (failoverTo >= 0)
+                c.setMasterChannel (failoverTo);
+
+            unplugged = true;
+        }
+
+        for (int d = 0; d < 3; ++d)
+        {
+            if (unplugged && d == 0)
+                continue; // the mic is gone; nothing more arrives from it
+
+            owed[d] += 64.0 * (1.0 + ppm[d] * 1.0e-6);
+            const int n = static_cast<int> (owed[d]);
+            owed[d] -= n;
+
+            const float* block[] = { in.data() };
+            backend.inputCallbacks[static_cast<size_t> (d)] (block, 1, nullptr, 0, n);
+        }
+
+        c.processOutputBlock (outs, 1, 64);
+    }
+
+    TakeResult r;
+    for (int d = 0; d < 3; ++d)
+    {
+        r.driftPpm[d] = c.getChannelDriftPpm (d);
+        r.underruns[d] = c.getUnderrunSamples (d);
+    }
+    return r;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_UnpluggedMasterLeavesTheOtherChannelsUntouched)
+{
+    // The question §6.5's "clock master unplugged" row raises: with the master
+    // gone silent and still flagged as master, is everything else now being
+    // resampled onto silence?
+    //
+    // It is not, and this pins down why. The master is not a signal any other
+    // channel reads -- DeviceInputStream drives each channel's ratio from that
+    // stream's own ring fill against the output clock, with no channel's audio
+    // entering another's arithmetic. So a master that stops delivering removes
+    // nothing from anyone else's loop.
+    //
+    // Run to a minute so both live loops are well past settling.
+    const auto control = runTake (false, -1, 60.0);
+    const auto masterGone = runTake (true, -1, 60.0);
+
+    // Bit-identical, not merely close: the two runs execute the same arithmetic
+    // on the live channels. Anything else would mean a coupling that is not
+    // supposed to exist.
+    for (int d = 1; d < 3; ++d)
+    {
+        REQUIRE_NEAR (masterGone.driftPpm[d], control.driftPpm[d], 1e-12);
+        REQUIRE (masterGone.underruns[d] == control.underruns[d]);
+    }
+
+    // And the loops were genuinely working, so the equality above means
+    // something.
+    REQUIRE (control.driftPpm[1] > 20.0);
+    REQUIRE (control.driftPpm[2] < -20.0);
+    REQUIRE (masterGone.underruns[1] == 0);
+    REQUIRE (masterGone.underruns[2] == 0);
+}
+
+TEST_CASE (CaptureCoordinator_FailingOverMidTakeCostsTheLiveChannelsNothing)
+{
+    // §6.5's "clock master unplugged -> failover per §3.3", and the regression
+    // guard for what used to make it unsafe.
+    //
+    // Under the old exemption, promoting a live channel took one the PI loop was
+    // holding at its target fill and stopped steering it, leaving its ring to
+    // run to one end for the rest of the take. Failing over cost more than not
+    // failing over, which is why the mid-take path did not do it.
+    //
+    // Every channel is corrected onto the output clock now, so the title carries
+    // no correction with it and the promotion is free.
+    const auto noFailover = runTake (true, -1, 60.0, 4.0);
+    const auto failedOver = runTake (true, 1, 60.0, 4.0);
+
+    // Channel 1 takes over the reference and keeps being steered: its loop
+    // reaches the correction its +40 PPM crystal needs either way. (Its own
+    // reported figure is relative to itself once it is the master, hence
+    // reading it off the control run.)
+    REQUIRE (noFailover.driftPpm[1] > 35.0);
+    REQUIRE_NEAR (failedOver.driftPpm[1], 0.0, 1e-12);
+
+    // And nothing was lost anywhere: no channel underran in either run.
+    for (int d = 1; d < 3; ++d)
+    {
+        REQUIRE (noFailover.underruns[d] == 0);
+        REQUIRE (failedOver.underruns[d] == 0);
+    }
+}
+
+TEST_CASE (CaptureCoordinator_DriftIsQuotedRelativeToTheClockMaster)
+{
+    // §3.3: "positive means this device runs fast relative to the master."
+    //
+    // Each stream's own loop measures itself against the output clock, whose
+    // skew is common to every channel. Moving the reference therefore re-bases
+    // every figure by the same amount, and the master always reads zero against
+    // itself -- which is what makes these numbers mean what §3.3 says they mean
+    // rather than "how far this mic is from the headphones".
+    const auto control = runTake (false, -1, 60.0);
+
+    REQUIRE_NEAR (control.driftPpm[0], 0.0, 1e-12);
+
+    // Channels at +40 and -60 PPM against a master at 0.
+    REQUIRE (control.driftPpm[1] > 35.0);
+    REQUIRE (control.driftPpm[2] < -55.0);
+}

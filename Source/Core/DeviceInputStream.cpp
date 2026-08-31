@@ -75,19 +75,25 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     }
 
     // §3.2: fill error drives the loop. Positive means this device is producing
-    // faster than the master consumes, so its ratio must rise to drain it.
+    // faster than this stream is being consumed, so its ratio must rise to
+    // drain it.
+    //
+    // Every channel is steered, the clock master included. The thing this
+    // stream is pulled by is the output device's callback, not any microphone,
+    // so exempting one mic from correction does not make it the timebase -- it
+    // just leaves that one mic uncorrected against a clock it has no
+    // relationship to. Its ring then walks to one end of its travel and stays
+    // there, dropping arrivals when full or holding the last sample when dry,
+    // which is drift on the one channel §3.1 nominated as the reference. See
+    // §3.1/§3.2 in docs/SPEC.md for why the reference is a reporting role here
+    // rather than a correction one.
     const auto available = ring.availableForRead();
     const double fillError = static_cast<double> (available) - static_cast<double> (targetFillSamples);
 
-    if (! isMaster)
-    {
-        compensator.update (fillError, numSamples);
-        driftPpm.store (compensator.getPpm(), std::memory_order_relaxed);
-    }
+    compensator.update (fillError, numSamples);
+    driftPpm.store (compensator.getPpm(), std::memory_order_relaxed);
 
-    // §3.1: the master is the timebase. Resampling it would mean correcting the
-    // reference against itself.
-    const double ratio = isMaster ? 1.0 : compensator.getRatio();
+    const double ratio = compensator.getRatio();
 
     if (! primed)
     {
@@ -147,9 +153,13 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     }
 }
 
-void DeviceInputStream::tickDriftReporting (double elapsedSeconds) noexcept
+void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double referencePpm) noexcept
 {
-    compensator.updateSustainedDriftFlag (elapsedSeconds);
+    // §3.3 judges a device against the clock master, not against the output
+    // stream. Passing the master's own correction as the reference is what
+    // keeps a skewed *output* device from flagging every microphone at once:
+    // that skew lands in every channel's PPM equally and subtracts out here.
+    compensator.updateSustainedDriftFlag (elapsedSeconds, referencePpm);
     excessDrift.store (compensator.isSustainedExcessDrift(), std::memory_order_relaxed);
 }
 

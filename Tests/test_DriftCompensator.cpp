@@ -79,6 +79,31 @@ TEST_CASE (DriftCompensator_SustainedExcessDriftFlagsAfterThreshold)
     REQUIRE (dc.isSustainedExcessDrift());
 }
 
+TEST_CASE (DriftCompensator_SustainedExcessDriftIsJudgedAgainstTheClockMaster)
+{
+    // §3.3 flags a device that is far from the *master*, not from whatever
+    // clock happens to be pulling it.
+    //
+    // Every channel is corrected onto the output stream now (§3.2), so an output
+    // device a long way off nominal shows up in every channel's PPM at once. Judged
+    // absolutely that would flag the entire rig as unreliable the moment the
+    // listener plugged in an unusual interface -- every mic reported broken
+    // because the headphones are unusual. Relative to the master it cancels.
+    DriftCompensator dc (48000.0);
+    for (int i = 0; i < 200000; ++i)
+        dc.update (1.0e9, 64);
+    REQUIRE (dc.getPpm() > 100.0);
+
+    // The master sits at the same offset: this device is not drifting from it.
+    const double masterPpm = dc.getPpm();
+    dc.updateSustainedDriftFlag (10.0, masterPpm);
+    REQUIRE_FALSE (dc.isSustainedExcessDrift());
+
+    // A master 150 PPM the other way is a genuine disagreement, and is flagged.
+    dc.updateSustainedDriftFlag (10.0, masterPpm - 150.0);
+    REQUIRE (dc.isSustainedExcessDrift());
+}
+
 TEST_CASE (DriftCompensator_SustainedExcessDriftFlagClearsWhenBackInRange)
 {
     DriftCompensator dc (48000.0);

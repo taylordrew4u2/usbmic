@@ -32,8 +32,12 @@ struct MasterResolution
 /// A candidate can fail either test independently: a microphone plugged in
 /// mid-take is present and healthy but is not in the take at all (§6.5 -- it
 /// joins nothing until the next one), and an unplugged channel is in the take
-/// but is writing silence. Locking the rig's timebase to either one would
-/// resample every other microphone onto a clock that carries no audio.
+/// but is writing silence.
+///
+/// Naming either one costs §3.3 its meaning rather than the take its alignment:
+/// per §3.1 the master is the reference every device's PPM is quoted against,
+/// not an exemption from correction, and a channel index that is out of the
+/// take's range or writing silence quotes the whole rig against nothing.
 MasterResolution resolveMasterChannel (const std::vector<std::string>& takeChannelIds,
                                        const std::vector<bool>& channelLive,
                                        const std::vector<std::string>& rankedCandidateIds);
