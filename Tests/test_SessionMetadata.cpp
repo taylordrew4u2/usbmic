@@ -95,3 +95,30 @@ TEST_CASE (JsonValue_EscapesSpecialCharactersInStrings)
     JsonValue reparsed = JsonValue::parse (dumped);
     REQUIRE (reparsed.find ("text")->asString() == "line1\nline2\"quoted\"");
 }
+
+TEST_CASE (SessionMetadata_videoFilesSurviveARoundTrip)
+{
+    SessionMetadata meta;
+    meta.appVersion = "0.5.0";
+    meta.videos.push_back ({ "Kitchen Cam", "V01_Kitchen-Cam.mov", false });
+    meta.videos.push_back ({ "Wide", "V02_Wide.mov", false });
+
+    const auto restored = SessionMetadata::fromJsonString (meta.toJsonString());
+
+    REQUIRE (restored.videos.size() == 2u);
+    REQUIRE (restored.videos[0].cameraName == std::string ("Kitchen Cam"));
+    REQUIRE (restored.videos[1].fileName == std::string ("V02_Wide.mov"));
+
+    // The picture never carries the sound: that is the whole arrangement, and
+    // an editor reading this file is entitled to be told so rather than having
+    // to open the video to find out.
+    REQUIRE_FALSE (restored.videos[0].hasAudioTrack);
+    REQUIRE_FALSE (restored.videos[1].hasAudioTrack);
+}
+
+TEST_CASE (SessionMetadata_aTakeWithNoCamerasRecordsNoVideos)
+{
+    SessionMetadata meta;
+    const auto restored = SessionMetadata::fromJsonString (meta.toJsonString());
+    REQUIRE (restored.videos.empty());
+}

@@ -2,6 +2,10 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "MainScreen.h"
 #include "AdvancedPanel.h"
+#include "CameraPanel.h"
+#include "SaveLocationPrompt.h"
+#include "SavedTakePanel.h"
+#include <functional>
 
 namespace mma {
 
@@ -42,12 +46,43 @@ private:
 
     juce::Viewport mainViewport;
     juce::Viewport advancedViewport;
+    juce::Viewport cameraViewport;
     bool advancedVisible = false;
+    bool cameraVisible = false;
+    int lastCameraHeight = 0;
     int lastMicCount = -1;
     int lastAdvancedMicCount = -1;
     int framesUntilStatusRefresh = 1;
 
+    // What the live "files are appearing" line last reported, so it is only
+    // rebuilt when the folder on disk has actually changed underneath it.
+    juce::String lastSavingLine;
+
+    /// §10.1/§6.2: the record press, with the "where does this go" question in
+    /// front of it the first time it is asked for a given destination.
+    void beginRecording();
+    /// Actually starts the take. Everything the prompt is for has already
+    /// happened by the time this runs.
+    void startRecordingNow();
+    void showSaveLocationPrompt();
+    void dismissSaveLocationPrompt();
+    /// §6.2: called when a take has finished, with what landed on disk.
+    void showSavedTake();
+    void chooseDestinationFolder (std::function<void()> onChosen);
+
+    SaveLocationPrompt saveLocationPrompt;
+    SavedTakePanel savedTakePanel;
+    // The folder the panel is currently showing, so "Open the folder" opens the
+    // one on screen rather than whatever the app has moved on to since.
+    juce::String savedTakeFolder;
+
     void toggleAdvanced();
+    void toggleCameras();
+    /// The camera list and its live views. Refreshed when the panel is open,
+    /// and rebuilt only when the set of cameras or their state has moved.
+    void refreshCameras();
+    CameraPanel cameraPanel;
+
     /// §10.3 panel contents. Refreshed on the slow tick and whenever the panel
     /// is opened, so it is never showing a stale rig.
     void refreshAdvanced();

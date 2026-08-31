@@ -14,9 +14,20 @@ set -euo pipefail
 OUT="${1:-app.png}"
 SETTLE="${2:-15}"
 DISPLAY_NUM="${MMA_DISPLAY:-:99}"
-APP="build-app/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator"
+# Multi-config generators (Xcode, Visual Studio) put the product under a
+# per-configuration directory; single-config ones -- which is what the build
+# command in the README produces -- put it straight in the artefacts folder.
+# Both are looked for, so this works from the documented build rather than only
+# from the generator the script was first written against.
+APP=""
+for CANDIDATE in \
+  "build-app/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" \
+  "build-app/MultiMicAggregator_artefacts/Multi-Mic Aggregator"
+do
+  if [ -x "$CANDIDATE" ]; then APP="$CANDIDATE"; break; fi
+done
 
-test -x "$APP" || { echo "Build first: cmake -B build-app -DMMA_BUILD_APP=ON && cmake --build build-app"; exit 1; }
+test -n "$APP" || { echo "Build first: cmake -B build-app -DMMA_BUILD_APP=ON && cmake --build build-app"; exit 1; }
 
 # `pkill Xvfb` matches the process name only. Do not reach for `pkill -f` here:
 # the pattern would also match the shell running this script, and killing the

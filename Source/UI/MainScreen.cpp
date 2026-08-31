@@ -24,7 +24,7 @@ MainScreen::MainScreen()
 
     // A quiet supporting tier under the record button, rather than three lines
     // competing with it and with each other at the same weight.
-    for (auto* l : { &elapsedLabel, &remainingLabel, &saveLocationLabel })
+    for (auto* l : { &elapsedLabel, &remainingLabel, &saveLocationLabel, &filesSavingLabel })
     {
         l->setFont (juce::Font (12.0f));
         l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
@@ -33,16 +33,20 @@ MainScreen::MainScreen()
     addAndMakeVisible (remainingLabel);
     addAndMakeVisible (saveLocationLabel);
 
+    // Green rather than the supporting grey the line above it uses: while a
+    // take is running this is the one status line saying the thing the user
+    // most wants to be true, which is that files are appearing.
+    filesSavingLabel.setColour (juce::Label::textColourId, AppLookAndFeel::meterLow);
+    addAndMakeVisible (filesSavingLabel);
+
     noMicsLabel.setText ("Plug in a microphone to get started.", juce::dontSendNotification);
     noMicsLabel.setJustificationType (juce::Justification::centred);
-    noMicsLabel.setVisible (false);
-    addAndMakeVisible (noMicsLabel);
+    addChildComponent (noMicsLabel);
 
     adviceLabel.setJustificationType (juce::Justification::centred);
     adviceLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
     adviceLabel.setFont (juce::Font (12.0f));
-    adviceLabel.setVisible (false);
-    addAndMakeVisible (adviceLabel);
+    addChildComponent (adviceLabel);
 
     monitorProblemLabel.setJustificationType (juce::Justification::centred);
     // Was JUCE's stock orange at the default size, running the full width of the
@@ -54,8 +58,7 @@ MainScreen::MainScreen()
     // that had just gone wrong.
     monitorProblemLabel.setColour (juce::Label::textColourId, AppLookAndFeel::warning);
     monitorProblemLabel.setFont (juce::Font (13.0f));
-    monitorProblemLabel.setVisible (false);
-    addAndMakeVisible (monitorProblemLabel);
+    addChildComponent (monitorProblemLabel);
 
     // Why the record button will not go. Warning amber and small, matching the
     // monitor-problem line it sits next to, rather than primary-text white,
@@ -63,8 +66,7 @@ MainScreen::MainScreen()
     disabledReasonLabel.setJustificationType (juce::Justification::centred);
     disabledReasonLabel.setColour (juce::Label::textColourId, AppLookAndFeel::warning);
     disabledReasonLabel.setFont (juce::Font (12.0f));
-    disabledReasonLabel.setVisible (false);
-    addAndMakeVisible (disabledReasonLabel);
+    addChildComponent (disabledReasonLabel);
 
     // The bare number told a user nothing about what it controlled. Naming it
     // inside the value box costs no layout and needs no separate label; a
@@ -95,6 +97,9 @@ MainScreen::MainScreen()
 
     advancedButton.onClick = [this] { if (onAdvancedClicked) onAdvancedClicked(); };
     addAndMakeVisible (advancedButton);
+
+    camerasButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
+    addAndMakeVisible (camerasButton);
 }
 
 MainScreen::~MainScreen() = default;
@@ -125,7 +130,7 @@ int MainScreen::getRequiredHeight() const
 {
     // The channel-strip row plus every fixed row resized() lays out beneath it,
     // and the margins around the lot.
-    return 504 + 24;
+    return 522 + 24;
 }
 
 int MainScreen::getMicCount() const
@@ -140,6 +145,7 @@ SkullMeterComponent* MainScreen::getSkullMeter (int index)
 
 void MainScreen::setRecording (bool isRecording)
 {
+    const bool changed = recording != isRecording;
     recording = isRecording;
     // §10.4/§10.6: buttons say what happens. "Start recording" -> "Recording."
     recordButton.setButtonText (recording ? "Recording. Tap to stop." : "Start recording");
@@ -150,6 +156,13 @@ void MainScreen::setRecording (bool isRecording)
                             recording ? AppLookAndFeel::danger : AppLookAndFeel::accent);
     recordButton.setColour (juce::TextButton::textColourOffId,
                             recording ? AppLookAndFeel::bone : AppLookAndFeel::background);
+
+    // The status row is split in two while recording and single when not, so
+    // the change of state is a change of layout. Without this the elapsed-time
+    // label kept the empty bounds resized() gave it in the idle layout, and
+    // "Recording for 4m 12s" was set on a label nobody could see.
+    if (changed)
+        resized();
 }
 
 void MainScreen::setHighlightedMic (int index)
@@ -166,6 +179,13 @@ void MainScreen::setMuteState (bool muted, bool runawayMuted)
     // is the recovery control, and it must say so.
     muteButton.setButtonText (runawayMuted ? "Unmute (sound was cut)"
                                            : (muted ? "Unmute" : "Mute"));
+}
+
+void MainScreen::setCameraCount (int count)
+{
+    // §9.3: the count is on the button rather than only in a colour, so a
+    // camera being in the take is readable at a glance from the main screen.
+    camerasButton.setButtonText (count > 0 ? "Cameras (" + juce::String (count) + ")" : "Cameras");
 }
 
 void MainScreen::setAdviceText (const juce::String& text)
@@ -276,7 +296,7 @@ void MainScreen::resized()
     // "Saves to" line, for no reason a reader could see.
     auto statusRow = area.removeFromTop (24);
 
-    if (recordingState)
+    if (recording)
     {
         elapsedLabel.setBounds (statusRow.removeFromLeft (statusRow.getWidth() / 2));
         remainingLabel.setBounds (statusRow);
@@ -288,14 +308,20 @@ void MainScreen::resized()
     }
 
     saveLocationLabel.setBounds (area.removeFromTop (20));
+    filesSavingLabel.setBounds (area.removeFromTop (18));
     monitorProblemLabel.setBounds (area.removeFromTop (20));
     adviceLabel.setBounds (area.removeFromTop (20));
     area.removeFromTop (8);
 
     auto bottomRow = area.removeFromTop (32);
-    volumeSlider.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() * 2 / 3));
-    muteButton.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 2));
-    advancedButton.setBounds (bottomRow);
+
+    // The slider gives up a third of its old width to make room for the second
+    // door. It was two thirds of the row for a control with a 0-100 range;
+    // half is still more resolution than the ear has.
+    volumeSlider.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 2));
+    muteButton.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 3));
+    camerasButton.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 2).reduced (2, 0));
+    advancedButton.setBounds (bottomRow.reduced (2, 0));
 }
 
 } // namespace mma

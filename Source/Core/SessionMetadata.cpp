@@ -27,6 +27,17 @@ JsonValue SessionMetadata::toJson() const
     }
     root["devices"] = deviceArr;
 
+    JsonValue videoArr = JsonValue::makeArray();
+    for (const auto& v : videos)
+    {
+        JsonValue vv = JsonValue::makeObject();
+        vv["cameraName"] = JsonValue (v.cameraName);
+        vv["fileName"] = JsonValue (v.fileName);
+        vv["hasAudioTrack"] = JsonValue (v.hasAudioTrack);
+        videoArr.push_back (vv);
+    }
+    root["videos"] = videoArr;
+
     JsonValue driftArr = JsonValue::makeArray();
     for (const auto& e : driftLog)
     {
@@ -85,6 +96,16 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
     if (auto* p = v.find ("bufferSizeSamples")) m.bufferSizeSamples = p->asInt (64);
     if (auto* p = v.find ("measuredLatencyMs")) m.measuredLatencyMs = p->asDouble (0.0);
     if (auto* p = v.find ("mirrorEnabled")) m.mirrorEnabled = p->asBool (true);
+    if (auto* p = v.find ("videos"))
+        for (const auto& dv : p->asArray())
+        {
+            VideoRecord rec;
+            if (auto* n = dv.find ("cameraName")) rec.cameraName = n->asString();
+            if (auto* n = dv.find ("fileName")) rec.fileName = n->asString();
+            if (auto* n = dv.find ("hasAudioTrack")) rec.hasAudioTrack = n->asBool (false);
+            m.videos.push_back (rec);
+        }
+
     if (auto* p = v.find ("mirrorActive")) m.mirrorActive = p->asBool (true);
     if (auto* p = v.find ("mirrorPath")) m.mirrorPath = p->asString();
 
