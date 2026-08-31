@@ -25,25 +25,33 @@ double runClockRatio (DeviceInputStream& s, int pushPerBlock, int pullPerBlock, 
 
 } // namespace
 
-TEST_CASE (DeviceInputStream_MasterIsNeverResampled)
+TEST_CASE (DeviceInputStream_EveryChannelIsCorrectedIncludingTheClockMaster)
 {
+    // This class has no notion of a master any more, and that is the fix.
+    //
+    // The stream a DeviceInputStream is pulled by belongs to the output device,
+    // not to any microphone, so exempting the §3.1 master from correction never
+    // made it the timebase -- it left one channel uncorrected against a clock it
+    // had no relationship to. Its ring then walked to one end of its travel and
+    // stayed there, dropping arrivals when full or holding its last sample when
+    // dry: drift, on the one channel the rig quotes every other against.
+    //
+    // §3.1's reference is now a reporting role, held by CaptureCoordinator. Down
+    // here every channel is steered the same way.
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (true);
 
-    // §3.1: the master defines the timebase. Even with its ring deliberately
-    // far from the target fill, its rate must not be corrected -- correcting
-    // the reference against itself is what a master exists to prevent.
+    // A ring deliberately far from target fill: whoever this channel is, the
+    // loop must answer it.
     runClockRatio (s, 96, 64, 40);
 
-    REQUIRE_NEAR (s.getDriftPpm(), 0.0, 1e-12);
+    REQUIRE (s.getDriftPpm() > 0.0);
 }
 
 TEST_CASE (DeviceInputStream_FastDeviceIsPulledDown)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (false);
 
     // Start the ring well above its target fill, which is what a device running
     // fast produces. §3.2 must then raise the playout ratio to drain it.
@@ -61,7 +69,6 @@ TEST_CASE (DeviceInputStream_SlowDeviceIsPulledUp)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (false);
 
     // Enough to clear pre-roll and start, then a device that supplies less than
     // the clock consumes: the ring drains below target, which is what "not
@@ -78,7 +85,6 @@ TEST_CASE (DeviceInputStream_CorrectionStaysInsideTheSafetyClamp)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (false);
 
     // A device this far out is broken, not drifting. §3.2 clamps at +/-200 PPM
     // so a bad measurement can never turn into an audible pitch shift. The
@@ -174,7 +180,6 @@ TEST_CASE (DeviceInputStream_PassesAudioThroughAtMatchedClocks)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (true);
 
     std::vector<float> in (256, 0.5f);
     s.pushBlock (in.data(), 256);
@@ -194,7 +199,6 @@ TEST_CASE (DeviceInputStream_SustainedExcessDriftIsFlagged)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (false);
 
     runClockRatio (s, 128, 64, 60000);
 
@@ -219,7 +223,6 @@ TEST_CASE (DeviceInputStream_UnderrunCountNeverExceedsWhatWasAskedFor)
     // can never exceed the number of samples actually requested.
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (true);
 
     // Enough to clear pre-roll (2 blocks) and prime the resampler, and no more.
     std::vector<float> in (128, 0.5f);
@@ -242,7 +245,6 @@ TEST_CASE (DeviceInputStream_StarvedBlockHoldsRatherThanClicking)
     // click the hold exists to avoid.
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
-    s.setIsMaster (true);
 
     std::vector<float> in (128, 0.75f);
     s.pushBlock (in.data(), 128);
@@ -254,4 +256,97 @@ TEST_CASE (DeviceInputStream_StarvedBlockHoldsRatherThanClicking)
 
     for (float sample : out)
         REQUIRE (std::abs (sample - 0.75f) < 1e-4f);
+}
+
+TEST_CASE (DeviceInputStream_DriftLoopIsDrivenByItsOwnRingNotByAnyOtherChannel)
+{
+    // What "locked to the master" amounts to in this path: no channel reads any
+    // other channel's audio. A stream's ratio comes from its own ring fill
+    // against the pull it is given, and nothing else enters that arithmetic.
+    //
+    // This is why an unplugged clock master cannot poison the other channels --
+    // there is no path from it to them -- and it is the fact the mid-take
+    // failover question turns on, so it is pinned here rather than re-derived.
+    DeviceInputStream fast (48000.0), alsoFast (48000.0);
+    fast.prepare (48000.0, 64);
+    alsoFast.prepare (48000.0, 64);
+
+    std::vector<float> preload (400, 0.25f);
+    fast.pushBlock (preload.data(), 400);
+    alsoFast.pushBlock (preload.data(), 400);
+
+    runClockRatio (fast, 64, 64, 400);
+    runClockRatio (alsoFast, 64, 64, 400);
+
+    // Two streams that never saw each other, or any master, settle identically:
+    // the loop has no other input than this stream's own fill.
+    REQUIRE_NEAR (fast.getDriftPpm(), alsoFast.getDriftPpm(), 1e-12);
+    REQUIRE (fast.getDriftPpm() > 0.0);
+}
+
+TEST_CASE (DeviceInputStream_NamingAChannelTheReferenceDoesNotStopCorrectingIt)
+{
+    // Regression, and the whole point of the change. Under the old exemption a
+    // channel promoted to master stopped being steered: its reported drift
+    // froze and its ring was left to run wherever its crystal took it. That
+    // made mid-take failover a hazard rather than a fix.
+    //
+    // There is nothing to promote here now -- the reference lives in
+    // CaptureCoordinator and this class corrects unconditionally -- so a
+    // channel's correction cannot be switched off behind its back. Running the
+    // same imbalance twice as long simply carries the loop further.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> preload (400, 0.25f);
+    s.pushBlock (preload.data(), 400);
+    runClockRatio (s, 64, 64, 400);
+
+    const double afterSettling = s.getDriftPpm();
+    REQUIRE (afterSettling > 0.0);
+
+    runClockRatio (s, 64, 64, 400);
+
+    // Still being steered: the loop kept working rather than freezing.
+    REQUIRE (s.getDriftPpm() > 0.0);
+}
+
+TEST_CASE (DeviceInputStream_RingIsHeldAtTargetEvenAtAWideClockOffset)
+{
+    // The cost the exemption used to carry, now measured as its absence. A mic
+    // 100 PPM off the clock that pulls it, run for five simulated minutes.
+    //
+    // Exempt from correction, this ring ended pinned near full (0.875) -- and at
+    // that limit RingBuffer::write keeps only what fits, so arriving audio was
+    // being dropped a sample at a time with the underrun counter reading zero
+    // throughout. Corrected, it parks at its pre-roll target and stays there.
+    //
+    // Five minutes because §3.2 caps the loop's slew at 5 PPM/s: reaching
+    // 100 PPM and settling takes a couple of minutes, and sampling before then
+    // measures the slew rather than the steady state.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> pre (256, 0.25f);
+    s.pushBlock (pre.data(), 256);
+
+    // 100 PPM fast: an extra sample arrives roughly one block in every 156.
+    std::vector<float> in (65, 0.25f), out (64, 0.0f);
+    double owed = 0.0;
+
+    const int blocks = static_cast<int> (300.0 * 48000.0 / 64.0);
+
+    for (int i = 0; i < blocks; ++i)
+    {
+        owed += 64.0 * 1.0001;
+        const int n = static_cast<int> (owed);
+        owed -= n;
+        s.pushBlock (in.data(), n);
+        s.pull (out.data(), 64);
+    }
+
+    // kPreRollBlocks of kRingBlocks is 0.25, and settling sits just under it.
+    // Nowhere near the 0.875 the uncorrected channel used to reach.
+    REQUIRE (s.getFillFraction() < 0.3);
+    REQUIRE (s.getUnderrunSamples() == 0);
 }

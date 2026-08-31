@@ -16,6 +16,7 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <set>
 #include <thread>
 #include <mutex>
 #include "../Core/PortIdentity.h"

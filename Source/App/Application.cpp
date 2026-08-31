@@ -345,8 +345,9 @@ void Application::applyClockMaster()
         if (! appliedMasterDeviceId.empty())
             midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), resolved.deviceId,
                                          resolved.deviceId.empty()
-                                             ? std::string ("Clock master lost: no live microphone can hold "
-                                                            "the timebase, so the channels are free-running.")
+                                             ? std::string ("Clock master lost: no live microphone is left to "
+                                                            "measure drift against. The channels stay corrected "
+                                                            "and the recording is unaffected.")
                                              : std::string ("Clock master switched to this microphone after "
                                                             "the previous one stopped delivering audio.") });
 
@@ -511,6 +512,23 @@ void Application::onDeviceListChanged()
             break;
         }
 
+        // §6.5 "clock master unplugged": failover per §3.3, without touching
+        // the channel set.
+        //
+        // applyClockMaster() already resolves against the take's frozen channel
+        // list and skips a candidate that is writing silence, so calling it
+        // here is the whole of the failover. It runs on the status poll too;
+        // doing it on the device-list notification as well is what makes the
+        // switch happen when the microphone actually leaves rather than up to a
+        // poll later.
+        //
+        // Only the reference moves. Every channel is corrected onto the output
+        // stream's clock (§3.2), master included, so no channel's resampling
+        // changes and the file layout is untouched (§6.5). What the move buys is
+        // §3.3's figures: they are quoted relative to the master, and a master
+        // that has gone silent stops updating, so leaving it there would quote
+        // every surviving microphone against a frozen number.
+        applyClockMaster();
         return;
     }
 

@@ -27,8 +27,12 @@ MasterResolution resolveMasterChannel (const std::vector<std::string>& takeChann
     }
 
     // §3.3 tolerates a bounded transient but not a stopped recording, so the
-    // caller is told "no master" (free-running) rather than being handed a
-    // channel that cannot serve as one.
+    // caller is told "no master" rather than being handed a channel that cannot
+    // serve as one.
+    //
+    // "No master" is not "no correction". Every channel is resampled onto the
+    // clock that pulls it either way (§3.2), so the take stays aligned; what is
+    // lost is the reference §3.3's per-device PPM figures are quoted against.
     return {};
 }
 

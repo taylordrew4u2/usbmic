@@ -105,7 +105,7 @@ bool DeviceManager::removeDevice (const PortIdentity& identity)
 
     devices.erase (it);
     reapplyCapacityLimit();
-    return true; // caller determines master-ness externally and calls selectFailoverMaster as needed
+    return true; // §3.3 failover follows from the erase -- see removeDevice()'s note
 }
 
 void DeviceManager::reapplyCapacityLimit()
@@ -239,21 +239,6 @@ const MicDeviceState* DeviceManager::selectDefaultMaster() const
     // take falls back to is the same rule that chose the master to begin with.
     const auto ranked = rankMasterCandidates();
     return ranked.empty() ? nullptr : ranked.front();
-}
-
-const MicDeviceState* DeviceManager::selectFailoverMaster (const PortIdentity& removedMasterIdentity) const
-{
-    const MicDeviceState* best = nullptr;
-    for (const auto& d : devices)
-    {
-        if (! d.included)
-            continue;
-        if (d.identity.key() == removedMasterIdentity.key())
-            continue;
-        if (best == nullptr || lowerDrift (d, *best))
-            best = &d;
-    }
-    return best;
 }
 
 } // namespace mma
