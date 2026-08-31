@@ -171,6 +171,21 @@ juce::StringArray CameraController::getPlannedFileNames() const
     return names;
 }
 
+juce::String CameraController::getPlannedFileNameFor (const std::string& deviceId) const
+{
+#if JUCE_USE_CAMERA
+    const auto extension = juce::CameraDevice::getFileExtension();
+#else
+    const juce::String extension { ".mov" };
+#endif
+
+    for (const auto& plan : selection.buildPlans())
+        if (plan.deviceId == deviceId)
+            return juce::String (plan.fileName) + extension;
+
+    return {};
+}
+
 bool CameraController::startRecording (const juce::File& sessionFolder)
 {
 #if JUCE_USE_CAMERA

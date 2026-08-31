@@ -275,12 +275,42 @@ has this same step.
   into the same session folder as the audio, with no sound track of its own —
   the sound is the WAVs beside it, and `session.json` records the pairing and
   the shared session origin that lines them up in an editor.
+- **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
+  under its name, updating as you rename it. Renaming is the moment you want to
+  know what the name does.
 - Cameras are never opened until you ask for them: nothing is opened at
   launch, so no camera light comes on and no privacy prompt is spent before
   you have opened the panel or armed a take with a camera switched on.
 - **macOS and Windows only.** JUCE implements camera capture on those two
   targets; the Linux build says so in one sentence instead of showing controls
   that cannot work. The sound recording works either way.
+
+<p align="center">
+  <img src="docs/images/cameras.png" alt="The Cameras panel on Linux: a Done button, the heading Cameras, a paragraph explaining that video and sound save as separate files, and a line saying this build cannot use cameras" width="660">
+</p>
+
+That shot is the Linux build, which is the one this container can render — so
+it is showing the sentence rather than the cameras. On macOS and Windows the
+same panel carries a row per camera: its name, a switch, the file it will
+write, and its picture, live.
+
+- **It remembers your rig.** Microphone names and trims, which mics are
+  switched off, where recordings go, the backup setting, the combined-device
+  name, your cameras and their names — all of it is still there next time you
+  open the app. Setting up once means setting up once.
+- **If the app is killed mid-take, it hands the recording back.** On the next
+  launch it checks the destination and the backup folder for takes that never
+  got a stop timestamp, repairs their file headers from the audio actually on
+  disk, and shows you what it found before the main screen — with a button that
+  opens the folder. Files holding less than a second are reported as empty
+  rather than offered, and are left on disk rather than deleted.
+
+<p align="center">
+  <img src="docs/images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">
+</p>
+
+That shot is real: the app was killed with SIGKILL part-way through a take,
+and this is what came up on the next launch.
 
 ### First run — where things go, on every platform
 
@@ -295,6 +325,9 @@ has this same step.
 - **A local backup copy** of each take is kept by default in
   `RECORDINGS-MIRROR` in your home directory, so a card failure is an
   inconvenience rather than data loss. Toggle it in the Settings panel.
+- **Your settings** live beside the log, at
+  `MultiMicAggregator/settings.json`. Delete it to start over from defaults;
+  a corrupt or unreadable one is ignored rather than fatal.
 - **The log** lives at `MultiMicAggregator/log.txt` under your user
   application-data directory (`~/Library` on macOS, `%APPDATA%` on Windows,
   `~/.config` on Linux). **Export diagnostics** in the Settings panel bundles
@@ -303,13 +336,14 @@ has this same step.
 ### Uninstalling
 
 Delete the app. The only things it leaves behind are your recordings
-(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log folder above — remove those
-too if you want nothing left.
+(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above —
+remove those too if you want nothing left.
 
 ## Layout
 
 ```
 Source/Core/        platform-independent engine logic, no JUCE dependency
+                    (including settings persistence and §6.6 crash recovery)
 Source/Platform/    audio backends (CoreAudio, WASAPI/ASIO) + virtual device backends A-D
 Source/UI/          JUCE components: skull meters, main screen, settings and
                     camera panels, the save-location and saved-take cards
@@ -554,6 +588,12 @@ The full application builds and links in CI on Linux, macOS and Windows, so
   on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
   stand-in `juce_video`, via the `sim_camera` target — so the code that only
   macOS and Windows can link is still type-checked on every runner.
+- `RecoveredTakesPanel` has been rendered against a real interrupted take:
+  a session folder with no stop timestamp and four WAVs whose size fields were
+  zeroed, as a SIGKILL leaves them. The app found it at launch, repaired all
+  four headers, and offered the three that held real audio while reporting the
+  0.4-second one as empty. The repaired files were then confirmed playable by
+  a decoder outside this project.
 
 The app has also been driven headless under Xvfb against the virtual ALSA
 microphones, through a whole take: press record, answer the save-location card,
@@ -660,6 +700,19 @@ microphone. In particular:
   destination, before the first take against it, and the answer is remembered
   against the folder it was given about. Every press after that goes straight
   to recording. A user who wants it every time can ask for that on the card.
+- **A recovered stub is reported, not deleted.** §6.6 says to "discard any
+  recovered file containing under 1 second of audio; report it as empty rather
+  than presenting an unplayable stub." The reporting half is taken literally;
+  the discarding half is not. Silently removing a file from someone's card at
+  launch, before they have seen it or asked for anything, is a worse mistake
+  than listing a short file — so a stub is excluded from what is offered and
+  left exactly where it is.
+- **The listening level is the one setting not written when it changes.**
+  Everything else that is remembered goes to disk the moment it changes, so a
+  crash cannot cost it. Master volume is written only at shutdown: it is the
+  one control that moves continuously while someone listens, and it is comfort
+  rather than setup — losing it costs a second to reset, where losing a trim
+  costs the ear-work that found it.
 - **Cameras are an addition, not a spec item.** `docs/SPEC.md` is about
   microphones and says nothing about video, so everything in the Cameras panel
   is a judgment call against the spec's own principles rather than a

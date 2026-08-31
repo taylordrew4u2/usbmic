@@ -29,6 +29,8 @@ add_library(mma_core STATIC
     Source/Core/SessionMetadata.cpp
     Source/Core/SessionFolderNaming.cpp
     Source/Core/CameraSelection.cpp
+    Source/Core/AppSettings.cpp
+    Source/Core/SessionRecovery.cpp
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
@@ -130,6 +132,7 @@ if (MMA_BUILD_APP)
         Source/UI/ModalCard.cpp
         Source/UI/SaveLocationPrompt.cpp
         Source/UI/SavedTakePanel.cpp
+        Source/UI/RecoveredTakesPanel.cpp
         Source/UI/MainComponent.cpp
         Source/UI/Main.cpp
         Source/App/Application.cpp

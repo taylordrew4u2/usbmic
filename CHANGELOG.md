@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Added -- the app remembers your rig
+
+- **Setting up happens once.** Microphone names and trims, which microphones are
+  switched off, where recordings go, the backup setting, the combined-device
+  name, the cameras and their names, and the answer to the "where does this go"
+  card are all still there next launch. §2.4 already carried a name and a trim
+  across a replug, and PortIdentityStore said in as many words that writing them
+  to disk was the App layer's job -- which the App layer had never done, so
+  every one of them was carried faithfully across an unplug and lost completely
+  on quit.
+- **Keyed by port, not by name.** Four identical microphones share a product
+  string (§14.6); switching one off by name would have switched off its three
+  siblings on the next launch.
+- **A settings file is never worth failing to launch over.** One that is
+  corrupt, truncated by a power cut, or written by a newer version loads as
+  defaults, and a file from an older version keeps every key it does recognise
+  rather than being dropped whole.
+- **A remembered destination has to still be there.** A card unplugged since
+  last time falls back to the default rather than leaving the app pointed at a
+  path that no longer exists.
+
+### Added -- §6.6 crash recovery
+
+- **A take the app was killed in the middle of is handed back.** On launch the
+  destination and the mirror are checked for sessions with no stop timestamp;
+  their file headers are repaired from the audio actually on disk, and what was
+  found is presented before the main screen with a button that opens the folder.
+- **This collects a guarantee that was already being paid for.** SessionWriter
+  has always rewritten each file's RIFF and data sizes every five seconds
+  precisely so an interrupted file stays playable -- and nothing had ever gone
+  looking for those files afterwards. The audio was on the card, under a header
+  describing a file up to five seconds shorter than it really was, and the app
+  came up as though nothing had happened.
+- **Under a second is reported, not offered.** §6.6 calls such a file an
+  unplayable stub. It is excluded from what is presented, named in the count so
+  nobody is left wondering where a file went, and left on disk rather than
+  deleted -- see *Judgment calls*.
+- **A take where nothing survived is not mentioned at all**, and neither is a
+  clean shutdown, which is nearly every launch.
+
+### Changed -- cameras say what they will write
+
+- Each camera row now shows the file it will produce (`Writes
+  V01_Kitchen-Cam.mov`), updating as it is renamed. Renaming is the moment
+  someone wants to see what the name does.
+- The Cameras panel's way back moved to the top left, where the one in Settings
+  already was. Two doors off the main screen that close in different corners is
+  two things to learn instead of one.
+
+
 ### Added -- you are told where the files go before there are any, and shown them after
 
 - **A card before your first take asks where it's going.** Two questions --
