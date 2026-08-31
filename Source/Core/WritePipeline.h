@@ -47,6 +47,17 @@ public:
     /// block, which is a dropout and must be reported (§0.1, §6.5).
     bool pushBlock (const float* const* channelData, int numChannels, int numSamples) noexcept;
 
+    /// §6.5: at 90% ring fill with no mirror to fall back on, the stems stop
+    /// and the mix keeps going. A complete mix is worth more than eight stems
+    /// that all have the same hole in them, and the ring draining at a fraction
+    /// of the byte rate is what stops the hole growing.
+    ///
+    /// Never restarts within a take, for the same reason the mirror does not
+    /// (§6.3): stems that resume mid-file are worse than stems that stopped,
+    /// because the gap is invisible in the waveform.
+    void fallBackToMixOnly() noexcept;
+    bool isMixOnly() const noexcept { return mixOnly.load (std::memory_order_acquire); }
+
     /// §6.5: a channel whose mic is unplugged writes silence rather than
     /// changing the file layout mid-recording.
     void setChannelLive (int channelIndex, bool live) noexcept;
@@ -91,6 +102,7 @@ private:
     // Constructed small and resized by start(), which is the only place the
     // real channel count and rate are known. RingBuffer::reset reallocates, so
     // it must never be called while the audio thread is running.
+    std::atomic<bool> mixOnly { false };
     std::atomic<bool> cardWriteFailed { false };
     std::atomic<bool> mirrorWriteFailed { false };
 

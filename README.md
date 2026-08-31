@@ -303,6 +303,12 @@ write, and its picture, live.
   switched off, where recordings go, the backup setting, the combined-device
   name, your cameras and their names — all of it is still there next time you
   open the app. Setting up once means setting up once.
+- **If the drive starts falling behind, you are told before anything is lost.**
+  At half a buffer the screen says so; if it reaches nine tenths with no backup
+  copy running, the separate microphone tracks stop and the mixed file keeps
+  going, so what survives is one complete recording of everyone rather than
+  eight with the same hole in them. The sample position where that happened
+  goes into `session.json`.
 - **If the drive goes away mid-take, you are told immediately.** Pulling the
   card stops the recording, closes every open file, and says so — and if the
   backup copy was running, it gives you the folder that still holds a complete

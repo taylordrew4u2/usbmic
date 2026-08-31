@@ -84,7 +84,16 @@ public:
 
     uint64_t getFramesDropped() const noexcept { return pipeline != nullptr ? pipeline->getFramesDropped() : 0; }
 
-    /// §6.5 "target card removed": the destination stopped accepting writes.
+    /// §6.5: shed the stems and keep the mix when the ring is nearly full and
+    /// there is no mirror to fall back on.
+    void fallBackToMixOnly() noexcept { if (pipeline != nullptr) pipeline->fallBackToMixOnly(); }
+    bool isMixOnly() const noexcept { return pipeline != nullptr && pipeline->isMixOnly(); }
+
+    /// Frames taken from the audio thread so far -- §6.5 wants the exact sample
+    /// position where degradation began, and this is that clock.
+    uint64_t getFramesAccepted() const noexcept { return pipeline != nullptr ? pipeline->getFramesAccepted() : 0; }
+
+        /// §6.5 "target card removed": the destination stopped accepting writes.
     /// The take is over -- the owner stops and finalizes, and tells the user.
     bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
