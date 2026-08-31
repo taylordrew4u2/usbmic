@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Core/ClockMasterResolver.h"
 #include "../Core/SampleRateNegotiator.h"
@@ -957,6 +958,18 @@ void Application::toggleRecording()
         lastMirrorFolder = currentMirrorFolder;
         savedNoticeSeconds = 10.0;
 
+        // Judged here, against the files as finalized, so the status line and
+        // the saved-take card cannot disagree. They used to: the card warned
+        // that every file was empty while this line said "Saved to ..." beside
+        // it, and the line is the one a user reads on their way out of the room.
+        {
+            std::vector<TakeFile> written;
+            for (const auto& f : listSessionFiles (lastSessionFolder))
+                written.push_back ({ f.name.toStdString(), f.sizeBytes });
+
+            lastTakeHeldNoAudio = takeHoldsNoAudio (written);
+        }
+
         // §6.2: the take is on disk and the UI has not shown where yet. Only
         // raised when a folder was actually opened -- a start that failed
         // preflight never got one, and "saved" would be a lie.
@@ -1885,6 +1898,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (savedNoticeSeconds > 0.0)
     {
         savedNoticeSeconds -= sinceLastCallSeconds;
+
+        // §0.1: never claim audio that is not there. A take whose files hold
+        // nothing but headers is where the take went, not what it saved, and
+        // saying "Saved" would be the one word the user needed to be false.
+        if (lastTakeHeldNoAudio)
+            return "Recording stopped, but the files in " + lastSessionFolder
+                   + " are empty -- no audio reached the drive.";
+
         return "Saved to " + lastSessionFolder;
     }
 

@@ -365,6 +365,11 @@ private:
     juce::String lastMirrorFolder;
     double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
 
+    // Whether the take that just finished wrote any audio at all, judged once
+    // at stop against the finalized files. Keeps the §10.6 status line and the
+    // saved-take card telling the same story.
+    bool lastTakeHeldNoAudio = false;
+
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
 
