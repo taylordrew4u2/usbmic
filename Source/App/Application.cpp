@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "../Platform/ReducedMotion.h"
 #include "../Core/ClockMasterResolver.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
@@ -18,7 +19,12 @@
 
 namespace mma {
 
-Application::Application() = default;
+Application::Application()
+    // §9.3, asked once. The setting does not change between meter repaints, and
+    // the alternative -- querying the OS per strip at 60Hz -- would be absurd.
+    : reducedMotionPreferred (prefersReducedMotionOnThisSystem())
+{
+}
 Application::~Application() { shutdown(); }
 
 std::unique_ptr<IAudioBackend> Application::createPlatformBackend()
@@ -636,6 +642,64 @@ juce::String Application::nameForDevice (const std::string& identityKey,
     }
 
     return fallback;
+}
+
+juce::String Application::getMicProductName (int index) const
+{
+    // §14.6: with four identical microphones on a desk, the name the user gave
+    // a port is what identifies it -- but the hardware's own name is what tells
+    // them which *kind* of thing it is. The strip has always reserved a line
+    // for it under the bold name and always drawn it empty, because
+    // setDeviceName() had no callers anywhere.
+    //
+    // Resolved in the take's channel space while one is running, for the same
+    // reason getMicDisplayName is: after a mid-take unplug the device list and
+    // the channel list are different lengths.
+    std::string key;
+    juce::String fallback;
+
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+
+        if (index < 0 || index >= static_cast<int> (channels.size()))
+            return {};
+
+        key = channels[static_cast<size_t> (index)].deviceId;
+        fallback = juce::String (channels[static_cast<size_t> (index)].displayName);
+    }
+    else
+    {
+        int seen = 0;
+        for (const auto& d : deviceManager.getDevices())
+        {
+            if (! d.included)
+                continue;
+
+            if (seen == index)
+            {
+                key = d.identity.key();
+                fallback = juce::String (d.displayName);
+                break;
+            }
+
+            ++seen;
+        }
+
+        if (key.empty())
+            return {};
+    }
+
+    juce::String product = fallback;
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.identity.key() == key)
+            product = juce::String (d.displayName);
+
+    // Nothing to add when the strip is already showing this exact text: an
+    // unnamed microphone would otherwise print its product string twice, once
+    // bold and once faint underneath.
+    return product == getMicDisplayName (index) ? juce::String() : product;
 }
 
 juce::String Application::getMicDisplayName (int index) const

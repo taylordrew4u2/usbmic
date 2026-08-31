@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixed -- two meter-strip setters that nothing ever called, and a screenshot tool that hid it
+
+- **Every strip painted an empty row.** `SkullMeterComponent` reserves an 11px
+  line under the bold microphone name and draws `deviceName` into it --
+  and `setDeviceName()` had no callers anywhere, so that line was blank on every
+  channel for the life of the app. It now carries the hardware's own product
+  string, so a port the user named "Kitchen" shows `Kitchen` with `Blue Yeti`
+  faint beneath it. Left deliberately empty when the two would be the same
+  words, so an unnamed microphone does not print its product string twice.
+- **§9.3's `prefers-reduced-motion` was never read.** The gate has always been
+  there -- the clip-eye glow draws only when `reducedMotion` is false -- and
+  `setReducedMotion()` had no callers, so the flag sat at its default and the
+  glow drew for everyone regardless of the setting. The preference is now read
+  from the OS once at startup (macOS `com.apple.universalaccess`, Windows
+  `SPI_GETCLIENTAREAANIMATION`) and applied to every strip. Where no single
+  setting exists to read, "no preference" is reported rather than guessed.
+- **`Tools/screenshot_app.sh` silently photographed stale binaries.** The README
+  builds into `build`; the script only ever looked in `build-app`, so it either
+  refused to run or -- worse -- rendered whatever old artefact happened to be
+  sitting in the other directory. It now looks in both, prefers the **newest**
+  binary, and prints which one it is capturing and when that was built. This is
+  not hypothetical: it produced a screenshot offered as evidence for a change
+  the binary did not contain.
+
 ### Fixed -- a failed backup drive stopped the mirror in silence
 
 §6.3 has two ways a mirror can stop mid-take, and only one of them was ever
