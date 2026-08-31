@@ -14,23 +14,31 @@ Out:  Resources/DmgBackground.png  (660x420 @1x)
 import os
 from PIL import Image, ImageDraw, ImageFont
 
-BONE = (237, 228, 211)
-SECONDARY = (140, 129, 119)
-TERTIARY = (94, 85, 77)
-BACKDROP_TOP = (34, 27, 24)
-BACKDROP_BOTTOM = (18, 14, 12)
+# §9.2 palette, from the `palette` namespace in Source/UI/AppLookAndFeel.h.
+BONE = (227, 234, 242)          # palette::bone
+SECONDARY = (132, 150, 168)     # palette::secondary
+TERTIARY = (86, 99, 114)        # palette::tertiary
+ACCENT = (34, 211, 238)         # palette::accent
+BACKDROP_TOP = (28, 39, 51)     # palette::surfaceHigh
+BACKDROP_BOTTOM = (10, 14, 19)  # palette::background
 
 W, H = 660, 520
 SS = 2
 
 
-def load_font(size, bold=False):
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold
-        else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ]
+def load_font(size, bold=False, mono=False):
+    if mono:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold
+            else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ]
     for path in candidates:
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
@@ -59,17 +67,30 @@ def main():
     # Arrow between the two icon positions the AppleScript sets (165 and 495).
     y = 205 * SS
     x0, x1 = 268 * SS, 392 * SS
-    d.line([(x0, y), (x1 - 16 * SS, y)], fill=TERTIARY, width=3 * SS)
+    # The accent, not the dimmest tone available. This arrow is the entire
+    # instruction the window exists to give, and it was the faintest mark on it.
+    d.line([(x0, y), (x1 - 16 * SS, y)], fill=ACCENT, width=3 * SS)
     d.polygon([(x1, y), (x1 - 19 * SS, y - 11 * SS), (x1 - 19 * SS, y + 11 * SS)],
-              fill=TERTIARY)
+              fill=ACCENT)
 
     # The one step that is not obvious, said here rather than only in a README
     # nobody opens.
-    centred(d, 322 * SS, "First launch: Control-click the app, then choose Open.",
-            load_font(13 * SS), SECONDARY)
-    centred(d, 348 * SS, "macOS asks once because this build has no paid Apple certificate.",
+    #
+    # This used to say "Control-click the app, then choose Open." That is the
+    # workaround for an app that is unsigned; this one is ad-hoc signed, and
+    # Control-click -> Open does not clear a quarantine flag on a build with no
+    # Developer ID -- which is exactly the case someone hitting "is damaged" is
+    # in. So the panel that a Mac user reads before anything else was giving
+    # them the one instruction that could not work. The command below is what
+    # actually works, and it is the same one the README gives.
+    centred(d, 318 * SS, "First launch: after dragging, run this once in Terminal",
+            load_font(13 * SS), BONE)
+    centred(d, 344 * SS,
+            'xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"',
+            load_font(11 * SS, mono=True), ACCENT)
+    centred(d, 372 * SS, "Needed because this build has no paid Apple certificate.",
             load_font(11 * SS), TERTIARY)
-    centred(d, 370 * SS, "If it says the app is damaged, see Troubleshooting in the README.",
+    centred(d, 392 * SS, 'Without it macOS says "is damaged". Nothing is wrong with the download.',
             load_font(11 * SS), TERTIARY)
 
     out_dir = os.path.join(
