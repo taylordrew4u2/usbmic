@@ -18,12 +18,12 @@ MainComponent::MainComponent (Application& app)
     advancedViewport.setVisible (false);
     addChildComponent (advancedViewport);
 
-    mainScreen.onRecordButtonClicked = [this] {
-        // §6.2: whatever is in the name box when record is pressed names the take.
-        application.setSessionName (mainScreen.getSessionName());
-        application.toggleRecording();
-        mainScreen.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
-    };
+    cameraViewport.setViewedComponent (&cameraPanel, false);
+    cameraViewport.setScrollBarsShown (true, false);
+    cameraViewport.setVisible (false);
+    addChildComponent (cameraViewport);
+
+    mainScreen.onRecordButtonClicked = [this] { beginRecording(); };
 
     mainScreen.onVolumeChanged = [this] (double volume0to100) {
         // Master monitor volume, mapped logarithmically per §5.1; MonitorBus
@@ -61,6 +61,32 @@ MainComponent::MainComponent (Application& app)
     application.onCaptureRebuilt = [this] { rebindMeters(); };
 
     mainScreen.onAdvancedClicked = [this] { toggleAdvanced(); };
+    mainScreen.onCamerasClicked = [this] { toggleCameras(); };
+
+    // The live views come from the controller, which is the only thing holding
+    // the open devices -- the panel never opens a camera itself.
+    cameraPanel.makeViewer = [this] (const std::string& id) {
+        return application.getCameraController().createViewer (id);
+    };
+
+    cameraPanel.onCameraEnabledChanged = [this] (const std::string& id, bool enabled) {
+        application.getCameraController().getSelection().setEnabled (id, enabled);
+        // Opening or releasing the camera immediately is what makes the toggle
+        // mean something: the view appears or goes when it is clicked, not when
+        // the next take starts.
+        application.openEnabledCameras();
+        refreshCameras();
+    };
+
+    cameraPanel.onCameraRenamed = [this] (const std::string& id, const juce::String& name) {
+        application.getCameraController().getSelection().setAssignedName (id, name.toStdString());
+    };
+
+    cameraPanel.onPreviewQualityChanged = [this] (PreviewQuality quality) {
+        application.getCameraController().setPreviewQuality (quality);
+    };
+
+    cameraPanel.onCloseClicked = [this] { toggleCameras(); };
 
     // §10.3: everything behind the one door is optional, but none of it is
     // decorative -- each control below reaches the engine it names.
@@ -85,20 +111,7 @@ MainComponent::MainComponent (Application& app)
     };
 
     advancedPanel.onDestinationFolderClicked = [this] {
-        folderChooser = std::make_unique<juce::FileChooser> ("Choose where recordings are saved",
-                                                             juce::File (application.getDestinationFolder()));
-
-        folderChooser->launchAsync (juce::FileBrowserComponent::openMode
-                                        | juce::FileBrowserComponent::canSelectDirectories,
-                                    [this] (const juce::FileChooser& chooser) {
-                                        const auto result = chooser.getResult();
-
-                                        if (result.isDirectory())
-                                        {
-                                            application.setDestinationFolder (result);
-                                            refreshAdvanced();
-                                        }
-                                    });
+        chooseDestinationFolder ([this] { refreshAdvanced(); });
     };
 
     advancedPanel.onStorageVolumeChosen = [this] (const juce::String& path) {
@@ -118,6 +131,57 @@ MainComponent::MainComponent (Application& app)
                                      .getNonexistentChildFile ("MultiMicAggregator-diagnostics", ".zip");
         application.exportDiagnostics (destination);
     };
+
+    // §10.1/§6.2: the question asked before the first take, and the answer
+    // given after every one. Children of this component rather than
+    // AlertWindows so they arrive in the app's own palette and spacing, and
+    // addChildComponent (not addAndMakeVisible) so neither is up until it is
+    // wanted.
+    saveLocationPrompt.folderNameFor = [this] (const juce::String& name) {
+        return application.planSave (name).folderName;
+    };
+    saveLocationPrompt.onStart = [this] {
+        application.setAskWhereToSaveEveryTime (saveLocationPrompt.getAskEveryTime());
+        // §10.1: the answer is about the folder they were just shown, so it is
+        // recorded against that folder and every later press goes straight
+        // through -- §10.4's "no confirmation" holds from here on.
+        application.confirmSaveLocation();
+        mainScreen.setSessionName (saveLocationPrompt.getSessionName());
+        dismissSaveLocationPrompt();
+        startRecordingNow();
+    };
+    saveLocationPrompt.onChooseFolder = [this] {
+        // The card is rebuilt from the main screen's name field, so a name
+        // typed into the card goes back there first -- otherwise picking a
+        // folder silently throws away what the user had just typed.
+        mainScreen.setSessionName (saveLocationPrompt.getSessionName());
+
+        // Re-stated against the folder they just picked, rather than dismissed:
+        // the whole card was the answer to "where does this go", and the answer
+        // has just changed.
+        chooseDestinationFolder ([this] { showSaveLocationPrompt(); });
+    };
+    saveLocationPrompt.onCancel = [this] {
+        // Backing out of the card is not backing out of the name: it lands in
+        // the box on the main screen, where the user can see it and where the
+        // next press will pick it up.
+        mainScreen.setSessionName (saveLocationPrompt.getSessionName());
+        dismissSaveLocationPrompt();
+    };
+    addChildComponent (saveLocationPrompt);
+
+    savedTakePanel.onOpenFolder = [this] {
+        // §6.2: the offer to open the containing folder. Reveals the session
+        // folder in the OS file browser rather than opening the files, which
+        // is the difference between "here is your recording" and a media
+        // player nobody asked for.
+        juce::File (savedTakeFolder).revealToUser();
+    };
+    savedTakePanel.onDone = [this] {
+        savedTakePanel.setVisible (false);
+        grabKeyboardFocus();
+    };
+    addChildComponent (savedTakePanel);
 
     // Tall enough that the whole main screen -- monitor volume, mute and the
     // Settings button included -- is on screen at launch. At 480 the bottom
@@ -146,6 +210,11 @@ void MainComponent::timerCallback()
 
 bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
+    // A card is up and owns the keyboard. Muting the room from behind one would
+    // be a change the user cannot see the cause of.
+    if (saveLocationPrompt.isVisible() || savedTakePanel.isVisible())
+        return false;
+
     // §5.1: spacebar mutes and unmutes the monitor instantly. A focused text
     // field never reaches here -- it consumes its own keys -- so typing a
     // space into the session name does not silence the room.
@@ -158,6 +227,109 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     }
 
     return false;
+}
+
+void MainComponent::beginRecording()
+{
+    // §6.2: whatever is in the name box when record is pressed names the take.
+    application.setSessionName (mainScreen.getSessionName());
+
+    const bool stopping = application.getRecordingEngine().getState() == RecordingState::Recording;
+
+    // §10.4: stopping is never confirmed and never delayed. Only the first
+    // start against a destination the user has not been shown asks anything,
+    // and it asks before a file exists rather than after one is lost.
+    if (! stopping && ! application.isSaveLocationConfirmed())
+    {
+        showSaveLocationPrompt();
+        return;
+    }
+
+    startRecordingNow();
+}
+
+void MainComponent::startRecordingNow()
+{
+    const bool stopping = application.getRecordingEngine().getState() == RecordingState::Recording;
+
+    // §6.4: arming is blocked until the destination has passed its throughput
+    // benchmark, and refusing before the take starts is the whole point --
+    // "never degrade mid-take". The record button is disabled for this, but the
+    // prompt's own start button is a second way in, and picking a new folder
+    // from the prompt is exactly what sets a fresh benchmark running.
+    if (! stopping && application.getRecordDisabledReason().isNotEmpty())
+        return;
+
+    application.setSessionName (mainScreen.getSessionName());
+    application.toggleRecording();
+    mainScreen.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
+
+    // §6.2: a stop that wrote a take raises the notice; showing it here rather
+    // than waiting for the next timer tick keeps the panel attached to the
+    // press that caused it.
+    showSavedTake();
+}
+
+void MainComponent::showSaveLocationPrompt()
+{
+    const auto plan = application.planSave (mainScreen.getSessionName());
+
+    saveLocationPrompt.setSessionName (mainScreen.getSessionName());
+    saveLocationPrompt.setAskEveryTime (application.getAskWhereToSaveEveryTime());
+    saveLocationPrompt.setPlan (plan.parentFolder, plan.folderName, plan.mirrorFolder, plan.fileNames,
+                                application.getCameraController().getSelection().getEnabledCount());
+
+    saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
+    saveLocationPrompt.setBounds (getLocalBounds());
+    saveLocationPrompt.setVisible (true);
+    saveLocationPrompt.toFront (true);
+    saveLocationPrompt.prepareToShow();
+}
+
+void MainComponent::dismissSaveLocationPrompt()
+{
+    saveLocationPrompt.setVisible (false);
+    grabKeyboardFocus();
+}
+
+void MainComponent::showSavedTake()
+{
+    Application::SavedTake take;
+
+    if (! application.consumeSavedTake (take))
+        return;
+
+    savedTakeFolder = take.folder;
+
+    std::vector<SavedTakePanel::FileRow> rows;
+    rows.reserve (take.files.size());
+
+    for (const auto& file : take.files)
+        rows.push_back ({ file.name, file.sizeBytes });
+
+    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows);
+    savedTakePanel.setBounds (getLocalBounds());
+    savedTakePanel.setVisible (true);
+    savedTakePanel.toFront (true);
+    savedTakePanel.prepareToShow();
+}
+
+void MainComponent::chooseDestinationFolder (std::function<void()> onChosen)
+{
+    folderChooser = std::make_unique<juce::FileChooser> ("Choose where recordings are saved",
+                                                         juce::File (application.getDestinationFolder()));
+
+    folderChooser->launchAsync (juce::FileBrowserComponent::openMode
+                                    | juce::FileBrowserComponent::canSelectDirectories,
+                                [this, onChosen] (const juce::FileChooser& chooser) {
+                                    const auto result = chooser.getResult();
+
+                                    if (result.isDirectory())
+                                        application.setDestinationFolder (result);
+
+                                    if (onChosen)
+                                        onChosen();
+                                });
 }
 
 void MainComponent::promptRenameMic (int index)
@@ -225,7 +397,42 @@ void MainComponent::refreshStatus()
         mainScreen.setRemainingTimeText ("Room for "
             + Application::formatDuration (application.getRemainingRecordingSeconds()));
 
-        mainScreen.setSaveLocationText ("Saves to " + application.getDestinationFolder());
+        // Idle: where the next take will go. Recording: the folder this one is
+        // actually in, which is the specific thing a user needs and the parent
+        // folder only implies.
+        mainScreen.setSaveLocationText (isRecording
+            ? "Saving into " + application.getCurrentSessionFolder()
+            : "Saves to " + application.getDestinationFolder());
+
+        // §6.2/§10.6: the files themselves, growing. Read off the folder rather
+        // than assumed from the channel count, so what is on screen is what is
+        // on the disk. On the slow tick because it stats the destination
+        // volume, which §14.3 warns is exactly where contention shows up.
+        juce::String savingLine;
+
+        if (isRecording)
+        {
+            const auto files = Application::listSessionFiles (application.getCurrentSessionFolder());
+            int64_t total = 0;
+
+            for (const auto& file : files)
+                total += file.sizeBytes;
+
+            if (! files.empty())
+                savingLine = "Writing " + juce::String ((int) files.size()) + " files -- "
+                           + juce::File::descriptionOfSizeInBytes (total) + " so far";
+        }
+
+        if (savingLine != lastSavingLine)
+        {
+            lastSavingLine = savingLine;
+            mainScreen.setFilesBeingSavedText (savingLine);
+        }
+
+        // A take can also end without the record button: §6.5 stops one when
+        // the card fills or is pulled. The notice belongs to the stop, not to
+        // the press, so it is picked up here too.
+        showSavedTake();
 
         const auto reason = application.getRecordDisabledReason();
         mainScreen.setRecordButtonEnabled (reason.isEmpty(), reason);
@@ -249,8 +456,18 @@ void MainComponent::refreshStatus()
         // destination volume and runs the level detectors.
         mainScreen.setAdviceText (application.pollStatusAdvice (1.0 / kStatusRefreshHz));
 
+        mainScreen.setCameraCount (application.getCameraController().getSelection().getEnabledCount());
+
+        // The benchmark behind this finishes on its own thread, so a prompt
+        // that was blocked when it opened has to notice when it stops being.
+        if (saveLocationPrompt.isVisible())
+            saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
+
         if (advancedVisible)
             refreshAdvanced();
+
+        if (cameraVisible)
+            refreshCameras();
     }
 }
 
@@ -341,15 +558,75 @@ void MainComponent::refreshAdvanced()
     }
 }
 
+void MainComponent::toggleCameras()
+{
+    cameraVisible = ! cameraVisible;
+
+    if (cameraVisible)
+    {
+        // Opening the door is the user asking to see the cameras, which is the
+        // moment to actually open them -- and on macOS the moment to spend the
+        // privacy prompt, with the reason on screen behind it.
+        advancedVisible = false;
+        application.getCameraController().refreshCameras();
+        application.openEnabledCameras();
+        refreshCameras();
+    }
+
+    cameraViewport.setVisible (cameraVisible);
+    advancedViewport.setVisible (advancedVisible);
+    mainViewport.setVisible (! cameraVisible && ! advancedVisible);
+
+    if (cameraVisible)
+        cameraViewport.setViewPosition (0, 0);
+
+    resized();
+}
+
+void MainComponent::refreshCameras()
+{
+    auto& controller = application.getCameraController();
+
+    cameraPanel.setUnavailableReason (controller.getUnavailableReason());
+    cameraPanel.setProblemText (controller.getProblem());
+    cameraPanel.setPreviewQuality (controller.getPreviewQuality());
+    cameraPanel.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording
+                                  && controller.isRecording());
+
+    std::vector<CameraPanel::CameraRow> cameras;
+
+    for (const auto& camera : controller.getSelection().getAvailableCameras())
+        cameras.push_back ({ camera.id,
+                             juce::String (controller.getSelection().getDisplayName (camera.id)),
+                             controller.getSelection().isEnabled (camera.id) });
+
+    cameraPanel.setCameras (cameras);
+
+    const int requiredHeight = cameraPanel.getRequiredHeight();
+
+    if (requiredHeight != lastCameraHeight)
+    {
+        lastCameraHeight = requiredHeight;
+        resized();
+    }
+}
+
 void MainComponent::toggleAdvanced()
 {
     advancedVisible = ! advancedVisible;
 
     if (advancedVisible)
+    {
+        // §10.3 says one door at a time. Two panels stacked over the main
+        // screen would leave whichever was underneath unreachable but alive,
+        // still running its live views.
+        cameraVisible = false;
         refreshAdvanced();
+    }
 
     advancedViewport.setVisible (advancedVisible);
-    mainViewport.setVisible (! advancedVisible);
+    cameraViewport.setVisible (cameraVisible);
+    mainViewport.setVisible (! advancedVisible && ! cameraVisible);
 
     // Back to the top on entry, so opening Settings never starts halfway down
     // wherever it was last left.
@@ -365,6 +642,12 @@ void MainComponent::resized()
 
     mainViewport.setBounds (bounds);
     advancedViewport.setBounds (bounds);
+    cameraViewport.setBounds (bounds);
+
+    // The modal cards cover whichever screen is underneath, so they follow the
+    // window rather than the viewport they happen to be over.
+    saveLocationPrompt.setBounds (bounds);
+    savedTakePanel.setBounds (bounds);
 
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one
@@ -382,6 +665,7 @@ void MainComponent::resized()
 
     fit (mainViewport, mainScreen, mainScreen.getRequiredHeight());
     fit (advancedViewport, advancedPanel, advancedPanel.getRequiredHeight());
+    fit (cameraViewport, cameraPanel, cameraPanel.getRequiredHeight());
 }
 
 } // namespace mma

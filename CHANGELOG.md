@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+### Added -- you are told where the files go before there are any, and shown them after
+
+- **A card before your first take asks where it's going.** Two questions --
+  what to call this recording, and where to put it -- with the exact folder
+  that will be created shown underneath, updating as you type the name. It
+  lists what will be in the folder, says where the backup copy goes, and
+  offers a button to pick somewhere else. §6.2 calls a novice losing track of
+  their recording a total product failure, and the cheapest place to prevent
+  that is before there is anything to lose.
+- **It is asked once.** The answer is remembered against the folder it was
+  given about, so every later press of record starts immediately, exactly as
+  §10.4 requires. It is asked again only when the destination moves somewhere
+  the user has not agreed to, or when they tick *Ask me this before every
+  recording*.
+- **The files can be watched appearing.** While a take runs, the main screen
+  shows that take's own folder rather than its parent, and a live count and
+  total size read off the disk -- not inferred from the channel count, so what
+  is on screen is what is on the card.
+- **Stopping produces the files, not a sentence.** §6.2 has always asked for
+  "show the location and offer to open the containing folder"; until now that
+  was a status line that said "Saved to ..." for ten seconds and offered
+  nothing. It is now a panel naming every file that was written with its size,
+  the backup copy's location, and an **Open the folder** button. A take whose
+  files came out empty says so, and says to check the mute switches -- §10.5's
+  single most common failure.
+
+### Added -- cameras
+
+- **Any camera the OS lists can be recorded**, from a new **Cameras** door on
+  the main screen: USB webcam, built-in camera, a capture card presenting an
+  HDMI feed. The app does not vet where the picture comes from, the same way
+  §2 does not vet a microphone's.
+- **Live from the moment the panel opens.** Framing is something you fix before
+  a take, and a picture you cannot see until you press record is a picture you
+  aim afterwards.
+- **Recording is always at the camera's best quality, and nothing on screen can
+  change that.** The preview toggle decides how large the picture is *drawn*,
+  so the live view can be cheap without ever costing the file quality -- §6.6
+  warns about spending CPU before it starts dropping audio, and a 4K frame
+  redrawn to check someone is in shot is exactly that spend.
+- **Picture and sound are separate files.** Each camera writes one file into the
+  same session folder as the audio, under §6.2's naming rules, with no sound
+  track of its own -- the sound is the microphone tracks beside it. `session.json`
+  records the pairing and states that the video carries no audio, so an editor
+  reading the folder later is told rather than having to find out.
+- **The remaining-time figure counts the video.** "Room for 8h" with two cameras
+  running would have been out by an order of magnitude, and §6.5's whole point
+  is that a novice cannot act on a surprise part-way through a take.
+- **Nothing is opened until asked for.** No camera is opened at launch, so no
+  camera light comes on and no privacy prompt is spent before the user has
+  opened the panel or armed a take with a camera switched on.
+- **The camera path compiles everywhere.** JUCE implements camera capture on
+  macOS and Windows only, so on any other machine it would have been unverified
+  by construction -- which is how CoreAudioBackend and WasapiAsioBackend came to
+  be carrying five defects each. `Simulation/Camera` supplies a stand-in
+  `juce_video`, and `sim_camera` compiles the controller unmodified against it,
+  so a wrong signature fails the build on Linux too.
+
+### Fixed
+
+- **The elapsed time was set on a label with no bounds.** The main screen splits
+  its status row in two while recording and leaves it single when not, but the
+  flag that chose between the two layouts was never assigned, and changing state
+  never re-laid the screen out -- so "Recording for 4m 12s" was written every
+  tick to a label nobody could see.
+
+
 ### Changed — a cooler palette, and one place it lives
 
 - **The colours are cool rather than warm.** A slate ground with cyan doing the

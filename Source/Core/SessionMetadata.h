@@ -41,6 +41,17 @@ struct FailoverEntry
     std::string newMasterUsbId;
 };
 
+/// One camera's contribution to a take. §6.2's session.json is what a DAW or an
+/// editor is read by later, and a video file with no sound track needs the
+/// session origin beside it to line up against the stems -- which is exactly
+/// what session.json already carries for the audio.
+struct VideoRecord
+{
+    std::string cameraName;
+    std::string fileName;      // "V01_Kitchen-Cam.mov"
+    bool hasAudioTrack = false; // always false: the sound is the WAVs, deliberately
+};
+
 /// §6.2 session.json schema. Pure data + JSON (de)serialization, no file I/O
 /// here -- SessionWriter owns when/where this gets written to disk.
 struct SessionMetadata
@@ -57,6 +68,7 @@ struct SessionMetadata
     std::vector<BufferChangeEntry> bufferChanges;
     std::vector<DropoutEntry> dropouts;
     std::vector<FailoverEntry> failovers;
+    std::vector<VideoRecord> videos;
     bool mirrorEnabled = true;
     bool mirrorActive = true;
     std::string mirrorPath;

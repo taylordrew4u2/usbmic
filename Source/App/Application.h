@@ -24,6 +24,7 @@
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
+#include "CameraController.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 #include "../Platform/SystemAggregateDevice.h"
@@ -100,6 +101,62 @@ public:
     /// §6.2: the user's name for the next take -- "2026-08-27_1030_<name>".
     /// Empty falls back to "Session". Sanitized by SessionFolderNaming.
     void setSessionName (const juce::String& name) { sessionName = name; }
+    juce::String getSessionName() const { return sessionName; }
+
+    /// §6.2/§10.1: everything the "where will this go?" question needs
+    /// answered, worked out from the settings as they stand and without
+    /// creating anything on disk. The pre-record prompt shows this, so a user
+    /// knows where to look before there is anything to look for -- §6.2 calls
+    /// a novice losing track of their recording a total product failure, and
+    /// the cheapest place to prevent it is before the take, not after.
+    struct PlannedSave
+    {
+        juce::String parentFolder;   // "/Users/sam/RECORDINGS"
+        juce::String folderName;     // "2026-08-31_1432_Kitchen"
+        juce::String fullPath;       // the two joined
+        juce::String mirrorFolder;   // §6.3 second copy, empty when none will run
+        juce::StringArray fileNames; // "MIX.wav", "01_Alice.wav", ..., "session.json"
+    };
+    PlannedSave planSave (const juce::String& proposedSessionName) const;
+
+    /// §10.1: whether the user has been shown, and has agreed to, where their
+    /// recordings go. False until the pre-record prompt has been answered for
+    /// the destination currently set -- changing the destination clears it,
+    /// because the answer was about somewhere else.
+    bool isSaveLocationConfirmed() const;
+    void confirmSaveLocation() { confirmedSaveLocation = destinationFolder; }
+    /// For a user who wants the question every time rather than once a run.
+    void setAskWhereToSaveEveryTime (bool ask) { askWhereToSaveEveryTime = ask; }
+    bool getAskWhereToSaveEveryTime() const { return askWhereToSaveEveryTime; }
+
+    /// §6.2: the take in progress, and its §6.3 second copy. Empty when idle.
+    juce::String getCurrentSessionFolder() const { return currentSessionFolder; }
+    juce::String getCurrentMirrorFolder() const { return currentMirrorFolder; }
+
+    /// One file in a session folder, as it stands on disk right now.
+    struct SavedFile
+    {
+        juce::String name;
+        int64_t sizeBytes = 0;
+    };
+
+    /// What is actually in `folder` at this instant, MIX first, then the stems
+    /// in channel order, then session.json. Read live during a take so the
+    /// files can be watched growing, and again at stop so what is shown is
+    /// what was written rather than what was meant to be.
+    static std::vector<SavedFile> listSessionFiles (const juce::String& folder);
+
+    /// §6.2: "on stop, show the location and offer to open the containing
+    /// folder." Set when a take finishes and consumed once by the UI that
+    /// shows it, so the notice is driven by the stop rather than by the UI
+    /// having to spot a state edge on a timer.
+    struct SavedTake
+    {
+        juce::String folder;
+        juce::String mirrorFolder;
+        std::vector<SavedFile> files;
+    };
+    bool consumeSavedTake (SavedTake& out);
 
     /// §4 per-microphone trim, -20..+20 dB in 0.5 dB steps. Persisted against
     /// the physical port so it follows the mic across a replug, and applied
@@ -217,6 +274,20 @@ public:
     Metering* getMixMetering();
     juce::String getMicDisplayName (int index) const;
 
+    /// The picture side of a take: which cameras are connected, which are in,
+    /// and the live views. Video only -- see CameraController for why there is
+    /// no audio anywhere near it.
+    CameraController& getCameraController() { return cameraController; }
+    const CameraController& getCameraController() const { return cameraController; }
+
+    /// Opens the enabled cameras for viewing. Deliberately not done at launch:
+    /// a camera light coming on by itself the moment an audio recorder starts
+    /// is alarming, and on macOS it spends the privacy prompt before the user
+    /// has asked for anything. Called when the camera panel is opened, and
+    /// again at arm time so a camera switched on but never looked at still
+    /// records.
+    void openEnabledCameras();
+
     /// §11: diagnostics export -- logs, last 5 session.json files, device
     /// inventory. Never audio.
     void exportDiagnostics (const juce::File& destinationZip);
@@ -240,10 +311,23 @@ private:
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
     juce::String sessionName;      // §6.2, set by the user before a take
     juce::String lastSessionFolder;
+    juce::String lastMirrorFolder;
     double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
+
+    // §6.2: a take has finished and the UI has not yet shown where it went.
+    bool savedTakePending = false;
+
+    // §10.1: the destination the user has actually been shown and accepted.
+    // Compared against destinationFolder rather than being a bare flag, so
+    // pointing the app at a different card asks again instead of assuming the
+    // old answer covered the new place.
+    std::string confirmedSaveLocation;
+    bool askWhereToSaveEveryTime = false;
 
     // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
     // fixed-width detectors in SetupAdvisor.
+    CameraController cameraController;
+
     std::unique_ptr<TapToNameDetector> tapDetector;
     int tapDetectorChannels = 0;
     int tappedChannel = -1;
@@ -302,6 +386,10 @@ private:
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
     std::vector<CaptureChannel> buildCaptureChannels() const;
+    /// §6.2 folder name for a take started at `now` under `name`, including the
+    /// collision suffix. Resolves against the disk but creates nothing, so the
+    /// pre-record prompt and the take itself agree on the answer.
+    juce::String resolveSessionFolderName (juce::Time now, const juce::String& name) const;
     /// §6.2 destination folder for a new take, created on disk. Empty on failure.
     juce::String createSessionFolder (juce::Time now) const;
     /// §6.3 local backup folder for a take, created on disk. Empty on failure.
@@ -314,6 +402,12 @@ private:
     void chooseInitialDestination();
     void reselectOutputDevice();
     double bytesPerSecondOfAudio() const;
+    /// Audio plus whatever the enabled cameras are estimated to add. This, not
+    /// the audio figure, is what the destination volume actually has to hold --
+    /// "Room for 8h" with two cameras running would be off by an order of
+    /// magnitude, and §6.5's whole point is that a novice cannot act on a
+    /// surprise part-way through.
+    double bytesPerSecondOfRecording() const;
     int64_t projectedSessionBytes() const;
     std::unique_ptr<IAudioBackend> createPlatformBackend();
     std::unique_ptr<VirtualDeviceBackend> createDefaultVirtualDeviceBackend();

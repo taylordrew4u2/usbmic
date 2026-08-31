@@ -38,6 +38,10 @@ public:
     void setElapsedTimeText (const juce::String& text) { elapsedLabel.setText (text, juce::dontSendNotification); }
     void setRemainingTimeText (const juce::String& text) { remainingLabel.setText (text, juce::dontSendNotification); }
     void setSaveLocationText (const juce::String& text) { saveLocationLabel.setText (text, juce::dontSendNotification); }
+    /// §6.2/§10.6: the files this take is putting on disk, growing as they are
+    /// written. Empty outside a take. Someone watching this line has already
+    /// been answered before they think to ask where the recording went.
+    void setFilesBeingSavedText (const juce::String& text) { filesSavingLabel.setText (text, juce::dontSendNotification); }
     void setNoMicsMessage (bool show);
     void setRecordButtonEnabled (bool enabled, const juce::String& disabledReason);
 
@@ -50,10 +54,17 @@ public:
 
     /// §6.2: the user's name for the next take. Empty is fine.
     juce::String getSessionName() const { return sessionNameEditor.getText(); }
+    /// Set when the name was given somewhere else -- the pre-record prompt --
+    /// so the box on the main screen agrees with the folder that was named.
+    void setSessionName (const juce::String& name) { sessionNameEditor.setText (name, juce::dontSendNotification); }
 
     /// §10.5/§6.5/§6.6: the single most serious thing worth telling the user
     /// about the rig right now. Empty hides the line.
     void setAdviceText (const juce::String& text);
+
+    /// How many cameras are in the take, so the button says whether any are.
+    /// Zero leaves it reading "Cameras".
+    void setCameraCount (int count);
 
     /// §5.3/§5.4: anything wrong with the listening path, in plain language.
     /// Empty hides the line. Never leave this unshown -- the spec forbids
@@ -63,19 +74,16 @@ public:
     std::function<void()> onRecordButtonClicked;
     std::function<void (double)> onVolumeChanged; // 0-100
     std::function<void()> onAdvancedClicked;
+    std::function<void()> onCamerasClicked;
     std::function<void()> onMuteToggled;
     std::function<void (int)> onMicNameClicked; // skull index
 
 private:
-    /// Layout differs between the two states, so it is remembered rather than
-    /// re-derived from a label's text.
-    bool recordingState = false;
-
     juce::OwnedArray<SkullMeterComponent> skullMeters;
     MixBarComponent mixBar;
 
     juce::TextButton recordButton { "Start recording" };
-    juce::Label elapsedLabel, remainingLabel, saveLocationLabel, noMicsLabel, disabledReasonLabel;
+    juce::Label elapsedLabel, remainingLabel, saveLocationLabel, filesSavingLabel, noMicsLabel, disabledReasonLabel;
     juce::Label monitorProblemLabel, adviceLabel;
     juce::Slider volumeSlider;
     juce::TextEditor sessionNameEditor;
@@ -84,7 +92,13 @@ private:
     // screen, and it holds ordinary choices -- which mics are in use, where
     // recordings go -- not expert ones. "Advanced" told users to stay out.
     juce::TextButton advancedButton { "Settings" };
+    // The second door, and the only other one. Named for what is behind it,
+    // like Settings: a user looking for their webcam looks for "Cameras".
+    juce::TextButton camerasButton { "Cameras" };
 
+    /// Layout differs between the two states, so it is remembered rather than
+    /// re-derived from a label's text. setRecording() is called from the UI
+    /// tick, so it only re-lays the screen out when this actually flips.
     bool recording = false;
 
     static const juce::Colour kBackground;

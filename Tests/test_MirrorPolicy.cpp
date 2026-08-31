@@ -120,3 +120,22 @@ TEST_CASE (MirrorPolicy_ResetPreparesTheNextTake)
     REQUIRE_FALSE (p.wasStoppedForSpace());
     REQUIRE (p.evaluateAtArm (10 * kGB, 1 * kGB) == MirrorState::Active);
 }
+
+TEST_CASE (MirrorPolicy_theSettingIsReadableBeforeTheFirstArm)
+{
+    MirrorPolicy policy;
+
+    // The state starts at DisabledByUser and only becomes Active at arm time,
+    // so a caller asking "will the next take get a second copy" cannot read the
+    // state to find out -- before the first arm it would always say no, and the
+    // path the user is told about would be missing from the one screen shown
+    // before any file exists.
+    REQUIRE (policy.getState() == MirrorState::DisabledByUser);
+    REQUIRE (policy.isEnabledByUser());
+
+    policy.setEnabledByUser (false);
+    REQUIRE_FALSE (policy.isEnabledByUser());
+
+    policy.setEnabledByUser (true);
+    REQUIRE (policy.isEnabledByUser());
+}
