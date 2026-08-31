@@ -69,10 +69,31 @@ public:
     /// audio was lost, which §0.1 treats as the one unacceptable failure.
     uint64_t getFramesDropped() const noexcept { return framesDropped.load (std::memory_order_relaxed); }
 
+    /// §6.5 "target card removed": true once a write to the destination itself
+    /// has failed, which is what pulling the card mid-take looks like from here.
+    ///
+    /// SessionWriter has always returned false on an unrecoverable write and its
+    /// own header says the caller handles it per §6.5. This pipeline was that
+    /// caller and discarded every one of those returns, so a pulled card wrote
+    /// into the void: no stop, no finalize, no alert, and the elapsed time still
+    /// climbing. Once this is true the pipeline stops writing rather than
+    /// looping on a dead handle, and the owner must stop and finalize the take.
+    bool hasCardWriteFailed() const noexcept { return cardWriteFailed.load (std::memory_order_acquire); }
+
+    /// §6.3: the mirror failing is survivable and must never stop the card --
+    /// the mirror exists to turn a card failure into an inconvenience, so it
+    /// cannot be allowed to become one itself. A mirror write that fails stops
+    /// the mirror for the rest of the take, exactly as running out of internal
+    /// space does, and the card write continues untouched.
+    bool hasMirrorWriteFailed() const noexcept { return mirrorWriteFailed.load (std::memory_order_acquire); }
+
 private:
     // Constructed small and resized by start(), which is the only place the
     // real channel count and rate are known. RingBuffer::reset reallocates, so
     // it must never be called while the audio thread is running.
+    std::atomic<bool> cardWriteFailed { false };
+    std::atomic<bool> mirrorWriteFailed { false };
+
     RingBuffer ring { 1 };
     std::vector<std::unique_ptr<SessionWriter>> stemWriters;
     std::unique_ptr<SessionWriter> mixWriter;
