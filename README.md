@@ -275,6 +275,11 @@ has this same step.
   into the same session folder as the audio, with no sound track of its own —
   the sound is the WAVs beside it, and `session.json` records the pairing and
   the shared session origin that lines them up in an editor.
+- **A camera counts against the card's speed, not just its space.** §6.4 blocks
+  arming when the card cannot sustain twice what the take needs; that figure now
+  includes the video, because a card that keeps up with eight microphones can
+  still be too slow once a camera is writing alongside them. Refusing before the
+  take is the entire point — §6.4 says never degrade mid-take.
 - **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
   under its name, updating as you rename it. Renaming is the moment you want to
   know what the name does.
@@ -317,7 +322,11 @@ and this is what came up on the next launch.
 - **Recordings** default to a `RECORDINGS` folder in your home directory.
   Change the destination from **Settings → Save recordings to** — pointing it
   at an external card is the intended setup, and the app benchmarks a new
-  destination before enabling the record button (§6.4).
+  destination before enabling the record button (§6.4). The benchmark measures
+  the card once; whether that is fast enough is decided fresh each time you
+  reach for record, so switching a camera on can block arming a card that was
+  fine for the microphones alone — and the message says the cameras are what
+  did it.
 - **Video goes in the same folder** as the audio for that take, one file per
   camera, named `V01_<camera name>`. The remaining-time figure on the main
   screen accounts for it, so "Room for 2h 10m" stays true once a camera is
