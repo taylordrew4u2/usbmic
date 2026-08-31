@@ -255,3 +255,109 @@ TEST_CASE (DeviceInputStream_StarvedBlockHoldsRatherThanClicking)
     for (float sample : out)
         REQUIRE (std::abs (sample - 0.75f) < 1e-4f);
 }
+
+TEST_CASE (DeviceInputStream_DriftLoopIsDrivenByItsOwnRingNotByTheMastersAudio)
+{
+    // What "locked to the master" actually is here: the master is not a signal
+    // anyone reads, it is an exemption. A non-master's ratio comes from its own
+    // ring fill against the output clock's block size, and nothing about the
+    // master enters that arithmetic.
+    //
+    // This is why an unplugged master cannot poison the other channels -- there
+    // is no path from it to them -- and it is the fact the failover question
+    // turns on, so it is pinned here rather than left to be re-derived.
+    DeviceInputStream fast (48000.0), alsoFast (48000.0);
+    fast.prepare (48000.0, 64);
+    alsoFast.prepare (48000.0, 64);
+    fast.setIsMaster (false);
+    alsoFast.setIsMaster (false);
+
+    std::vector<float> preload (400, 0.25f);
+    fast.pushBlock (preload.data(), 400);
+    alsoFast.pushBlock (preload.data(), 400);
+
+    runClockRatio (fast, 64, 64, 400);
+    runClockRatio (alsoFast, 64, 64, 400);
+
+    // Two streams that never saw each other, or any master, settle identically:
+    // the loop has no other input than this stream's own fill.
+    REQUIRE_NEAR (fast.getDriftPpm(), alsoFast.getDriftPpm(), 1e-12);
+    REQUIRE (fast.getDriftPpm() > 0.0);
+}
+
+TEST_CASE (DeviceInputStream_PromotingAChannelToMasterStopsCorrectingIt)
+{
+    // §3.1 exempts the master from correction, so "master" is a liability for
+    // the channel that holds it, not a protection. A channel promoted mid-take
+    // stops having its ratio steered and its ring is left to run wherever its
+    // crystal takes it.
+    //
+    // This is the measurable reason mid-take failover onto a live channel is
+    // not the fix it looks like: it would take a channel the loop was holding
+    // at target and stop holding it.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    s.setIsMaster (false);
+
+    std::vector<float> preload (400, 0.25f);
+    s.pushBlock (preload.data(), 400);
+    runClockRatio (s, 64, 64, 400);
+
+    const double correctedPpm = s.getDriftPpm();
+    REQUIRE (correctedPpm > 0.0);
+
+    // Promotion. From here the loop is no longer consulted at all.
+    s.setIsMaster (true);
+    runClockRatio (s, 64, 64, 400);
+
+    REQUIRE_NEAR (s.getDriftPpm(), correctedPpm, 1e-12);
+}
+
+TEST_CASE (DeviceInputStream_MastersRingIsLeftToDriftWhereACorrectedOnesIsNot)
+{
+    // The cost of that exemption, measured. A mic 100 PPM off the output clock
+    // runs for five simulated minutes as master and again as a corrected
+    // channel. The corrected one ends held at its target fill; the master's
+    // ring walks off to a limit, and at the limit it is either dropping what
+    // arrives or holding the last sample it had.
+    //
+    // Five minutes because §3.2 caps the loop's slew at 5 PPM/s: a corrected
+    // channel takes a couple of minutes to reach 100 PPM and settle, and
+    // sampling it before then measures the slew, not the steady state.
+    auto fillAfterFiveMinutes = [] (bool master)
+    {
+        DeviceInputStream s (48000.0);
+        s.prepare (48000.0, 64);
+        s.setIsMaster (master);
+
+        std::vector<float> pre (256, 0.25f);
+        s.pushBlock (pre.data(), 256);
+
+        // 100 PPM fast: an extra sample arrives roughly one block in every 156.
+        std::vector<float> in (65, 0.25f), out (64, 0.0f);
+        double owed = 0.0;
+
+        const int blocks = static_cast<int> (300.0 * 48000.0 / 64.0);
+
+        for (int i = 0; i < blocks; ++i)
+        {
+            owed += 64.0 * 1.0001;
+            const int n = static_cast<int> (owed);
+            owed -= n;
+            s.pushBlock (in.data(), n);
+            s.pull (out.data(), 64);
+        }
+
+        return s.getFillFraction();
+    };
+
+    const double correctedFill = fillAfterFiveMinutes (false);
+    const double masterFill = fillAfterFiveMinutes (true);
+
+    // The loop parks a corrected channel near its pre-roll target and keeps it
+    // there. kPreRollBlocks of kRingBlocks is 0.25, and settling sits just under.
+    REQUIRE (correctedFill < 0.3);
+
+    // The master, given the same mic, is pinned against the top of its ring.
+    REQUIRE (masterFill > 0.8);
+}

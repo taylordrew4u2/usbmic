@@ -435,6 +435,30 @@ void Application::onDeviceListChanged()
         for (const auto& ch : capture->getChannels())
             capture->setChannelLive (ch.deviceId, present.count (ch.deviceId) > 0);
 
+        // §6.5 "clock master unplugged" is covered by the line above, and the
+        // clock master is deliberately left where it is for the rest of the
+        // take.
+        //
+        // "Failover per §3.3" reads as though the timebase has to be moved, but
+        // in this capture path the master is not a reference the other channels
+        // are locked onto. The output stream is the clock: processOutputBlock
+        // pulls a block from every device's ring, and each DeviceInputStream
+        // steers its own resample ratio from its own ring fill against that
+        // pull (§3.2). `isMaster` does not feed anyone -- it exempts one
+        // channel from being steered at all. So a master that has gone silent
+        // takes nothing away from the loops still running, which is measured in
+        // CaptureCoordinator_UnpluggedMasterLeavesTheOtherChannelsUntouched.
+        //
+        // Promoting a live channel here would be the actual harm: it would take
+        // a channel the loop is holding at its target fill and stop correcting
+        // it, leaving its ring to run to one end and drop or hold samples for
+        // the rest of the take
+        // (DeviceInputStream_MastersRingIsLeftToDriftWhereACorrectedOnesIsNot).
+        // §3.3 wants a bounded transient, not a newly uncorrected microphone.
+        //
+        // restartCapture() below picks the master up again from
+        // DeviceManager once the take ends, which is where §3.1's rule can be
+        // applied without touching a file that is mid-write.
         return;
     }
 
