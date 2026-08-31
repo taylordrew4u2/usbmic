@@ -360,6 +360,10 @@ private:
     // until the take ends so session.json carries them. RecordingEngine has
     // always tracked this and nothing ever told it anything.
     std::vector<DropoutEntry> midTakeDropouts;
+
+    // §3.3: which device is currently holding the timebase, so a mid-take
+    // switchover can be logged once rather than on every status poll.
+    std::string appliedMasterDeviceId;
     juce::String midTakeNotice;
     double midTakeNoticeSeconds = 0.0;
 
@@ -436,6 +440,13 @@ private:
     void restartCapture();
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
+
+    /// The user's name for a device if it has one, its product string
+    /// otherwise, and `fallback` when the device is no longer enumerated at
+    /// all -- which is exactly the case mid-take, where the channel outlives
+    /// the microphone that was unplugged from it.
+    juce::String nameForDevice (const std::string& identityKey,
+                                const juce::String& fallback) const;
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 folder name for a take started at `now` under `name`, including the
     /// collision suffix. Resolves against the disk but creates nothing, so the

@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "../Core/ClockMasterResolver.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
@@ -297,33 +298,57 @@ void Application::applyClockMaster()
     if (capture == nullptr)
         return;
 
-    // §3.1 / §3.3: DeviceManager owns which mic is the timebase -- lowest
-    // measured drift, the user's override, or the failover pick after the
-    // master leaves. The coordinator only needs the resulting channel index.
-    const auto* master = deviceManager.selectDefaultMaster();
+    // §3.1 / §3.3: DeviceManager owns *which microphone* should be the timebase
+    // -- lowest measured drift, the user's override, or the next best after the
+    // master leaves. What it cannot own is which channel that is, because it
+    // tracks the devices the OS reports right now and a take's channel list is
+    // frozen (§6.5).
+    //
+    // This used to count included devices to find the index, which is the same
+    // number only until a microphone is unplugged mid-take. After that the
+    // device list is short one entry and every index past the gap is off by
+    // one, so setMasterChannel() named the wrong channel -- and the channel it
+    // named could be the unplugged one, writing silence, with every other
+    // microphone resampled onto it.
+    std::vector<std::string> rankedIds;
+    for (const auto* d : deviceManager.rankMasterCandidates())
+        rankedIds.push_back (d->identity.key());
 
-    if (master == nullptr)
+    // capture's own channel list, since that is exactly what setMasterChannel
+    // indexes into. Outside a take it tracks the device list; during one it is
+    // the frozen list, which is the point.
+    const bool recording = capture->isRecording();
+    std::vector<std::string> channelIds;
+    std::vector<bool> channelLive;
+
+    for (const auto& ch : capture->getChannels())
     {
-        capture->setMasterChannel (-1);
-        return;
+        channelIds.push_back (ch.deviceId);
+        channelLive.push_back (! recording || ! recordingEngine.isWritingSilence (ch.deviceId));
     }
 
-    int index = 0;
-    for (const auto& d : deviceManager.getDevices())
+    const auto resolved = resolveMasterChannel (channelIds, channelLive, rankedIds);
+    capture->setMasterChannel (resolved.channelIndex);
+
+    // §3.3: "Log the switchover timestamp in session.json." Only a change is
+    // worth a line -- this runs on every status poll, and re-confirming the
+    // same master is not an event.
+    if (recording && resolved.deviceId != appliedMasterDeviceId)
     {
-        if (! d.included)
-            continue;
+        if (! appliedMasterDeviceId.empty())
+            midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), resolved.deviceId,
+                                         resolved.deviceId.empty()
+                                             ? std::string ("Clock master lost: no live microphone can hold "
+                                                            "the timebase, so the channels are free-running.")
+                                             : std::string ("Clock master switched to this microphone after "
+                                                            "the previous one stopped delivering audio.") });
 
-        if (d.identity.key() == master->identity.key())
-        {
-            capture->setMasterChannel (index);
-            return;
-        }
-
-        ++index;
+        appliedMasterDeviceId = resolved.deviceId;
     }
-
-    capture->setMasterChannel (-1);
+    else if (! recording)
+    {
+        appliedMasterDeviceId = resolved.deviceId;
+    }
 }
 
 MonitorBus* Application::getMonitorBus()
@@ -401,8 +426,6 @@ void Application::onDeviceListChanged()
         if (! d.included)
             continue;
 
-        names.push_back (d.displayName);
-
         ControllerContentionDetector::DeviceControllerInfo info;
         info.deviceId = d.identity.key();
         // controllerId is left empty: no backend reports USB host-controller
@@ -413,6 +436,14 @@ void Application::onDeviceListChanged()
         info.isMicrophone = true;
         topology.push_back (std::move (info));
     }
+
+    // The advisor is fed peaks per *channel* (see pollStatusAdvice), so its
+    // names have to be in that same space or every piece of §10.5 advice ends
+    // up addressed to the wrong person. Built from the take's channel list
+    // while one is running -- taking them from the device list meant that
+    // unplugging a microphone mid-take renamed everyone after it.
+    for (int i = 0, n = getIncludedMicCount(); i < n; ++i)
+        names.push_back (getMicDisplayName (i).toStdString());
 
     setupAdvisor.setChannelNames (std::move (names));
     setupAdvisor.updateControllerTopology (topology);
@@ -587,8 +618,44 @@ Metering* Application::getMixMetering()
     return capture != nullptr ? &capture->getMixMetering() : nullptr;
 }
 
+juce::String Application::nameForDevice (const std::string& identityKey,
+                                         const juce::String& fallback) const
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (d.identity.key() != identityKey)
+            continue;
+
+        // The name the user gave this port wins over the product string --
+        // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
+        if (const auto persisted = portIdentityStore.get (d.identity))
+            if (! persisted->assignedName.empty())
+                return juce::String (persisted->assignedName);
+
+        return juce::String (d.displayName);
+    }
+
+    return fallback;
+}
+
 juce::String Application::getMicDisplayName (int index) const
 {
+    // Mid-take, resolve through the take's frozen channel list: the device the
+    // caller means is the one recording into channel `index`, which after an
+    // unplug is no longer "the index-th included device". The channel keeps the
+    // name it was opened with, so an unplugged microphone's strip still says
+    // whose it is rather than going blank.
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+
+        if (index < 0 || index >= static_cast<int> (channels.size()))
+            return {};
+
+        const auto& ch = channels[static_cast<size_t> (index)];
+        return nameForDevice (ch.deviceId, juce::String (ch.displayName));
+    }
+
     int seen = 0;
     for (const auto& d : deviceManager.getDevices())
     {
@@ -596,15 +663,7 @@ juce::String Application::getMicDisplayName (int index) const
             continue;
 
         if (seen == index)
-        {
-            // The name the user gave this port wins over the product string --
-            // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
-            if (const auto persisted = portIdentityStore.get (d.identity))
-                if (! persisted->assignedName.empty())
-                    return juce::String (persisted->assignedName);
-
-            return juce::String (d.displayName);
-        }
+            return nameForDevice (d.identity.key(), juce::String (d.displayName));
 
         ++seen;
     }
@@ -993,6 +1052,15 @@ double Application::getElapsedRecordingSeconds() const
 
 int Application::getIncludedMicCount() const
 {
+    // During a take this is the count the meters, the drift reports, the
+    // advisor and the skull strips are all indexed by, and every one of those
+    // reads out of capture. The device list is not the same length once a
+    // microphone is unplugged mid-take -- counting it there left the last
+    // channel's meter unread and shifted every name past the gap onto the
+    // wrong strip.
+    if (capture != nullptr && capture->isRecording())
+        return static_cast<int> (capture->getChannels().size());
+
     int count = 0;
     for (const auto& d : deviceManager.getDevices())
         if (d.included)
@@ -1489,7 +1557,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     for (const auto& entry : midTakeDropouts)
         meta.dropouts.push_back (entry);
 
-        // §6.5: "log the exact sample position of degradation." Recorded as a
+    // §6.5: "log the exact sample position of degradation." Recorded as a
     // dropout entry rather than a new field, because that is what it is: the
     // moment the stems stopped receiving audio they should have had.
     if (const auto degradedAt = capacityMonitor.getDegradationSamplePosition(); degradedAt >= 0)
@@ -1544,16 +1612,19 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         capture->tickDriftReporting (sinceLastCallSeconds);
         driftMeasuredSeconds += sinceLastCallSeconds;
 
-        int index = 0;
-        for (const auto& d : deviceManager.getDevices())
+        // Walked over capture's channels rather than the device list: the two
+        // agree only until a microphone is unplugged mid-take, and after that
+        // this loop was attributing each channel's drift to whichever device
+        // had shifted into its position -- so the Advanced panel showed one
+        // microphone's PPM under another's name, and §3.3's 100 PPM flag could
+        // land on a device that was keeping perfect time.
         {
-            if (! d.included)
-                continue;
+            const auto& channels = capture->getChannels();
 
-            deviceManager.updateMeasuredDrift (d.identity.key(),
-                                               capture->getChannelDriftPpm (index),
-                                               driftMeasuredSeconds);
-            ++index;
+            for (size_t i = 0; i < channels.size(); ++i)
+                deviceManager.updateMeasuredDrift (channels[i].deviceId,
+                                                   capture->getChannelDriftPpm (static_cast<int> (i)),
+                                                   driftMeasuredSeconds);
         }
 
         // §3.1: the master is re-picked as measurements arrive, so a rig that
@@ -1613,7 +1684,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (midTakeNoticeSeconds > 0.0)
         midTakeNoticeSeconds -= sinceLastCallSeconds;
 
-        // §6.5 buffer back-pressure, before the remaining-time warnings: the ring
+    // §6.5 buffer back-pressure, before the remaining-time warnings: the ring
     // filling up is audio about to be lost right now, where running low on
     // room is audio that will stop being recorded later.
     //
@@ -1680,7 +1751,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (midTakeNoticeSeconds > 0.0 && midTakeNotice.isNotEmpty())
         return midTakeNotice;
 
-        // §14.6: which mic was just heard alone. Not an error and not a message --
+    // §14.6: which mic was just heard alone. Not an error and not a message --
     // the UI highlights that skull, which is how a user with four identical
     // mics learns which meter is which person. Runs only outside a take, when
     // naming actually happens.
