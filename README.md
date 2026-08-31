@@ -118,7 +118,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.6.0**. The recording engine is mature — it is covered by 330
+This is **v0.7.0**. The recording engine is mature — it is covered by 330
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.

@@ -69,6 +69,13 @@ MainComponent::MainComponent (Application& app)
         return application.getCameraController().createViewer (id);
     };
 
+    // The same factory for the main screen's tiles. Only one of these two ever
+    // holds viewers at a time -- see the releases in toggleCameras/toggleAdvanced
+    // -- so a camera never has two.
+    mainScreen.makeViewer = [this] (const std::string& id) {
+        return application.getCameraController().createViewer (id);
+    };
+
     cameraPanel.onCameraEnabledChanged = [this] (const std::string& id, bool enabled) {
         application.setCameraEnabled (id, enabled);
         // Opening or releasing the camera immediately is what makes the toggle
@@ -528,6 +535,20 @@ void MainComponent::refreshStatus()
 
         if (cameraVisible)
             refreshCameras();
+        else if (! advancedVisible)
+        {
+            // The main screen carries the pictures now, so the cameras have to
+            // actually be open for it to have anything to show.
+            //
+            // This only opens what the user already switched on, and switching
+            // one on happens behind the camera door -- where the macOS privacy
+            // prompt is still spent for the first time, with the explanation on
+            // screen behind it. A rig with no camera enabled opens nothing,
+            // prompts for nothing, and shows no tiles. applySelection() skips
+            // what is already open, so this is a no-op once they are.
+            application.openEnabledCameras();
+            refreshCameras();
+        }
     }
 }
 
@@ -653,8 +674,22 @@ void MainComponent::toggleCameras()
         // moment to actually open them -- and on macOS the moment to spend the
         // privacy prompt, with the reason on screen behind it.
         advancedVisible = false;
+
+        // Hand the viewers over before the panel makes its own. Whichever
+        // screen is visible owns them, and a camera with two live viewers is a
+        // second claim on a device this app has no reason to make.
+        mainScreen.releaseCameraViews();
+
         application.getCameraController().refreshCameras();
         application.openEnabledCameras();
+        refreshCameras();
+    }
+    else
+    {
+        // Coming back: the panel's viewers go with it and the main screen
+        // rebuilds its own, so the pictures are on screen beside the meters
+        // again without either screen having held a stale one.
+        cameraPanel.setCameras ({});
         refreshCameras();
     }
 
@@ -688,6 +723,24 @@ void MainComponent::refreshCameras()
 
     cameraPanel.setCameras (cameras);
 
+    // The main screen shows only what is switched on: a tile per camera that is
+    // actually going into the take. The off ones are a settings question, and
+    // settings live behind the door.
+    if (! cameraVisible && ! advancedVisible)
+    {
+        std::vector<MainScreen::CameraTile> tiles;
+
+        for (const auto& camera : cameras)
+            if (camera.enabled)
+                tiles.push_back ({ camera.id, camera.displayName });
+
+        const int before = mainScreen.getRequiredHeight();
+        mainScreen.setCameraTiles (tiles);
+
+        if (mainScreen.getRequiredHeight() != before)
+            resized();
+    }
+
     const int requiredHeight = cameraPanel.getRequiredHeight();
 
     if (requiredHeight != lastCameraHeight)
@@ -707,7 +760,17 @@ void MainComponent::toggleAdvanced()
         // screen would leave whichever was underneath unreachable but alive,
         // still running its live views.
         cameraVisible = false;
+
+        // Settings is not showing pictures, so nothing should be running one.
+        // The camera panel is closing here too, so both sets go.
+        mainScreen.releaseCameraViews();
+        cameraPanel.setCameras ({});
+
         refreshAdvanced();
+    }
+    else
+    {
+        refreshCameras(); // back to the main screen: the tiles come back with it
     }
 
     advancedViewport.setVisible (advancedVisible);
