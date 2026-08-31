@@ -1,5 +1,9 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 #include "SkullMeterComponent.h"
 #include "MixBarComponent.h"
 
@@ -66,6 +70,40 @@ public:
     /// Zero leaves it reading "Cameras".
     void setCameraCount (int count);
 
+    /// One camera that is switched on for this take, as the main screen needs
+    /// it: something to look at, and whose it is.
+    struct CameraTile
+    {
+        std::string id;
+        juce::String displayName;
+    };
+
+    /// §10.2: the picture belongs beside the levels, not behind a door.
+    ///
+    /// Framing and gain are one job -- you set them together, and during a take
+    /// you watch them together. Sending someone to another screen to see the
+    /// camera meant they could see the shot or the meters but never both, and
+    /// the one moment that matters is the one where a mic has gone quiet while
+    /// the shot still looks fine.
+    ///
+    /// Only the cameras actually switched on appear. A rig with none is laid out
+    /// exactly as before, so this costs an audio-only user no space at all.
+    void setCameraTiles (const std::vector<CameraTile>& tiles);
+
+    /// Makes the live view for one camera. Supplied by the owner, which is the
+    /// only thing holding the open devices; nullptr is normal and means that
+    /// camera is not open.
+    std::function<std::unique_ptr<juce::Component> (const std::string&)> makeViewer;
+
+    /// Destroys the live views without disturbing anything else.
+    ///
+    /// The rule this and setCameraTiles() together keep: whichever screen is on
+    /// screen owns the viewers, and no camera ever has two. The panels are
+    /// mutually exclusive viewports, so the owner releases these before showing
+    /// another screen and repopulates them on the way back. A viewer outliving
+    /// the device behind it is a component drawing from freed memory.
+    void releaseCameraViews();
+
     /// §5.3/§5.4: anything wrong with the listening path, in plain language.
     /// Empty hides the line. Never leave this unshown -- the spec forbids
     /// silently delivering a high-latency mix instead of saying so.
@@ -81,6 +119,25 @@ public:
 private:
     juce::OwnedArray<SkullMeterComponent> skullMeters;
     MixBarComponent mixBar;
+
+    struct CameraView
+    {
+        std::string id;
+        // Owned here and destroyed with the tile, per releaseCameraViews().
+        std::unique_ptr<juce::Component> viewer;
+        std::unique_ptr<juce::Label> caption;
+        std::unique_ptr<juce::Label> placeholder;
+    };
+
+    std::vector<CameraView> cameraViews;
+    // What the tiles were last built from, so the UI tick can call
+    // setCameraTiles() every frame without tearing down live views that have
+    // not changed. Rebuilding a viewer per frame would flicker and churn the
+    // device.
+    std::vector<std::string> lastTileIds;
+
+    /// Height the camera row needs, or zero when no camera is switched on.
+    int cameraRowHeight() const;
 
     juce::TextButton recordButton { "Start recording" };
     juce::Label elapsedLabel, remainingLabel, saveLocationLabel, filesSavingLabel, noMicsLabel, disabledReasonLabel;
