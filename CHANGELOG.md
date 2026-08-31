@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Fixed -- every microphone looked dead, and §6.5's hot-plug row said nothing
+
+Found by sweeping `Source/Core` for public API with no production callers,
+after two bugs of exactly that shape (#34, #35).
+
+- **Every meter read `--.-` forever.** `SkullMeterComponent::setNoSignal` had no
+  callers anywhere, and the flag it sets defaults to true -- and it gates both
+  the dashed skull outline *and* both numeric readouts. So every microphone was
+  drawn permanently dashed with a hardcoded `--.-` and `pk --.-`, whatever it
+  was actually doing. §8.1 puts the meters live from launch and §9.2 asks for
+  numeric readouts in a monospace face "so digits do not jitter as values
+  change"; the digits never changed at all. Now dashed means what §6.5 says it
+  means -- the channel is not delivering audio, either unbound or writing
+  silence because its microphone was unplugged mid-take -- and a connected
+  microphone in a quiet room shows its real level, which is the difference
+  between "nobody is talking" and "this is not working".
+- **A microphone plugged in mid-take said nothing.** §6.5 requires one line:
+  "Mic added to monitoring. It'll be recorded starting with your next take."
+  `RecordingEngine` has contained that sentence, verbatim, the whole time --
+  nothing had ever asked it for one. So plugging a microphone in during a
+  recording was completely silent, leaving the user to assume it was being
+  captured.
+- **An unplug mid-take was never logged.** §6.5 says "log the dropout";
+  `RecordingEngine::onMicUnplugged` existed to record exactly that and was never
+  called, so a microphone could fall out of a four-hour take and leave no trace
+  in `session.json`. Reconnections were equally unrecorded. Both are now logged
+  against the device they happened to.
+
+The audio itself was never at risk here: an unplugged channel has always kept
+its slot and written silence (§6.5), which is the part that protects the take.
+What was missing was every way the user or the record would have known.
+
+
 ### Fixed -- §6.5's back-pressure row was policy nothing ever called
 
 - **The ring-buffer warnings never fired.** `CapacityMonitor::evaluateFill` has

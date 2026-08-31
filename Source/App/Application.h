@@ -91,7 +91,12 @@ public:
 
     int getIncludedMicCount() const;
 
-    /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
+    /// §6.5: false while this channel's microphone is unplugged mid-take. The
+    /// channel stays in the file writing silence; this is what the UI dashes
+    /// its skull on. Index is into the included-mic list, as everywhere else.
+    bool isMicLive (int index) const;
+
+        /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
     /// highlights that skull so a user can see which meter is which person --
     /// four identical USB mics enumerate with the same product string.
     int getTappedChannel() const noexcept { return tappedChannel; }
@@ -264,7 +269,13 @@ public:
     /// §10.6: what happened then what to do, never a code.
     juce::String pollStatusAdvice (double sinceLastCallSeconds);
 
-    /// §14.2: report an enumeration failure or a device dropping off the bus,
+    /// §6.5: "New microphone plugged in mid-take -- do not add to the
+    /// in-progress recording. State in one line." That line, for the few
+    /// seconds after it happens, or empty. RecordingEngine has always had the
+    /// sentence; nothing had ever asked it for one.
+    juce::String getMidTakeNotice() const { return midTakeNotice; }
+
+        /// §14.2: report an enumeration failure or a device dropping off the bus,
     /// which is how bus-power exhaustion actually presents.
     void noteDeviceDropout();
 
@@ -345,7 +356,14 @@ private:
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
 
-    // §6.5: the take was stopped by the card going away rather than by the
+    // §6.5's mid-recording row: unplugs and reconnections during a take, kept
+    // until the take ends so session.json carries them. RecordingEngine has
+    // always tracked this and nothing ever told it anything.
+    std::vector<DropoutEntry> midTakeDropouts;
+    juce::String midTakeNotice;
+    double midTakeNoticeSeconds = 0.0;
+
+        // §6.5: the take was stopped by the card going away rather than by the
     // user, and that has not been said out loud yet.
     bool cardRemovalPending = false;
     CardRemovalNotice cardRemovalNotice;
