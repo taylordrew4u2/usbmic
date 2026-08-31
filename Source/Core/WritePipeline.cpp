@@ -33,6 +33,7 @@ bool WritePipeline::start (const std::string& sessionFolder,
     // must never make this one look doomed before it has written a byte.
     cardWriteFailed.store (false, std::memory_order_release);
     mirrorWriteFailed.store (false, std::memory_order_release);
+    mixOnly.store (false, std::memory_order_release);
 
     if (running.load (std::memory_order_acquire) || channels.empty())
         return false;
@@ -212,6 +213,11 @@ bool WritePipeline::openMirrorWriters (const std::string& mirrorFolder,
     return true;
 }
 
+void WritePipeline::fallBackToMixOnly() noexcept
+{
+    mixOnly.store (true, std::memory_order_release);
+}
+
 void WritePipeline::stopMirroring()
 {
     // Only flips the flag. The writer thread owns the files, so it closes them
@@ -259,6 +265,11 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         std::fill (mixScratch.begin(), mixScratch.begin() + static_cast<long> (frames), 0.0f);
 
+        // §6.5: once degraded, the stems stop but the mix is still summed from
+        // every channel -- the point is to shed write bandwidth, not to lose
+        // anyone from the recording that survives.
+        const bool writeStems = ! mixOnly.load (std::memory_order_acquire);
+
         for (int ch = 0; ch < numChannels; ++ch)
         {
             const float gain = trimGains[static_cast<size_t> (ch)];
@@ -275,6 +286,9 @@ void WritePipeline::drainOnce (bool finalFlush)
                 // applies here and only here.
                 mixScratch[f] += sample * gain;
             }
+
+            if (! writeStems)
+                continue;
 
             // §6.5: the return value is the card telling us it has gone. It was
             // discarded here, which is why pulling a card mid-take used to look
@@ -302,8 +316,10 @@ void WritePipeline::drainOnce (bool finalFlush)
                 mirrorWriteFailed.store (true, std::memory_order_release);
 
         const double elapsed = static_cast<double> (frames) / sampleRate;
-        for (auto& w : stemWriters)
-            w->tick (elapsed);
+
+        if (writeStems)
+            for (auto& w : stemWriters)
+                w->tick (elapsed);
         mixWriter->tick (elapsed);
 
         if (mirrorActiveForThisPass)
