@@ -6,6 +6,15 @@
 // aligned over the full duration without accumulating error or underrunning.
 // What it CANNOT: how real crystals behave. Simulated offsets are steady;
 // real ones wander with temperature.
+//
+// Nor does it exercise the master's own clock. The master is given 0.0 PPM
+// below, i.e. a crystal identical to the output stream's -- and the master is
+// the one channel §3.1 exempts from correction, so that assignment is what
+// keeps it aligned here. Give it a realistic offset instead and this gate
+// fails: at 40 PPM the marker lands 384 samples (8 ms) off the others after
+// half an hour, against a 1 ms ceiling, with the underrun counters still
+// reading zero. The offsets below are a property of the simulation, not
+// something the shipping path guarantees.
 #include "Core/DeviceInputStream.h"
 #include <cmath>
 #include <cstdio>

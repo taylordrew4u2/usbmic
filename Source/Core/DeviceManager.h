@@ -61,8 +61,12 @@ public:
     /// the work a no-op notification does not require.
     bool syncToEnumeration (const std::vector<MicDeviceState>& seen);
 
-    /// Removes a device (unplug). Returns true if the removed device was the
-    /// current clock master, which the caller must react to via promoteFailoverMaster().
+    /// Removes a device (unplug). Returns true if the device was found.
+    ///
+    /// §3.3 failover needs nothing further: the device is gone from the list,
+    /// so selectDefaultMaster() can no longer return it and already promotes
+    /// the lowest-drift survivor -- while still honouring the user's override
+    /// and still declining to hand the clock to a built-in microphone.
     bool removeDevice (const PortIdentity& identity);
 
     const std::vector<MicDeviceState>& getDevices() const { return devices; }
@@ -85,11 +89,6 @@ public:
     void updateMeasuredDrift (const std::string& identityKey, double driftPpm,
                               double measuredForSeconds);
     const std::string& getPreferredMaster() const { return preferredMasterKey; }
-
-    /// §3.3: on master unplug, promote the remaining device with the lowest
-    /// measured drift; tiebreak by enumeration order. Returns nullptr if no
-    /// devices remain.
-    const MicDeviceState* selectFailoverMaster (const PortIdentity& removedMasterIdentity) const;
 
     /// Re-evaluates the 8-mic-cap inclusion flags after an add/remove, in
     /// enumeration order (earliest 8 included mics win; opt-out is never used
