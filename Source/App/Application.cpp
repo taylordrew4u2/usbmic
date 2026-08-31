@@ -902,6 +902,17 @@ std::vector<Application::SavedFile> Application::listSessionFiles (const juce::S
     return files;
 }
 
+bool Application::consumeCardRemovalNotice (CardRemovalNotice& out)
+{
+    if (! cardRemovalPending)
+        return false;
+
+    cardRemovalPending = false;
+    out = cardRemovalNotice;
+
+    return true;
+}
+
 bool Application::consumeSavedTake (SavedTake& out)
 {
     if (! savedTakePending)
@@ -1506,7 +1517,29 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         }
     }
 
-    // §6.5 first: running out of room stops the take, which outranks everything.
+    // §6.5 "target card removed" outranks even running out of room: the drive
+    // is not merely full, it is gone, and every further block would be written
+    // into nothing. Checked before anything else because the take has to stop
+    // now rather than at the end of this function.
+    if (capture != nullptr && capture->hasCardWriteFailed()
+        && recordingEngine.getState() == RecordingState::Recording)
+    {
+        // Built before the take is torn down, while the mirror's path and
+        // whether it was still running are both still known.
+        cardRemovalNotice = CardRemovalNotice::build (currentMirrorFolder.toStdString(),
+                                                      capture->isMirroring());
+        cardRemovalPending = true;
+
+        // The ordinary stop path: it finalizes every open file (§6.5 "finalize
+        // every open file"), writes session.json and raises the saved-take
+        // notice, which is what shows the user whatever did survive.
+        toggleRecording();
+
+        return juce::String (cardRemovalNotice.message);
+    }
+
+    // §6.5 next: running out of room stops the take, which outranks everything
+    // else that is merely a warning.
     switch (pollCapacityWarning())
     {
         case RemainingTimeWarning::Exhausted:

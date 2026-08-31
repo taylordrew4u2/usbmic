@@ -11,6 +11,7 @@
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/AppSettings.h"
 #include "../Core/SessionRecovery.h"
+#include "../Core/CardRemovalNotice.h"
 #include "../Core/PreflightThroughputTest.h"
 #include <atomic>
 #include <functional>
@@ -297,7 +298,12 @@ public:
     /// records.
     void openEnabledCameras();
 
-    /// §6.6: takes the app never got to finish -- a force-quit, a power cut, a
+    /// §6.5 "target card removed": set when a take was stopped because the
+    /// destination stopped accepting writes, and consumed once by the UI that
+    /// alerts about it. Empty the rest of the time.
+    bool consumeCardRemovalNotice (CardRemovalNotice& out);
+
+        /// §6.6: takes the app never got to finish -- a force-quit, a power cut, a
     /// pulled card. Found at launch on the destination volume and in the mirror
     /// folder, with their headers repaired, and presented before the main
     /// screen. Empty when the last run ended cleanly, which is the usual case.
@@ -338,6 +344,11 @@ private:
 
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
+
+    // §6.5: the take was stopped by the card going away rather than by the
+    // user, and that has not been said out loud yet.
+    bool cardRemovalPending = false;
+    CardRemovalNotice cardRemovalNotice;
 
     // §10.1: the destination the user has actually been shown and accepted.
     // Compared against destinationFolder rather than being a bare flag, so

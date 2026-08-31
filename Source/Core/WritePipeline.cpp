@@ -29,6 +29,11 @@ bool WritePipeline::start (const std::string& sessionFolder,
                            const std::string& originTimestamp,
                            const std::string& mirrorFolder)
 {
+    // A fresh take starts with a clean slate: a failure from a previous one
+    // must never make this one look doomed before it has written a byte.
+    cardWriteFailed.store (false, std::memory_order_release);
+    mirrorWriteFailed.store (false, std::memory_order_release);
+
     if (running.load (std::memory_order_acquire) || channels.empty())
         return false;
 
@@ -271,12 +276,17 @@ void WritePipeline::drainOnce (bool finalFlush)
                 mixScratch[f] += sample * gain;
             }
 
-            stemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames);
+            // §6.5: the return value is the card telling us it has gone. It was
+            // discarded here, which is why pulling a card mid-take used to look
+            // exactly like a healthy recording.
+            if (! stemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames))
+                cardWriteFailed.store (true, std::memory_order_release);
 
             // §6.3: same frames, second destination. Written from the same
             // scratch so the copy cannot diverge from the original.
             if (mirrorActiveForThisPass && ch < static_cast<int> (mirrorStemWriters.size()))
-                mirrorStemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames);
+                if (! mirrorStemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames))
+                    mirrorWriteFailed.store (true, std::memory_order_release);
         }
 
         // §6.1: the mix file gets its own limiter instance at -1 dBFS, separate
@@ -284,10 +294,12 @@ void WritePipeline::drainOnce (bool finalFlush)
         for (size_t f = 0; f < frames; ++f)
             mixScratch[f] = MixBusLimiter::processSample (mixScratch[f]);
 
-        mixWriter->writeInterleaved (mixScratch.data(), frames);
+        if (! mixWriter->writeInterleaved (mixScratch.data(), frames))
+            cardWriteFailed.store (true, std::memory_order_release);
 
         if (mirrorActiveForThisPass && mirrorMixWriter != nullptr)
-            mirrorMixWriter->writeInterleaved (mixScratch.data(), frames);
+            if (! mirrorMixWriter->writeInterleaved (mixScratch.data(), frames))
+                mirrorWriteFailed.store (true, std::memory_order_release);
 
         const double elapsed = static_cast<double> (frames) / sampleRate;
         for (auto& w : stemWriters)
@@ -302,6 +314,17 @@ void WritePipeline::drainOnce (bool finalFlush)
             if (mirrorMixWriter != nullptr)
                 mirrorMixWriter->tick (elapsed);
         }
+
+        // §6.3: a mirror that has failed stops for the rest of the take, the
+        // same way one that ran out of room does. The card write is untouched:
+        // the mirror must never take the recording down with it.
+        if (mirrorWriteFailed.load (std::memory_order_acquire) && mirroring.load (std::memory_order_acquire))
+            stopMirroring();
+
+        // §6.5: the destination is gone. Draining further would loop writing
+        // into a dead handle; the owner stops and finalizes the take.
+        if (cardWriteFailed.load (std::memory_order_acquire))
+            return;
 
         if (! finalFlush && frames < framesCapacity)
             return;
