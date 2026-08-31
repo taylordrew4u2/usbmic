@@ -28,6 +28,7 @@ add_library(mma_core STATIC
     Source/Core/SessionWriter.cpp
     Source/Core/SessionMetadata.cpp
     Source/Core/SessionFolderNaming.cpp
+    Source/Core/CameraSelection.cpp
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
@@ -103,6 +104,11 @@ if (MMA_BUILD_APP)
         PRODUCT_NAME "Multi-Mic Aggregator"
         COMPANY_NAME "MultiMicAggregator"
         MICROPHONE_PERMISSION_ENABLED TRUE
+        # The camera is opt-in and opened only when the user opens the camera
+        # panel, but macOS still wants the usage string declared up front, and
+        # §10.1 wants the reason to be the one the user would have guessed.
+        CAMERA_PERMISSION_ENABLED TRUE
+        CAMERA_PERMISSION_TEXT "Multi-Mic Aggregator records video from the cameras you switch on, alongside your microphone recordings."
         ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon.png"
     )
 
@@ -120,9 +126,14 @@ if (MMA_BUILD_APP)
         Source/UI/MixBarComponent.cpp
         Source/UI/MainScreen.cpp
         Source/UI/AdvancedPanel.cpp
+        Source/UI/CameraPanel.cpp
+        Source/UI/ModalCard.cpp
+        Source/UI/SaveLocationPrompt.cpp
+        Source/UI/SavedTakePanel.cpp
         Source/UI/MainComponent.cpp
         Source/UI/Main.cpp
         Source/App/Application.cpp
+        Source/App/CameraController.cpp
     )
 
     target_compile_definitions(MultiMicAggregator PRIVATE
@@ -130,6 +141,16 @@ if (MMA_BUILD_APP)
         JUCE_USE_CURL=0
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:MultiMicAggregator,JUCE_PRODUCT_NAME>"
     )
+
+    # Camera capture, on the two desktop targets §11 names. JUCE implements
+    # CameraDevice on macOS and Windows only, so elsewhere -- a Linux build,
+    # which is what the headless checks compile -- CameraController compiles to
+    # its unsupported form and says so in one sentence rather than presenting
+    # controls that cannot work.
+    if (APPLE OR WIN32)
+        target_compile_definitions(MultiMicAggregator PRIVATE JUCE_USE_CAMERA=1)
+        target_link_libraries(MultiMicAggregator PRIVATE juce::juce_video)
+    endif()
 
     target_link_libraries(MultiMicAggregator PRIVATE
         mma_core
@@ -139,6 +160,35 @@ if (MMA_BUILD_APP)
         juce::juce_dsp
         juce::juce_gui_extra
     )
+
+    # -----------------------------------------------------------------------
+    # Camera path, compiled where it otherwise could not be.
+    #
+    # JUCE only implements CameraDevice on macOS and Windows, so on Linux the
+    # whole camera path is #if'd out and nothing checks it. This target
+    # compiles CameraController.cpp unmodified with JUCE_USE_CAMERA=1 against
+    # Simulation/Camera's stand-in juce_video, so a wrong signature or a stale
+    # call fails the build on every platform rather than on the one machine
+    # that happens to be a Mac.
+    #
+    # An OBJECT library: compiling is the whole test. Running it would mean
+    # standing up JUCE's message manager and a Component on a headless box,
+    # which tests the harness rather than the controller.
+    # -----------------------------------------------------------------------
+    if (NOT APPLE AND NOT WIN32)
+        add_library(sim_camera OBJECT
+            Source/App/CameraController.cpp
+            Simulation/Camera/FakeCameraDevice.cpp)
+        target_compile_definitions(sim_camera PRIVATE
+            JUCE_USE_CAMERA=1
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0)
+        # Ahead of everything, so juce_video/juce_video.h resolves to the stub.
+        target_include_directories(sim_camera BEFORE PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/Simulation/Camera
+            ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+        target_link_libraries(sim_camera PRIVATE mma_core juce::juce_gui_basics)
+    endif()
 
     if (WIN32)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
