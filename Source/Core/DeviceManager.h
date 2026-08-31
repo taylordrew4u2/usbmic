@@ -72,6 +72,17 @@ public:
     /// Returns nullptr if there are no included devices.
     const MicDeviceState* selectDefaultMaster() const;
 
+    /// The same §3.1 ordering, but every candidate rather than only the winner:
+    /// the user's override first, then the USB microphones by drift, then the
+    /// built-in as a last resort.
+    ///
+    /// A take needs the whole ranking, not just the front of it. The best
+    /// device overall may be one this take is not recording -- plugged in after
+    /// the channel list was frozen (§6.5) -- and picking it would lock the rig
+    /// to a channel that does not exist. The caller walks the list until it
+    /// finds one that is actually in the take and still live.
+    std::vector<const MicDeviceState*> rankMasterCandidates() const;
+
     /// §3.1: the user may override the automatic choice from the Advanced
     /// panel. The override holds until that device leaves the rig, at which
     /// point §3.3 failover takes over again from the automatic rule.

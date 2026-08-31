@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Fixed -- a mid-take unplug pointed the clock master at silence
+
+The take's channel list and the device list are two different index spaces.
+Outside a recording they agree, which is what made conflating them so easy to
+miss. During a take they do not: §6.5 freezes the channel list, so an unplugged
+microphone keeps its slot and writes silence, while `DeviceManager` tracks what
+the OS reports right now and drops anything unplugged. Five places paired an
+index from one space with a lookup in the other.
+
+- **The clock master locked onto the unplugged channel.** `applyClockMaster()`
+  found its index by counting included devices, which is the right number only
+  until a microphone leaves mid-take. Recording A, B and C and unplugging B
+  made the device list `A, C`; asked to lock to C, the old arithmetic returned
+  index 1 -- channel B, the one writing silence. Every other microphone was
+  then drift-corrected against a channel carrying no audio. Resolution now
+  goes by device id against the take's frozen list, and skips any candidate
+  that is dead or is not in this take at all.
+- **§3.3 master failover never ran.** `selectFailoverMaster` had no production
+  callers -- the fifth unwired Core API in this series. Losing the master left
+  the rig on whatever channel the shifted index happened to name. The
+  switchover is now performed and, as §3.3 requires, logged with its timestamp
+  in `session.json`.
+- **Drift was attributed to the wrong microphone.** The reporting loop walked
+  the device list while reading `getChannelDriftPpm(index)` from capture, so
+  after an unplug the Advanced panel showed one microphone's PPM under
+  another's name, and §3.3's 100 PPM "unreliable" flag could land on a device
+  keeping perfect time.
+- **Names, meters and the dead-channel indicator drifted apart.** The skull
+  strips take their name from the device list and their level, liveness and
+  dashed outline from capture. After a mid-take unplug the name and the meter
+  on a strip belonged to different people, and the shorter device count meant
+  the last channel's meter was never polled at all. `getIncludedMicCount()` and
+  `getMicDisplayName()` now answer in the take's space while one is running,
+  and an unplugged microphone's strip keeps the name it was opened with rather
+  than going blank.
+- **§10.5 advice addressed the wrong person.** `SetupAdvisor` is fed one peak
+  per channel but was given names from the device list, so unplugging a
+  microphone renamed everyone after it in every piece of advice.
+
 ### Fixed -- every microphone looked dead, and §6.5's hot-plug row said nothing
 
 Found by sweeping `Source/Core` for public API with no production callers,
