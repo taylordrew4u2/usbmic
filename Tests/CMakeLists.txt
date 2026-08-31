@@ -9,6 +9,8 @@ add_executable(mma_core_tests
     test_MonitorBus.cpp
     test_SessionFolderNaming.cpp
     test_CameraSelection.cpp
+    test_AppSettings.cpp
+    test_SessionRecovery.cpp
     test_PreflightThroughputTest.cpp
     test_SessionMetadata.cpp
     test_RingBuffer.cpp

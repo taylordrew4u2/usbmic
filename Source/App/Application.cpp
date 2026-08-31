@@ -43,6 +43,10 @@ std::unique_ptr<VirtualDeviceBackend> Application::createDefaultVirtualDeviceBac
 
 void Application::initialise()
 {
+    // First, before anything reads a setting: the capture coordinator is built
+    // with masterVolume a few lines down, and the destination is chosen below.
+    loadSettings();
+
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
     systemAggregate = createSystemAggregateDevice();
@@ -74,10 +78,19 @@ void Application::initialise()
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
     }
 
-    chooseInitialDestination();
+    // §10.1's default, but only when there is nothing remembered to override
+    // it -- otherwise the card the user chose last time is silently replaced by
+    // the home folder on every launch.
+    if (destinationFolder.empty())
+        chooseInitialDestination();
 
     // §6.4: benchmark before the user reaches for record, not at record time.
     beginPreflightForDestination();
+
+    // §6.6: before the window opens, and only ever here. It rewrites file
+    // headers, which must never happen while a writer has those files open --
+    // at launch nothing does.
+    scanForInterruptedSessions();
 
     // §5.1: monitoring is live from launch, independent of record state --
     // there is deliberately no "arm monitoring" step anywhere in this flow.
@@ -87,6 +100,60 @@ void Application::initialise()
     // privacy prompt is spent, until the user opens the camera panel or arms a
     // take with a camera switched on.
     cameraController.refreshCameras();
+
+    // A camera the user turned off last time stays off, and one they named
+    // keeps its name -- applied after enumeration, since only then is there
+    // anything to match the remembered answers against.
+    applyingRememberedSettings = true;
+
+    for (const auto& camera : cameraController.getSelection().getAvailableCameras())
+        if (const auto* remembered = rememberedSettings.findCamera (camera.id))
+        {
+            cameraController.getSelection().setEnabled (camera.id, remembered->enabled);
+
+            if (! remembered->assignedName.empty())
+                cameraController.getSelection().setAssignedName (camera.id, remembered->assignedName);
+        }
+
+    applyingRememberedSettings = false;
+}
+
+void Application::setCameraEnabled (const std::string& id, bool enabled)
+{
+    cameraController.getSelection().setEnabled (id, enabled);
+    saveSettings();
+}
+
+void Application::setCameraName (const std::string& id, const juce::String& name)
+{
+    // §6.2 sanitizing at the point of entry, so what is remembered is what will
+    // appear in the filename rather than something that still has to be cleaned.
+    cameraController.getSelection().setAssignedName (id, SessionFolderNaming::sanitizeName (name.toStdString()));
+    saveSettings();
+}
+
+void Application::setCameraPreviewQuality (PreviewQuality quality)
+{
+    cameraController.setPreviewQuality (quality);
+    saveSettings();
+}
+
+void Application::confirmSaveLocation()
+{
+    confirmedSaveLocation = destinationFolder;
+    saveSettings();
+}
+
+void Application::setAskWhereToSaveEveryTime (bool ask)
+{
+    askWhereToSaveEveryTime = ask;
+    saveSettings();
+}
+
+void Application::setMirrorEnabled (bool enabled)
+{
+    mirrorPolicy.setEnabledByUser (enabled);
+    saveSettings();
 }
 
 void Application::openEnabledCameras()
@@ -217,6 +284,7 @@ void Application::setAggregateDeviceName (const juce::String& name)
     const auto trimmed = name.trim();
     aggregateName = trimmed.isEmpty() ? juce::String ("Multi-Mic Aggregator") : trimmed;
     publishAggregateDevice();
+    saveSettings();
 }
 
 juce::String Application::getAggregateStatus() const
@@ -308,6 +376,11 @@ void Application::onDeviceListChanged()
     // microphone initialises, and this handler previously called addDevice()
     // per device per firing -- which is why one Yeti showed up five times.
     deviceManager.syncToEnumeration (seen);
+
+    // §2.4: a microphone remembered from last week is only matchable once it is
+    // actually plugged in, so this runs after every enumeration rather than
+    // once at launch.
+    applyRememberedDeviceSettings();
 
     // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
@@ -500,6 +573,8 @@ void Application::setMicAssignedName (int index, const juce::String& name)
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
         settings.assignedName = SessionFolderNaming::sanitizeName (name.toStdString());
         portIdentityStore.put (d.identity, settings);
+
+        saveSettings();
 
         // The capture channels carry the display name into the stem filenames
         // (§6.2), so they are rebuilt -- but never mid-take, where §6.5 fixes
@@ -1052,6 +1127,11 @@ void Application::setMasterVolume (double volume0to100)
 
     if (auto* bus = getMonitorBus())
         bus->setMasterVolume (masterVolume);
+
+    // Deliberately not saved here. This is the one control that moves
+    // continuously while someone listens, and it is comfort rather than setup:
+    // losing it costs a second to reset, where losing a trim costs the ear-work
+    // that found it. It goes to disk with everything else at shutdown.
 }
 
 double Application::getMasterVolume() const
@@ -1087,6 +1167,12 @@ void Application::setChannelTrimDb (int index, float trimDb)
 
     if (capture != nullptr)
         capture->setChannelTrimDb (index, quantised);
+
+    // Written on each step rather than only at quit: a trim is setup the user
+    // did by ear and would have to redo, and §4 quantises it to 0.5 dB, so a
+    // drag across the whole range is a few dozen writes of a small file in the
+    // application-data folder -- never on the card a take is being written to.
+    saveSettings();
 }
 
 float Application::getChannelTrimDb (int index) const
@@ -1206,6 +1292,7 @@ void Application::setMicEnabledByName (const juce::String& displayName, bool ena
         if (deviceManager.setUserEnabled (d.identity.key(), enabled))
             restartCapture(); // the channel set changed, so the streams must be reopened
 
+        saveSettings();
         return;
     }
 }
@@ -1237,6 +1324,8 @@ void Application::setDestinationFolder (const juce::File& folder)
 
     // §6.4: a new volume is an unbenchmarked volume.
     beginPreflightForDestination();
+
+    saveSettings();
 }
 
 juce::String Application::createMirrorFolder (const juce::String& sessionFolderName)
@@ -1522,6 +1611,122 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
         builder.writeToStream (out, nullptr);
 }
 
+juce::File Application::getSettingsFile()
+{
+    return getLogFile().getSiblingFile ("settings.json");
+}
+
+void Application::loadSettings()
+{
+    const auto file = getSettingsFile();
+
+    if (! file.existsAsFile())
+        return;
+
+    // Anything unreadable comes back as defaults rather than as a failure:
+    // §10.1 says the app launches to a working state, and a preferences file
+    // truncated by a power cut is not a reason to refuse to start.
+    rememberedSettings = AppSettings::fromJsonString (file.loadFileAsString().toStdString());
+
+    applyingRememberedSettings = true;
+
+    // §10.1: a remembered destination wins over the default, but only if it is
+    // still there -- a card that has been unplugged since must not leave the
+    // app pointed at a path that no longer exists.
+    if (! rememberedSettings.destinationFolder.empty())
+        if (const juce::File folder { juce::String (rememberedSettings.destinationFolder) }; folder.isDirectory())
+        {
+            destinationFolder = rememberedSettings.destinationFolder;
+            confirmedSaveLocation = rememberedSettings.confirmedSaveLocation;
+        }
+
+    askWhereToSaveEveryTime = rememberedSettings.askWhereToSaveEveryTime;
+    mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
+    aggregateName = juce::String (rememberedSettings.aggregateName);
+    masterVolume = rememberedSettings.masterVolume;
+    cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
+                                            ? PreviewQuality::Full : PreviewQuality::Low);
+
+    // §2.4: the names and trims go back into the store they were taken from, so
+    // every path that already reads it -- stem filenames, the monitor mix, the
+    // trim sliders -- picks them up without knowing a file was involved.
+    for (const auto& port : rememberedSettings.ports)
+    {
+        PortIdentity id;
+        id.locationId = port.key;
+        portIdentityStore.put (id, port.settings);
+    }
+
+    applyingRememberedSettings = false;
+}
+
+void Application::applyRememberedDeviceSettings()
+{
+    if (rememberedSettings.ports.empty() && rememberedSettings.disabledMicKeys.empty())
+        return;
+
+    applyingRememberedSettings = true;
+
+    for (const auto& device : deviceManager.getDevices())
+    {
+        const auto key = device.identity.key();
+
+        // The store is keyed by PortIdentity::key(), which is what was written,
+        // so a device only matches the entry that was actually about it.
+        if (const auto* port = rememberedSettings.findPort (key); port != nullptr
+                && ! portIdentityStore.contains (device.identity))
+            portIdentityStore.put (device.identity, port->settings);
+
+        if (rememberedSettings.isMicDisabled (key) && device.userEnabled)
+            deviceManager.setUserEnabled (key, false);
+    }
+
+    applyingRememberedSettings = false;
+}
+
+void Application::saveSettings()
+{
+    // Guarded so applying a loaded file cannot write a half-applied rig back
+    // over the complete one it came from.
+    if (applyingRememberedSettings)
+        return;
+
+    AppSettings settings;
+    settings.destinationFolder = destinationFolder;
+    settings.confirmedSaveLocation = confirmedSaveLocation;
+    settings.askWhereToSaveEveryTime = askWhereToSaveEveryTime;
+    settings.mirrorEnabled = mirrorPolicy.isEnabledByUser();
+    settings.aggregateName = aggregateName.toStdString();
+    settings.masterVolume = masterVolume;
+    settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
+
+    for (const auto& entry : portIdentityStore.all())
+        settings.ports.push_back ({ entry.first, entry.second });
+
+    for (const auto& device : deviceManager.getDevices())
+        if (! device.userEnabled)
+            settings.disabledMicKeys.push_back (device.identity.key());
+
+    // Every camera the user has an opinion about, not only the connected ones:
+    // a camera unplugged today should come back tomorrow as it was left.
+    const auto& selection = cameraController.getSelection();
+    for (const auto& camera : selection.getAvailableCameras())
+        settings.cameras.push_back ({ camera.id,
+                                      selection.isEnabled (camera.id),
+                                      selection.getDisplayName (camera.id) });
+
+    for (const auto& remembered : rememberedSettings.cameras)
+        if (settings.cameras.end() == std::find_if (settings.cameras.begin(), settings.cameras.end(),
+                [&remembered] (const PersistedCamera& c) { return c.id == remembered.id; }))
+            settings.cameras.push_back (remembered);
+
+    const auto file = getSettingsFile();
+    file.getParentDirectory().createDirectory();
+    file.replaceWithText (juce::String (settings.toJsonString()));
+
+    rememberedSettings = settings;
+}
+
 juce::File Application::getLogFile()
 {
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
@@ -1540,6 +1745,78 @@ struct NewestFirst
     }
 };
 } // namespace
+
+void Application::scanForInterruptedSessions()
+{
+    recoveredSessions.clear();
+
+    // §6.6 names both places a take can be: the card it was written to, and the
+    // mirror, which is the copy that survives when the card is what failed.
+    std::vector<juce::File> roots { juce::File (juce::String (destinationFolder)),
+                                    juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                        .getChildFile ("RECORDINGS-MIRROR") };
+
+    for (const auto& root : roots)
+    {
+        if (! root.isDirectory())
+            continue;
+
+        // One level down and newest first. A card can hold hundreds of takes and
+        // this runs before the window opens, so it looks at the recent ones
+        // rather than walking the whole volume -- an interrupted take is by
+        // definition the most recent thing that happened.
+        juce::Array<juce::File> folders;
+        root.findChildFiles (folders, juce::File::findDirectories, false);
+
+        NewestFirst comparator;
+        folders.sort (comparator);
+
+        constexpr int kMaxFoldersExamined = 20;
+        const int examine = juce::jmin (folders.size(), kMaxFoldersExamined);
+
+        for (int i = 0; i < examine; ++i)
+        {
+            const auto folder = folders[i];
+            const auto metadataFile = folder.getChildFile ("session.json");
+
+            if (! metadataFile.existsAsFile())
+                continue;
+
+            SessionMetadata meta;
+
+            // A session.json truncated by the same power cut that interrupted
+            // the take is not a reason to fail: the audio beside it is still
+            // worth recovering, so an unreadable one is treated as interrupted.
+            try
+            {
+                meta = SessionMetadata::fromJsonString (metadataFile.loadFileAsString().toStdString());
+            }
+            catch (...)
+            {
+                meta = {};
+            }
+
+            if (! SessionRecovery::sessionWasInterrupted (meta))
+                continue;
+
+            RecoveredSession session;
+            session.folder = folder.getFullPathName().toStdString();
+            session.startedIso = meta.startTimestampIso;
+
+            for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*.wav", juce::File::findFiles))
+                session.files.push_back (
+                    SessionRecovery::repairWavFile (entry.getFile().getFullPathName().toStdString()));
+
+            std::sort (session.files.begin(), session.files.end(),
+                       [] (const RecoveredFile& a, const RecoveredFile& b) { return a.fileName < b.fileName; });
+
+            // §6.6: a take where nothing survived is not presented at all --
+            // better to say nothing than to hand someone an unplayable stub.
+            if (session.isWorthPresenting())
+                recoveredSessions.push_back (std::move (session));
+        }
+    }
+}
 
 juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) const
 {
@@ -1582,6 +1859,9 @@ void Application::shutdown()
 
     if (preflightThread.joinable())
         preflightThread.join();
+
+    // The rig as the user is leaving it, so tomorrow starts where today ended.
+    saveSettings();
 
     // Finalised first: a half-written video file left open at quit is a file
     // the OS may never close a header on.
