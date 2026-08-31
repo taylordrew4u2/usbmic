@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Fixed -- §6.5's back-pressure row was policy nothing ever called
+
+- **The ring-buffer warnings never fired.** `CapacityMonitor::evaluateFill` has
+  always held §6.5's thresholds -- warn at 50% fill, fall back to mix-only at
+  90% when there is no mirror -- and has always had tests. Nothing in the app
+  ever called it. Neither did anything call `noteDegradationAt`, and
+  `CaptureCoordinator::getRingFillFraction` was exposed and read by nobody. So
+  a drive falling behind produced no warning at all, and §0.1's "never silently
+  drop" described precisely what happened.
+- **Now the fill is polled during a take** and the warning is shown, ranked
+  above the remaining-time warnings: a ring filling up is audio about to be
+  lost now, where running low on room is audio that will stop being recorded
+  later.
+- **At 90% with no mirror, the stems stop and the mix keeps going.** A complete
+  mix is worth more than eight stems with the same hole in them, and the ring
+  drains at a fraction of the byte rate while it recovers. The mix is still
+  summed from every channel while degraded -- the point is to shed write
+  bandwidth, not to drop anyone out of the recording that survives.
+- **It never un-degrades within a take**, for the same reason the mirror never
+  restarts (§6.3): stems that resume mid-file are worse than stems that
+  stopped, because the gap is invisible in the waveform.
+- **§6.5: "log the exact sample position of degradation."** It goes into
+  `session.json` as a dropout entry, which is what it is -- the moment the
+  stems stopped receiving audio they should have had.
+
+
 ### Fixed -- a pulled card no longer fails silently
 
 - **Every failed write was being thrown away.** `SessionWriter::writeInterleaved`
