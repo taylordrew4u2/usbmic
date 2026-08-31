@@ -344,6 +344,27 @@ TEST_CASE (WritePipeline_StoppingTheMirrorLeavesTheRecordingIntact)
     REQUIRE (readU32LE (card, kDataSizeOffset) == 1024 * 2);
 }
 
+TEST_CASE (WritePipeline_AHealthyTakeNeverReportsAFailure)
+{
+    // The other half of the claim: the flag must stay down when nothing is
+    // wrong, or it would stop every take the moment it was wired to the UI.
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "healthy_card", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> block (4096, 0.2f);
+    const float* chans[] = { block.data() };
+    REQUIRE (p.pushBlock (chans, 1, 4096));
+    p.stop();
+
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+    REQUIRE_FALSE (p.hasMirrorWriteFailed());
+
+    std::remove ((dir + "/healthy_card.wav").c_str());
+}
+
 // -----------------------------------------------------------------------
 // §6.5 "target card removed". Making a real write fail without unplugging
 // real hardware: cap the process's maximum file size so the writer's own
@@ -353,8 +374,11 @@ TEST_CASE (WritePipeline_StoppingTheMirrorLeavesTheRecordingIntact)
 // return value being exactly what SessionWriter documents and what this
 // pipeline used to throw away.
 //
-// POSIX only: Windows has no equivalent, so the check is compiled out there
-// rather than faked.
+// POSIX only: Windows has no equivalent, so these two are compiled out there
+// rather than faked. The healthy-take check above deliberately sits outside the
+// guard -- it needs nothing platform-specific, and "this flag stays down when
+// nothing is wrong" is worth asserting on every platform, since a false
+// positive there would stop every recording instantly.
 // -----------------------------------------------------------------------
 #if ! defined(_WIN32)
 
@@ -426,27 +450,6 @@ TEST_CASE (WritePipeline_ADestinationThatFailsMidTakeIsNoticed)
     }
 
     std::remove ((dir + "/pulled_card.wav").c_str());
-}
-
-TEST_CASE (WritePipeline_AHealthyTakeNeverReportsAFailure)
-{
-    // The other half of the claim: the flag must stay down when nothing is
-    // wrong, or it would stop every take the moment it was wired to the UI.
-    const auto dir = tempDir();
-    std::vector<WriteChannelSpec> channels = { { "healthy_card", 0.0f } };
-
-    WritePipeline p;
-    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
-
-    std::vector<float> block (4096, 0.2f);
-    const float* chans[] = { block.data() };
-    REQUIRE (p.pushBlock (chans, 1, 4096));
-    p.stop();
-
-    REQUIRE_FALSE (p.hasCardWriteFailed());
-    REQUIRE_FALSE (p.hasMirrorWriteFailed());
-
-    std::remove ((dir + "/healthy_card.wav").c_str());
 }
 
 TEST_CASE (WritePipeline_AFreshTakeForgetsTheLastOnesFailure)
