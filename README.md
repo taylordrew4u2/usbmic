@@ -105,15 +105,21 @@ The steps below include it.
 1. Double-click `MultiMicAggregator-macOS.dmg`. A window opens showing the app
    and an arrow pointing at your **Applications** folder.
 2. Drag the skull onto **Applications**. That is the install.
-3. **First launch only:** Control-click (or right-click) the app in
-   Applications and choose **Open**, then **Open** again in the dialog. A plain
-   double-click is refused the first time.
+3. **First launch only:** open **Terminal** and run this once:
 
-   macOS asks because the build is signed ad-hoc rather than with a paid Apple
-   Developer ID. On macOS 15 (Sequoia) and later there may be no Open button in
-   that dialog — go to **System Settings → Privacy & Security**, scroll down,
-   and click **Open Anyway**. If neither works, see
-   [Troubleshooting](#troubleshooting-macos) below.
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
+   ```
+
+   Then open the app normally. This step is needed because the build is signed
+   ad-hoc rather than with a paid Apple Developer ID, so macOS quarantines it;
+   without clearing that flag you get *"Multi-Mic Aggregator is damaged and
+   can't be opened"*. Nothing is wrong with the download — see
+   [Troubleshooting](#troubleshooting-macos) below for the full explanation.
+
+   Control-click → **Open** is the usual advice for an unsigned app and it does
+   *not* work here: it gets past an app with no signature, not a quarantined one
+   whose ad-hoc signature Gatekeeper will not accept.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable Multi-Mic Aggregator.

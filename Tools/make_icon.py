@@ -2,7 +2,10 @@
 """Generate the application icon from the app's own §9.2 palette.
 
 The app's identity is the skull level meter it draws for every microphone, so
-the icon is a skull in the same bone white over the same warm near-black.
+the icon is a skull in the same bone white over the same slate near-black --
+and, like the meter, filled with the accent from the jaw up to a level. That
+fill is the one thing that tells you at 32px what the app is for: a skull is a
+skull, a skull holding a level is a level meter.
 
 It is *designed* here rather than traced from
 SkullMeterComponent::buildSkullSilhouette. That silhouette is a cranium ellipse
@@ -17,12 +20,21 @@ Out:  Resources/AppIcon.png (1024x1024, transparent rounded corners)
 import os
 from PIL import Image, ImageDraw
 
-# §9.2 palette, from Source/UI/SkullMeterComponent.cpp.
-BONE = (237, 228, 211)
-BONE_SHADE = (198, 187, 170)
-SOCKET = (18, 14, 12)
-BACKDROP_TOP = (44, 35, 31)
-BACKDROP_BOTTOM = (18, 14, 12)
+# §9.2 palette, from the `palette` namespace in Source/UI/AppLookAndFeel.h.
+BONE = (227, 234, 242)          # palette::bone
+BONE_SHADE = (183, 196, 212)    # bone, shaded, so the skull has form not flatness
+ACCENT = (34, 211, 238)         # palette::accent
+ACCENT_SHADE = (22, 168, 190)
+SOCKET = (10, 14, 19)           # palette::background
+BACKDROP_TOP = (28, 39, 51)     # palette::surfaceHigh
+BACKDROP_BOTTOM = (10, 14, 19)  # palette::background
+
+# Where the accent fill stops, in skull-box units. Chosen so the jaw and the
+# teeth sit inside it and the eye sockets stay clear of it: the fill has to
+# read as a level, and a boundary crossing the sockets reads as damage. It also
+# clears the nasal cavity, which at 0.66 the fill line ran exactly through --
+# so the nose sat on the boundary and the whole thing read as a dip line.
+FILL_LEVEL = 0.700
 
 SIZE = 1024
 SS = 3
@@ -75,7 +87,7 @@ def vertical_gradient(top, bottom, height):
 def main():
     icon = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 
-    # Backdrop: warm near-black squircle.
+    # Backdrop: slate near-black squircle.
     mask = Image.new("L", (W, W), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, W - 1, W - 1], CORNER, fill=255)
     icon.paste(vertical_gradient(BACKDROP_TOP, BACKDROP_BOTTOM, W), (0, 0), mask)
@@ -91,6 +103,14 @@ def main():
 
     # Bone with a soft top-down shade, so it has form rather than reading flat.
     icon.paste(vertical_gradient(BONE, BONE_SHADE, W), (0, 0), skull)
+
+    # The accent fill, from the jaw up to FILL_LEVEL, clipped to the silhouette
+    # exactly the way SkullMeterComponent clips its own fill to the same shape.
+    fill_top = int(by + FILL_LEVEL * bh)
+    fill_mask = Image.new("L", (W, W), 0)
+    ImageDraw.Draw(fill_mask).rectangle([0, fill_top, W - 1, W - 1], fill=255)
+    fill_mask = Image.composite(skull, Image.new("L", (W, W), 0), fill_mask)
+    icon.paste(vertical_gradient(ACCENT, ACCENT_SHADE, W), (0, 0), fill_mask)
 
     cut = Image.new("L", (W, W), 0)
     d = ImageDraw.Draw(cut)
@@ -136,7 +156,9 @@ def main():
         x = left + (right - left) * i / n
         td.rectangle([x - bw * 0.013, top_y, x + bw * 0.013, bot_y], fill=255)
     teeth = Image.composite(skull, Image.new("L", (W, W), 0), teeth)
-    icon.paste(vertical_gradient(BONE, BONE_SHADE, W), (0, 0), teeth)
+    # In the accent, not in bone: the teeth are below FILL_LEVEL, so painting
+    # them bone would punch two rows of holes in the level.
+    icon.paste(vertical_gradient(ACCENT, ACCENT_SHADE, W), (0, 0), teeth)
 
     icon = icon.resize((SIZE, SIZE), Image.LANCZOS)
 

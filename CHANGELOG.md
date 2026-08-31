@@ -18,6 +18,27 @@
   meant editing four files and finding out from a screenshot which one had
   been missed.
 
+### Changed — the icon and the disk image follow the app
+
+- **The app icon is recoloured**, and now carries the accent the way the meters
+  do: bone skull on slate, filled from the jaw up to a level. A skull is a
+  skull; a skull holding a level is a level meter, and that is what tells you
+  at 32px what the app is for.
+- **The disk-image window** matches, and its drag arrow is the accent rather
+  than the faintest mark in the window -- it is the entire instruction that
+  window exists to give.
+
+### Fixed — the first-launch instruction, in the two places a Mac user reads it
+
+The disk-image panel and the README's install steps both led with
+*"Control-click the app, then choose Open."* That is the workaround for an
+app with **no** signature. This build is ad-hoc signed, and Control-click →
+Open does not clear the quarantine flag on a build with no Developer ID --
+which is exactly the state someone seeing *"is damaged"* is in. So the first
+thing a Mac user read was the one instruction that could not work, while the
+Troubleshooting section further down said so. Both now lead with the
+`xattr -dr com.apple.quarantine` command, which is what actually works.
+
 ### Changed — polish on both screens
 
 - **Channel strips are rounded cards with air around them.** Each strip painted
