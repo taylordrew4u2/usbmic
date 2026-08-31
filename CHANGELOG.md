@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed -- "Saved to ..." for a take that saved nothing
+
+The saved-take card has always been able to tell that a finished take holds
+nothing but WAV headers, and it warns when it does. The status line beside it
+said `Saved to <folder>` regardless, because `SavedTakePanel::takeIsEmpty()` --
+whose own comment reads *"The owner uses this to say so rather than calling it
+saved"* -- had no callers. So the two disagreed on screen at the same moment,
+and the status line is the one a user reads on their way out of the room.
+
+The rule moves to `Core/TakeCompleteness` so both places reach one verdict
+instead of keeping two copies that can drift, and the §10.6 notice now says the
+files are empty when they are. §0.1 is about never silently dropping audio;
+telling someone it was saved when it was not is the same failure wearing a
+better word.
+
 ### Fixed -- two meter-strip setters that nothing ever called, and a screenshot tool that hid it
 
 - **Every strip painted an empty row.** `SkullMeterComponent` reserves an 11px
