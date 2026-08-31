@@ -288,6 +288,18 @@ public:
     Metering* getMixMetering();
     juce::String getMicDisplayName (int index) const;
 
+    /// The hardware's own product string for that channel, ignoring any name
+    /// the user gave the port -- the faint second line under the name. Empty
+    /// when it would only repeat what the strip already says, so an unnamed
+    /// microphone does not print its product string twice.
+    juce::String getMicProductName (int index) const;
+
+    /// §9.3: whether this machine's owner has asked for reduced motion. Read
+    /// once at construction -- it is an accessibility preference, not something
+    /// that changes between repaints, and asking the OS at 60Hz per strip would
+    /// be absurd.
+    bool prefersReducedMotion() const noexcept { return reducedMotionPreferred; }
+
     /// The picture side of a take: which cameras are connected, which are in,
     /// and the live views. Video only -- see CameraController for why there is
     /// no audio anywhere near it.
@@ -364,6 +376,9 @@ private:
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
     std::string appliedMasterDeviceId;
+
+    // §9.3, read once at construction. See prefersReducedMotion().
+    bool reducedMotionPreferred = false;
     juce::String midTakeNotice;
     double midTakeNoticeSeconds = 0.0;
 
@@ -447,6 +462,7 @@ private:
     /// the microphone that was unplugged from it.
     juce::String nameForDevice (const std::string& identityKey,
                                 const juce::String& fallback) const;
+
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 folder name for a take started at `now` under `name`, including the
     /// collision suffix. Resolves against the disk but creates nothing, so the

@@ -19,15 +19,30 @@ DISPLAY_NUM="${MMA_DISPLAY:-:99}"
 # command in the README produces -- put it straight in the artefacts folder.
 # Both are looked for, so this works from the documented build rather than only
 # from the generator the script was first written against.
+#
+# The README builds into `build`; this script was originally written against
+# `build-app`. Both are looked in, and when both exist the NEWEST binary wins
+# rather than whichever directory happens to be listed first -- otherwise a
+# stale artefact in one directory silently gets photographed while the change
+# under test sits unbuilt in the other. That is not hypothetical: it produced a
+# screenshot presented as evidence for a change the binary did not contain.
 APP=""
 for CANDIDATE in \
+  "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" \
+  "build/MultiMicAggregator_artefacts/Multi-Mic Aggregator" \
   "build-app/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" \
   "build-app/MultiMicAggregator_artefacts/Multi-Mic Aggregator"
 do
-  if [ -x "$CANDIDATE" ]; then APP="$CANDIDATE"; break; fi
+  [ -x "$CANDIDATE" ] || continue
+  if [ -z "$APP" ] || [ "$CANDIDATE" -nt "$APP" ]; then APP="$CANDIDATE"; fi
 done
 
-test -n "$APP" || { echo "Build first: cmake -B build-app -DMMA_BUILD_APP=ON && cmake --build build-app"; exit 1; }
+test -n "$APP" || { echo "Build first: cmake -B build -DMMA_BUILD_APP=ON && cmake --build build"; exit 1; }
+
+# Always say which binary is being photographed and when it was built. A
+# screenshot is only evidence if it is of the code under test, and the age is
+# what makes a forgotten rebuild obvious instead of invisible.
+echo "Capturing: $APP (built $(date -r "$APP" '+%Y-%m-%d %H:%M:%S'))"
 
 # `pkill Xvfb` matches the process name only. Do not reach for `pkill -f` here:
 # the pattern would also match the shell running this script, and killing the
