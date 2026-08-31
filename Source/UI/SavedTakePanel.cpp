@@ -1,4 +1,5 @@
 #include "SavedTakePanel.h"
+#include "../Core/TakeCompleteness.h"
 #include "AppLookAndFeel.h"
 
 namespace mma {
@@ -61,20 +62,13 @@ void SavedTakePanel::setTake (const juce::String& folder,
     listContainer.removeAllChildren();
 
     int64_t total = 0;
-    int64_t audioBytes = 0;
-    int audioFiles = 0;
+    std::vector<TakeFile> forJudging;
+    forJudging.reserve (files.size());
 
     for (const auto& file : files)
     {
         total += file.sizeBytes;
-
-        // session.json is a few hundred bytes whatever happened, so it must not
-        // be what makes an otherwise empty take look like it recorded something.
-        if (! file.name.endsWithIgnoreCase (".json"))
-        {
-            audioBytes += file.sizeBytes;
-            ++audioFiles;
-        }
+        forJudging.push_back ({ file.name.toStdString(), file.sizeBytes });
 
         Row row;
         row.name = std::make_unique<juce::Label>();
@@ -96,9 +90,10 @@ void SavedTakePanel::setTake (const juce::String& folder,
                             + juce::File::descriptionOfSizeInBytes (total),
                         juce::dontSendNotification);
 
-    // A WAV header alone is 44 bytes plus the BWF chunk, so anything under a
-    // kilobyte per file holds no audio worth the name.
-    everythingWasEmpty = audioFiles > 0 && audioBytes < audioFiles * 1024;
+    // The rule lives in Core now, because the status line has to reach the same
+    // verdict: it used to say "Saved to ..." while this panel warned the files
+    // were empty, and two copies of a rule are two chances to disagree.
+    everythingWasEmpty = takeHoldsNoAudio (forJudging);
     emptyWarning.setVisible (everythingWasEmpty);
 
     mirrorValue.setVisible (mirrorFolder.isNotEmpty());
