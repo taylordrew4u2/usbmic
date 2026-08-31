@@ -14,6 +14,12 @@ enum class MirrorState
     /// Was running and was stopped mid-take because internal space ran low.
     /// The card write continues (§6.3): the recording is never interrupted.
     StoppedLowSpace,
+    /// Was running and was stopped mid-take because a write to it failed --
+    /// the mirror volume was unplugged, went read-only, or died. Distinct from
+    /// StoppedLowSpace because the two need different words: one is "your disk
+    /// is filling up", the other is "your backup drive is gone". The card
+    /// write continues either way.
+    StoppedWriteFailed,
 };
 
 /// §6.3 redundant local mirror. Its whole purpose is turning most card
@@ -53,6 +59,19 @@ public:
     /// True when the mirror stopped mid-take, which §6.3 requires be noted in
     /// session.json.
     bool wasStoppedForSpace() const noexcept { return state == MirrorState::StoppedLowSpace; }
+
+    /// Records that a write to the mirror failed. Like the low-space stop this
+    /// is one-way within a take: a copy with a hole in the middle is not a
+    /// usable copy, so it never resumes even if the volume comes back.
+    ///
+    /// Returns true only on the transition, so the caller can say it once
+    /// rather than on every poll.
+    bool noteWriteFailure() noexcept;
+
+    /// True when the mirror stopped because its destination failed, which §6.3
+    /// requires be noted in session.json just as the low-space stop is. Without
+    /// it a truncated backup copy is indistinguishable from a complete one.
+    bool wasStoppedForWriteFailure() const noexcept { return state == MirrorState::StoppedWriteFailed; }
 
     void reset() noexcept;
 

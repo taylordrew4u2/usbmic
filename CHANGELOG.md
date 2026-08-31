@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed -- a failed backup drive stopped the mirror in silence
+
+§6.3 has two ways a mirror can stop mid-take, and only one of them was ever
+reported.
+
+- **A failed mirror write said nothing at all.** `WritePipeline` has always
+  detected it, stopped mirroring, and correctly left the card write running --
+  §6.3's "the mirror must never take the recording down with it". But
+  `hasMirrorWriteFailed()` had no callers outside its own tests, so nothing
+  ever *noticed*. Pulling the backup drive mid-take produced no message and no
+  line in `session.json`, because only the low-space stop was recorded. The
+  user was left with a truncated backup copy that looked exactly like a
+  complete one. `MirrorState` gains `StoppedWriteFailed` so the two reasons
+  stay distinguishable -- "your disk is filling up" and "your backup drive is
+  gone" need different words -- and both now reach the user and the record.
+- **The emergency stop sat below two mirror checks.** The §6.5 card-removal
+  branch is commented "checked before anything else because the take has to
+  stop now", and it wasn't: the mirror checks returned ahead of it, so a mirror
+  message could delay the stop by a poll. It is now where its comment says.
+
 ### Fixed -- a mid-take unplug pointed the clock master at silence
 
 The take's channel list and the device list are two different index spaces.
