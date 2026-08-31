@@ -1,4 +1,5 @@
 #include "AdvancedPanel.h"
+#include "AppLookAndFeel.h"
 
 namespace mma {
 
@@ -29,6 +30,27 @@ AdvancedPanel::AdvancedPanel()
                      &backendValue, &destinationFolderLabel })
         addAndMakeVisible (c);
 
+    // Two tones rather than one. Every row rendered at the same weight, so the
+    // question and its answer were indistinguishable down a column.
+    for (auto* l : { &sampleRateLabel, &bitDepthLabel, &bufferSizeLabel, &latencyLabel,
+                     &clockMasterLabel, &outputDeviceLabel, &backendLabel,
+                     &aggregateNameLabel, &destinationFolderLabel, &storageLabel,
+                     &micSelectionLabel })
+        l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+
+    for (auto* v : { &sampleRateValue, &bitDepthValue, &bufferSizeValue, &latencyValue,
+                     &backendValue })
+        v->setColour (juce::Label::textColourId, AppLookAndFeel::bone);
+
+    // Supporting text, not body text: the drift report, the aggregate status
+    // and the clock-master explanation all sat at the same size and weight as
+    // the settings they describe.
+    for (auto* l : { &driftLabel, &aggregateStatusLabel, &clockMasterHelpLabel })
+    {
+        l->setFont (juce::Font (11.0f));
+        l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+    }
+
     addAndMakeVisible (clockMasterCombo);
     clockMasterCombo.onChange = [this] {
         if (onClockMasterChanged)
@@ -56,6 +78,23 @@ AdvancedPanel::AdvancedPanel()
 
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
+
+    // Four headings over what was a flat list. The reader can now find the
+    // storage picker by scanning four words instead of reading fifteen rows.
+    const std::pair<juce::Label*, const char*> sections[] = {
+        { &storageSection, "WHERE RECORDINGS GO" },
+        { &formatSection,  "RECORDING FORMAT" },
+        { &micSection,     "MICROPHONES" },
+        { &outputSection,  "MONITORING AND OUTPUT" },
+    };
+
+    for (auto& [label, text] : sections)
+    {
+        label->setText (text, juce::dontSendNotification);
+        label->setFont (juce::Font (10.0f, juce::Font::bold));
+        label->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+        addAndMakeVisible (label);
+    }
 
     micSelectionLabel.setText ("Microphones to record", juce::dontSendNotification);
     addAndMakeVisible (micSelectionLabel);
@@ -257,7 +296,15 @@ void AdvancedPanel::layOutTrimRows()
 
 void AdvancedPanel::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xFF1E1816));
+    g.fillAll (AppLookAndFeel::surface);
+
+    // One hairline under each heading, in the outline tone. Anything heavier
+    // turns a grouping cue into four more lines competing with the settings.
+    g.setColour (AppLookAndFeel::outline);
+    const auto bounds = getLocalBounds().reduced (12, 0);
+
+    for (int y : ruleYs)
+        g.fillRect (bounds.getX(), y, bounds.getWidth(), 1);
 }
 
 int AdvancedPanel::getRequiredHeight() const
@@ -266,42 +313,63 @@ int AdvancedPanel::getRequiredHeight() const
     // from a trial layout, because resized() consumes the bounds it is given
     // and cannot report what it would have wanted from a taller one.
     constexpr int kMargins       = 12 * 2;
-    constexpr int kCloseButton   = 30 + 8;
+    constexpr int kCloseButton   = 30 + 14;
+    constexpr int kSection       = 14 + 3 + 1 + 9;  // heading, gap, rule, gap
     constexpr int kRow           = 26 + 4;
     constexpr int kMicListLabel  = 22;
     constexpr int kMicToggle     = 24 + 2;
-    constexpr int kClockHelp     = 76 + 6;
+    constexpr int kClockHelp     = 64 + 8;
     constexpr int kDrift         = 60 + 4;
-    constexpr int kTrimViewport  = 100 + 4;
-    constexpr int kAggregate     = 20 + 4;
-    constexpr int kMirror        = 26 + 4;
-    constexpr int kDestination   = 26 + 12;
+    constexpr int kTrimViewport  = 100 + 16;
+    constexpr int kAggregate     = 20 + 16;
+    constexpr int kMirror        = 26 + 16;
     constexpr int kDiagnostics   = 30;
 
-    // sample rate, bit depth, buffer size, latency, clock master, output
-    // device, backend, aggregate name, save-to volume.
-    constexpr int kRowCount = 9;
+    // save-to volume, destination folder, sample rate, bit depth, buffer size,
+    // latency, clock master, output device, backend, aggregate name.
+    constexpr int kRowCount = 10;
 
-    return kMargins + kCloseButton + (kRow * kRowCount) + kMicListLabel
-         + static_cast<int> (micToggles.size()) * kMicToggle + 8
-         + kClockHelp + kDrift + kTrimViewport + kAggregate + kMirror
-         + kDestination + kDiagnostics;
+    // The gaps resized() leaves between sections that are not a heading's own:
+    // after the format rows, and after the microphone checkbox list.
+    constexpr int kSectionGaps = 12 + 10;
+
+    return kMargins + kCloseButton + (kSection * 4) + (kRow * kRowCount)
+         + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
+         + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
+         + kMirror + kDiagnostics;
 }
 
 void AdvancedPanel::resized()
 {
     auto area = getLocalBounds().reduced (12);
+    ruleYs.clear();
 
     // Top-left and first in the layout, where a back control is looked for,
     // and placed before anything else claims the space so it cannot be pushed
     // off the bottom by a long device list.
     closeButton.setBounds (area.removeFromTop (30).removeFromLeft (110));
-    area.removeFromTop (8);
+    area.removeFromTop (14);
+
+    // A heading, then the hairline paint() draws under it. The gap below the
+    // rule is wider than the one above the next heading, so a section reads as
+    // one block rather than as rows that happen to be adjacent.
+    auto section = [&] (juce::Label& heading) {
+        heading.setBounds (area.removeFromTop (14));
+        area.removeFromTop (3);
+        ruleYs.push_back (area.getY());
+        area.removeFromTop (9);
+    };
+
+    // The value column is capped rather than taking the whole right half. At
+    // half the panel a combo holding "root - 29.8 GB free" stretched to 340px
+    // of mostly empty well, and short labels sat a long way from their values.
+    constexpr int kValueWidth = 300;
 
     auto row = [&] (juce::Label& label, juce::Component& value) {
         auto r = area.removeFromTop (26);
-        label.setBounds (r.removeFromLeft (r.getWidth() / 2));
-        value.setBounds (r);
+        value.setBounds (r.removeFromRight (juce::jmin (kValueWidth, r.getWidth() * 3 / 5)));
+        r.removeFromRight (12);
+        label.setBounds (r);
         area.removeFromTop (4);
     };
 
@@ -309,48 +377,51 @@ void AdvancedPanel::resized()
     // the choice a user comes in here to make -- picking an SD card before a
     // take -- and at the bottom of the panel it was below the fold, found only
     // by scrolling past four values nobody can change.
+    section (storageSection);
     row (storageLabel, storageCombo);
+    row (destinationFolderLabel, destinationFolderButton);
 
-    {
-        auto r = area.removeFromTop (26);
-        destinationFolderLabel.setBounds (r.removeFromLeft (r.getWidth() / 2));
-        destinationFolderButton.setBounds (r);
-    }
-    area.removeFromTop (12);
+    // The backup copy is a storage decision, so it belongs with the other two
+    // rather than orphaned at the bottom between the aggregate device and the
+    // diagnostics button.
+    mirrorToggle.setBounds (area.removeFromTop (26));
+    area.removeFromTop (16);
 
+    section (formatSection);
     row (sampleRateLabel, sampleRateValue);
     row (bitDepthLabel, bitDepthValue);
     row (bufferSizeLabel, bufferSizeValue);
     row (latencyLabel, latencyValue);
+    area.removeFromTop (12);
+
+    section (micSection);
     micSelectionLabel.setBounds (area.removeFromTop (22));
     for (auto& toggle : micToggles)
     {
         toggle->setBounds (area.removeFromTop (24).reduced (8, 0));
         area.removeFromTop (2);
     }
-    area.removeFromTop (8);
+    area.removeFromTop (10);
 
     row (clockMasterLabel, clockMasterCombo);
-    clockMasterHelpLabel.setBounds (area.removeFromTop (76));
-    area.removeFromTop (6);
+    clockMasterHelpLabel.setBounds (area.removeFromTop (64));
+    area.removeFromTop (8);
 
     driftLabel.setBounds (area.removeFromTop (60));
     area.removeFromTop (4);
 
     trimViewport.setBounds (area.removeFromTop (100));
     layOutTrimRows();
-    area.removeFromTop (4);
+    area.removeFromTop (16);
 
+    section (outputSection);
     row (outputDeviceLabel, outputDeviceCombo);
     row (backendLabel, backendValue);
     row (aggregateNameLabel, aggregateNameEditor);
     aggregateStatusLabel.setBounds (area.removeFromTop (20));
-    area.removeFromTop (4);
+    area.removeFromTop (16);
 
-    mirrorToggle.setBounds (area.removeFromTop (26));
-    area.removeFromTop (4);
-
-    diagnosticsExportButton.setBounds (area.removeFromTop (30));
+    diagnosticsExportButton.setBounds (area.removeFromTop (30).removeFromLeft (180));
 }
 
 } // namespace mma

@@ -106,6 +106,14 @@ private:
     juce::StringArray storagePaths;
     juce::StringArray lastStorageLabels;
     juce::Label clockMasterHelpLabel;
+
+    // Section headings and the hairline rules under them. The panel was one
+    // flat list of fifteen rows, so finding the storage picker meant reading
+    // every unrelated row on the way past it. resized() records where the
+    // rules go; paint() draws them, since a rule is a line rather than a
+    // component.
+    juce::Label storageSection, formatSection, micSection, outputSection;
+    std::vector<int> ruleYs;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;
     juce::StringArray lastMicNames;
 
