@@ -104,9 +104,14 @@ void Application::initialise()
     // there is deliberately no "arm monitoring" step anywhere in this flow.
     restartCapture();
 
-    // Enumeration only. Nothing is opened, so no camera light comes on and no
-    // privacy prompt is spent, until the user opens the camera panel or arms a
-    // take with a camera switched on.
+    // Enumeration only. Nothing is opened here, so a rig with no camera
+    // switched on turns no camera light on and spends no privacy prompt.
+    //
+    // A camera the user has already switched on is opened shortly afterwards by
+    // the UI tick, because the main screen shows the picture beside the meters
+    // and cannot show one from a closed device. That is not a new prompt:
+    // switching a camera on happens behind the camera door, and the first grant
+    // is spent there with the reason on screen.
     cameraController.refreshCameras();
 
     // A camera the user turned off last time stays off, and one they named
