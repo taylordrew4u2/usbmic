@@ -1,15 +1,17 @@
 #include "MixBarComponent.h"
+#include "AppLookAndFeel.h"
 
 namespace mma {
 
-const juce::Colour MixBarComponent::kPanel         { 0xFF1E1816 };
-const juce::Colour MixBarComponent::kEmptyInterior { 0xFF2A2320 };
-const juce::Colour MixBarComponent::kFillLow       { 0xFF7A9E7E };
-const juce::Colour MixBarComponent::kFillMid       { 0xFFD9A441 };
-const juce::Colour MixBarComponent::kFillHigh      { 0xFFC3352B };
-const juce::Colour MixBarComponent::kBone          { 0xFFEDE4D3 };
-const juce::Colour MixBarComponent::kSecondaryText { 0xFF8C8177 };
-const juce::Colour MixBarComponent::kOutline       { 0xFF3A312C };
+// Built from the one palette, for the reason given in SkullMeterComponent.
+const juce::Colour MixBarComponent::kPanel           { palette::surface };
+const juce::Colour MixBarComponent::kEmptyInterior   { palette::surfaceHigh };
+const juce::Colour MixBarComponent::kFillLow         { palette::meterLow };
+const juce::Colour MixBarComponent::kFillMid         { palette::meterMid };
+const juce::Colour MixBarComponent::kFillHigh        { palette::meterHigh };
+const juce::Colour MixBarComponent::kBone            { palette::bone };
+const juce::Colour MixBarComponent::kSecondaryText   { palette::secondary };
+const juce::Colour MixBarComponent::kOutline         { palette::outline };
 
 MixBarComponent::MixBarComponent() { startTimerHz (60); }
 MixBarComponent::~MixBarComponent() { stopTimer(); }

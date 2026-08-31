@@ -1,18 +1,22 @@
 #include "SkullMeterComponent.h"
+#include "AppLookAndFeel.h"
 
 namespace mma {
 
-const juce::Colour SkullMeterComponent::kBackground      { 0xFF16110F };
-const juce::Colour SkullMeterComponent::kPanel           { 0xFF1E1816 };
-const juce::Colour SkullMeterComponent::kBone            { 0xFFEDE4D3 };
-const juce::Colour SkullMeterComponent::kEmptyInterior   { 0xFF2A2320 };
-const juce::Colour SkullMeterComponent::kFillLow         { 0xFF7A9E7E };
-const juce::Colour SkullMeterComponent::kFillMid         { 0xFFD9A441 };
-const juce::Colour SkullMeterComponent::kFillHigh        { 0xFFC3352B };
-const juce::Colour SkullMeterComponent::kClipEyes        { 0xFFF2C14A };
-const juce::Colour SkullMeterComponent::kDimmedOutline   { 0xFF6E645B };
-const juce::Colour SkullMeterComponent::kSecondaryText   { 0xFF8C8177 };
-const juce::Colour SkullMeterComponent::kTertiaryText    { 0xFF5E554D };
+// These were a second copy of the §9.2 hex values. They are now built from
+// the one set in AppLookAndFeel, so a recolour happens once rather than four
+// times and cannot leave this file behind.
+const juce::Colour SkullMeterComponent::kBackground        { palette::background };
+const juce::Colour SkullMeterComponent::kPanel             { palette::surface };
+const juce::Colour SkullMeterComponent::kBone              { palette::bone };
+const juce::Colour SkullMeterComponent::kEmptyInterior     { palette::surfaceHigh };
+const juce::Colour SkullMeterComponent::kFillLow           { palette::meterLow };
+const juce::Colour SkullMeterComponent::kFillMid           { palette::meterMid };
+const juce::Colour SkullMeterComponent::kFillHigh          { palette::meterHigh };
+const juce::Colour SkullMeterComponent::kClipEyes          { palette::clipEyes };
+const juce::Colour SkullMeterComponent::kDimmedOutline     { palette::dimmedOutline };
+const juce::Colour SkullMeterComponent::kSecondaryText     { palette::secondary };
+const juce::Colour SkullMeterComponent::kTertiaryText      { palette::tertiary };
 
 SkullMeterComponent::SkullMeterComponent()
 {
@@ -164,7 +168,7 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         g.fillRect (clipRegion.getX() + peakInset, peakY - 1.0f,
                     clipRegion.getWidth() - peakInset * 2.0f, 2.0f);
 
-        // Eye sockets: clip indicator. Color changes AND an amber glow, but
+        // Eye sockets: clip indicator. Colour changes AND a yellow glow, but
         // the clip count text also changes -- color never carries meaning alone (§9.3).
         const float eyeY = skullBounds.getY() + skullBounds.getHeight() * 0.32f;
         const float eyeRadius = skullBounds.getWidth() * 0.09f;
