@@ -1571,6 +1571,14 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
                                    "Local backup copy stopped: the internal drive ran low on space." });
 
+    // §6.3 again, for the other way a mirror can stop. Without this line a
+    // backup copy truncated by a failed drive looks exactly like a complete
+    // one -- the file is simply shorter, and nothing says why.
+    if (mirrorPolicy.wasStoppedForWriteFailure())
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Local backup copy stopped: that drive stopped accepting writes. "
+                                   "The copy is incomplete from this point." });
+
     if (capture != nullptr && capture->getFramesDropped() > 0)
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
                                    "Dropped " + std::to_string (capture->getFramesDropped())
@@ -1642,21 +1650,6 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         }
     }
 
-    // §6.3: the mirror is re-judged during the take, and once it stops it never
-    // restarts within the same recording.
-    if (capture != nullptr && capture->isMirroring())
-    {
-        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-
-        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
-            == MirrorState::StoppedLowSpace)
-        {
-            capture->stopMirroring();
-            return "The local backup copy stopped -- this drive is low on space. "
-                   "The recording itself is unaffected.";
-        }
-    }
-
     // §6.5 "target card removed" outranks even running out of room: the drive
     // is not merely full, it is gone, and every further block would be written
     // into nothing. Checked before anything else because the take has to stop
@@ -1677,6 +1670,51 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         return juce::String (cardRemovalNotice.message);
     }
+
+    // §6.3: the mirror's destination failed -- unplugged, read-only, or dead.
+    //
+    // WritePipeline has always stopped mirroring on a failed write, and rightly
+    // leaves the card write alone (§6.3: the mirror must never take the
+    // recording down with it). What nothing ever did was *notice*, so pulling
+    // the backup drive mid-take stopped the copy in silence: no message, and
+    // nothing in session.json, because only the low-space stop was ever
+    // recorded. The user kept a truncated backup they had every reason to
+    // believe was complete.
+    //
+    // Checked outside the isMirroring() guard below, and deliberately so: the
+    // pipeline raises this flag and stops mirroring in the same breath, on its
+    // own writer thread. By the time this poll runs isMirroring() is already
+    // false, so nesting the check inside that guard would make it unreachable
+    // -- policy that exists and never runs, which is the whole shape of bug
+    // this series keeps finding. noteWriteFailure() is the idempotence: it
+    // fires only on the transition out of Active, so a mirror that never
+    // started, or one already stopped for space, produces nothing.
+    //
+    // capture->stopMirroring() is not called here because the pipeline has
+    // already done it; this only catches the policy up so session.json can say
+    // why the copy is short.
+    if (capture != nullptr && capture->hasMirrorWriteFailed()
+        && mirrorPolicy.noteWriteFailure())
+    {
+        return "The local backup copy stopped -- that drive stopped accepting writes. "
+               "The recording itself is unaffected and is still going to the card.";
+    }
+
+    // §6.3: the mirror is re-judged during the take, and once it stops it never
+    // restarts within the same recording.
+    if (capture != nullptr && capture->isMirroring())
+    {
+        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+
+        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
+            == MirrorState::StoppedLowSpace)
+        {
+            capture->stopMirroring();
+            return "The local backup copy stopped -- this drive is low on space. "
+                   "The recording itself is unaffected.";
+        }
+    }
+
 
     // The notice's clock runs from here, not from the branch that shows it:
     // decremented where it is returned, a warning outranking it for a few
