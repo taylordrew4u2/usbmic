@@ -183,42 +183,62 @@ void DeviceManager::updateMeasuredDrift (const std::string& identityKey, double 
     }
 }
 
-const MicDeviceState* DeviceManager::selectDefaultMaster() const
+std::vector<const MicDeviceState*> DeviceManager::rankMasterCandidates() const
 {
+    std::vector<const MicDeviceState*> ranked;
+    ranked.reserve (devices.size());
+
     // §3.1: an explicit choice wins over the lowest-drift rule, but only while
     // that device is actually present and included -- otherwise the rig would
     // have no master at all.
+    const MicDeviceState* preferred = nullptr;
+
     if (! preferredMasterKey.empty())
         for (const auto& d : devices)
             if (d.included && d.identity.key() == preferredMasterKey)
-                return &d;
+                preferred = &d;
+
+    if (preferred != nullptr)
+        ranked.push_back (preferred);
 
     // §3.1: prefer something the user plugged in. A machine's built-in
     // microphone is a legitimate input but a poor timebase, and CoreAudio
     // enumerates it first, so before any drift measurement exists it would win
     // on enumeration order alone -- which is why the clock master read as the
     // computer on every Mac regardless of how many USB mics were attached.
-    const MicDeviceState* best = nullptr;
-    for (const auto& d : devices)
+    //
+    // Built-ins are not dropped, only ranked last: one is still a better
+    // timebase than none at all.
+    for (int pass = 0; pass < 2; ++pass)
     {
-        if (! d.included || d.isBuiltIn)
-            continue;
-        if (best == nullptr || lowerDrift (d, *best))
-            best = &d;
+        std::vector<const MicDeviceState*> group;
+
+        for (const auto& d : devices)
+        {
+            if (! d.included || &d == preferred)
+                continue;
+            if (d.isBuiltIn != (pass == 1))
+                continue;
+
+            group.push_back (&d);
+        }
+
+        std::stable_sort (group.begin(), group.end(),
+                          [] (const MicDeviceState* a, const MicDeviceState* b)
+                          { return lowerDrift (*a, *b); });
+
+        ranked.insert (ranked.end(), group.begin(), group.end());
     }
 
-    if (best != nullptr)
-        return best;
+    return ranked;
+}
 
-    // Only if there is nothing else. A built-in master beats no master at all.
-    for (const auto& d : devices)
-    {
-        if (! d.included)
-            continue;
-        if (best == nullptr || lowerDrift (d, *best))
-            best = &d;
-    }
-    return best;
+const MicDeviceState* DeviceManager::selectDefaultMaster() const
+{
+    // One ordering, used both here and by the mid-take failover, so the rule a
+    // take falls back to is the same rule that chose the master to begin with.
+    const auto ranked = rankMasterCandidates();
+    return ranked.empty() ? nullptr : ranked.front();
 }
 
 const MicDeviceState* DeviceManager::selectFailoverMaster (const PortIdentity& removedMasterIdentity) const

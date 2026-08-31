@@ -35,6 +35,7 @@ add_library(mma_core STATIC
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
+    Source/Core/ClockMasterResolver.cpp
     Source/Core/RecordingEngine.cpp
     Source/Core/OutputDeviceSelector.cpp
     Source/Core/CapacityMonitor.cpp
