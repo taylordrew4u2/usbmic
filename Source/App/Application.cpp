@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
+#include <algorithm>
 #include <cstdio>
 #include <chrono>
 #include <cmath>
@@ -81,6 +82,16 @@ void Application::initialise()
     // §5.1: monitoring is live from launch, independent of record state --
     // there is deliberately no "arm monitoring" step anywhere in this flow.
     restartCapture();
+
+    // Enumeration only. Nothing is opened, so no camera light comes on and no
+    // privacy prompt is spent, until the user opens the camera panel or arms a
+    // take with a camera switched on.
+    cameraController.refreshCameras();
+}
+
+void Application::openEnabledCameras()
+{
+    cameraController.applySelection();
 }
 
 std::vector<CaptureChannel> Application::buildCaptureChannels() const
@@ -642,6 +653,12 @@ void Application::toggleRecording()
                 currentMirrorFolder = mirror;
                 sessionStartIso = now.toISO8601 (true);
 
+                // The picture starts with the sound, into the same folder. A
+                // camera the user switched on but never looked at is opened
+                // here rather than being quietly left out of the take.
+                openEnabledCameras();
+                cameraController.startRecording (juce::File (folder));
+
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
                 // stop to add the stop time and everything logged since.
@@ -669,6 +686,11 @@ void Application::toggleRecording()
         if (capture != nullptr)
             capture->stopRecording();
 
+        // Before the folder is listed for the panel that shows what was saved,
+        // so the video files are closed and their real sizes are on disk by the
+        // time anyone reads them.
+        cameraController.stopRecording();
+
         // Written after stopRecording() so the frame counts and buffer log it
         // records are the take's final ones -- and before recordingStartMs is
         // cleared, or every timestamp inside it would read as zero.
@@ -677,7 +699,13 @@ void Application::toggleRecording()
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
         // read without becoming furniture.
         lastSessionFolder = currentSessionFolder;
+        lastMirrorFolder = currentMirrorFolder;
         savedNoticeSeconds = 10.0;
+
+        // §6.2: the take is on disk and the UI has not shown where yet. Only
+        // raised when a folder was actually opened -- a start that failed
+        // preflight never got one, and "saved" would be a lie.
+        savedTakePending = currentSessionFolder.isNotEmpty();
 
         recordingEngine.stop();
         recordingStartMs = 0.0;
@@ -688,13 +716,12 @@ void Application::toggleRecording()
     }
 }
 
-juce::String Application::createSessionFolder (juce::Time now) const
+juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const
 {
     const juce::File root (destinationFolder);
 
-    // §6.2: never overwrite, never prompt -- collisions get _2, _3, ...
     // §6.2: the user's session name, sanitized; "Session" when they gave none.
-    auto cleaned = SessionFolderNaming::sanitizeName (sessionName.toStdString());
+    auto cleaned = SessionFolderNaming::sanitizeName (name.toStdString());
     if (cleaned.empty())
         cleaned = SessionFolderNaming::kDefaultName;
 
@@ -702,18 +729,115 @@ juce::String Application::createSessionFolder (juce::Time now) const
                                                                now.getDayOfMonth(), now.getHours(),
                                                                now.getMinutes(), cleaned);
 
-    const auto resolved = SessionFolderNaming::resolveCollision (desired,
+    // §6.2: never overwrite, never prompt -- collisions get _2, _3, ...
+    return juce::String (SessionFolderNaming::resolveCollision (desired,
         [&root] (const std::string& candidate)
         {
             return root.getChildFile (juce::String (candidate)).exists();
-        });
+        }));
+}
 
-    const auto folder = root.getChildFile (juce::String (resolved));
+juce::String Application::createSessionFolder (juce::Time now) const
+{
+    const juce::File root (destinationFolder);
+    const auto folder = root.getChildFile (resolveSessionFolderName (now, sessionName));
 
     if (! folder.createDirectory().wasOk())
         return {};
 
     return folder.getFullPathName();
+}
+
+Application::PlannedSave Application::planSave (const juce::String& proposedSessionName) const
+{
+    PlannedSave plan;
+    plan.parentFolder = juce::String (destinationFolder);
+    plan.folderName = resolveSessionFolderName (juce::Time::getCurrentTime(), proposedSessionName);
+    plan.fullPath = juce::File (plan.parentFolder).getChildFile (plan.folderName).getFullPathName();
+
+    // §6.3: the mirror decision is only actually taken at arm time, against the
+    // free space then. Showing where it *would* go is still worth doing -- a
+    // second copy the user does not know about is a second copy they will not
+    // find -- so this reports the path whenever the setting is on, and the
+    // panel shown at stop reports what really happened.
+    if (mirrorPolicy.isEnabledByUser())
+        plan.mirrorFolder = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                .getChildFile ("RECORDINGS-MIRROR")
+                                .getChildFile (plan.folderName)
+                                .getFullPathName();
+
+    // §6.1: one file per microphone plus the mix, exactly as WritePipeline
+    // opens them, plus the §6.2 session.json.
+    plan.fileNames.add ("MIX.wav");
+
+    for (const auto& c : buildCaptureChannels())
+        plan.fileNames.add (juce::String (c.fileName) + ".wav");
+
+    // One file per camera in the take, in the same folder. Listed with the rest
+    // because "where are my files" has one answer, not two.
+    plan.fileNames.addArray (cameraController.getPlannedFileNames());
+
+    plan.fileNames.add ("session.json");
+
+    return plan;
+}
+
+bool Application::isSaveLocationConfirmed() const
+{
+    if (askWhereToSaveEveryTime)
+        return false;
+
+    return ! confirmedSaveLocation.empty() && confirmedSaveLocation == destinationFolder;
+}
+
+std::vector<Application::SavedFile> Application::listSessionFiles (const juce::String& folder)
+{
+    std::vector<SavedFile> files;
+
+    if (folder.isEmpty())
+        return files;
+
+    const juce::File dir (folder);
+
+    if (! dir.isDirectory())
+        return files;
+
+    for (const auto& entry : juce::RangedDirectoryIterator (dir, false, "*", juce::File::findFiles))
+    {
+        const auto file = entry.getFile();
+        files.push_back ({ file.getFileName(), file.getSize() });
+    }
+
+    // MIX first, session.json last, the stems in between in the channel order
+    // their "01_", "02_" prefixes already encode. A user reading this list is
+    // looking for "is everyone here", and the mix is the file they will play.
+    const auto rank = [] (const juce::String& name)
+    {
+        if (name.startsWithIgnoreCase ("MIX")) return 0;
+        if (name.equalsIgnoreCase ("session.json")) return 2;
+        return 1;
+    };
+
+    std::sort (files.begin(), files.end(), [&rank] (const SavedFile& a, const SavedFile& b)
+    {
+        const int ra = rank (a.name), rb = rank (b.name);
+        return ra != rb ? ra < rb : a.name.compareNatural (b.name) < 0;
+    });
+
+    return files;
+}
+
+bool Application::consumeSavedTake (SavedTake& out)
+{
+    if (! savedTakePending)
+        return false;
+
+    savedTakePending = false;
+    out.folder = lastSessionFolder;
+    out.mirrorFolder = lastMirrorFolder;
+    out.files = listSessionFiles (lastSessionFolder);
+
+    return true;
 }
 
 double Application::getElapsedRecordingSeconds() const
@@ -754,9 +878,15 @@ int64_t Application::projectedSessionBytes() const
     return static_cast<int64_t> (bytesPerSecondOfAudio() * kProjectedSessionSeconds);
 }
 
+double Application::bytesPerSecondOfRecording() const
+{
+    return bytesPerSecondOfAudio()
+         + static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond());
+}
+
 double Application::getRemainingRecordingSeconds() const
 {
-    const double bytesPerSecond = bytesPerSecondOfAudio();
+    const double bytesPerSecond = bytesPerSecondOfRecording();
 
     if (bytesPerSecond <= 0.0)
         return -1.0;
@@ -1100,6 +1230,11 @@ void Application::setDestinationFolder (const juce::File& folder)
 
     destinationFolder = folder.getFullPathName().toStdString();
 
+    // §10.1: the user agreed to a place, not to a setting. Somewhere else has
+    // not been agreed to, so it gets asked about before the next take.
+    if (confirmedSaveLocation != destinationFolder)
+        confirmedSaveLocation.clear();
+
     // §6.4: a new volume is an unbenchmarked volume.
     beginPreflightForDestination();
 }
@@ -1156,6 +1291,18 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // §5.4 requires every buffer step logged.
     for (const auto& change : bufferLadder.getChangeLog())
         meta.bufferChanges.push_back ({ change.atSeconds, change.fromSamples, change.toSamples });
+
+    // The cameras in this take, and their files. An editor opening the folder
+    // later needs to know which picture goes with which take and that the sound
+    // is not in it -- the session origin every stem carries is what lines the
+    // two up, so the fact that they are separate files has to be on the record.
+    {
+        const auto videoNames = cameraController.getPlannedFileNames();
+        const auto plans = cameraController.getSelection().buildPlans();
+
+        for (size_t i = 0; i < plans.size() && (int) i < videoNames.size(); ++i)
+            meta.videos.push_back ({ plans[i].displayName, videoNames[(int) i].toStdString(), false });
+    }
 
     meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
     meta.mirrorActive = capture != nullptr && capture->isMirroring();
@@ -1435,6 +1582,10 @@ void Application::shutdown()
 
     if (preflightThread.joinable())
         preflightThread.join();
+
+    // Finalised first: a half-written video file left open at quit is a file
+    // the OS may never close a header on.
+    cameraController.stopRecording();
 
     // Ordered: drain the writer, then close the streams the callback runs on.
     if (capture != nullptr)

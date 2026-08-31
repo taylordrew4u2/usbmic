@@ -41,6 +41,13 @@ public:
     MirrorState evaluateDuringRecording (int64_t internalFreeBytes) noexcept;
 
     MirrorState getState() const noexcept { return state; }
+
+    /// Whether the user wants a mirror, which is not the same question as
+    /// whether one is running. The state starts at DisabledByUser and only
+    /// becomes Active at arm time, so anything asking "will there be a second
+    /// copy of the next take" has to ask this rather than read the state and
+    /// conclude the feature is switched off.
+    bool isEnabledByUser() const noexcept { return enabledByUser; }
     bool isMirroring() const noexcept { return state == MirrorState::Active; }
 
     /// True when the mirror stopped mid-take, which §6.3 requires be noted in

@@ -40,7 +40,25 @@ comes first, because picking a card before a take is what most people open it
 for. Then the format, then which microphones to record and which one carries the
 clock — explained where it is set, rather than assumed.
 
-> Both shots are rendered headless on a Linux container by
+<p align="center">
+  <img src="docs/images/save-prompt.png" alt="A card over the main screen headed 'Where does this recording go?', with a name field, the destination folder, the folder name this take will create, the list of files it will contain, the backup copy's location, an 'ask me every time' checkbox, and buttons reading Not yet, Choose a different folder and Start recording" width="660">
+</p>
+
+Before the first take, one card answers the question §6.2 says a novice must
+never be left with. The folder name updates as the recording is named, the list
+underneath is what will actually be written, and the backup copy's location is
+stated rather than left to be discovered. Answering it once is the whole cost —
+every press of record after this starts immediately.
+
+<p align="center">
+  <img src="docs/images/saved-take.png" alt="A card headed 'Saved.' showing the session folder path, '5 files, 3.2 KB', each file listed with its size, a warning that the files are empty, and buttons reading Done and Open the folder" width="660">
+</p>
+
+And when the take stops, the files themselves — named, with their sizes, and a
+button that opens the folder. This shot is the virtual-microphone rig, so the
+files really are empty and the card says so instead of calling it saved.
+
+> All four shots are rendered headless on a Linux container by
 > [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh), against the virtual ALSA
 > microphones [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh)
 > creates. That rig serves file-backed devices, which §5.4's exclusive-mode gate
@@ -225,7 +243,44 @@ has this same step.
 - If the sound ever cuts out on its own, that is the feedback protection —
   the mute button becomes **Unmute (sound was cut)** and pressing it brings
   the sound back.
-- After you stop, the screen says exactly where the take was saved.
+- **Before your first take, the app asks where it's going.** One card, two
+  questions: what to call the recording, and where to put it. It shows the
+  exact folder that will be created, what will be inside it, and where the
+  backup copy goes, with a button to pick somewhere else. Answer it once and
+  every later press of record starts immediately — the question is asked again
+  only if you point the app at a different drive, or tick *Ask me this before
+  every recording*.
+- **While you record, you can watch the files appear.** The screen shows the
+  take's own folder and a live count and size — "Writing 5 files — 240 MB so
+  far" — read off the disk rather than assumed.
+- **When you stop, you get the files.** Not a line of status text: a panel
+  naming every file that was written, with its size, plus the backup copy's
+  location and an **Open the folder** button. If the files came out empty it
+  says so, and says to check the mute switches on the mics.
+
+### Cameras
+
+- **Turn on any camera that's plugged in** from the **Cameras** button on the
+  main screen. USB webcam, built-in camera, a capture card presenting an HDMI
+  feed as a camera — the app takes whatever the OS lists and doesn't vet where
+  it came from. The first camera it finds is switched on for you; the rest are
+  one click away.
+- **You see it live** the moment you open the panel. Name each camera and the
+  name goes on its file.
+- **Recording is always at the camera's best quality.** The preview toggle
+  changes how big the picture is drawn on screen and nothing else — the live
+  view is small by default so that drawing it never competes with the audio
+  (§6.6). It cannot make your recording worse.
+- **Picture and sound are separate files.** Each camera writes one video file
+  into the same session folder as the audio, with no sound track of its own —
+  the sound is the WAVs beside it, and `session.json` records the pairing and
+  the shared session origin that lines them up in an editor.
+- Cameras are never opened until you ask for them: nothing is opened at
+  launch, so no camera light comes on and no privacy prompt is spent before
+  you have opened the panel or armed a take with a camera switched on.
+- **macOS and Windows only.** JUCE implements camera capture on those two
+  targets; the Linux build says so in one sentence instead of showing controls
+  that cannot work. The sound recording works either way.
 
 ### First run — where things go, on every platform
 
@@ -233,6 +288,10 @@ has this same step.
   Change the destination from **Settings → Save recordings to** — pointing it
   at an external card is the intended setup, and the app benchmarks a new
   destination before enabling the record button (§6.4).
+- **Video goes in the same folder** as the audio for that take, one file per
+  camera, named `V01_<camera name>`. The remaining-time figure on the main
+  screen accounts for it, so "Room for 2h 10m" stays true once a camera is
+  running.
 - **A local backup copy** of each take is kept by default in
   `RECORDINGS-MIRROR` in your home directory, so a card failure is an
   inconvenience rather than data loss. Toggle it in the Settings panel.
@@ -252,12 +311,15 @@ too if you want nothing left.
 ```
 Source/Core/        platform-independent engine logic, no JUCE dependency
 Source/Platform/    audio backends (CoreAudio, WASAPI/ASIO) + virtual device backends A-D
-Source/UI/          JUCE components: skull meters, main screen, advanced panel
+Source/UI/          JUCE components: skull meters, main screen, settings and
+                    camera panels, the save-location and saved-take cards
 Source/App/         composition root wiring devices + engine + monitor + UI
 Tests/              headless unit tests for Source/Core
 Tools/              capture harnesses: e2e_capture, soak_drift, sim_* (see Building)
 Simulation/         stand-in CoreAudio and WASAPI headers + virtual device layers,
-                    so the macOS and Windows backends can be executed anywhere
+                    so the macOS and Windows backends can be executed anywhere,
+                    plus a stand-in juce_video so the camera path compiles on
+                    a machine that has no camera API at all
 docs/SPEC.md        the build specification, verbatim
 ```
 
@@ -486,10 +548,24 @@ The full application builds and links in CI on Linux, macOS and Windows, so
 `Source/UI` is not unverified code either:
 
 - `SkullMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
+  `CameraPanel`, `ModalCard`, `SaveLocationPrompt`, `SavedTakePanel`,
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
+- `CameraController` compiles twice: once as it ships (camera path compiled out
+  on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
+  stand-in `juce_video`, via the `sim_camera` target — so the code that only
+  macOS and Windows can link is still type-checked on every runner.
 
-The app has also been run headless under Xvfb, where it renders the §1
-zero-microphone state and survives with its 60 Hz refresh running.
+The app has also been driven headless under Xvfb against the virtual ALSA
+microphones, through a whole take: press record, answer the save-location card,
+watch the file count and total climb on the main screen, stop, and read the
+saved-take panel listing every file that was written with its size. Pressing
+record a second time started immediately with no card, into a `_2` folder — so
+"asked once, then never again" is a checked claim rather than an intended one.
+
+What that does **not** cover: no camera has been opened. `CameraDevice::openDevice`,
+the live viewer, and `startRecordingToFile` need a real camera on a real macOS or
+Windows machine, so the camera path is compiled and type-checked everywhere and
+executed nowhere. See *Not yet validated against hardware*.
 
 ### Wired but unreportable
 
@@ -551,6 +627,14 @@ microphone. In particular:
   macOS, Windows ASIO, and Windows WASAPI exclusive.
 - Hostile-event matrix, card throughput on real slow media, bus-power
   exhaustion, and the §10.7 novice acceptance test.
+- **No camera has been opened.** The camera path is type-checked on every
+  runner (`sim_camera`) and executed on none. Outstanding on real hardware:
+  what resolution `openDevice` actually settles on, what the recorded file
+  costs per second against the estimate the remaining-time figure uses
+  (`CameraSelection::kEstimatedVideoBytesPerSecond`, deliberately pessimistic
+  at ~32 Mbit/s), whether two cameras can be held open at once on a given
+  machine, and whether recording video alongside eight microphones stays
+  within the §6.6 CPU budget.
 
 ## Judgment calls
 
@@ -566,6 +650,27 @@ microphone. In particular:
 - Backends B/C/D return an explicit unavailable status rather than pretending to
   work, so §7's requirement that the UI names which applications can and cannot
   see the aggregate device stays truthful.
+- **One question before the first take, and none after that.** §10.4 says a
+  record press starts immediately with no confirmation, and it is right: a
+  dialog on every press is friction on the one control that matters. But §6.2
+  says a novice losing track of their recording is a total product failure, and
+  the app was relying on a 12px grey line to prevent it. The reading taken here
+  is that §10.4 forbids *confirming the act of recording*, not *telling someone
+  where their files will be* — so the card is shown at most once per
+  destination, before the first take against it, and the answer is remembered
+  against the folder it was given about. Every press after that goes straight
+  to recording. A user who wants it every time can ask for that on the card.
+- **Cameras are an addition, not a spec item.** `docs/SPEC.md` is about
+  microphones and says nothing about video, so everything in the Cameras panel
+  is a judgment call against the spec's own principles rather than a
+  requirement being met: opt-in per camera because §6.5's card-full failure is
+  the one a novice cannot recover from and video is what fills a card; capture
+  always at full quality with only the *drawing* made cheap, because §6.6 is
+  about not spending CPU where it costs audio; picture and sound as separate
+  files, because §6.1's whole premise is one clean track per person and a
+  camera's own microphone would put a room mic into that. Nothing about the
+  camera path can affect the audio path — it is opened, recorded and closed
+  entirely outside the audio callback.
 
 ## Build order
 
