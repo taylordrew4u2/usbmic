@@ -177,8 +177,16 @@ void MainScreen::setNoMicsMessage (bool show)
 void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disabledReason)
 {
     recordButton.setEnabled (enabled);
-    disabledReasonLabel.setVisible (! enabled);
     disabledReasonLabel.setText (disabledReason, juce::dontSendNotification);
+
+    // resized() only reserves the reason row when it is visible, so the layout
+    // has to be redone when that changes. Guarded because this is called from
+    // a timer, and re-laying out the screen every tick is not free.
+    if (disabledReasonLabel.isVisible() == enabled)
+    {
+        disabledReasonLabel.setVisible (! enabled);
+        resized();
+    }
 }
 
 void MainScreen::paint (juce::Graphics& g)
@@ -228,14 +236,28 @@ void MainScreen::resized()
             meter->setBounds (skullRow.removeFromLeft (meterWidth).reduced (2, 0));
     }
 
+    area.removeFromTop (10);
     mixBar.setBounds (area.removeFromTop (28));
-    area.removeFromTop (8);
+    area.removeFromTop (14);
 
-    sessionNameEditor.setBounds (area.removeFromTop (26).reduced (area.getWidth() / 5, 0));
-    area.removeFromTop (4);
-    recordButton.setBounds (area.removeFromTop (56));
-    disabledReasonLabel.setBounds (area.removeFromTop (20));
+    sessionNameEditor.setBounds (area.removeFromTop (28).reduced (area.getWidth() / 6, 0));
     area.removeFromTop (8);
+    recordButton.setBounds (area.removeFromTop (56));
+
+    // Only take the row when there is something in it. Reserved unconditionally
+    // it left a 28px hole under the record button whenever recording was
+    // possible -- which is almost always -- and pushed the status lines away
+    // from the button they belong to.
+    if (disabledReasonLabel.isVisible())
+    {
+        disabledReasonLabel.setBounds (area.removeFromTop (20));
+        area.removeFromTop (8);
+    }
+    else
+    {
+        disabledReasonLabel.setBounds ({});
+        area.removeFromTop (14);
+    }
 
     // Two centred halves while recording, one centred line when not. Splitting
     // unconditionally left the remaining-time text centred in the right-hand
