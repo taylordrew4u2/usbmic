@@ -2,7 +2,9 @@
 #include "Core/WritePipeline.h"
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 using namespace mma;
@@ -33,6 +35,23 @@ uint32_t readU32LE (std::ifstream& f, std::streampos pos)
     f.read (reinterpret_cast<char*> (b), 4);
     return static_cast<uint32_t> (b[0]) | (static_cast<uint32_t> (b[1]) << 8)
          | (static_cast<uint32_t> (b[2]) << 16) | (static_cast<uint32_t> (b[3]) << 24);
+}
+
+/// Spins until the writer thread has taken everything pushed so far, so a test
+/// can say "after this block was written" without guessing at thread timing.
+/// Returns false if it never drains, so a hang shows up as a failed assertion
+/// rather than a test that never finishes.
+bool waitForDrain (const WritePipeline& p)
+{
+    for (int attempt = 0; attempt < 2000; ++attempt)
+    {
+        if (p.getFillFraction() == 0.0)
+            return true;
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (1));
+    }
+
+    return false;
 }
 
 std::vector<WriteChannelSpec> twoChannels()
@@ -479,3 +498,100 @@ TEST_CASE (WritePipeline_AFreshTakeForgetsTheLastOnesFailure)
 }
 
 #endif // ! _WIN32
+
+TEST_CASE (WritePipeline_MixOnlyStopsTheStemsAndKeepsTheMix)
+{
+    // §6.5: at 90% fill with no mirror, "fall back to writing the mix file
+    // only". A complete mix is worth more than eight stems with the same hole
+    // in them, and the ring drains at a fraction of the byte rate while it
+    // recovers.
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "degrade_a", 0.0f }, { "degrade_b", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+    REQUIRE_FALSE (p.isMixOnly());
+
+    std::vector<float> a (512, 0.5f), b (512, 0.25f);
+    const float* chans[] = { a.data(), b.data() };
+    REQUIRE (p.pushBlock (chans, 2, 512));
+
+    // Wait for the writer thread to actually take that block before degrading.
+    // Without this the test races it: degrade first and the stem never receives
+    // the block at all, which looks like a bug in the pipeline and is not one.
+    REQUIRE (waitForDrain (p));
+
+    // Everything written so far is on both the stems and the mix.
+    p.fallBackToMixOnly();
+    REQUIRE (p.isMixOnly());
+
+    REQUIRE (p.pushBlock (chans, 2, 512));
+    p.stop();
+
+    std::ifstream stem (dir + "/degrade_a.wav", std::ios::binary);
+    std::ifstream mix (dir + "/MIX.wav", std::ios::binary);
+    REQUIRE (stem.is_open());
+    REQUIRE (mix.is_open());
+
+    // The stem stopped at the first block; the mix carried both.
+    REQUIRE (readU32LE (stem, kDataSizeOffset) == 512 * 2);
+    REQUIRE (readU32LE (mix, kDataSizeOffset) == 1024 * 2);
+
+    std::remove ((dir + "/degrade_a.wav").c_str());
+    std::remove ((dir + "/degrade_b.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}
+
+TEST_CASE (WritePipeline_TheMixStillCarriesEveryChannelAfterDegrading)
+{
+    // Shedding the stems must not quietly drop anyone out of the recording that
+    // does survive -- the point is to shed write bandwidth, not people.
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "sum_a", 0.0f }, { "sum_b", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+    p.fallBackToMixOnly();
+
+    // Two channels at +0.25 each: the mix must be their sum, not one of them.
+    std::vector<float> a (256, 0.25f), b (256, 0.25f);
+    const float* chans[] = { a.data(), b.data() };
+    REQUIRE (p.pushBlock (chans, 2, 256));
+    p.stop();
+
+    std::ifstream mix (dir + "/MIX.wav", std::ios::binary);
+    REQUIRE (mix.is_open());
+    mix.seekg (kAudioDataOffset);
+    unsigned char lo = 0, hi = 0;
+    mix.read (reinterpret_cast<char*> (&lo), 1);
+    mix.read (reinterpret_cast<char*> (&hi), 1);
+    const int16_t sample = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+
+    // 0.25 + 0.25 = 0.5 of full scale, give or take rounding.
+    REQUIRE (sample > 16000);
+    REQUIRE (sample < 16800);
+
+    std::remove ((dir + "/sum_a.wav").c_str());
+    std::remove ((dir + "/sum_b.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}
+
+TEST_CASE (WritePipeline_AFreshTakeIsNotStillDegraded)
+{
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "rearm", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+    p.fallBackToMixOnly();
+    REQUIRE (p.isMixOnly());
+    p.stop();
+
+    // §6.5 never restarts the stems within a take. A new take is a new take.
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-08-27T00:00:00Z"));
+    REQUIRE_FALSE (p.isMixOnly());
+    p.stop();
+
+    std::remove ((dir + "/rearm.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}

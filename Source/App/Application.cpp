@@ -1428,6 +1428,14 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     meta.mirrorActive = capture != nullptr && capture->isMirroring();
     meta.mirrorPath = currentMirrorFolder.toStdString();
 
+    // §6.5: "log the exact sample position of degradation." Recorded as a
+    // dropout entry rather than a new field, because that is what it is: the
+    // moment the stems stopped receiving audio they should have had.
+    if (const auto degradedAt = capacityMonitor.getDegradationSamplePosition(); degradedAt >= 0)
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Fell back to writing the mix only at sample "
+                                       + std::to_string (degradedAt) });
+
     // §6.3: a mirror that stopped mid-take must be visible in the record --
     // otherwise the copy looks complete and is not.
     if (mirrorPolicy.wasStoppedForSpace())
@@ -1536,6 +1544,38 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         toggleRecording();
 
         return juce::String (cardRemovalNotice.message);
+    }
+
+    // §6.5 buffer back-pressure, before the remaining-time warnings: the ring
+    // filling up is audio about to be lost right now, where running low on
+    // room is audio that will stop being recorded later.
+    //
+    // CapacityMonitor has always had this policy, and always had tests for it.
+    // Nothing had ever called it, so the 50% warning was never shown and the
+    // 90% fallback never happened -- §0.1's "never silently drop" was exactly
+    // what the app did.
+    if (capture != nullptr && recordingEngine.getState() == RecordingState::Recording)
+    {
+        switch (capacityMonitor.evaluateFill (capture->getRingFillFraction(), capture->isMirroring()))
+        {
+            case WritePipelineState::DegradedToMixOnly:
+                if (! capture->isMixOnly())
+                {
+                    capture->fallBackToMixOnly();
+                    // §6.5: "log the exact sample position of degradation."
+                    capacityMonitor.noteDegradationAt (static_cast<long long> (capture->getFramesAccepted()));
+                }
+
+                return "The drive can't keep up. Still recording everyone into the mixed file, but the "
+                       "separate microphone tracks have stopped. Close other apps using the disk.";
+
+            case WritePipelineState::FillWarning:
+                return "The drive is falling behind. Nothing has been lost yet -- close any other apps "
+                       "using the disk.";
+
+            case WritePipelineState::Healthy:
+                break;
+        }
     }
 
     // §6.5 next: running out of room stops the take, which outranks everything
