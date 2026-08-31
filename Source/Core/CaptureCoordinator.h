@@ -96,6 +96,12 @@ public:
         /// §6.5 "target card removed": the destination stopped accepting writes.
     /// The take is over -- the owner stops and finalizes, and tells the user.
     bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
+
+    /// §6.3: the mirror's equivalent. The pipeline already stops mirroring on
+    /// a failed write and deliberately leaves the card write alone -- what this
+    /// exposes is the fact that it happened, so the take's owner can say so and
+    /// put it in the record.
+    bool hasMirrorWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasMirrorWriteFailed(); }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
 
     /// One microphone's audio callback (§3.2). Separate USB devices run on

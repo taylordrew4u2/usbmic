@@ -92,7 +92,12 @@ public:
 
     int getIncludedMicCount() const;
 
-    /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
+    /// §6.5: false while this channel's microphone is unplugged mid-take. The
+    /// channel stays in the file writing silence; this is what the UI dashes
+    /// its skull on. Index is into the included-mic list, as everywhere else.
+    bool isMicLive (int index) const;
+
+        /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
     /// highlights that skull so a user can see which meter is which person --
     /// four identical USB mics enumerate with the same product string.
     int getTappedChannel() const noexcept { return tappedChannel; }
@@ -265,7 +270,13 @@ public:
     /// §10.6: what happened then what to do, never a code.
     juce::String pollStatusAdvice (double sinceLastCallSeconds);
 
-    /// §14.2: report an enumeration failure or a device dropping off the bus,
+    /// §6.5: "New microphone plugged in mid-take -- do not add to the
+    /// in-progress recording. State in one line." That line, for the few
+    /// seconds after it happens, or empty. RecordingEngine has always had the
+    /// sentence; nothing had ever asked it for one.
+    juce::String getMidTakeNotice() const { return midTakeNotice; }
+
+        /// §14.2: report an enumeration failure or a device dropping off the bus,
     /// which is how bus-power exhaustion actually presents.
     void noteDeviceDropout();
 
@@ -277,6 +288,18 @@ public:
     Metering* getChannelMetering (int index);
     Metering* getMixMetering();
     juce::String getMicDisplayName (int index) const;
+
+    /// The hardware's own product string for that channel, ignoring any name
+    /// the user gave the port -- the faint second line under the name. Empty
+    /// when it would only repeat what the strip already says, so an unnamed
+    /// microphone does not print its product string twice.
+    juce::String getMicProductName (int index) const;
+
+    /// §9.3: whether this machine's owner has asked for reduced motion. Read
+    /// once at construction -- it is an accessibility preference, not something
+    /// that changes between repaints, and asking the OS at 60Hz per strip would
+    /// be absurd.
+    bool prefersReducedMotion() const noexcept { return reducedMotionPreferred; }
 
     /// The picture side of a take: which cameras are connected, which are in,
     /// and the live views. Video only -- see CameraController for why there is
@@ -343,10 +366,29 @@ private:
     juce::String lastMirrorFolder;
     double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
 
+    // Whether the take that just finished wrote any audio at all, judged once
+    // at stop against the finalized files. Keeps the §10.6 status line and the
+    // saved-take card telling the same story.
+    bool lastTakeHeldNoAudio = false;
+
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
 
-    // §6.5: the take was stopped by the card going away rather than by the
+    // §6.5's mid-recording row: unplugs and reconnections during a take, kept
+    // until the take ends so session.json carries them. RecordingEngine has
+    // always tracked this and nothing ever told it anything.
+    std::vector<DropoutEntry> midTakeDropouts;
+
+    // §3.3: which device is currently holding the timebase, so a mid-take
+    // switchover can be logged once rather than on every status poll.
+    std::string appliedMasterDeviceId;
+
+    // §9.3, read once at construction. See prefersReducedMotion().
+    bool reducedMotionPreferred = false;
+    juce::String midTakeNotice;
+    double midTakeNoticeSeconds = 0.0;
+
+        // §6.5: the take was stopped by the card going away rather than by the
     // user, and that has not been said out loud yet.
     bool cardRemovalPending = false;
     CardRemovalNotice cardRemovalNotice;
@@ -420,10 +462,13 @@ private:
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
 
-    /// §6.5 "clock master unplugged" -> §3.3 failover, mid-take. Moves only
-    /// which channel §3.3's drift is quoted against; the take's channel list
-    /// and file layout are fixed for its duration and are not touched.
-    void applyClockMasterDuringTake (const std::set<std::string>& present);
+    /// The user's name for a device if it has one, its product string
+    /// otherwise, and `fallback` when the device is no longer enumerated at
+    /// all -- which is exactly the case mid-take, where the channel outlives
+    /// the microphone that was unplugged from it.
+    juce::String nameForDevice (const std::string& identityKey,
+                                const juce::String& fallback) const;
+
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 folder name for a take started at `now` under `name`, including the
     /// collision suffix. Resolves against the disk but creates nothing, so the

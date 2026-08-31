@@ -556,8 +556,33 @@ void MainComponent::rebindMeters()
     {
         if (auto* skull = mainScreen.getSkullMeter (i))
         {
-            skull->setMetering (application.getChannelMetering (i));
+            auto* metering = application.getChannelMetering (i);
+            skull->setMetering (metering);
             skull->setMicName (application.getMicDisplayName (i));
+
+            // §6.5 "skull goes dashed", and §8.1's live numbers. This was never
+            // called: noSignal defaults to true, so every skull stayed dashed
+            // for the life of the app and both readouts were a hardcoded
+            // "--.-" no matter what the microphone was doing.
+            //
+            // Dashed means the channel is not delivering audio -- either it has
+            // no meter bound at all, or §6.5 has it writing silence because its
+            // microphone was unplugged mid-take. A connected microphone in a
+            // quiet room is not dashed: it reads its real level, which is the
+            // difference between "nobody is talking" and "this is not working".
+            skull->setNoSignal (metering == nullptr || ! application.isMicLive (i));
+
+            // The faint second line under the name: the hardware's own product
+            // string. The strip has always reserved and painted this row and
+            // setDeviceName() had no callers, so it drew an empty line on every
+            // channel for the life of the app.
+            skull->setDeviceName (application.getMicProductName (i));
+
+            // §9.3: "Respect prefers-reduced-motion: glow and pulse off, fill
+            // and numbers still live." The gate on the clip glow has always
+            // been there; nothing ever set it, so it sat at its default and the
+            // glow drew for everyone regardless of the setting.
+            skull->setReducedMotion (application.prefersReducedMotion());
         }
     }
 }

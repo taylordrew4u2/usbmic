@@ -2,6 +2,137 @@
 
 ## Unreleased
 
+### Fixed -- "Saved to ..." for a take that saved nothing
+
+The saved-take card has always been able to tell that a finished take holds
+nothing but WAV headers, and it warns when it does. The status line beside it
+said `Saved to <folder>` regardless, because `SavedTakePanel::takeIsEmpty()` --
+whose own comment reads *"The owner uses this to say so rather than calling it
+saved"* -- had no callers. So the two disagreed on screen at the same moment,
+and the status line is the one a user reads on their way out of the room.
+
+The rule moves to `Core/TakeCompleteness` so both places reach one verdict
+instead of keeping two copies that can drift, and the §10.6 notice now says the
+files are empty when they are. §0.1 is about never silently dropping audio;
+telling someone it was saved when it was not is the same failure wearing a
+better word.
+
+### Fixed -- two meter-strip setters that nothing ever called, and a screenshot tool that hid it
+
+- **Every strip painted an empty row.** `SkullMeterComponent` reserves an 11px
+  line under the bold microphone name and draws `deviceName` into it --
+  and `setDeviceName()` had no callers anywhere, so that line was blank on every
+  channel for the life of the app. It now carries the hardware's own product
+  string, so a port the user named "Kitchen" shows `Kitchen` with `Blue Yeti`
+  faint beneath it. Left deliberately empty when the two would be the same
+  words, so an unnamed microphone does not print its product string twice.
+- **§9.3's `prefers-reduced-motion` was never read.** The gate has always been
+  there -- the clip-eye glow draws only when `reducedMotion` is false -- and
+  `setReducedMotion()` had no callers, so the flag sat at its default and the
+  glow drew for everyone regardless of the setting. The preference is now read
+  from the OS once at startup (macOS `com.apple.universalaccess`, Windows
+  `SPI_GETCLIENTAREAANIMATION`) and applied to every strip. Where no single
+  setting exists to read, "no preference" is reported rather than guessed.
+- **`Tools/screenshot_app.sh` silently photographed stale binaries.** The README
+  builds into `build`; the script only ever looked in `build-app`, so it either
+  refused to run or -- worse -- rendered whatever old artefact happened to be
+  sitting in the other directory. It now looks in both, prefers the **newest**
+  binary, and prints which one it is capturing and when that was built. This is
+  not hypothetical: it produced a screenshot offered as evidence for a change
+  the binary did not contain.
+
+### Fixed -- a failed backup drive stopped the mirror in silence
+
+§6.3 has two ways a mirror can stop mid-take, and only one of them was ever
+reported.
+
+- **A failed mirror write said nothing at all.** `WritePipeline` has always
+  detected it, stopped mirroring, and correctly left the card write running --
+  §6.3's "the mirror must never take the recording down with it". But
+  `hasMirrorWriteFailed()` had no callers outside its own tests, so nothing
+  ever *noticed*. Pulling the backup drive mid-take produced no message and no
+  line in `session.json`, because only the low-space stop was recorded. The
+  user was left with a truncated backup copy that looked exactly like a
+  complete one. `MirrorState` gains `StoppedWriteFailed` so the two reasons
+  stay distinguishable -- "your disk is filling up" and "your backup drive is
+  gone" need different words -- and both now reach the user and the record.
+- **The emergency stop sat below two mirror checks.** The §6.5 card-removal
+  branch is commented "checked before anything else because the take has to
+  stop now", and it wasn't: the mirror checks returned ahead of it, so a mirror
+  message could delay the stop by a poll. It is now where its comment says.
+
+### Fixed -- a mid-take unplug pointed the clock master at silence
+
+The take's channel list and the device list are two different index spaces.
+Outside a recording they agree, which is what made conflating them so easy to
+miss. During a take they do not: §6.5 freezes the channel list, so an unplugged
+microphone keeps its slot and writes silence, while `DeviceManager` tracks what
+the OS reports right now and drops anything unplugged. Five places paired an
+index from one space with a lookup in the other.
+
+- **The clock master locked onto the unplugged channel.** `applyClockMaster()`
+  found its index by counting included devices, which is the right number only
+  until a microphone leaves mid-take. Recording A, B and C and unplugging B
+  made the device list `A, C`; asked to lock to C, the old arithmetic returned
+  index 1 -- channel B, the one writing silence. Every other microphone was
+  then drift-corrected against a channel carrying no audio. Resolution now
+  goes by device id against the take's frozen list, and skips any candidate
+  that is dead or is not in this take at all.
+- **§3.3 master failover never ran.** `selectFailoverMaster` had no production
+  callers -- the fifth unwired Core API in this series. Losing the master left
+  the rig on whatever channel the shifted index happened to name. The
+  switchover is now performed and, as §3.3 requires, logged with its timestamp
+  in `session.json`.
+- **Drift was attributed to the wrong microphone.** The reporting loop walked
+  the device list while reading `getChannelDriftPpm(index)` from capture, so
+  after an unplug the Advanced panel showed one microphone's PPM under
+  another's name, and §3.3's 100 PPM "unreliable" flag could land on a device
+  keeping perfect time.
+- **Names, meters and the dead-channel indicator drifted apart.** The skull
+  strips take their name from the device list and their level, liveness and
+  dashed outline from capture. After a mid-take unplug the name and the meter
+  on a strip belonged to different people, and the shorter device count meant
+  the last channel's meter was never polled at all. `getIncludedMicCount()` and
+  `getMicDisplayName()` now answer in the take's space while one is running,
+  and an unplugged microphone's strip keeps the name it was opened with rather
+  than going blank.
+- **§10.5 advice addressed the wrong person.** `SetupAdvisor` is fed one peak
+  per channel but was given names from the device list, so unplugging a
+  microphone renamed everyone after it in every piece of advice.
+
+### Fixed -- every microphone looked dead, and §6.5's hot-plug row said nothing
+
+Found by sweeping `Source/Core` for public API with no production callers,
+after two bugs of exactly that shape (#34, #35).
+
+- **Every meter read `--.-` forever.** `SkullMeterComponent::setNoSignal` had no
+  callers anywhere, and the flag it sets defaults to true -- and it gates both
+  the dashed skull outline *and* both numeric readouts. So every microphone was
+  drawn permanently dashed with a hardcoded `--.-` and `pk --.-`, whatever it
+  was actually doing. §8.1 puts the meters live from launch and §9.2 asks for
+  numeric readouts in a monospace face "so digits do not jitter as values
+  change"; the digits never changed at all. Now dashed means what §6.5 says it
+  means -- the channel is not delivering audio, either unbound or writing
+  silence because its microphone was unplugged mid-take -- and a connected
+  microphone in a quiet room shows its real level, which is the difference
+  between "nobody is talking" and "this is not working".
+- **A microphone plugged in mid-take said nothing.** §6.5 requires one line:
+  "Mic added to monitoring. It'll be recorded starting with your next take."
+  `RecordingEngine` has contained that sentence, verbatim, the whole time --
+  nothing had ever asked it for one. So plugging a microphone in during a
+  recording was completely silent, leaving the user to assume it was being
+  captured.
+- **An unplug mid-take was never logged.** §6.5 says "log the dropout";
+  `RecordingEngine::onMicUnplugged` existed to record exactly that and was never
+  called, so a microphone could fall out of a four-hour take and leave no trace
+  in `session.json`. Reconnections were equally unrecorded. Both are now logged
+  against the device they happened to.
+
+The audio itself was never at risk here: an unplugged channel has always kept
+its slot and written silence (§6.5), which is the part that protects the take.
+What was missing was every way the user or the record would have known.
+
+
 ### Fixed -- §6.5's back-pressure row was policy nothing ever called
 
 - **The ring-buffer warnings never fired.** `CapacityMonitor::evaluateFill` has

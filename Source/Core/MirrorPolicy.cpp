@@ -44,4 +44,16 @@ void MirrorPolicy::reset() noexcept
     state = enabledByUser ? MirrorState::Active : MirrorState::DisabledByUser;
 }
 
+bool MirrorPolicy::noteWriteFailure() noexcept
+{
+    // Only a mirror that was actually running can stop. A failure reported
+    // after it already stopped -- for space, or for an earlier failure -- is
+    // not a new event and must not produce a second notice.
+    if (state != MirrorState::Active)
+        return false;
+
+    state = MirrorState::StoppedWriteFailed;
+    return true;
+}
+
 } // namespace mma
