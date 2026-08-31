@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/app-icon.png" alt="Multi-Mic Aggregator icon: a bone skull on slate, filled from the jaw up with the accent, the way the app's own level meters fill" width="128">
+</p>
+
 # Multi-Microphone Aggregator, Recorder, and Monitor
 
 Cross-platform desktop application (macOS + Windows) that aggregates up to 8 USB
@@ -15,6 +19,33 @@ implements a spec rule, the section number is cited in a comment.
 > device layers, but have still never run against real hardware, because no
 > build environment here has an audio device. That distinction is stated
 > precisely below rather than glossed.
+
+## What it looks like
+
+<p align="center">
+  <img src="docs/images/main-screen.png" alt="The main screen: three channel strips side by side, a summed mix bar, a session name field, the record button, and a row with monitor volume, mute and Settings" width="660">
+</p>
+
+One channel strip per microphone, laid out like a mixing desk: a skull that
+fills with the level, a peak-hold bar, and the name at its foot. Under them the
+summed mix, the take name, and the one button worth pressing. Everything else —
+how much room is left, where the files are going — sits quietly beneath it.
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Settings: sections for where recordings go, recording format, and microphones, with a storage picker, per-microphone checkboxes and the clock master control" width="660">
+</p>
+
+Settings is one screen with a Done button at the top left. Where recordings go
+comes first, because picking a card before a take is what most people open it
+for. Then the format, then which microphones to record and which one carries the
+clock — explained where it is set, rather than assumed.
+
+> Both shots are rendered headless on a Linux container by
+> [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh), against the virtual ALSA
+> microphones [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh)
+> creates. That rig serves file-backed devices, which §5.4's exclusive-mode gate
+> correctly refuses to record from — which is what the warning line is saying,
+> and why the meters read `--.-`. On real hardware the strips carry live levels.
 
 ## Download
 
