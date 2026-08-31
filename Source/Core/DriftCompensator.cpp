@@ -49,9 +49,15 @@ void DriftCompensator::update (double fillError, int blockSizeSamples) noexcept
     currentPpm = currentRatioDeviation * 1.0e6;
 }
 
-void DriftCompensator::updateSustainedDriftFlag (double elapsedSeconds) noexcept
+void DriftCompensator::updateSustainedDriftFlag (double elapsedSeconds, double referencePpm) noexcept
 {
-    if (std::abs (currentPpm) > kExcessDriftThresholdPpm)
+    // §3.3 flags a device that is far from the *master*. Every channel's PPM
+    // also carries the output device's own skew, identically, so subtracting
+    // the master's figure removes it -- otherwise an output clock a long way
+    // off nominal would flag every microphone in the rig at once.
+    const double relativePpm = currentPpm - referencePpm;
+
+    if (std::abs (relativePpm) > kExcessDriftThresholdPpm)
     {
         excessDriftSeconds += elapsedSeconds;
         if (excessDriftSeconds >= kExcessDriftSustainSeconds)

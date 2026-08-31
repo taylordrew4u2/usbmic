@@ -12,6 +12,11 @@ namespace mma {
 /// lock-free ring on its own audio thread, and the output clock pulls from every
 /// ring at a resample ratio the PI loop keeps adjusting.
 ///
+/// Every channel is steered that way, the §3.1 clock master included. The clock
+/// this stream is pulled by belongs to the output device, so exempting a
+/// microphone from correction does not make it the timebase -- it only leaves
+/// that one channel uncorrected against a clock it has no relationship to.
+///
 /// Both ends are audio threads, so nothing here allocates, locks or blocks
 /// after prepare() (§11). It is SPSC: the device callback is the only producer,
 /// the output callback the only consumer.
@@ -58,16 +63,17 @@ public:
     /// True once enough audio has arrived to start consuming (§3.2 pre-roll).
     bool hasStarted() const noexcept { return started; }
 
-    /// §3.1: the master defines the timebase, so it is never resampled. Its
-    /// ratio stays exactly 1.0 no matter what its fill does.
-    void setIsMaster (bool shouldBeMaster) noexcept { isMaster = shouldBeMaster; }
-    bool getIsMaster() const noexcept { return isMaster; }
-
     /// §6.5: an unplugged mic keeps its channel and yields silence.
     void setLive (bool live) noexcept { channelLive.store (live, std::memory_order_relaxed); }
     bool isLive() const noexcept { return channelLive.load (std::memory_order_relaxed); }
 
-    /// §3.3 reporting. Positive means this device runs fast relative to the master.
+    /// §3.3 reporting, as a correction against the stream that pulls this one --
+    /// i.e. the output device, not the clock master. Positive means this device
+    /// runs fast relative to that clock.
+    ///
+    /// The figure §3.3 actually shows is relative to the clock master, which is
+    /// this minus the master's own value; CaptureCoordinator owns which channel
+    /// that is and does the subtraction.
     double getDriftPpm() const noexcept { return driftPpm.load (std::memory_order_relaxed); }
     bool hasSustainedExcessDrift() const noexcept { return excessDrift.load (std::memory_order_relaxed); }
 
@@ -78,14 +84,15 @@ public:
     double getFillFraction() const noexcept { return ring.fillFraction(); }
 
     /// §3.3 drift reporting runs on a slower cadence than the audio callback,
-    /// so the sustained-excess flag is advanced from there.
-    void tickDriftReporting (double elapsedSeconds) noexcept;
+    /// so the sustained-excess flag is advanced from there. referencePpm is the
+    /// clock master's own correction, since §3.3 judges each device against the
+    /// master rather than against the output stream.
+    void tickDriftReporting (double elapsedSeconds, double referencePpm = 0.0) noexcept;
 
 private:
     RingBuffer ring;
     DriftCompensator compensator;
 
-    bool isMaster = false;
     std::atomic<bool> channelLive { true };
     std::atomic<double> driftPpm { 0.0 };
     std::atomic<bool> excessDrift { false };

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <set>
 #include <thread>
 #include <mutex>
 #include "../Core/PortIdentity.h"
@@ -418,6 +419,11 @@ private:
     void restartCapture();
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
+
+    /// §6.5 "clock master unplugged" -> §3.3 failover, mid-take. Moves only
+    /// which channel §3.3's drift is quoted against; the take's channel list
+    /// and file layout are fixed for its duration and are not touched.
+    void applyClockMasterDuringTake (const std::set<std::string>& present);
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 folder name for a take started at `now` under `name`, including the
     /// collision suffix. Resolves against the disk but creates nothing, so the

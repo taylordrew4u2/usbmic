@@ -115,10 +115,10 @@ AdvancedPanel::AdvancedPanel()
     // know what a clock master is cannot tell whether they need to care.
     clockMasterHelpLabel.setText (
         "Clock master: every USB microphone runs on its own crystal, and no two "
-        "tick at exactly the same rate. One is chosen as the reference and the "
-        "others are continuously nudged to match it, which is what keeps the "
-        "tracks lined up over a long take. Leave this alone unless one mic drifts "
-        "much more than the rest -- the app picks a sensible one for you.",
+        "tick at exactly the same rate. Every mic is continuously nudged to keep "
+        "the tracks lined up over a long take; this picks which one the drift "
+        "figures above are measured against. Leave this alone unless one mic "
+        "drifts much more than the rest -- the app picks a sensible one for you.",
         juce::dontSendNotification);
     clockMasterHelpLabel.setJustificationType (juce::Justification::topLeft);
     clockMasterHelpLabel.setMinimumHorizontalScale (1.0f);
