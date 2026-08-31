@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Fixed -- the card-speed gate now counts the video, and is answered fresh
+
+- **A camera could push a card past what it can sustain, and nothing checked.**
+  §6.4 blocks arming unless the destination sustains twice what the take needs,
+  but that figure counted the audio only. Eight microphones at 24-bit/48k need
+  about 4.6 MB/s and one camera at its best quality can ask for as much again,
+  so a card could pass the gate and then fail once a camera started -- the exact
+  mid-take degradation §6.4 exists to refuse in advance. The video is now part
+  of the required rate, added once rather than doubled, since the x2 covers the
+  stems plus the mix and there is only ever one copy of the video.
+- **The verdict is no longer frozen at benchmark time.** How fast the card is
+  belongs to the card; how fast it needs to be belongs to the take, and the take
+  changes whenever a microphone or a camera is switched on. The 200 MB
+  measurement is still cached per volume and never re-run needlessly, but the
+  gate is applied against the rig as it stands at the moment someone reaches for
+  record. This also closes the same staleness for microphone count, which was
+  there before cameras existed: the stored pass/fail was computed with whatever
+  channel count happened to be live when the benchmark last ran.
+- **§10.6: the way out is named.** When the cameras are what pushed a card over,
+  the message says so -- and when the card was too slow for the audio alone, it
+  does not, because turning the cameras off would not save it.
+
+
 ### Added -- the app remembers your rig
 
 - **Setting up happens once.** Microphone names and trims, which microphones are

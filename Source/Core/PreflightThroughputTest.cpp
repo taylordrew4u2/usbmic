@@ -4,10 +4,13 @@
 
 namespace mma {
 
-double PreflightThroughputTest::requiredBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample) noexcept
+double PreflightThroughputTest::requiredBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample,
+                                                        double videoBytesPerSecond) noexcept
 {
-    // channels * sampleRate * bytesPerSample * 2 (card write + mix file overhead)
-    return static_cast<double> (numChannels) * sampleRate * static_cast<double> (bytesPerSample) * 2.0;
+    // channels * sampleRate * bytesPerSample * 2 (card write + mix file overhead),
+    // then the video on top -- written once, so not doubled.
+    return static_cast<double> (numChannels) * sampleRate * static_cast<double> (bytesPerSample) * 2.0
+         + (videoBytesPerSecond > 0.0 ? videoBytesPerSecond : 0.0);
 }
 
 double PreflightThroughputTest::sustainedMinimum (const std::vector<double>& rollingWindowBytesPerSec) noexcept
@@ -18,11 +21,21 @@ double PreflightThroughputTest::sustainedMinimum (const std::vector<double>& rol
 }
 
 PreflightResult PreflightThroughputTest::evaluate (const std::vector<double>& rollingWindowBytesPerSec,
-                                                   int numChannels, double sampleRate, int bytesPerSample)
+                                                   int numChannels, double sampleRate, int bytesPerSample,
+                                                   double videoBytesPerSecond)
+{
+    return evaluateMeasured (sustainedMinimum (rollingWindowBytesPerSec),
+                             numChannels, sampleRate, bytesPerSample, videoBytesPerSecond);
+}
+
+PreflightResult PreflightThroughputTest::evaluateMeasured (double sustainedMinBytesPerSec,
+                                                           int numChannels, double sampleRate,
+                                                           int bytesPerSample, double videoBytesPerSecond)
 {
     PreflightResult result;
-    result.sustainedMinBytesPerSec = sustainedMinimum (rollingWindowBytesPerSec);
-    result.requiredBytesPerSec = requiredBytesPerSecond (numChannels, sampleRate, bytesPerSample);
+    result.sustainedMinBytesPerSec = sustainedMinBytesPerSec;
+    result.requiredBytesPerSec = requiredBytesPerSecond (numChannels, sampleRate, bytesPerSample,
+                                                         videoBytesPerSecond);
 
     const double gate = result.requiredBytesPerSec * kRequiredMultiplier;
     result.passed = result.sustainedMinBytesPerSec >= gate;
@@ -34,6 +47,19 @@ PreflightResult PreflightThroughputTest::evaluate (const std::vector<double>& ro
             << static_cast<long long> (result.sustainedMinBytesPerSec / (1024 * 1024))
             << " MB/s, needs at least "
             << static_cast<long long> (gate / (1024 * 1024)) << " MB/s.";
+
+        // §10.6: what happened, then what to do. When a camera is what pushed
+        // the requirement over the card's measured speed, switching it off is a
+        // real way out and the user cannot guess it from a number.
+        if (videoBytesPerSecond > 0.0)
+        {
+            const double audioOnlyGate = requiredBytesPerSecond (numChannels, sampleRate, bytesPerSample)
+                                       * kRequiredMultiplier;
+
+            if (sustainedMinBytesPerSec >= audioOnlyGate)
+                oss << " Turning the cameras off would bring it back within range.";
+        }
+
         result.reason = oss.str();
     }
 
