@@ -17,6 +17,7 @@ add_executable(mma_core_tests
     test_RingBuffer.cpp
     test_DeviceManager.cpp
     test_ClockMasterResolver.cpp
+    test_TakeCompleteness.cpp
     test_RecordingEngine.cpp
     test_SessionWriter.cpp
     test_OutputDeviceSelector.cpp
