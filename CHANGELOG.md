@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Changed — a cooler palette, and one place it lives
+
+- **The colours are cool rather than warm.** A slate ground with cyan doing the
+  acting, in place of the sepia and amber, which read as a leather-bound thing
+  rather than as an instrument. The meters keep green through yellow to red:
+  that is the convention every level meter uses, and the palette is not worth
+  relearning a meter for.
+- **A warning colour distinct from the accent.** Amber for anything that needs
+  attention -- a monitor problem, the reason a record button will not go.
+  Painted in the accent, a problem said "press me" in the colour of the thing
+  that had just gone wrong.
+- **The palette lives in one place.** The meters, the mix bar and the main
+  screen each carried their own copy of the same hex values, so a recolour
+  meant editing four files and finding out from a screenshot which one had
+  been missed.
+
+### Changed — the icon and the disk image follow the app
+
+- **The app icon is recoloured**, and now carries the accent the way the meters
+  do: bone skull on slate, filled from the jaw up to a level. A skull is a
+  skull; a skull holding a level is a level meter, and that is what tells you
+  at 32px what the app is for.
+- **The disk-image window** matches, and its drag arrow is the accent rather
+  than the faintest mark in the window -- it is the entire instruction that
+  window exists to give.
+
+### Fixed — the first-launch instruction, in the two places a Mac user reads it
+
+The disk-image panel and the README's install steps both led with
+*"Control-click the app, then choose Open."* That is the workaround for an
+app with **no** signature. This build is ad-hoc signed, and Control-click →
+Open does not clear the quarantine flag on a build with no Developer ID --
+which is exactly the state someone seeing *"is damaged"* is in. So the first
+thing a Mac user read was the one instruction that could not work, while the
+Troubleshooting section further down said so. Both now lead with the
+`xattr -dr com.apple.quarantine` command, which is what actually works.
+
+### Changed — polish on both screens
+
+- **Channel strips are rounded cards with air around them.** Each strip painted
+  itself to its own edges, so a row of them shared hard seams and read as one
+  striped slab rather than as separate channels. The skull outline is lighter,
+  and the peak-hold bar is inset to the skull's width instead of running edge
+  to edge, where it read as a rule drawn across the card.
+- **The mix bar** puts its name on the left and its number on the right, both
+  inside the track's padding. Justified into the corner, the label sat on the
+  fill and became unreadable the moment the mix got loud.
+- **Settings has four sections** -- where recordings go, recording format,
+  microphones, monitoring and output -- each a heading over a hairline. It was
+  one flat list of fifteen rows. Labels and values are two tones rather than
+  one, and the local-backup toggle moves up beside the other storage choices.
+- **The reason a record button is disabled only takes a row when there is one.**
+  Reserved unconditionally it left a hole under the button whenever recording
+  was possible, which is almost always.
+
 ## v0.5.0 — 2026-08-29
 
 ### Changed — one visual language, and controls where they are looked for

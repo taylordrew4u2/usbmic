@@ -3,7 +3,7 @@
 
 namespace mma {
 
-const juce::Colour MainScreen::kBackground { 0xFF16110F };
+const juce::Colour MainScreen::kBackground { palette::background };
 
 MainScreen::MainScreen()
 {
@@ -39,19 +39,30 @@ MainScreen::MainScreen()
     addAndMakeVisible (noMicsLabel);
 
     adviceLabel.setJustificationType (juce::Justification::centred);
+    adviceLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+    adviceLabel.setFont (juce::Font (12.0f));
     adviceLabel.setVisible (false);
     addAndMakeVisible (adviceLabel);
 
     monitorProblemLabel.setJustificationType (juce::Justification::centred);
     // Was JUCE's stock orange at the default size, running the full width of the
-    // window in one thin line. Amber from the palette, larger, and allowed to
-    // wrap so it reads as a sentence rather than a ticker.
-    monitorProblemLabel.setColour (juce::Label::textColourId, AppLookAndFeel::accent);
+    // window in one thin line. Larger now, and allowed to wrap so it reads as a
+    // sentence rather than a ticker.
+    //
+    // Warning amber rather than the accent: the accent fills the record button,
+    // so painting a problem in it said "press me" in the colour of the thing
+    // that had just gone wrong.
+    monitorProblemLabel.setColour (juce::Label::textColourId, AppLookAndFeel::warning);
     monitorProblemLabel.setFont (juce::Font (13.0f));
     monitorProblemLabel.setVisible (false);
     addAndMakeVisible (monitorProblemLabel);
 
+    // Why the record button will not go. Warning amber and small, matching the
+    // monitor-problem line it sits next to, rather than primary-text white,
+    // which read as an ordinary status line.
     disabledReasonLabel.setJustificationType (juce::Justification::centred);
+    disabledReasonLabel.setColour (juce::Label::textColourId, AppLookAndFeel::warning);
+    disabledReasonLabel.setFont (juce::Font (12.0f));
     disabledReasonLabel.setVisible (false);
     addAndMakeVisible (disabledReasonLabel);
 
@@ -133,7 +144,7 @@ void MainScreen::setRecording (bool isRecording)
     // §10.4/§10.6: buttons say what happens. "Start recording" -> "Recording."
     recordButton.setButtonText (recording ? "Recording. Tap to stop." : "Start recording");
 
-    // Amber to start, red while running: the colour carries the state at a
+    // Cyan to start, red while running: the colour carries the state at a
     // glance, and §9.3 keeps the text saying it too rather than colour alone.
     recordButton.setColour (juce::TextButton::buttonColourId,
                             recording ? AppLookAndFeel::danger : AppLookAndFeel::accent);
@@ -177,8 +188,16 @@ void MainScreen::setNoMicsMessage (bool show)
 void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disabledReason)
 {
     recordButton.setEnabled (enabled);
-    disabledReasonLabel.setVisible (! enabled);
     disabledReasonLabel.setText (disabledReason, juce::dontSendNotification);
+
+    // resized() only reserves the reason row when it is visible, so the layout
+    // has to be redone when that changes. Guarded because this is called from
+    // a timer, and re-laying out the screen every tick is not free.
+    if (disabledReasonLabel.isVisible() == enabled)
+    {
+        disabledReasonLabel.setVisible (! enabled);
+        resized();
+    }
 }
 
 void MainScreen::paint (juce::Graphics& g)
@@ -228,14 +247,28 @@ void MainScreen::resized()
             meter->setBounds (skullRow.removeFromLeft (meterWidth).reduced (2, 0));
     }
 
+    area.removeFromTop (10);
     mixBar.setBounds (area.removeFromTop (28));
-    area.removeFromTop (8);
+    area.removeFromTop (14);
 
-    sessionNameEditor.setBounds (area.removeFromTop (26).reduced (area.getWidth() / 5, 0));
-    area.removeFromTop (4);
-    recordButton.setBounds (area.removeFromTop (56));
-    disabledReasonLabel.setBounds (area.removeFromTop (20));
+    sessionNameEditor.setBounds (area.removeFromTop (28).reduced (area.getWidth() / 6, 0));
     area.removeFromTop (8);
+    recordButton.setBounds (area.removeFromTop (56));
+
+    // Only take the row when there is something in it. Reserved unconditionally
+    // it left a 28px hole under the record button whenever recording was
+    // possible -- which is almost always -- and pushed the status lines away
+    // from the button they belong to.
+    if (disabledReasonLabel.isVisible())
+    {
+        disabledReasonLabel.setBounds (area.removeFromTop (20));
+        area.removeFromTop (8);
+    }
+    else
+    {
+        disabledReasonLabel.setBounds ({});
+        area.removeFromTop (14);
+    }
 
     // Two centred halves while recording, one centred line when not. Splitting
     // unconditionally left the remaining-time text centred in the right-hand

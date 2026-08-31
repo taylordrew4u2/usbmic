@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/app-icon.png" alt="Multi-Mic Aggregator icon: a bone skull on slate, filled from the jaw up with the accent, the way the app's own level meters fill" width="128">
+</p>
+
 # Multi-Microphone Aggregator, Recorder, and Monitor
 
 Cross-platform desktop application (macOS + Windows) that aggregates up to 8 USB
@@ -15,6 +19,33 @@ implements a spec rule, the section number is cited in a comment.
 > device layers, but have still never run against real hardware, because no
 > build environment here has an audio device. That distinction is stated
 > precisely below rather than glossed.
+
+## What it looks like
+
+<p align="center">
+  <img src="docs/images/main-screen.png" alt="The main screen: three channel strips side by side, a summed mix bar, a session name field, the record button, and a row with monitor volume, mute and Settings" width="660">
+</p>
+
+One channel strip per microphone, laid out like a mixing desk: a skull that
+fills with the level, a peak-hold bar, and the name at its foot. Under them the
+summed mix, the take name, and the one button worth pressing. Everything else —
+how much room is left, where the files are going — sits quietly beneath it.
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Settings: sections for where recordings go, recording format, and microphones, with a storage picker, per-microphone checkboxes and the clock master control" width="660">
+</p>
+
+Settings is one screen with a Done button at the top left. Where recordings go
+comes first, because picking a card before a take is what most people open it
+for. Then the format, then which microphones to record and which one carries the
+clock — explained where it is set, rather than assumed.
+
+> Both shots are rendered headless on a Linux container by
+> [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh), against the virtual ALSA
+> microphones [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh)
+> creates. That rig serves file-backed devices, which §5.4's exclusive-mode gate
+> correctly refuses to record from — which is what the warning line is saying,
+> and why the meters read `--.-`. On real hardware the strips carry live levels.
 
 ## Download
 
@@ -105,15 +136,21 @@ The steps below include it.
 1. Double-click `MultiMicAggregator-macOS.dmg`. A window opens showing the app
    and an arrow pointing at your **Applications** folder.
 2. Drag the skull onto **Applications**. That is the install.
-3. **First launch only:** Control-click (or right-click) the app in
-   Applications and choose **Open**, then **Open** again in the dialog. A plain
-   double-click is refused the first time.
+3. **First launch only:** open **Terminal** and run this once:
 
-   macOS asks because the build is signed ad-hoc rather than with a paid Apple
-   Developer ID. On macOS 15 (Sequoia) and later there may be no Open button in
-   that dialog — go to **System Settings → Privacy & Security**, scroll down,
-   and click **Open Anyway**. If neither works, see
-   [Troubleshooting](#troubleshooting-macos) below.
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
+   ```
+
+   Then open the app normally. This step is needed because the build is signed
+   ad-hoc rather than with a paid Apple Developer ID, so macOS quarantines it;
+   without clearing that flag you get *"Multi-Mic Aggregator is damaged and
+   can't be opened"*. Nothing is wrong with the download — see
+   [Troubleshooting](#troubleshooting-macos) below for the full explanation.
+
+   Control-click → **Open** is the usual advice for an unsigned app and it does
+   *not* work here: it gets past an app with no signature, not a quarantined one
+   whose ad-hoc signature Gatekeeper will not accept.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable Multi-Mic Aggregator.
