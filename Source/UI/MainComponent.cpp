@@ -70,7 +70,7 @@ MainComponent::MainComponent (Application& app)
     };
 
     cameraPanel.onCameraEnabledChanged = [this] (const std::string& id, bool enabled) {
-        application.getCameraController().getSelection().setEnabled (id, enabled);
+        application.setCameraEnabled (id, enabled);
         // Opening or releasing the camera immediately is what makes the toggle
         // mean something: the view appears or goes when it is clicked, not when
         // the next take starts.
@@ -79,11 +79,12 @@ MainComponent::MainComponent (Application& app)
     };
 
     cameraPanel.onCameraRenamed = [this] (const std::string& id, const juce::String& name) {
-        application.getCameraController().getSelection().setAssignedName (id, name.toStdString());
+        application.setCameraName (id, name);
+        refreshCameras(); // the name goes on the file, so the panel restates it
     };
 
     cameraPanel.onPreviewQualityChanged = [this] (PreviewQuality quality) {
-        application.getCameraController().setPreviewQuality (quality);
+        application.setCameraPreviewQuality (quality);
     };
 
     cameraPanel.onCloseClicked = [this] { toggleCameras(); };
@@ -183,6 +184,16 @@ MainComponent::MainComponent (Application& app)
     };
     addChildComponent (savedTakePanel);
 
+    recoveredTakesPanel.onOpenFolder = [this] {
+        juce::File (recoveredTakesPanel.getFolderToOpen()).revealToUser();
+    };
+    recoveredTakesPanel.onDone = [this] {
+        recoveredTakesPanel.setVisible (false);
+        application.clearRecoveredSessions();
+        grabKeyboardFocus();
+    };
+    addChildComponent (recoveredTakesPanel);
+
     // Tall enough that the whole main screen -- monitor volume, mute and the
     // Settings button included -- is on screen at launch. At 480 the bottom
     // row sat below the fold, so the one door into Settings was reachable
@@ -192,6 +203,10 @@ MainComponent::MainComponent (Application& app)
     // §8.1: meters and status are live from launch, not from record.
     refreshStatus();
     startTimerHz (kUiRefreshHz);
+
+    // §6.6: "present recovered recordings before the main screen." Last, so the
+    // screen it sits in front of is already laid out behind it.
+    showRecoveredTakes();
 }
 
 MainComponent::~MainComponent()
@@ -212,7 +227,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
     // A card is up and owns the keyboard. Muting the room from behind one would
     // be a change the user cannot see the cause of.
-    if (saveLocationPrompt.isVisible() || savedTakePanel.isVisible())
+    if (saveLocationPrompt.isVisible() || savedTakePanel.isVisible()
+        || recoveredTakesPanel.isVisible())
         return false;
 
     // §5.1: spacebar mutes and unmutes the monitor instantly. A focused text
@@ -290,6 +306,34 @@ void MainComponent::dismissSaveLocationPrompt()
 {
     saveLocationPrompt.setVisible (false);
     grabKeyboardFocus();
+}
+
+void MainComponent::showRecoveredTakes()
+{
+    const auto& sessions = application.getRecoveredSessions();
+
+    // The overwhelmingly common case: the last run quit cleanly and there is
+    // nothing to say, so nothing is shown.
+    if (sessions.empty())
+        return;
+
+    std::vector<RecoveredTakesPanel::TakeRow> rows;
+
+    for (const auto& session : sessions)
+    {
+        const juce::File folder { juce::String (session.folder) };
+        rows.push_back ({ folder.getFileName(),
+                          folder.getFullPathName(),
+                          session.keptFileCount(),
+                          session.emptyFileCount(),
+                          session.longestSeconds() });
+    }
+
+    recoveredTakesPanel.setTakes (rows);
+    recoveredTakesPanel.setBounds (getLocalBounds());
+    recoveredTakesPanel.setVisible (true);
+    recoveredTakesPanel.toFront (true);
+    recoveredTakesPanel.prepareToShow();
 }
 
 void MainComponent::showSavedTake()
@@ -598,7 +642,8 @@ void MainComponent::refreshCameras()
     for (const auto& camera : controller.getSelection().getAvailableCameras())
         cameras.push_back ({ camera.id,
                              juce::String (controller.getSelection().getDisplayName (camera.id)),
-                             controller.getSelection().isEnabled (camera.id) });
+                             controller.getSelection().isEnabled (camera.id),
+                             controller.getPlannedFileNameFor (camera.id) });
 
     cameraPanel.setCameras (cameras);
 
@@ -648,6 +693,7 @@ void MainComponent::resized()
     // window rather than the viewport they happen to be over.
     saveLocationPrompt.setBounds (bounds);
     savedTakePanel.setBounds (bounds);
+    recoveredTakesPanel.setBounds (bounds);
 
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one

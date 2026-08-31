@@ -30,6 +30,9 @@ public:
         std::string id;
         juce::String displayName;
         bool enabled = false;
+        /// The file this camera will write, extension included. Empty when the
+        /// camera is switched off and so will not write one.
+        juce::String fileName;
     };
 
     /// The camera list and the state of each one. Rebuilds the rows -- and the
@@ -67,6 +70,7 @@ private:
         // device behind it is a component drawing from freed memory.
         std::unique_ptr<juce::Component> viewer;
         std::unique_ptr<juce::Label> placeholder;
+        std::unique_ptr<juce::Label> fileName;
     };
 
     juce::Label heading, explanation, problemLabel, unavailableLabel;
@@ -79,6 +83,7 @@ private:
     std::vector<Row> rows;
     std::vector<std::string> lastCameraIds;
     std::vector<char> lastEnabled;
+    juce::StringArray lastFileNames;
     PreviewQuality previewQuality = PreviewQuality::Low;
     bool recording = false;
 

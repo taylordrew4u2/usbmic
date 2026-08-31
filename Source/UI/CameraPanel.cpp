@@ -125,18 +125,21 @@ void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
     // real cost, so it happens only when the set or its state has moved.
     std::vector<std::string> ids;
     std::vector<char> enabled;
+    juce::StringArray fileNames;
 
     for (const auto& camera : cameras)
     {
         ids.push_back (camera.id);
         enabled.push_back (camera.enabled ? 1 : 0);
+        fileNames.add (camera.fileName);
     }
 
-    if (ids == lastCameraIds && enabled == lastEnabled)
+    if (ids == lastCameraIds && enabled == lastEnabled && fileNames == lastFileNames)
         return;
 
     lastCameraIds = std::move (ids);
     lastEnabled = std::move (enabled);
+    lastFileNames = std::move (fileNames);
     rebuildRows (cameras);
 }
 
@@ -171,6 +174,17 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
                 onCameraRenamed (id, editor->getText());
         };
         addAndMakeVisible (*row.nameEditor);
+
+        // The file this camera is going to write, said here rather than only in
+        // the card before a take: renaming a camera is the moment someone
+        // wants to see what the name does, and this is where renaming happens.
+        row.fileName = std::make_unique<juce::Label>();
+        row.fileName->setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
+        row.fileName->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+        row.fileName->setText (camera.enabled ? "Writes " + camera.fileName
+                                              : "Not in the recording",
+                               juce::dontSendNotification);
+        addAndMakeVisible (*row.fileName);
 
         if (camera.enabled && makeViewer)
             row.viewer = makeViewer (camera.id);
@@ -214,7 +228,7 @@ int CameraPanel::getRequiredHeight() const
         height += 40;
 
     for (size_t i = 0; i < rows.size(); ++i)
-        height += kRowHeight + 6 + viewHeight() + kViewGap;
+        height += kRowHeight + 18 + 6 + viewHeight() + kViewGap;
 
     if (rows.empty())
         height += 60;
@@ -276,6 +290,7 @@ void CameraPanel::resized()
         header.removeFromLeft (12);
         row.enabledToggle->setBounds (header);
 
+        row.fileName->setBounds (area.removeFromTop (18));
         area.removeFromTop (6);
         auto view = area.removeFromTop (viewHeight());
 

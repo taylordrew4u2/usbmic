@@ -42,6 +42,12 @@ public:
     std::optional<PersistedDeviceSettings> get (const PortIdentity& id) const;
     bool contains (const PortIdentity& id) const;
 
+    /// Everything remembered so far, keyed by PortIdentity::key(). The App
+    /// layer needs this to write the store to disk -- which is the half of
+    /// §2.4 this class's own comment says is left to it -- and there is no
+    /// other way to ask what is in here.
+    const std::map<std::string, PersistedDeviceSettings>& all() const { return byKey; }
+
 private:
     std::map<std::string, PersistedDeviceSettings> byKey;
 };

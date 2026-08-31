@@ -64,6 +64,10 @@ public:
     /// that tell the user what to expect and what they got.
     juce::StringArray getPlannedFileNames() const;
 
+    /// The file one camera will write, extension included, or empty when that
+    /// camera is not in the take.
+    juce::String getPlannedFileNameFor (const std::string& deviceId) const;
+
     /// §10.6: whatever is currently wrong with the cameras, in plain language.
     /// Empty when nothing is.
     juce::String getProblem() const { return problem; }
