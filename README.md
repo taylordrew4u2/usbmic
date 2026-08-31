@@ -305,6 +305,13 @@ write, and its picture, live.
   opens the folder. Files holding less than a second are reported as empty
   rather than offered, and are left on disk rather than deleted.
 
+<p align="center">
+  <img src="docs/images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">
+</p>
+
+That shot is real: the app was killed with SIGKILL part-way through a take,
+and this is what came up on the next launch.
+
 ### First run — where things go, on every platform
 
 - **Recordings** default to a `RECORDINGS` folder in your home directory.
