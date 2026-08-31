@@ -1007,8 +1007,24 @@ juce::String Application::getRecordDisabledReason() const
         std::lock_guard<std::mutex> lock (preflightMutex);
         const auto it = preflightResults.find (destinationFolder);
 
-        if (it != preflightResults.end() && ! it->second.passed)
-            return juce::String (it->second.reason);
+        if (it != preflightResults.end())
+        {
+            // The benchmark measured the card; the gate is about this take. They
+            // are applied apart so that switching a camera or a microphone on
+            // re-answers the question here, rather than leaving the verdict
+            // frozen at whatever the rig was when the 200 MB test last ran --
+            // which would let a card pass for the audio and then fail mid-take
+            // once a camera started, the exact outcome §6.4 exists to prevent.
+            const auto verdict = PreflightThroughputTest::evaluateMeasured (
+                it->second.sustainedMinBytesPerSec,
+                std::max (1, getIncludedMicCount()),
+                currentSampleRate,
+                std::max (1, currentBitDepth / 8),
+                static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
+
+            if (! verdict.passed)
+                return juce::String (verdict.reason);
+        }
     }
 
     return {};
@@ -1108,6 +1124,10 @@ void Application::runPreflight (const std::string& destination, int channelCount
     // wrongly condemn the volume on the next launch of this session.
     if (! preflightAbort.load())
     {
+        // What is kept from this is the measurement. The pass/fail and the
+        // wording alongside it are a snapshot of the rig as it was during the
+        // benchmark; getRecordDisabledReason() applies the gate again against
+        // the rig as it is when someone actually reaches for record.
         result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
                                                     currentSampleRate, bytesPerSample);
 
