@@ -122,6 +122,7 @@ if (MMA_BUILD_APP)
         Source/Platform/NullBackend.cpp
         Source/Platform/MacSystemAggregateDevice.cpp
         Source/Platform/NullSystemAggregateDevice.cpp
+        Source/Platform/ReducedMotion.cpp
         Source/Platform/AsioOutputBackend.cpp
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp
