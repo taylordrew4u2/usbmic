@@ -556,8 +556,21 @@ void MainComponent::rebindMeters()
     {
         if (auto* skull = mainScreen.getSkullMeter (i))
         {
-            skull->setMetering (application.getChannelMetering (i));
+            auto* metering = application.getChannelMetering (i);
+            skull->setMetering (metering);
             skull->setMicName (application.getMicDisplayName (i));
+
+            // §6.5 "skull goes dashed", and §8.1's live numbers. This was never
+            // called: noSignal defaults to true, so every skull stayed dashed
+            // for the life of the app and both readouts were a hardcoded
+            // "--.-" no matter what the microphone was doing.
+            //
+            // Dashed means the channel is not delivering audio -- either it has
+            // no meter bound at all, or §6.5 has it writing silence because its
+            // microphone was unplugged mid-take. A connected microphone in a
+            // quiet room is not dashed: it reads its real level, which is the
+            // difference between "nobody is talking" and "this is not working".
+            skull->setNoSignal (metering == nullptr || ! application.isMicLive (i));
         }
     }
 }
