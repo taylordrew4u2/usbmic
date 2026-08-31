@@ -44,8 +44,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     }
 
     // §3.1: until the caller says otherwise, the first included mic is the
-    // timebase. A rig with no master would resample every device against
-    // nothing.
+    // reference §3.3's drift figures are quoted against.
     setMasterChannel (channels.empty() ? -1 : 0);
 
     deviceScratch.assign (std::max<size_t> (1, channels.size())
@@ -255,8 +254,11 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
         || devicePointers.size() < static_cast<size_t> (channelCount))
         return noteCallbackLoad (callbackStart, numSamples);
 
-    // §3.2: every device is pulled onto the master's timebase here. This is the
-    // single point where the independent USB clocks become one aligned frame.
+    // §3.2: every device is pulled onto this callback's timebase here. This is
+    // the single point where the independent USB clocks become one aligned
+    // frame, and every channel is corrected onto it -- including the one §3.1
+    // names as clock master, whose crystal is no more this clock than any
+    // other mic's is.
     for (int ch = 0; ch < channelCount; ++ch)
     {
         float* destination = deviceScratch.data() + static_cast<size_t> (ch) * block;
@@ -350,18 +352,28 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
 
 void CaptureCoordinator::setMasterChannel (int index) noexcept
 {
+    // §3.1: exactly one reference. Nothing about the capture path changes here
+    // -- every channel is corrected onto the output clock either way (§3.2) --
+    // so this only moves which channel §3.3's drift figures are measured from,
+    // and which device Application publishes as the aggregate's clock source.
+    // That makes it safe to call mid-take, unlike a change to the channel set.
     masterChannel = (index >= 0 && index < static_cast<int> (deviceStreams.size())) ? index : -1;
+}
 
-    // §3.1: exactly one timebase. Leaving a second device unresampled would
-    // mean two references disagreeing with each other.
-    for (size_t i = 0; i < deviceStreams.size(); ++i)
-        deviceStreams[i]->setIsMaster (static_cast<int> (i) == masterChannel);
+double CaptureCoordinator::getMasterDriftPpm() const noexcept
+{
+    if (masterChannel < 0 || masterChannel >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (masterChannel)]->getDriftPpm();
 }
 
 void CaptureCoordinator::tickDriftReporting (double elapsedSeconds) noexcept
 {
+    const double reference = getMasterDriftPpm();
+
     for (auto& stream : deviceStreams)
-        stream->tickDriftReporting (elapsedSeconds);
+        stream->tickDriftReporting (elapsedSeconds, reference);
 }
 
 double CaptureCoordinator::getChannelDriftPpm (int index) const noexcept
@@ -369,7 +381,12 @@ double CaptureCoordinator::getChannelDriftPpm (int index) const noexcept
     if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
         return 0.0;
 
-    return deviceStreams[static_cast<size_t> (index)]->getDriftPpm();
+    // §3.3: "positive means this device runs fast relative to the master". Each
+    // stream's own figure is its correction against the output clock, and that
+    // clock's skew is common to all of them, so the difference is exactly the
+    // device-against-master number §3.3 asks for -- and the master reports zero
+    // against itself by construction.
+    return deviceStreams[static_cast<size_t> (index)]->getDriftPpm() - getMasterDriftPpm();
 }
 
 bool CaptureCoordinator::hasSustainedExcessDrift (int index) const noexcept

@@ -326,6 +326,64 @@ void Application::applyClockMaster()
     capture->setMasterChannel (-1);
 }
 
+void Application::applyClockMasterDuringTake (const std::set<std::string>& present)
+{
+    if (capture == nullptr)
+        return;
+
+    const auto& takeChannels = capture->getChannels();
+
+    auto stillPresent = [&] (int index)
+    {
+        return index >= 0 && index < static_cast<int> (takeChannels.size())
+               && present.count (takeChannels[static_cast<size_t> (index)].deviceId) > 0;
+    };
+
+    // The sitting master is still plugged in: §3.3 has nothing to fail over
+    // from, and re-picking would move the reference every time any unrelated
+    // device is touched.
+    if (stillPresent (capture->getMasterChannel()))
+        return;
+
+    // §3.1's rule decides who takes over -- lowest measured drift, the user's
+    // override, no built-in unless there is nothing else. It picks from the
+    // current device list, which mid-take may no longer match the take's own
+    // channel list, so the winner counts only if this take actually has a
+    // channel for it.
+    if (const auto* preferred = deviceManager.selectDefaultMaster())
+    {
+        for (size_t i = 0; i < takeChannels.size(); ++i)
+        {
+            if (takeChannels[i].deviceId != preferred->identity.key())
+                continue;
+
+            if (present.count (takeChannels[i].deviceId) > 0)
+                capture->setMasterChannel (static_cast<int> (i));
+
+            break;
+        }
+
+        if (stillPresent (capture->getMasterChannel()))
+            return;
+    }
+
+    // §3.1's pick is not in this take -- it is a mic plugged in after recording
+    // started, which §6.5 keeps out of the file. Any channel still delivering
+    // beats quoting §3.3 against one that is not.
+    for (size_t i = 0; i < takeChannels.size(); ++i)
+    {
+        if (present.count (takeChannels[i].deviceId) > 0)
+        {
+            capture->setMasterChannel (static_cast<int> (i));
+            return;
+        }
+    }
+
+    // Every microphone in the take is gone. §6.5 keeps the take running and
+    // every channel writing silence; there is nothing left to quote drift
+    // against, so leave the reference where it is rather than inventing one.
+}
+
 MonitorBus* Application::getMonitorBus()
 {
     // The coordinator owns the bus the audio callback actually runs, so this is
@@ -435,30 +493,21 @@ void Application::onDeviceListChanged()
         for (const auto& ch : capture->getChannels())
             capture->setChannelLive (ch.deviceId, present.count (ch.deviceId) > 0);
 
-        // §6.5 "clock master unplugged" is covered by the line above, and the
-        // clock master is deliberately left where it is for the rest of the
-        // take.
+        // §6.5 "clock master unplugged": failover per §3.3, without touching
+        // the channel set.
         //
-        // "Failover per §3.3" reads as though the timebase has to be moved, but
-        // in this capture path the master is not a reference the other channels
-        // are locked onto. The output stream is the clock: processOutputBlock
-        // pulls a block from every device's ring, and each DeviceInputStream
-        // steers its own resample ratio from its own ring fill against that
-        // pull (§3.2). `isMaster` does not feed anyone -- it exempts one
-        // channel from being steered at all. So a master that has gone silent
-        // takes nothing away from the loops still running, which is measured in
-        // CaptureCoordinator_UnpluggedMasterLeavesTheOtherChannelsUntouched.
+        // This is only a reference move, which is what makes it safe here.
+        // Every channel is corrected onto the output stream's clock (§3.2),
+        // master included, so the take's audio does not depend on which channel
+        // holds the title. What does depend on it is §3.3's drift figures, which
+        // are quoted relative to the master -- and a master that has gone silent
+        // stops updating, so leaving it would quote every remaining microphone
+        // against a frozen number for the rest of the take.
         //
-        // Promoting a live channel here would be the actual harm: it would take
-        // a channel the loop is holding at its target fill and stop correcting
-        // it, leaving its ring to run to one end and drop or hold samples for
-        // the rest of the take
-        // (DeviceInputStream_MastersRingIsLeftToDriftWhereACorrectedOnesIsNot).
-        // §3.3 wants a bounded transient, not a newly uncorrected microphone.
-        //
-        // restartCapture() below picks the master up again from
-        // DeviceManager once the take ends, which is where §3.1's rule can be
-        // applied without touching a file that is mid-write.
+        // The channel list stays exactly as it was: setMasterChannel takes an
+        // index into the take's own fixed list, so nothing about the file layout
+        // moves (§6.5).
+        applyClockMasterDuringTake (present);
         return;
     }
 

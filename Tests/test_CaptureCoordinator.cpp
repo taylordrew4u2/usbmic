@@ -666,10 +666,10 @@ TEST_CASE (CaptureCoordinator_UnpluggedMasterLeavesTheOtherChannelsUntouched)
     // resampled onto silence?
     //
     // It is not, and this pins down why. The master is not a signal any other
-    // channel reads -- DeviceInputStream drives each non-master's ratio from
-    // that stream's own ring fill against the output clock, and `isMaster` only
-    // exempts a channel from being steered. So a master that stops delivering
-    // removes nothing from anyone else's loop.
+    // channel reads -- DeviceInputStream drives each channel's ratio from that
+    // stream's own ring fill against the output clock, with no channel's audio
+    // entering another's arithmetic. So a master that stops delivering removes
+    // nothing from anyone else's loop.
     //
     // Run to a minute so both live loops are well past settling.
     const auto control = runTake (false, -1, 60.0);
@@ -692,31 +692,50 @@ TEST_CASE (CaptureCoordinator_UnpluggedMasterLeavesTheOtherChannelsUntouched)
     REQUIRE (masterGone.underruns[2] == 0);
 }
 
-TEST_CASE (CaptureCoordinator_FailingOverMidTakeWouldUncorrectALiveChannel)
+TEST_CASE (CaptureCoordinator_FailingOverMidTakeCostsTheLiveChannelsNothing)
 {
-    // Why §6.5's "failover per §3.3" is not wired into the mid-take path, and a
-    // guard against wiring it in later.
+    // §6.5's "clock master unplugged -> failover per §3.3", and the regression
+    // guard for what used to make it unsafe.
     //
-    // Promoting a live channel to master does not give the take a better
-    // timebase -- it takes the channel the PI loop was holding at its target
-    // fill and exempts it from correction (§3.1). The channel that was fine
-    // stops being steered, and the silent one it was promoted over gains
-    // nothing, because silence has no clock to correct.
-    // The mic leaves early, while channel 1's loop is still slewing towards the
-    // +40 PPM its crystal needs. §3.2 caps that slew at 5 PPM/s deliberately,
-    // so at four seconds in the loop is only part-way there -- and that is the
-    // value a promotion freezes it at.
+    // Under the old exemption, promoting a live channel took one the PI loop was
+    // holding at its target fill and stopped steering it, leaving its ring to
+    // run to one end for the rest of the take. Failing over cost more than not
+    // failing over, which is why the mid-take path did not do it.
+    //
+    // Every channel is corrected onto the output clock now, so the title carries
+    // no correction with it and the promotion is free.
     const auto noFailover = runTake (true, -1, 60.0, 4.0);
     const auto failedOver = runTake (true, 1, 60.0, 4.0);
 
-    // Left alone, channel 1's loop runs the rest of the take and arrives.
+    // Channel 1 takes over the reference and keeps being steered: its loop
+    // reaches the correction its +40 PPM crystal needs either way. (Its own
+    // reported figure is relative to itself once it is the master, hence
+    // reading it off the control run.)
     REQUIRE (noFailover.driftPpm[1] > 35.0);
+    REQUIRE_NEAR (failedOver.driftPpm[1], 0.0, 1e-12);
 
-    // Promoted, it stops being steered at the moment of the promotion and never
-    // reaches the correction its crystal actually needs.
-    REQUIRE (failedOver.driftPpm[1] < 25.0);
+    // And nothing was lost anywhere: no channel underran in either run.
+    for (int d = 1; d < 3; ++d)
+    {
+        REQUIRE (noFailover.underruns[d] == 0);
+        REQUIRE (failedOver.underruns[d] == 0);
+    }
+}
 
-    // Channel 2, still corrected in both, is unaffected either way -- which is
-    // the same independence the test above establishes.
-    REQUIRE_NEAR (failedOver.driftPpm[2], noFailover.driftPpm[2], 1e-12);
+TEST_CASE (CaptureCoordinator_DriftIsQuotedRelativeToTheClockMaster)
+{
+    // §3.3: "positive means this device runs fast relative to the master."
+    //
+    // Each stream's own loop measures itself against the output clock, whose
+    // skew is common to every channel. Moving the reference therefore re-bases
+    // every figure by the same amount, and the master always reads zero against
+    // itself -- which is what makes these numbers mean what §3.3 says they mean
+    // rather than "how far this mic is from the headphones".
+    const auto control = runTake (false, -1, 60.0);
+
+    REQUIRE_NEAR (control.driftPpm[0], 0.0, 1e-12);
+
+    // Channels at +40 and -60 PPM against a master at 0.
+    REQUIRE (control.driftPpm[1] > 35.0);
+    REQUIRE (control.driftPpm[2] < -55.0);
 }

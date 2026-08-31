@@ -49,8 +49,11 @@ Build first. Everything else is easier afterward.
 Every USB mic runs an independent crystal. Uncorrected, channels desync and a long take is unusable.
 ### 3.1 Master selection
 Default master: the device with the lowest measured drift after 60 seconds of running. Before that measurement exists, use enumeration order. Overridable behind Advanced.
+
+**The master is a reference, not an exemption.** It names (a) the channel §3.3's drift figures are quoted against and (b) the clock source handed to the OS aggregate device. It does **not** mean "the one input that is never resampled". In the in-app capture path the streams are pulled by the output device's callback, so the clock every input is converted onto is the *output* device's, not any microphone's. Exempting the master from correction there does not make it the timebase — it leaves one channel uncorrected against a clock it has no relationship to, and that channel's ring then walks to one end of its travel and stays there, dropping arrivals when full or holding its last sample when dry. That is drift, on the one channel the whole rig is quoted against, and it is invisible to the underrun counters. Correct every channel, master included.
 ### 3.2 Correction
-- Every non-master input passes through an asynchronous sample rate converter locked to the master.
+- **Every** input passes through an asynchronous sample rate converter locked to the clock that pulls it — the output device's callback in the in-app path (§5.2), the OS in the aggregate path. This includes the §3.1 master; see the note there for why exempting it corrupts the reference rather than protecting it.
+- Because the pulling clock's own skew lands in every channel's ratio identically, it cancels in any channel-to-channel comparison. §3.3's per-device figure is therefore reported as this channel's correction *minus the master's*, which is what makes "runs fast relative to the master" true of the number shown.
 - ASRC ratio is driven by a PI control loop on measured ring-buffer fill.
   - Starting gains: Kp = 1e-6, Ki = 1e-8, per sample of fill error.
   - Maximum ratio deviation: ±200 PPM. Clamp there.
@@ -61,8 +64,11 @@ Default master: the device with the lowest measured drift after 60 seconds of ru
 - Track per-device drift in PPM, displayed behind Advanced, updated every 10 seconds.
 - Flag any device exceeding **100 PPM sustained** as unreliable. Flag, do not exclude.
 - **Master failover.** If the master is unplugged, promote the remaining device with the lowest measured drift; tiebreak by enumeration order. Re-lock without stopping the recording. Log the switchover timestamp in `session.json`. A bounded transient is acceptable; a stopped recording is not.
+  - Per §3.1 this moves a reference, not a correction: no channel's resampling changes, so mid-take there is no transient to bound and the take's channel list and file layout stay fixed (§6.5). What it does prevent is quoting every surviving microphone against a master that has stopped updating.
 ### 3.4 Validation gate
 A 4-hour take with four dissimilar USB microphones finishes with **under 1 ms inter-channel drift**, measured by cross-correlating a shared transient at the start and end of the take. This passes before UI work is considered complete.
+
+The master's own crystal is part of what this measures. A gate that gives the master a zero offset — a crystal identical to the pulling clock's — assumes away exactly the case §3.1's note describes, and will pass over a master that is drifting. `Tools/soak_drift.cpp` gives it a non-zero offset for that reason.
 ---
 ## 4. Gain, trim, and the recorded signal
 - Per-microphone trim exists as a single shared-bus trim. It does not create a second mix.

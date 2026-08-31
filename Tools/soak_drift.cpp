@@ -7,14 +7,14 @@
 // What it CANNOT: how real crystals behave. Simulated offsets are steady;
 // real ones wander with temperature.
 //
-// Nor does it exercise the master's own clock. The master is given 0.0 PPM
-// below, i.e. a crystal identical to the output stream's -- and the master is
-// the one channel §3.1 exempts from correction, so that assignment is what
-// keeps it aligned here. Give it a realistic offset instead and this gate
-// fails: at 40 PPM the marker lands 384 samples (8 ms) off the others after
-// half an hour, against a 1 ms ceiling, with the underrun counters still
-// reading zero. The offsets below are a property of the simulation, not
-// something the shipping path guarantees.
+// The clock master is deliberately given a NON-zero offset below. It used to be
+// 0.0 -- a crystal identical to the output stream's -- which is what let this
+// gate pass while the master was the one channel exempt from correction: the
+// exemption cost nothing only because the simulation had already assumed the
+// thing the exemption needed. At a realistic 40 PPM the same gate failed by
+// 8 ms after half an hour. Every channel is now corrected onto the pull clock
+// (§3.2), so keep this offset non-zero: it is what makes the master's own
+// crystal part of what the gate measures.
 #include "Core/DeviceInputStream.h"
 #include <cmath>
 #include <cstdio>
@@ -46,14 +46,13 @@ int main (int argc, char** argv) {
 
     // Deliberately dissimilar, and wider than USB audio devices typically are.
     std::vector<Mic> mics (4);
-    const double offsets[] = { 0.0, 100.0, -80.0, 45.0 };
+    const double offsets[] = { 40.0, 100.0, -80.0, 45.0 };
     const char* names[] = { "Yeti-A (master)", "Yeti-B", "Condenser-C", "Dynamic-D" };
 
     for (size_t i = 0; i < mics.size(); ++i) {
         mics[i].name = names[i];
         mics[i].ppm = offsets[i];
         mics[i].stream.prepare (rate, block);
-        mics[i].stream.setIsMaster (i == 0);
         mics[i].in.resize (block + 8);
     }
 
