@@ -3,6 +3,16 @@
 
 namespace mma {
 
+namespace {
+    // A 16:9 well, big enough to judge framing on and small enough that four of
+    // them still leave the meters and the record button on screen together --
+    // which is the entire point of putting them here.
+    constexpr int kCameraTileWidth    = 176;
+    constexpr int kCameraTileHeight   = 99;
+    constexpr int kCameraCaptionHeight = 16;
+    constexpr int kCameraRowGap       = 12;
+}
+
 const juce::Colour MainScreen::kBackground { palette::background };
 
 MainScreen::MainScreen()
@@ -126,11 +136,93 @@ void MainScreen::setMicCount (int count)
     resized();
 }
 
+void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
+{
+    std::vector<std::string> ids;
+    ids.reserve (tiles.size());
+    for (const auto& tile : tiles)
+        ids.push_back (tile.id);
+
+    // Called from the UI tick, so it must be free to run every frame. Only an
+    // actual change to the set of switched-on cameras rebuilds anything --
+    // tearing a viewer down and remaking it 60 times a second would flicker and
+    // churn the device for no reason.
+    if (ids == lastTileIds)
+        return;
+
+    lastTileIds = std::move (ids);
+    cameraViews.clear();
+
+    for (const auto& tile : tiles)
+    {
+        CameraView view;
+        view.id = tile.id;
+
+        if (makeViewer)
+            view.viewer = makeViewer (tile.id);
+
+        if (view.viewer != nullptr)
+        {
+            addAndMakeVisible (*view.viewer);
+        }
+        else
+        {
+            // A camera that would not open gets a well saying so, never an
+            // empty rectangle -- and on Linux, where JUCE has no CameraDevice
+            // at all, this is the honest thing to show rather than a black box.
+            view.placeholder = std::make_unique<juce::Label>();
+            view.placeholder->setText ("No picture from this camera.", juce::dontSendNotification);
+            view.placeholder->setJustificationType (juce::Justification::centred);
+            view.placeholder->setFont (juce::Font (12.0f));
+            view.placeholder->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+            addAndMakeVisible (*view.placeholder);
+        }
+
+        // Whose picture this is. Four identical webcams are the same problem
+        // §14.6 solves for microphones, and the answer is the same: put the
+        // name on the thing.
+        view.caption = std::make_unique<juce::Label>();
+        view.caption->setText (tile.displayName, juce::dontSendNotification);
+        view.caption->setJustificationType (juce::Justification::centred);
+        view.caption->setFont (juce::Font (12.0f));
+        view.caption->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+        addAndMakeVisible (*view.caption);
+
+        cameraViews.push_back (std::move (view));
+    }
+
+    resized();
+}
+
+void MainScreen::releaseCameraViews()
+{
+    if (cameraViews.empty())
+        return;
+
+    cameraViews.clear();
+
+    // Cleared too, so the next setCameraTiles() rebuilds rather than deciding
+    // nothing has changed and leaving the row empty.
+    lastTileIds.clear();
+    resized();
+}
+
+int MainScreen::cameraRowHeight() const
+{
+    // Zero when nothing is switched on, which is what keeps an audio-only rig
+    // laid out exactly as it was before the pictures arrived.
+    return cameraViews.empty() ? 0 : kCameraTileHeight + kCameraCaptionHeight + kCameraRowGap;
+}
+
 int MainScreen::getRequiredHeight() const
 {
     // The channel-strip row plus every fixed row resized() lays out beneath it,
-    // and the margins around the lot.
-    return 522 + 24;
+    // and the margins around the lot -- plus the camera row when there is one.
+    // Adding it here rather than letting it overflow is what keeps the record
+    // button on screen once the pictures are there: the owner sizes the window
+    // from this, and a row that did not declare itself would simply push the
+    // button below the fold.
+    return 522 + 24 + cameraRowHeight();
 }
 
 int MainScreen::getMicCount() const
@@ -228,6 +320,42 @@ void MainScreen::paint (juce::Graphics& g)
 void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
+
+    // The pictures sit above the levels: the shot is what you look at, the
+    // meters are what you glance at, and putting them in that order keeps the
+    // record button where it has always been at the bottom.
+    if (const int cameraHeight = cameraRowHeight(); cameraHeight > 0)
+    {
+        auto cameraRow = area.removeFromTop (cameraHeight - kCameraRowGap);
+
+        const int count = static_cast<int> (cameraViews.size());
+        const int available = cameraRow.getWidth();
+
+        // Same rule the channel strips follow: a tile has a natural size and
+        // keeps it, shrinking only when there is genuinely not enough room, so
+        // one camera is not blown up into a billboard.
+        const int tileWidth = juce::jmin (kCameraTileWidth, juce::jmax (72, available / juce::jmax (1, count)));
+        const int wanted = tileWidth * count;
+
+        if (wanted < available)
+            cameraRow.removeFromLeft ((available - wanted) / 2);
+
+        for (auto& view : cameraViews)
+        {
+            auto tile = cameraRow.removeFromLeft (tileWidth).reduced (4, 0);
+            auto caption = tile.removeFromBottom (kCameraCaptionHeight);
+
+            if (view.caption != nullptr)
+                view.caption->setBounds (caption);
+
+            if (view.viewer != nullptr)
+                view.viewer->setBounds (tile);
+            else if (view.placeholder != nullptr)
+                view.placeholder->setBounds (tile);
+        }
+
+        area.removeFromTop (kCameraRowGap);
+    }
 
     // Channel strips: tall and narrow, sitting side by side like a mixing
     // desk, rather than short wide boxes stretched to fill the width.
