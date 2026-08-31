@@ -31,6 +31,7 @@ private:
     static const juce::Colour kFillHigh;
     static const juce::Colour kBone;
     static const juce::Colour kSecondaryText;
+    static const juce::Colour kOutline;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MixBarComponent)
 };
