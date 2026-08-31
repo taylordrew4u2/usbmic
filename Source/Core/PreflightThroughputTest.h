@@ -27,8 +27,18 @@ public:
     static constexpr double kCacheExpiryDays = 30.0;
 
     /// Required sustained throughput per §6.4: channels * sampleRate * bytesPerSample * 2
-    /// (card + mix file overhead).
-    static double requiredBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample) noexcept;
+    /// (card + mix file overhead), plus whatever the cameras are writing to the
+    /// same card alongside it.
+    ///
+    /// The video is not a rounding error next to the audio: eight microphones at
+    /// 24-bit/48k need about 4.6 MB/s, and one camera at its best quality can
+    /// ask for as much again. A card benchmarked against the audio alone can
+    /// therefore pass this gate and still fail the moment a camera starts --
+    /// which is precisely the mid-take degradation §6.4 exists to refuse in
+    /// advance. Video is added once rather than doubled: the x2 above covers the
+    /// stems plus the mix file, and there is only ever one copy of the video.
+    static double requiredBytesPerSecond (int numChannels, double sampleRate, int bytesPerSample,
+                                          double videoBytesPerSecond = 0.0) noexcept;
 
     /// Reduces a series of measured (rolling 1-second window) throughput samples,
     /// in bytes/sec, to the sustained minimum -- never the average.
@@ -36,7 +46,19 @@ public:
 
     /// Applies the pass/fail gate: sustained minimum must be >= 2x required.
     static PreflightResult evaluate (const std::vector<double>& rollingWindowBytesPerSec,
-                                     int numChannels, double sampleRate, int bytesPerSample);
+                                     int numChannels, double sampleRate, int bytesPerSample,
+                                     double videoBytesPerSecond = 0.0);
+
+    /// The same gate applied to a measurement already taken.
+    ///
+    /// How fast the card is belongs to the card; how fast it needs to be belongs
+    /// to the take, and the take changes whenever a microphone or a camera is
+    /// switched on. Keeping the two apart means the answer can be recomputed the
+    /// moment someone reaches for record, instead of being frozen at whatever
+    /// the rig happened to be when the 200 MB test last ran.
+    static PreflightResult evaluateMeasured (double sustainedMinBytesPerSec,
+                                             int numChannels, double sampleRate, int bytesPerSample,
+                                             double videoBytesPerSecond = 0.0);
 
     /// Formats remaining free space as recording time in "Xh Ym" form, per §6.4
     /// ("remaining recording time in hours and minutes, not bytes").
