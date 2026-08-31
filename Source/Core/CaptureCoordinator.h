@@ -83,6 +83,10 @@ public:
     double getAudioCallbackLoad() const noexcept { return callbackLoad.load (std::memory_order_relaxed); }
 
     uint64_t getFramesDropped() const noexcept { return pipeline != nullptr ? pipeline->getFramesDropped() : 0; }
+
+    /// §6.5 "target card removed": the destination stopped accepting writes.
+    /// The take is over -- the owner stops and finalizes, and tells the user.
+    bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
 
     /// One microphone's audio callback (§3.2). Separate USB devices run on
