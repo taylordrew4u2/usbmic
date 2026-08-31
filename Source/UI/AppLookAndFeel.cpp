@@ -2,15 +2,21 @@
 
 namespace mma {
 
-const juce::Colour AppLookAndFeel::background  { 0xFF16110F };
-const juce::Colour AppLookAndFeel::surface     { 0xFF1E1816 };
-const juce::Colour AppLookAndFeel::surfaceHigh { 0xFF2A2320 };
-const juce::Colour AppLookAndFeel::bone        { 0xFFEDE4D3 };
-const juce::Colour AppLookAndFeel::secondary   { 0xFF8C8177 };
-const juce::Colour AppLookAndFeel::tertiary    { 0xFF5E554D };
-const juce::Colour AppLookAndFeel::accent      { 0xFFD9A441 };
-const juce::Colour AppLookAndFeel::danger      { 0xFFC3352B };
-const juce::Colour AppLookAndFeel::outline     { 0xFF3A312C };
+const juce::Colour AppLookAndFeel::background     { palette::background };
+const juce::Colour AppLookAndFeel::surface        { palette::surface };
+const juce::Colour AppLookAndFeel::surfaceHigh    { palette::surfaceHigh };
+const juce::Colour AppLookAndFeel::bone           { palette::bone };
+const juce::Colour AppLookAndFeel::secondary      { palette::secondary };
+const juce::Colour AppLookAndFeel::tertiary       { palette::tertiary };
+const juce::Colour AppLookAndFeel::accent         { palette::accent };
+const juce::Colour AppLookAndFeel::danger         { palette::danger };
+const juce::Colour AppLookAndFeel::warning        { palette::warning };
+const juce::Colour AppLookAndFeel::outline        { palette::outline };
+const juce::Colour AppLookAndFeel::meterLow       { palette::meterLow };
+const juce::Colour AppLookAndFeel::meterMid       { palette::meterMid };
+const juce::Colour AppLookAndFeel::meterHigh      { palette::meterHigh };
+const juce::Colour AppLookAndFeel::clipEyes       { palette::clipEyes };
+const juce::Colour AppLookAndFeel::dimmedOutline  { palette::dimmedOutline };
 
 AppLookAndFeel::AppLookAndFeel()
 {
