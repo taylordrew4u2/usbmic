@@ -432,8 +432,46 @@ void Application::onDeviceListChanged()
             if (d.included)
                 present.insert (d.identity.key());
 
+        std::set<std::string> takeChannels;
         for (const auto& ch : capture->getChannels())
-            capture->setChannelLive (ch.deviceId, present.count (ch.deviceId) > 0);
+            takeChannels.insert (ch.deviceId);
+
+        for (const auto& ch : capture->getChannels())
+        {
+            const bool live = present.count (ch.deviceId) > 0;
+            capture->setChannelLive (ch.deviceId, live);
+
+            // §6.5: "Log the dropout" on an unplug, and log the reconnection
+            // too. RecordingEngine has always tracked both and nothing had ever
+            // told it anything, so a mic could fall out of a four-hour take and
+            // leave no trace anywhere.
+            if (! live && ! recordingEngine.isWritingSilence (ch.deviceId))
+            {
+                recordingEngine.onMicUnplugged (ch.deviceId);
+                midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                             "Microphone unplugged: writing silence to its channel." });
+            }
+            else if (live && recordingEngine.isWritingSilence (ch.deviceId))
+            {
+                recordingEngine.onMicReconnected (ch.deviceId);
+                midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                             "Microphone reconnected: its channel is live again." });
+            }
+        }
+
+        // §6.5: a microphone plugged in during a take joins nothing -- the
+        // channel list is fixed for the duration, and renumbering it would
+        // corrupt the take. What the spec asks for is that the user be told,
+        // in one line, rather than left believing it is being recorded.
+        for (const auto& d : deviceManager.getDevices())
+        {
+            if (! d.included || takeChannels.count (d.identity.key()) > 0)
+                continue;
+
+            midTakeNotice = juce::String (recordingEngine.onNewMicPluggedMidTake (d.identity.key(), true));
+            midTakeNoticeSeconds = 12.0;
+            break;
+        }
 
         return;
     }
@@ -501,6 +539,21 @@ PerformanceWarning Application::updatePerformance (double cpuLoad, bool thermall
 std::vector<SetupAdvice> Application::getSetupAdvice() const
 {
     return setupAdvisor.getActiveAdvice (juce::Time::getMillisecondCounterHiRes() / 1000.0);
+}
+
+bool Application::isMicLive (int index) const
+{
+    // Outside a take every included mic is live by definition: §6.5's silence
+    // only applies to a channel already fixed into a recording.
+    if (capture == nullptr || ! capture->isRecording())
+        return true;
+
+    const auto& channels = capture->getChannels();
+
+    if (index < 0 || index >= static_cast<int> (channels.size()))
+        return true;
+
+    return ! recordingEngine.isWritingSilence (channels[static_cast<size_t> (index)].deviceId);
 }
 
 void Application::noteDeviceDropout()
@@ -742,6 +795,10 @@ void Application::toggleRecording()
 
             // Each take gets its own warnings; a previous one must not leave the
             // ten-minute warning already spent.
+            midTakeDropouts.clear();
+            midTakeNotice.clear();
+            midTakeNoticeSeconds = 0.0;
+
             capacityMonitor.reset();
             mirrorPolicy.reset();
 
@@ -1428,7 +1485,11 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     meta.mirrorActive = capture != nullptr && capture->isMirroring();
     meta.mirrorPath = currentMirrorFolder.toStdString();
 
-    // §6.5: "log the exact sample position of degradation." Recorded as a
+    // §6.5's mid-recording row: every unplug and reconnection during this take.
+    for (const auto& entry : midTakeDropouts)
+        meta.dropouts.push_back (entry);
+
+        // §6.5: "log the exact sample position of degradation." Recorded as a
     // dropout entry rather than a new field, because that is what it is: the
     // moment the stems stopped receiving audio they should have had.
     if (const auto degradedAt = capacityMonitor.getDegradationSamplePosition(); degradedAt >= 0)
@@ -1546,7 +1607,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         return juce::String (cardRemovalNotice.message);
     }
 
-    // §6.5 buffer back-pressure, before the remaining-time warnings: the ring
+    // The notice's clock runs from here, not from the branch that shows it:
+    // decremented where it is returned, a warning outranking it for a few
+    // seconds would silently extend how long it lingers afterwards.
+    if (midTakeNoticeSeconds > 0.0)
+        midTakeNoticeSeconds -= sinceLastCallSeconds;
+
+        // §6.5 buffer back-pressure, before the remaining-time warnings: the ring
     // filling up is audio about to be lost right now, where running low on
     // room is audio that will stop being recorded later.
     //
@@ -1605,7 +1672,15 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             break;
     }
 
-    // §14.6: which mic was just heard alone. Not an error and not a message --
+    // §6.5: a microphone plugged in mid-take joins nothing, and the user has to
+    // be told rather than left assuming it is being recorded. Ranked here, below
+    // everything that means audio is being lost or the take is about to end: it
+    // is information, not a problem, and it must never sit on top of a warning
+    // that the drive is failing.
+    if (midTakeNoticeSeconds > 0.0 && midTakeNotice.isNotEmpty())
+        return midTakeNotice;
+
+        // §14.6: which mic was just heard alone. Not an error and not a message --
     // the UI highlights that skull, which is how a user with four identical
     // mics learns which meter is which person. Runs only outside a take, when
     // naming actually happens.
