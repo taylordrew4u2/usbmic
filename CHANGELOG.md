@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.7.0 — 2026-08-31
+
+### Changed -- the cameras are on the main screen now
+
+The picture and the levels were on two different screens, so you could watch one
+or the other and never both. That is the wrong way round for the moment that
+matters: a microphone goes quiet while the shot still looks fine, and the only
+place that shows is the meters you left behind to look at the camera.
+
+Every camera switched on for the take now has a live tile on the main screen,
+above the channel strips, captioned with its name -- four identical webcams
+being the same problem §14.6 solves for microphones. A rig with no camera
+enabled is laid out exactly as before and costs an audio-only user no space.
+
+The Cameras door keeps doing what it did: switching cameras on and off, naming
+them, choosing preview quality. That is settings. What moved is the watching.
+
+One viewer per camera, enforced by ownership rather than hoped for: whichever
+screen is visible owns the viewers, and the main screen releases its tiles
+before either panel opens. Opening a camera the user already switched on does
+not move the macOS privacy prompt -- the first grant is still spent behind the
+camera door, with the reason on screen -- and a rig with nothing enabled opens
+nothing and prompts for nothing.
+
+Not visually verified: JUCE implements CameraDevice on macOS and Windows only,
+so the tiles cannot be seen from the Linux build this was written on.
+
 ## v0.6.0 — 2026-08-31
 
 ### Fixed -- "Saved to ..." for a take that saved nothing
