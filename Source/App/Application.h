@@ -9,6 +9,8 @@
 #include "../Core/Metering.h"
 #include "../Core/SessionMetadata.h"
 #include "../Core/SessionFolderNaming.h"
+#include "../Core/AppSettings.h"
+#include "../Core/SessionRecovery.h"
 #include "../Core/PreflightThroughputTest.h"
 #include <atomic>
 #include <functional>
@@ -124,9 +126,9 @@ public:
     /// the destination currently set -- changing the destination clears it,
     /// because the answer was about somewhere else.
     bool isSaveLocationConfirmed() const;
-    void confirmSaveLocation() { confirmedSaveLocation = destinationFolder; }
+    void confirmSaveLocation();
     /// For a user who wants the question every time rather than once a run.
-    void setAskWhereToSaveEveryTime (bool ask) { askWhereToSaveEveryTime = ask; }
+    void setAskWhereToSaveEveryTime (bool ask);
     bool getAskWhereToSaveEveryTime() const { return askWhereToSaveEveryTime; }
 
     /// §6.2: the take in progress, and its §6.3 second copy. Empty when idle.
@@ -241,7 +243,7 @@ public:
 
     /// §6.3 redundant local mirror. Default on; turns most card failures from
     /// data loss into inconvenience.
-    void setMirrorEnabled (bool enabled) { mirrorPolicy.setEnabledByUser (enabled); }
+    void setMirrorEnabled (bool enabled);
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
 
@@ -280,6 +282,13 @@ public:
     CameraController& getCameraController() { return cameraController; }
     const CameraController& getCameraController() const { return cameraController; }
 
+    /// The camera choices go through here rather than straight into the
+    /// selection, so that every one of them is remembered for next launch in
+    /// the one place that knows how to write them down.
+    void setCameraEnabled (const std::string& id, bool enabled);
+    void setCameraName (const std::string& id, const juce::String& name);
+    void setCameraPreviewQuality (PreviewQuality quality);
+
     /// Opens the enabled cameras for viewing. Deliberately not done at launch:
     /// a camera light coming on by itself the moment an audio recorder starts
     /// is alarming, and on macOS it spends the privacy prompt before the user
@@ -288,9 +297,22 @@ public:
     /// records.
     void openEnabledCameras();
 
+    /// §6.6: takes the app never got to finish -- a force-quit, a power cut, a
+    /// pulled card. Found at launch on the destination volume and in the mirror
+    /// folder, with their headers repaired, and presented before the main
+    /// screen. Empty when the last run ended cleanly, which is the usual case.
+    const std::vector<RecoveredSession>& getRecoveredSessions() const { return recoveredSessions; }
+    /// Called once the user has been shown them.
+    void clearRecoveredSessions() { recoveredSessions.clear(); }
+
     /// §11: diagnostics export -- logs, last 5 session.json files, device
     /// inventory. Never audio.
     void exportDiagnostics (const juce::File& destinationZip);
+
+    /// §2.4/§10.1: the rig as the user last left it -- microphone names and
+    /// trims, which mics are switched off, where recordings go, the mirror
+    /// setting, the cameras. Beside the log, in the same folder.
+    static juce::File getSettingsFile();
 
     /// §11: where the running log lives. Public so Main.cpp can install the
     /// logger before anything else has a chance to fail.
@@ -400,6 +422,32 @@ private:
     juce::Array<juce::File> findRecentSessionMetadata (int maximum) const;
     void onDeviceListChanged();
     void chooseInitialDestination();
+
+    /// Read once at launch, written whenever a remembered setting changes and
+    /// again at shutdown. Saving is not debounced: the file is a few hundred
+    /// bytes in the user's application-data folder, never on the card a take is
+    /// being written to, so §14.3's contention worry does not apply to it.
+    void loadSettings();
+    void saveSettings();
+
+    /// §6.6: walks the destination and the mirror for takes with no stop
+    /// timestamp. Launch-only -- it repairs file headers, which must never
+    /// happen alongside a writer that has those files open.
+    void scanForInterruptedSessions();
+    std::vector<RecoveredSession> recoveredSessions;
+
+    /// Pushes the remembered per-port names and trims, and the microphones the
+    /// user switched off, onto the device list as it currently stands. Runs
+    /// after every enumeration, not just the first: a microphone remembered
+    /// from last week is only matchable once it has actually been plugged in.
+    void applyRememberedDeviceSettings();
+
+    /// What was read at launch. Kept because devices and cameras arrive later
+    /// than the file does, so it has to stay around to be matched against them.
+    AppSettings rememberedSettings;
+    /// Suppresses saving while the loaded settings are still being applied, so
+    /// a half-applied rig cannot be written back over a complete one.
+    bool applyingRememberedSettings = false;
     void reselectOutputDevice();
     double bytesPerSecondOfAudio() const;
     /// Audio plus whatever the enabled cameras are estimated to add. This, not

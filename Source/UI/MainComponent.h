@@ -5,6 +5,7 @@
 #include "CameraPanel.h"
 #include "SaveLocationPrompt.h"
 #include "SavedTakePanel.h"
+#include "RecoveredTakesPanel.h"
 #include <functional>
 
 namespace mma {
@@ -70,8 +71,12 @@ private:
     void showSavedTake();
     void chooseDestinationFolder (std::function<void()> onChosen);
 
+    /// §6.6: shown once at launch when the last run was interrupted.
+    void showRecoveredTakes();
+
     SaveLocationPrompt saveLocationPrompt;
     SavedTakePanel savedTakePanel;
+    RecoveredTakesPanel recoveredTakesPanel;
     // The folder the panel is currently showing, so "Open the folder" opens the
     // one on screen rather than whatever the app has moved on to since.
     juce::String savedTakeFolder;
