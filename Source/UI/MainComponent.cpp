@@ -76,6 +76,15 @@ MainComponent::MainComponent (Application& app)
         return application.getCameraController().createViewer (id);
     };
 
+    mainScreen.setCameraScale (application.getCameraTileScale());
+    mainScreen.onCameraScaleChanged = [this] (int step) {
+        application.setCameraTileScale (step);
+        // The row's height changes with the tiles, so the window has to be
+        // re-laid-out around it rather than letting the pictures grow off the
+        // bottom of a viewport sized for the old ones.
+        resized();
+    };
+
     cameraPanel.onCameraEnabledChanged = [this] (const std::string& id, bool enabled) {
         application.setCameraEnabled (id, enabled);
         // Opening or releasing the camera immediately is what makes the toggle
@@ -245,6 +254,23 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     {
         if (mainScreen.onMuteToggled)
             mainScreen.onMuteToggled();
+
+        return true;
+    }
+
+    // The arrows resize the camera pictures, and only while the main screen is
+    // the thing on screen -- behind a panel they would resize something the
+    // user cannot see. A focused slider or text field consumes its own arrows
+    // before they reach here, so this cannot steal them from the volume.
+    if (! advancedVisible && ! cameraVisible
+        && (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey))
+    {
+        const int step = mainScreen.getCameraScale() + (key == juce::KeyPress::upKey ? 1 : -1);
+
+        mainScreen.setCameraScale (step);
+
+        if (mainScreen.onCameraScaleChanged)
+            mainScreen.onCameraScaleChanged (mainScreen.getCameraScale());
 
         return true;
     }
