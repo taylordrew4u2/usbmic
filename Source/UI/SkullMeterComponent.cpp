@@ -36,6 +36,7 @@ void SkullMeterComponent::timerCallback()
     currentLevelDb = metering->tick (1.0 / 60.0);
     currentPeakDb = metering->getPeakHoldDb();
     currentClip = metering->isClipped();
+    currentClipCount = metering->getClipCount();
     repaint();
 }
 
@@ -168,8 +169,10 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         g.fillRect (clipRegion.getX() + peakInset, peakY - 1.0f,
                     clipRegion.getWidth() - peakInset * 2.0f, 2.0f);
 
-        // Eye sockets: clip indicator. Colour changes AND a yellow glow, but
-        // the clip count text also changes -- color never carries meaning alone (§9.3).
+        // Eye sockets: clip indicator. The colour and the glow are the glance;
+        // the "CLIP n" line under the meter is what carries the meaning when
+        // the glow is off for reduced motion and hue is all that is left
+        // (§9.3). This comment used to claim that text existed. It did not.
         const float eyeY = skullBounds.getY() + skullBounds.getHeight() * 0.32f;
         const float eyeRadius = skullBounds.getWidth() * 0.09f;
         const float leftEyeX = skullBounds.getX() + skullBounds.getWidth() * 0.34f;
@@ -203,10 +206,21 @@ void SkullMeterComponent::paint (juce::Graphics& g)
     g.drawText (levelText, textArea.removeFromTop (13.0f).toNearestInt(),
                 juce::Justification::centred);
 
+    // §9.3: "every coloured state also changes shape, text, or number", and
+    // "clip indication cannot depend on hue". The eyes change colour, and the
+    // glow they also carried is switched off for prefers-reduced-motion -- which
+    // left hue alone carrying it for exactly the readers §9.3 protects. So the
+    // clip says itself in words and in a count, on the line that is already
+    // here: no row appears or disappears, so nothing below it moves when a
+    // channel clips.
     g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
-    g.setColour (kTertiaryText);
-    g.drawText (noSignal ? juce::String ("pk --.-") : ("pk " + juce::String (currentPeakDb, 1)),
-                textArea.removeFromTop (11.0f).toNearestInt(),
+    g.setColour (currentClip ? kClipEyes : kTertiaryText);
+
+    const juce::String peakLine = currentClip
+        ? ("CLIP " + juce::String (juce::jmax (1, currentClipCount)))
+        : (noSignal ? juce::String ("pk --.-") : ("pk " + juce::String (currentPeakDb, 1)));
+
+    g.drawText (peakLine, textArea.removeFromTop (11.0f).toNearestInt(),
                 juce::Justification::centred);
 
     textArea.removeFromTop (3.0f);

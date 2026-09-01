@@ -350,3 +350,111 @@ TEST_CASE (DeviceInputStream_RingIsHeldAtTargetEvenAtAWideClockOffset)
     REQUIRE (s.getFillFraction() < 0.3);
     REQUIRE (s.getUnderrunSamples() == 0);
 }
+
+TEST_CASE (DeviceInputStream_ReconnectedChannelReturnsToSilenceNotToAStuckSample)
+{
+    // §6.5 logs both halves of a mid-take unplug: the channel goes silent, and
+    // it comes back. Coming back was the half that was never implemented down
+    // here.
+    //
+    // While the channel is dead pull() returns early, so nothing consumes the
+    // ring and nothing touches the resampler. Everything below still describes
+    // the instant the microphone left: the interpolator holding the last sample
+    // before the gap, primed and started both true. An unplugged USB device's
+    // stream does not come back with it -- the OS hands out a new one -- so the
+    // ring stays dry, and resuming from that state used to hold that last
+    // sample as a DC offset for the rest of the take while counting every block
+    // as lost audio.
+    //
+    // Two failures in one: a constant offset in the stem and the monitor mix,
+    // and an underrun count climbing at the sample rate, which §0.1 shows the
+    // user as the one failure this app promises not to have.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    // Run normally at a healthy DC level, so "the last sample before the gap"
+    // is unmistakably not zero.
+    std::vector<float> in (64, 0.5f), out (64, 0.0f);
+
+    for (int i = 0; i < 40; ++i)
+    {
+        s.pushBlock (in.data(), 64);
+        s.pull (out.data(), 64);
+    }
+
+    REQUIRE (out[32] > 0.4f); // it really was running
+
+    // The mic leaves. §6.5: the channel stays and yields silence.
+    s.setLive (false);
+
+    for (int i = 0; i < 20; ++i)
+        s.pull (out.data(), 64);
+
+    REQUIRE (out[32] == 0.0f);
+
+    const auto underrunsWhileDead = s.getUnderrunSamples();
+
+    // The mic comes back, but its old stream is gone with it: nothing is
+    // delivering into this ring any more.
+    s.setLive (true);
+
+    for (int i = 0; i < 200; ++i)
+        s.pull (out.data(), 64);
+
+    // Silence, not the sample it was holding when the microphone left.
+    for (int i = 0; i < 64; ++i)
+        REQUIRE (out[i] == 0.0f);
+
+    // And nothing counted as lost: audio that never arrived was not audio the
+    // ring failed to supply. Pre-roll is exactly the state a stream that has
+    // not delivered yet should be in.
+    REQUIRE (s.getUnderrunSamples() == underrunsWhileDead);
+}
+
+TEST_CASE (DeviceInputStream_ReconnectedChannelDoesNotReplayAudioFromBeforeTheGap)
+{
+    // The other half of the same bug. When the ring does still hold audio from
+    // before the unplug -- a device that stopped being consumed rather than one
+    // that vanished -- resuming played that stale audio out after the gap, in
+    // the wrong place in the take by however long the microphone was away.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> stale (64, -0.75f), fresh (64, 0.25f), out (64, 0.0f);
+
+    for (int i = 0; i < 10; ++i)
+    {
+        s.pushBlock (stale.data(), 64);
+        s.pull (out.data(), 64);
+    }
+
+    s.setLive (false);
+
+    // Audio from before the gap, still sitting in the ring.
+    for (int i = 0; i < 4; ++i)
+        s.pushBlock (stale.data(), 64);
+
+    s.setLive (true);
+
+    // The device starts delivering again. Every sample from here on is either
+    // pre-roll silence or the audio arriving now -- stale is negative and fresh
+    // is positive, so a single negative sample is audio from before the gap
+    // played back after it.
+    bool sawStale = false;
+    bool sawFresh = false;
+
+    for (int block = 0; block < 40; ++block)
+    {
+        s.pushBlock (fresh.data(), 64);
+        s.pull (out.data(), 64);
+
+        for (int i = 0; i < 64; ++i)
+        {
+            sawStale = sawStale || out[static_cast<size_t> (i)] < -1.0e-6f;
+            sawFresh = sawFresh || out[static_cast<size_t> (i)] > 1.0e-6f;
+        }
+    }
+
+    REQUIRE_FALSE (sawStale);
+    REQUIRE (sawFresh); // and it did resume, rather than staying silent forever
+}

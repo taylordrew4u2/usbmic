@@ -46,6 +46,11 @@ public:
 private:
     double sampleRate;
 
+    // Precomputed at construction rather than evaluated per block on the audio
+    // thread. MonitorBus already hoists its ceiling out of the callback for the
+    // same reason; this is the same std::pow of the same kind of constant.
+    float clipThresholdLinear;
+
     // Written by the audio thread, read by the UI thread.
     std::atomic<float> latestBlockPeakDb { kMinDb };
     std::atomic<int> consecutiveClipSamples { 0 };

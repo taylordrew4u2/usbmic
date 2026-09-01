@@ -113,8 +113,20 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
 bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_, int numSamples) noexcept
 {
-    if (! running.load (std::memory_order_acquire) || numChannels_ != numChannels || numSamples <= 0)
+    if (! running.load (std::memory_order_acquire) || numSamples <= 0)
         return false;
+
+    if (numChannels_ != numChannels)
+    {
+        // A block that does not match the take's channel count cannot be
+        // written -- the file layout is fixed for the take (§6.5) and there is
+        // no honest way to widen or narrow a frame. But it is still audio that
+        // arrived and was not recorded, so §0.1 requires it be counted. This
+        // used to return false and count nothing, which made the loss invisible
+        // in exactly the place the user is told to look.
+        framesDropped.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+        return false;
+    }
 
     // Interleave straight into the ring. Writing per-frame keeps the audio
     // thread free of any temporary buffer, which §11 would not allow it to

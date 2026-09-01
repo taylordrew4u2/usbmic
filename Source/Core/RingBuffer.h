@@ -25,6 +25,16 @@ public:
     /// Consumer (writer thread): read up to numSamples; returns how many were read.
     size_t read (float* data, size_t numSamples) noexcept;
 
+    /// Consumer side: discard everything currently readable. Real-time safe --
+    /// it moves the read index, so it neither allocates nor blocks, and only
+    /// the consumer ever moves that index.
+    ///
+    /// This is not reset(): reset reallocates and may only be called while the
+    /// audio thread is out of the picture. This is for the consumer deciding
+    /// that what is buffered is no longer wanted, which is what a capture path
+    /// resuming after a gap has to say about the audio from before it.
+    void clear() noexcept;
+
     /// Number of samples currently readable.
     size_t availableForRead() const noexcept;
 
