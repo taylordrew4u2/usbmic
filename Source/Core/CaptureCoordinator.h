@@ -7,6 +7,7 @@
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
 #include "DeviceInputStream.h"
+#include "ChannelLayoutAnalyzer.h"
 #include "Metering.h"
 #include "WritePipeline.h"
 
@@ -109,6 +110,25 @@ public:
     /// own ring rather than as one aligned block.
     void pushDeviceBlock (int deviceIndex, const float* samples, int numSamples) noexcept;
 
+    /// §2.1: one microphone's callback when the device presents more than one
+    /// channel, which many USB microphones do -- as stereo with one silent side,
+    /// or with a single capsule duplicated across both.
+    ///
+    /// Picks the side the signal is actually on and pushes that. Taking channel
+    /// 0 regardless is how a microphone wired to the right records silence:
+    /// nothing warns, the meter sits at the floor, and the stem is empty.
+    ///
+    /// Real-time safe: the analysis is two passes over the block with no
+    /// allocation, and the chosen channel is pushed by pointer, so collapsing to
+    /// mono costs no copy (§11).
+    void pushDeviceBlockMultiChannel (int deviceIndex, const float* const* inputs,
+                                      int numInputs, int numSamples) noexcept;
+
+    /// §2.1: which channel of the device this take is taking as mono, and what
+    /// the analyzer concluded. -1 for a device that presented only one channel.
+    int getChannelLayoutSource (int index) const noexcept;
+    ChannelLayoutDecision getChannelLayoutDecision (int index) const noexcept;
+
     /// The output device's callback, which is the clock everything else is
     /// pulled onto (§3.1). Sums the drift-corrected mics, meters them, feeds the
     /// writer, and fills the headphone buffers.
@@ -151,6 +171,22 @@ private:
     MonitorBus monitorBus;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
+
+    /// §2.1 per device, for the ones that arrive with more than one channel.
+    ///
+    /// Touched only from that device's own audio callback, which is the single
+    /// producer for it, so no lock is needed. `source` is read by the UI too and
+    /// is therefore atomic -- a plain int written on the audio thread and read
+    /// on the message thread is a data race even when every value is valid.
+    struct ChannelLayout
+    {
+        ChannelLayoutAnalyzer analyzer { 48000.0 };
+        std::atomic<int> source { -1 };
+        std::atomic<int> decision { static_cast<int> (ChannelLayoutDecision::Pending) };
+        bool frozen = false;
+    };
+
+    std::vector<std::unique_ptr<ChannelLayout>> channelLayouts;
     int masterChannel = -1;
     Metering mixMeter;
 

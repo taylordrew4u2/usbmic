@@ -739,3 +739,114 @@ TEST_CASE (CaptureCoordinator_DriftIsQuotedRelativeToTheClockMaster)
     REQUIRE (control.driftPpm[1] > 35.0);
     REQUIRE (control.driftPpm[2] < -55.0);
 }
+
+namespace {
+
+/// Drives one device's input callback with a stereo block, the way a USB
+/// microphone that presents two channels does.
+void pushStereo (FakeBackend& backend, int device,
+                 const std::vector<float>& left, const std::vector<float>& right)
+{
+    const float* channels[] = { left.data(), right.data() };
+    backend.inputCallbacks[static_cast<size_t> (device)] (channels, 2, nullptr, 0,
+                                                          static_cast<int> (left.size()));
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_RecordsTheLiveSideOfARightWiredMicrophone)
+{
+    // §2.1: "many USB mics present as stereo with one silent side". Which side
+    // is silent is not fixed, and the capture path used to take channel 0 no
+    // matter what -- so a microphone with its capsule on the right recorded
+    // pure silence. Nothing warned: the meter sat at the floor and the stem was
+    // empty, which is §0.1's failure with a working device attached.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    const std::vector<float> silent (512, 0.0f);
+    const std::vector<float> signal (512, 0.4f);
+
+    // Device 0 is wired to the right, device 1 to the left.
+    pushStereo (backend, 0, silent, signal);
+    pushStereo (backend, 1, signal, silent);
+
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+    REQUIRE (c.getChannelLayoutSource (1) == 0);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    c.processOutputBlock (outs, 1, 64);
+
+    for (int i = 0; i < 10; ++i)
+    {
+        c.getChannelMetering (0)->tick (1.0 / 60.0);
+        c.getChannelMetering (1)->tick (1.0 / 60.0);
+    }
+
+    // Both channels carry the microphone's audio, whichever side it arrived on.
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() > Metering::kMinDb + 20.0f);
+    REQUIRE (c.getChannelMetering (1)->getDisplayedLevelDb() > Metering::kMinDb + 20.0f);
+}
+
+TEST_CASE (CaptureCoordinator_MonoDeviceIsUntouchedByChannelLayout)
+{
+    // A device presenting a single channel has nothing to decide, and must not
+    // be routed through the two-channel path at all -- there is no second
+    // pointer to read, and reading one would be a fault rather than a wrong
+    // answer.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> mono (512, 0.3f);
+    const float* one[] = { mono.data() };
+    backend.inputCallbacks[0] (one, 1, nullptr, 0, 512);
+
+    // Never analysed, so never claimed a side.
+    REQUIRE (c.getChannelLayoutSource (0) == -1);
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Pending);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    c.processOutputBlock (outs, 1, 64);
+
+    for (int i = 0; i < 10; ++i)
+        c.getChannelMetering (0)->tick (1.0 / 60.0);
+
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() > Metering::kMinDb + 20.0f);
+}
+
+TEST_CASE (CaptureCoordinator_ChannelSideNeverMovesOnceRecording)
+{
+    // §6.5 fixes the take's shape for its duration. Swapping which channel
+    // feeds a stem mid-file would put a discontinuity in the middle of the
+    // recording -- a worse failure than the one the side-picking fixes.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    const std::vector<float> silent (512, 0.0f);
+    const std::vector<float> signal (512, 0.4f);
+
+    // Opens in a quiet room: nothing heard from either side yet, so the side is
+    // still the default and §2.1 has not decided. This is deliberately the
+    // state in which the side is most free to move.
+    pushStereo (backend, 0, silent, silent);
+    REQUIRE (c.getChannelLayoutSource (0) == 0);
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Pending);
+
+    REQUIRE (c.startRecording (tempDir(), 16, "2026-09-01T00:00:00Z"));
+
+    // Now the right starts carrying everything while the left stays silent --
+    // the exact evidence that would move the side, arriving after the take has
+    // begun. It must not move: the freeze has to be checked before the side is
+    // recomputed, or the first block of the take still adopts the new one.
+    for (int i = 0; i < 400; ++i)
+        pushStereo (backend, 0, silent, signal);
+
+    REQUIRE (c.getChannelLayoutSource (0) == 0);
+
+    c.stopRecording();
+}

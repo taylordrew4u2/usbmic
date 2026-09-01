@@ -7,10 +7,23 @@ ChannelLayoutAnalyzer::ChannelLayoutAnalyzer (double sampleRateIn) noexcept
 {
 }
 
+int ChannelLayoutAnalyzer::getMonoSourceChannel() const noexcept
+{
+    if (loudestLeftDb < kSilenceThresholdDb && loudestRightDb > kSignalTriggerDb)
+        return 1;
+
+    return 0;
+}
+
 void ChannelLayoutAnalyzer::processBlock (float leftPeakDb, float rightPeakDb,
                                           float correlation, float rmsDiffDb,
                                           double blockSeconds) noexcept
 {
+    // Peaks are tracked even after the verdict lands: the decision stops moving,
+    // but "how loud has this side ever been" stays true and costs two compares.
+    loudestLeftDb = (leftPeakDb > loudestLeftDb) ? leftPeakDb : loudestLeftDb;
+    loudestRightDb = (rightPeakDb > loudestRightDb) ? rightPeakDb : loudestRightDb;
+
     if (decision != ChannelLayoutDecision::Pending)
         return;
 

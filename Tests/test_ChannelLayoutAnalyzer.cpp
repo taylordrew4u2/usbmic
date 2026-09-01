@@ -48,3 +48,78 @@ TEST_CASE (ChannelLayoutAnalyzer_PendingBeforeWindowCompletes)
     REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Pending);
     REQUIRE (analyzer.isWindowActive());
 }
+
+TEST_CASE (ChannelLayoutAnalyzer_TakesTheRightChannelWhenTheLeftIsTheSilentOne)
+{
+    // §2.1's first condition is "one channel stays below -80 dBFS" and does not
+    // say which. A microphone wired to the right presents exactly like one
+    // wired to the left, so the side has to be answered rather than assumed --
+    // assuming channel 0 is how such a device records silence.
+    ChannelLayoutAnalyzer analyzer (48000.0);
+
+    // Left digitally silent, right carrying signal.
+    for (int i = 0; i < 300; ++i)
+        analyzer.processBlock (-200.0f, -12.0f, 0.0f, 100.0f, 0.01);
+
+    REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Mono);
+    REQUIRE (analyzer.getMonoSourceChannel() == 1);
+}
+
+TEST_CASE (ChannelLayoutAnalyzer_TakesTheLeftChannelForEveryOtherLayout)
+{
+    // The side only ever moves for the case above. A duplicated source, a
+    // right-silent device and ordinary stereo all read from channel 0, so this
+    // cannot start rerouting microphones that were working.
+    {
+        ChannelLayoutAnalyzer duplicated (48000.0);
+        for (int i = 0; i < 300; ++i)
+            duplicated.processBlock (-12.0f, -12.0f, 0.999f, 0.0f, 0.01);
+
+        REQUIRE (duplicated.getDecision() == ChannelLayoutDecision::Mono);
+        REQUIRE (duplicated.getMonoSourceChannel() == 0);
+    }
+
+    {
+        ChannelLayoutAnalyzer rightSilent (48000.0);
+        for (int i = 0; i < 300; ++i)
+            rightSilent.processBlock (-12.0f, -200.0f, 0.0f, 100.0f, 0.01);
+
+        REQUIRE (rightSilent.getDecision() == ChannelLayoutDecision::Mono);
+        REQUIRE (rightSilent.getMonoSourceChannel() == 0);
+    }
+
+    {
+        ChannelLayoutAnalyzer stereo (48000.0);
+        for (int i = 0; i < 300; ++i)
+            stereo.processBlock (-12.0f, -18.0f, 0.20f, 6.0f, 0.01);
+
+        REQUIRE (stereo.getDecision() == ChannelLayoutDecision::Stereo);
+        REQUIRE (stereo.getMonoSourceChannel() == 0);
+    }
+}
+
+TEST_CASE (ChannelLayoutAnalyzer_AnswersTheSideBeforeItHasDecided)
+{
+    // The verdict takes three seconds of signal, and up to sixty if the room
+    // stays quiet. A right-wired microphone must not record silence for that
+    // long, so the side is answerable from the first block that carries audio.
+    ChannelLayoutAnalyzer analyzer (48000.0);
+
+    analyzer.processBlock (-200.0f, -10.0f, 0.0f, 100.0f, 0.0013);
+
+    REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Pending);
+    REQUIRE (analyzer.getMonoSourceChannel() == 1);
+}
+
+TEST_CASE (ChannelLayoutAnalyzer_SilenceOnBothSidesStaysOnTheLeft)
+{
+    // Nothing has been heard from either side, so there is no evidence to move
+    // on. Guessing the right here would reroute every microphone in a quiet
+    // room away from the channel it is probably using.
+    ChannelLayoutAnalyzer analyzer (48000.0);
+
+    for (int i = 0; i < 50; ++i)
+        analyzer.processBlock (-200.0f, -200.0f, 0.0f, 0.0f, 0.01);
+
+    REQUIRE (analyzer.getMonoSourceChannel() == 0);
+}
