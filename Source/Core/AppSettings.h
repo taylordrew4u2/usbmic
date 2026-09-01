@@ -49,6 +49,13 @@ struct AppSettings
     double masterVolume = 70.0;                         // §5.1 default
     bool cameraPreviewFullQuality = false;
 
+    /// How large the camera tiles on the main screen are drawn, as a step into
+    /// MainScreen's size table. Remembered because it is a decision about the
+    /// room -- one camera across a table wants a bigger picture than four in a
+    /// row -- and re-making it every launch is the §10.1 failure of asking the
+    /// same question twice.
+    int cameraTileScale = 1;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,

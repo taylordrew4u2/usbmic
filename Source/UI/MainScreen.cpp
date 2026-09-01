@@ -1,22 +1,62 @@
 #include "MainScreen.h"
 #include "AppLookAndFeel.h"
+#include <array>
 
 namespace mma {
 
 namespace {
-    // A 16:9 well, big enough to judge framing on and small enough that four of
-    // them still leave the meters and the record button on screen together --
-    // which is the entire point of putting them here.
-    constexpr int kCameraTileWidth    = 176;
-    constexpr int kCameraTileHeight   = 99;
+    // 16:9 wells. The default (index 1) is sized so four of them still leave the
+    // meters and the record button on screen together -- which is the entire
+    // point of putting them here -- and the steps either side exist because that
+    // trade-off is not the same for everyone: one camera across a table wants a
+    // picture you can judge focus on, four in a row want to fit.
+    constexpr int kCameraTileWidths[] = { 120, 176, 248, 340, 456 };
+    constexpr int kCameraScaleSteps = static_cast<int> (std::size (kCameraTileWidths));
+
     constexpr int kCameraCaptionHeight = 16;
     constexpr int kCameraRowGap       = 12;
+    constexpr int kCameraTileGap      = 8;
+
+    // The arrows and their label, on their own line above the pictures.
+    constexpr int kCameraControlHeight = 22;
+
+    int tileHeightFor (int tileWidth) noexcept
+    {
+        // 16:9, which is what every webcam this is likely to meet delivers.
+        return (tileWidth * 9) / 16;
+    }
 }
 
 const juce::Colour MainScreen::kBackground { palette::background };
 
 MainScreen::MainScreen()
 {
+    // The arrows. Small, beside the pictures they resize, and hidden entirely
+    // when there are no pictures -- a size control for nothing is clutter.
+    cameraSizeLabel.setText ("Camera size", juce::dontSendNotification);
+    cameraSizeLabel.setFont (juce::Font (12.0f));
+    cameraSizeLabel.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    cameraSizeLabel.setJustificationType (juce::Justification::centredRight);
+    addChildComponent (cameraSizeLabel);
+
+    cameraSmallerButton.onClick = [this] {
+        setCameraScale (cameraScale - 1);
+        if (onCameraScaleChanged) onCameraScaleChanged (cameraScale);
+    };
+    cameraLargerButton.onClick = [this] {
+        setCameraScale (cameraScale + 1);
+        if (onCameraScaleChanged) onCameraScaleChanged (cameraScale);
+    };
+
+    for (auto* b : { &cameraSmallerButton, &cameraLargerButton })
+    {
+        b->setColour (juce::TextButton::buttonColourId, AppLookAndFeel::surfaceHigh);
+        addChildComponent (*b);
+    }
+
+    cameraSmallerButton.setEnabled (cameraScale > 0);
+    cameraLargerButton.setEnabled (cameraScale < kCameraScaleSteps - 1);
+
     addAndMakeVisible (mixBar);
 
     // The one thing on this screen someone came here to press. Flat and
@@ -136,6 +176,47 @@ void MainScreen::setMicCount (int count)
     resized();
 }
 
+int MainScreen::getCameraScaleStepCount() noexcept
+{
+    return kCameraScaleSteps;
+}
+
+int MainScreen::cameraTileWidthAt (int step) const noexcept
+{
+    return kCameraTileWidths[juce::jlimit (0, kCameraScaleSteps - 1, step)];
+}
+
+int MainScreen::cameraRowsNeeded (int tileWidth, int availableWidth) const noexcept
+{
+    if (cameraViews.empty())
+        return 0;
+
+    const int perRow = juce::jmax (1, (availableWidth + kCameraTileGap)
+                                          / juce::jmax (1, tileWidth + kCameraTileGap));
+
+    return (static_cast<int> (cameraViews.size()) + perRow - 1) / perRow;
+}
+
+void MainScreen::setCameraScale (int step)
+{
+    // Clamped rather than asserted: this arrives from a settings file, which a
+    // future version may have written a larger number into.
+    const int clamped = juce::jlimit (0, kCameraScaleSteps - 1, step);
+
+    if (clamped == cameraScale)
+        return;
+
+    cameraScale = clamped;
+
+    // The ends of the range are the one thing the arrows must say for
+    // themselves -- a button that keeps accepting clicks and changes nothing
+    // reads as broken.
+    cameraSmallerButton.setEnabled (cameraScale > 0);
+    cameraLargerButton.setEnabled (cameraScale < kCameraScaleSteps - 1);
+
+    resized();
+}
+
 void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
 {
     std::vector<std::string> ids;
@@ -211,7 +292,21 @@ int MainScreen::cameraRowHeight() const
 {
     // Zero when nothing is switched on, which is what keeps an audio-only rig
     // laid out exactly as it was before the pictures arrived.
-    return cameraViews.empty() ? 0 : kCameraTileHeight + kCameraCaptionHeight + kCameraRowGap;
+    if (cameraViews.empty())
+        return 0;
+
+    // Measured against the width the screen actually has, because that decides
+    // how many tiles fit across and therefore how many rows they wrap onto. Its
+    // own width is the honest answer; before the first resize() there is none,
+    // so fall back to the window width the owner opens at.
+    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 720) - 32);
+    const int tileWidth = juce::jmin (cameraTileWidthAt (cameraScale), juce::jmax (72, available));
+    const int rows = cameraRowsNeeded (tileWidth, available);
+    const int cellHeight = tileHeightFor (tileWidth) + kCameraCaptionHeight;
+
+    return kCameraControlHeight + 4
+           + rows * cellHeight + (rows - 1) * kCameraTileGap
+           + kCameraRowGap;
 }
 
 int MainScreen::getRequiredHeight() const
@@ -324,25 +419,64 @@ void MainScreen::resized()
     // The pictures sit above the levels: the shot is what you look at, the
     // meters are what you glance at, and putting them in that order keeps the
     // record button where it has always been at the bottom.
-    if (const int cameraHeight = cameraRowHeight(); cameraHeight > 0)
+    const bool haveCameras = ! cameraViews.empty();
+
+    cameraSizeLabel.setVisible (haveCameras);
+    cameraSmallerButton.setVisible (haveCameras);
+    cameraLargerButton.setVisible (haveCameras);
+
+    if (haveCameras)
     {
-        auto cameraRow = area.removeFromTop (cameraHeight - kCameraRowGap);
+        auto cameraArea = area.removeFromTop (cameraRowHeight() - kCameraRowGap);
 
-        const int count = static_cast<int> (cameraViews.size());
-        const int available = cameraRow.getWidth();
+        // The arrows sit on their own line above the pictures, right-aligned so
+        // they do not wander as the tiles change size underneath them.
+        auto controls = cameraArea.removeFromTop (kCameraControlHeight);
+        cameraLargerButton.setBounds (controls.removeFromRight (28).reduced (1));
+        controls.removeFromRight (4);
+        cameraSmallerButton.setBounds (controls.removeFromRight (28).reduced (1));
+        controls.removeFromRight (6);
+        cameraSizeLabel.setBounds (controls.removeFromRight (80));
 
-        // Same rule the channel strips follow: a tile has a natural size and
-        // keeps it, shrinking only when there is genuinely not enough room, so
-        // one camera is not blown up into a billboard.
-        const int tileWidth = juce::jmin (kCameraTileWidth, juce::jmax (72, available / juce::jmax (1, count)));
-        const int wanted = tileWidth * count;
+        cameraArea.removeFromTop (4);
 
-        if (wanted < available)
-            cameraRow.removeFromLeft ((available - wanted) / 2);
+        const int available = cameraArea.getWidth();
+        const int tileWidth = juce::jmin (cameraTileWidthAt (cameraScale), juce::jmax (72, available));
+        const int tileHeight = tileHeightFor (tileWidth);
+        const int cellHeight = tileHeight + kCameraCaptionHeight;
 
+        // Wrap rather than shrink. Asking for a bigger picture on a four-camera
+        // rig has to give you one; squeezing them all onto one row instead
+        // would make the arrows do nothing precisely when they are wanted.
+        const int perRow = juce::jmax (1, (available + kCameraTileGap) / (tileWidth + kCameraTileGap));
+
+        int index = 0;
         for (auto& view : cameraViews)
         {
-            auto tile = cameraRow.removeFromLeft (tileWidth).reduced (4, 0);
+            if (index % perRow == 0)
+            {
+                if (index > 0)
+                    cameraArea.removeFromTop (kCameraTileGap);
+
+                const int inThisRow = juce::jmin (perRow, static_cast<int> (cameraViews.size()) - index);
+                const int rowWidth = inThisRow * tileWidth + (inThisRow - 1) * kCameraTileGap;
+
+                auto row = cameraArea.removeFromTop (cellHeight);
+
+                // Centred as a block, like the channel strips: two cameras sit
+                // in the middle rather than hugging the left edge.
+                if (rowWidth < available)
+                    row.removeFromLeft ((available - rowWidth) / 2);
+
+                // Stashed for the tiles in this row to consume.
+                cameraRowScratch = row;
+            }
+            else
+            {
+                cameraRowScratch.removeFromLeft (kCameraTileGap);
+            }
+
+            auto tile = cameraRowScratch.removeFromLeft (tileWidth);
             auto caption = tile.removeFromBottom (kCameraCaptionHeight);
 
             if (view.caption != nullptr)
@@ -352,6 +486,8 @@ void MainScreen::resized()
                 view.viewer->setBounds (tile);
             else if (view.placeholder != nullptr)
                 view.placeholder->setBounds (tile);
+
+            ++index;
         }
 
         area.removeFromTop (kCameraRowGap);

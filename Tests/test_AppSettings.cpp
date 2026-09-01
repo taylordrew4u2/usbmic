@@ -15,6 +15,7 @@ AppSettings populated()
     s.aggregateName = "Kitchen Table";
     s.masterVolume = 42.0;
     s.cameraPreviewFullQuality = true;
+    s.cameraTileScale = 3;
 
     PersistedPort port;
     port.key = "usb-1-2|SERIAL9";
@@ -43,6 +44,7 @@ TEST_CASE (AppSettings_everythingSurvivesARoundTrip)
     REQUIRE (restored.aggregateName == std::string ("Kitchen Table"));
     REQUIRE (restored.masterVolume == 42.0);
     REQUIRE (restored.cameraPreviewFullQuality);
+    REQUIRE (restored.cameraTileScale == 3);
 }
 
 TEST_CASE (AppSettings_aMicrophoneKeepsItsNameAndTrimAcrossLaunches)
@@ -124,4 +126,15 @@ TEST_CASE (AppSettings_entriesWithNoKeyAreDroppedRatherThanKept)
     REQUIRE (s.ports[0].key == std::string ("usb-1"));
     REQUIRE (s.cameras.size() == 1u);
     REQUIRE (s.cameras[0].id == std::string ("cam"));
+}
+
+TEST_CASE (AppSettings_CameraTileScaleDefaultsWhenAbsent)
+{
+    // Every settings file written before the camera size existed has no such
+    // key. Loading one must land on the default the main screen ships with
+    // rather than zero, which is the smallest tile and would silently shrink
+    // the pictures of everyone who upgrades.
+    const auto restored = AppSettings::fromJsonString ("{}");
+
+    REQUIRE (restored.cameraTileScale == 1);
 }

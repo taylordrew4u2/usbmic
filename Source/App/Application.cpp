@@ -169,6 +169,15 @@ void Application::setMirrorEnabled (bool enabled)
     saveSettings();
 }
 
+void Application::setCameraTileScale (int step)
+{
+    if (step == cameraTileScale)
+        return;
+
+    cameraTileScale = step;
+    saveSettings();
+}
+
 void Application::openEnabledCameras()
 {
     cameraController.applySelection();
@@ -2031,6 +2040,7 @@ void Application::loadSettings()
     masterVolume = rememberedSettings.masterVolume;
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
+    cameraTileScale = rememberedSettings.cameraTileScale;
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2084,6 +2094,7 @@ void Application::saveSettings()
     settings.aggregateName = aggregateName.toStdString();
     settings.masterVolume = masterVolume;
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
+    settings.cameraTileScale = cameraTileScale;
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });

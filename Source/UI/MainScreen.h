@@ -95,6 +95,20 @@ public:
     /// camera is not open.
     std::function<std::unique_ptr<juce::Component> (const std::string&)> makeViewer;
 
+    /// §10.2: how big the pictures are drawn, as a step into a fixed size
+    /// table. One camera across a table wants a bigger picture than four in a
+    /// row, and which of those the user is doing is not something the app can
+    /// work out for them -- so it is a control rather than a guess.
+    ///
+    /// Clamped to the table, so a remembered value from a future version cannot
+    /// put the row somewhere the layout cannot draw.
+    void setCameraScale (int step);
+    int getCameraScale() const noexcept { return cameraScale; }
+    static int getCameraScaleStepCount() noexcept;
+
+    /// The arrows. Fired by the buttons on the row and by the up/down keys.
+    std::function<void (int)> onCameraScaleChanged;
+
     /// Destroys the live views without disturbing anything else.
     ///
     /// The rule this and setCameraTiles() together keep: whichever screen is on
@@ -130,6 +144,23 @@ private:
     };
 
     std::vector<CameraView> cameraViews;
+
+    int cameraScale = 1;
+    juce::TextButton cameraSmallerButton { juce::String::charToString (juce::juce_wchar (0x25bc)) };
+    juce::TextButton cameraLargerButton { juce::String::charToString (juce::juce_wchar (0x25b2)) };
+    juce::Label cameraSizeLabel;
+
+    /// Tile width at the current step, and the rows the row needs to lay them
+    /// out in. Kept together because the height depends on both: enlarging past
+    /// what fits across wraps rather than shrinking back, which is what makes
+    /// the arrows do something on a four-camera rig.
+    int cameraTileWidthAt (int step) const noexcept;
+    int cameraRowsNeeded (int tileWidth, int availableWidth) const noexcept;
+
+    // Carries the current tile row across iterations of the layout loop. A
+    // member rather than a local because the loop consumes it tile by tile and
+    // starts a fresh one every perRow.
+    juce::Rectangle<int> cameraRowScratch;
     // What the tiles were last built from, so the UI tick can call
     // setCameraTiles() every frame without tearing down live views that have
     // not changed. Rebuilding a viewer per frame would flicker and churn the
