@@ -595,3 +595,38 @@ TEST_CASE (WritePipeline_AFreshTakeIsNotStillDegraded)
     std::remove ((dir + "/rearm.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 }
+
+TEST_CASE (WritePipeline_AMismatchedBlockIsCountedAsLostNotSilentlyDiscarded)
+{
+    // §0.1 makes unreported loss the one unacceptable failure. A block whose
+    // channel count does not match the take cannot be written -- the file
+    // layout is fixed for the take (§6.5) and there is no honest way to widen
+    // or narrow a frame -- but it is still audio that arrived and was not
+    // recorded, and it used to leave framesDropped at zero.
+    //
+    // Zero dropped frames is what the app shows the user as "nothing was lost".
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "mismatch-a", 0.0f }, { "mismatch-b", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 16, "2026-09-01T00:00:00Z"));
+
+    std::vector<float> a (128, 0.1f), b (128, 0.2f);
+    const float* two[2] = { a.data(), b.data() };
+
+    REQUIRE (p.pushBlock (two, 2, 128));
+    REQUIRE (p.getFramesDropped() == 0);
+
+    // One channel short of the take, which is what a capture path handing over
+    // fewer channels than it opened with looks like from here.
+    const float* one[1] = { a.data() };
+
+    REQUIRE_FALSE (p.pushBlock (one, 1, 128));
+    REQUIRE (p.getFramesDropped() == 128);
+
+    p.stop();
+
+    std::remove ((dir + "/mismatch-a.wav").c_str());
+    std::remove ((dir + "/mismatch-b.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}

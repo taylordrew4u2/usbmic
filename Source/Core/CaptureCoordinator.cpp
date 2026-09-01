@@ -428,8 +428,17 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     pipelineUsers.fetch_add (1, std::memory_order_acquire);
 
     if (auto* activeWriter = activePipeline.load (std::memory_order_acquire))
-        if (channelCount == static_cast<int> (channels.size()))
-            activeWriter->pushBlock (inputs, channelCount, numSamples);
+    {
+        // Handed over even when the count does not match the take's channel
+        // list. This used to be guarded by channelCount == channels.size(),
+        // which silently skipped the write: a block that could not be recorded
+        // simply never reached the pipeline, so framesDropped stayed at zero
+        // and the take looked healthy while audio went missing. §0.1 makes
+        // unreported loss the one unacceptable failure, and the pipeline
+        // rejects a mismatched block anyway -- what it does with it now is
+        // count it.
+        activeWriter->pushBlock (inputs, channelCount, numSamples);
+    }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
 
@@ -454,6 +463,17 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     if (static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
         return; // sized at startMonitoring(); never grow here (§11)
+
+    // trimFrame is sized to the channel list, but a block can carry fewer
+    // channels than that -- processAudioBlock takes min(numInputs, channels).
+    // MonitorBus::processSample sums the whole vector, so anything past
+    // channelCount that this block does not overwrite is a sample from an
+    // earlier, wider block, added to every sample of the mix from here on: a
+    // fixed offset in the listener's headphones from a channel that is no
+    // longer arriving. Zeroing the tail is a handful of stores and costs
+    // nothing when there is no tail (§11).
+    for (size_t ch = static_cast<size_t> (channelCount); ch < trimFrame.size(); ++ch)
+        trimFrame[ch] = 0.0f;
 
     for (int s = 0; s < numSamples; ++s)
     {
@@ -502,7 +522,14 @@ void CaptureCoordinator::measurePolarPattern (const float* const* inputs, int ch
         const float* samples = inputs[ch];
 
         if (samples == nullptr)
+        {
+            // Every other way out of this function clears the correlation. This
+            // one returned with it untouched, so the last verdict measured kept
+            // being reported after the measurement had stopped -- and §14.4's
+            // advice would keep firing from it.
+            polarCorrelation.store (0.0f, std::memory_order_relaxed);
             return;
+        }
 
         double sum = 0.0;
         float peak = 0.0f;
