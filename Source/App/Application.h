@@ -322,6 +322,12 @@ public:
     /// records.
     void openEnabledCameras();
 
+    /// §10.2: how large the main screen draws the camera pictures, as a step
+    /// into MainScreen's size table. Remembered across launches -- it is a
+    /// decision about the room, not about this take.
+    void setCameraTileScale (int step);
+    int getCameraTileScale() const noexcept { return cameraTileScale; }
+
     /// §6.5 "target card removed": set when a take was stopped because the
     /// destination stopped accepting writes, and consumed once by the UI that
     /// alerts about it. Empty the rest of the time.
@@ -506,6 +512,7 @@ private:
 
     /// What was read at launch. Kept because devices and cameras arrive later
     /// than the file does, so it has to stay around to be matched against them.
+    int cameraTileScale = 1;
     AppSettings rememberedSettings;
     /// Suppresses saving while the loaded settings are still being applied, so
     /// a half-applied rig cannot be written back over a complete one.
