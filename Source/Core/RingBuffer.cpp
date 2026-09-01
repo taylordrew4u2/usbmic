@@ -16,6 +16,13 @@ void RingBuffer::reset (size_t capacitySamples)
     readIndex.store (0, std::memory_order_relaxed);
 }
 
+void RingBuffer::clear() noexcept
+{
+    // Consumer-side only, so this races with nothing: the producer moves
+    // writeIndex and never reads readIndex for correctness of its own writes.
+    readIndex.store (writeIndex.load (std::memory_order_acquire), std::memory_order_release);
+}
+
 size_t RingBuffer::availableForRead() const noexcept
 {
     // Both loads acquire: this is called from the consumer (which must see the

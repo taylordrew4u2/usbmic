@@ -60,6 +60,37 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         return;
     }
 
+    // §6.5 reconnection. Nothing consumed this stream while the channel was
+    // dead, so everything here still describes the instant the microphone left:
+    // a ring holding pre-gap audio, an interpolator holding the last sample
+    // before it, a loop whose fill error is meaningless, and started/primed
+    // both saying the stream is running.
+    //
+    // Resuming from that puts audio from before the gap after it -- or, when
+    // the ring is dry because the old stream died with the device, holds that
+    // last sample as a DC offset for the rest of the take while counting every
+    // block as lost audio. Both are worse than the silence they replace, and
+    // §0.1 makes the second one a false alarm about the one failure this app
+    // promises not to have.
+    //
+    // So the channel restarts as if the stream had just opened: pre-roll again,
+    // stay silent until it is buffered, and only then consume. Real-time safe --
+    // a read-index store, a few scalars, no allocation (§11).
+    if (restartPending.exchange (false, std::memory_order_acquire))
+    {
+        ring.clear();
+        compensator.reset();
+
+        previousSample = 0.0f;
+        currentSample = 0.0f;
+        phase = 0.0;
+        primed = false;
+        started = false;
+
+        driftPpm.store (0.0, std::memory_order_relaxed);
+        excessDrift.store (false, std::memory_order_relaxed);
+    }
+
     // Pre-roll. The output clock starts before any device has delivered, so
     // consuming here would emit a click at the top of every take and count
     // audio as lost that had simply not arrived yet.

@@ -428,10 +428,24 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     pipelineUsers.fetch_add (1, std::memory_order_acquire);
 
     if (auto* activeWriter = activePipeline.load (std::memory_order_acquire))
-        if (channelCount == static_cast<int> (channels.size()))
-            activeWriter->pushBlock (inputs, channelCount, numSamples);
+    {
+        // Handed over even when the count does not match the take's channel
+        // list. This used to be guarded by channelCount == channels.size(),
+        // which silently skipped the write: a block that could not be recorded
+        // simply never reached the pipeline, so framesDropped stayed at zero
+        // and the take looked healthy while audio went missing. §0.1 makes
+        // unreported loss the one unacceptable failure, and the pipeline
+        // rejects a mismatched block anyway -- what it does with it now is
+        // count it.
+        activeWriter->pushBlock (inputs, channelCount, numSamples);
+    }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
+
+    // §14.4: measured here because this is the one place every channel is
+    // aligned in the same frame block -- the per-device path has just pulled
+    // them onto one timebase, and the aggregate path is handed them that way.
+    measurePolarPattern (inputs, channelCount, numSamples);
 
     // §8.2: the audio thread does only max-abs per block into the meter.
     for (int ch = 0; ch < channelCount; ++ch)
@@ -449,6 +463,17 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     if (static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
         return; // sized at startMonitoring(); never grow here (§11)
+
+    // trimFrame is sized to the channel list, but a block can carry fewer
+    // channels than that -- processAudioBlock takes min(numInputs, channels).
+    // MonitorBus::processSample sums the whole vector, so anything past
+    // channelCount that this block does not overwrite is a sample from an
+    // earlier, wider block, added to every sample of the mix from here on: a
+    // fixed offset in the listener's headphones from a channel that is no
+    // longer arriving. Zeroing the tail is a handful of stores and costs
+    // nothing when there is no tail (§11).
+    for (size_t ch = static_cast<size_t> (channelCount); ch < trimFrame.size(); ++ch)
+        trimFrame[ch] = 0.0f;
 
     for (int s = 0; s < numSamples; ++s)
     {
@@ -472,6 +497,129 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     for (int ch = 0; ch < numOutputs; ++ch)
         if (outputs[ch] != nullptr)
             std::copy (mixScratch.begin(), mixScratch.begin() + numSamples, outputs[ch]);
+}
+
+void CaptureCoordinator::measurePolarPattern (const float* const* inputs, int channelCount,
+                                              int numSamples) noexcept
+{
+    // §14.4's rule needs a third channel to check. With two microphones there
+    // is no "uninvolved" one, and a correlated pair is just two people at one
+    // table -- reporting anything here would be guessing.
+    if (inputs == nullptr || channelCount < 3 || numSamples <= 0)
+    {
+        polarCorrelation.store (0.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    constexpr int kMaxChannels = 8; // §1's ceiling
+    const int count = std::min (channelCount, kMaxChannels);
+
+    double energy[kMaxChannels] = {};
+    float peakDb[kMaxChannels] = {};
+
+    for (int ch = 0; ch < count; ++ch)
+    {
+        const float* samples = inputs[ch];
+
+        if (samples == nullptr)
+        {
+            // Every other way out of this function clears the correlation. This
+            // one returned with it untouched, so the last verdict measured kept
+            // being reported after the measurement had stopped -- and §14.4's
+            // advice would keep firing from it.
+            polarCorrelation.store (0.0f, std::memory_order_relaxed);
+            return;
+        }
+
+        double sum = 0.0;
+        float peak = 0.0f;
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const float v = samples[i];
+            sum += static_cast<double> (v) * v;
+            peak = std::max (peak, std::abs (v));
+        }
+
+        energy[ch] = sum;
+        peakDb[ch] = peak > 1.0e-10f ? 20.0f * std::log10 (peak) : -200.0f;
+    }
+
+    // Strongest correlated pair in the rig. At §1's eight-microphone ceiling
+    // that is 28 dot products over the block -- a few thousand multiply-adds,
+    // which is nothing beside the resampling already done here, and it costs
+    // no allocation (§11).
+    float bestCorrelation = 0.0f;
+    int bestA = -1, bestB = -1;
+
+    for (int a = 0; a < count; ++a)
+    {
+        for (int b = a + 1; b < count; ++b)
+        {
+            const double denominator = std::sqrt (energy[a]) * std::sqrt (energy[b]);
+
+            if (denominator <= 1.0e-12)
+                continue;
+
+            double cross = 0.0;
+            for (int i = 0; i < numSamples; ++i)
+                cross += static_cast<double> (inputs[a][i]) * inputs[b][i];
+
+            const float correlation = static_cast<float> (std::abs (cross) / denominator);
+
+            if (correlation > bestCorrelation)
+            {
+                bestCorrelation = correlation;
+                bestA = a;
+                bestB = b;
+            }
+        }
+    }
+
+    if (bestA < 0)
+    {
+        polarCorrelation.store (0.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    // The quietest channel outside the pair. §14.4 reads a third microphone
+    // hearing nothing as evidence that what the pair share is the room rather
+    // than someone speaking across all three.
+    float quietestOtherDb = 0.0f;
+    bool haveOther = false;
+
+    for (int ch = 0; ch < count; ++ch)
+    {
+        if (ch == bestA || ch == bestB)
+            continue;
+
+        if (! haveOther || peakDb[ch] < quietestOtherDb)
+        {
+            quietestOtherDb = peakDb[ch];
+            haveOther = true;
+        }
+    }
+
+    if (! haveOther)
+    {
+        polarCorrelation.store (0.0f, std::memory_order_relaxed);
+        return;
+    }
+
+    // Instant attack, slow release: a loud block on the third channel has to
+    // survive until the 2 Hz UI tick looks, or the evidence against a false
+    // trigger is exactly what gets missed.
+    const double blockSeconds = sampleRate > 0.0
+                                    ? static_cast<double> (numSamples) / sampleRate
+                                    : 0.0;
+    const auto decayDb = static_cast<float> (60.0 * blockSeconds); // ~60 dB/second
+
+    polarThirdPeakHeldDb = quietestOtherDb > polarThirdPeakHeldDb
+                               ? quietestOtherDb
+                               : std::max (quietestOtherDb, polarThirdPeakHeldDb - decayDb);
+
+    polarCorrelation.store (bestCorrelation, std::memory_order_relaxed);
+    polarThirdPeakDb.store (polarThirdPeakHeldDb, std::memory_order_relaxed);
 }
 
 void CaptureCoordinator::setMasterChannel (int index) noexcept

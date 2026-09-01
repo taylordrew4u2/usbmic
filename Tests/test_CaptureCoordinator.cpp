@@ -1,5 +1,7 @@
 #include "TestFramework.h"
 #include "Core/CaptureCoordinator.h"
+#include "Core/PolarPatternDetector.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -849,4 +851,150 @@ TEST_CASE (CaptureCoordinator_ChannelSideNeverMovesOnceRecording)
     REQUIRE (c.getChannelLayoutSource (0) == 0);
 
     c.stopRecording();
+}
+
+namespace {
+
+std::vector<CaptureChannel> threeMics()
+{
+    return { { "dev-a", "Kitchen", "01_Kitchen", 0.0f },
+             { "dev-b", "Couch",   "02_Couch",   0.0f },
+             { "dev-c", "Desk",    "03_Desk",    0.0f } };
+}
+
+/// Runs one already-aligned frame block through the aggregate path, which is
+/// where §14.4's measurement sits.
+void pushAligned (CaptureCoordinator& c, const std::vector<std::vector<float>>& channels)
+{
+    std::vector<const float*> pointers;
+    for (const auto& ch : channels)
+        pointers.push_back (ch.data());
+
+    c.processAudioBlock (pointers.data(), static_cast<int> (pointers.size()),
+                         nullptr, 0, static_cast<int> (channels[0].size()));
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_SpotsTwoMicrophonesHearingTheSameRoom)
+{
+    // §14.4, "the sleeper failure": two microphones in omni pick up the whole
+    // room, so they hear the same thing, while a third microphone with nobody
+    // in front of it hears nothing. That shape is what the detector looks for,
+    // and it had never been fed anything.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (threeMics(), "out-device"));
+
+    std::vector<float> shared (64), silent (64, 0.0f);
+    for (size_t i = 0; i < shared.size(); ++i)
+        shared[i] = 0.4f * std::sin (static_cast<float> (i) * 0.3f);
+
+    // A and B carry the same room; C is quiet.
+    pushAligned (c, { shared, shared, silent });
+
+    REQUIRE (c.getPolarPairCorrelation() > PolarPatternDetector::kCorrelationThreshold);
+    REQUIRE (c.getPolarThirdChannelPeakDb() < PolarPatternDetector::kThirdChannelSilenceDb);
+}
+
+TEST_CASE (CaptureCoordinator_DoesNotCallThreePeopleTalkingARoomProblem)
+{
+    // The case that must never fire. Three people each on their own cardioid
+    // microphone: the channels are uncorrelated and nobody is silent. Calling
+    // that a pattern problem would send someone to turn a knob that was already
+    // right, which is worse than staying quiet.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (threeMics(), "out-device"));
+
+    std::vector<float> a (64), b (64), third (64);
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        a[i] = 0.4f * std::sin (static_cast<float> (i) * 0.30f);
+        b[i] = 0.4f * std::sin (static_cast<float> (i) * 1.10f + 2.0f);
+        third[i] = 0.4f * std::sin (static_cast<float> (i) * 0.70f + 4.0f);
+    }
+
+    pushAligned (c, { a, b, third });
+
+    // Either test failing alone is enough to keep §14.4 quiet, and both do.
+    REQUIRE (c.getPolarThirdChannelPeakDb() > PolarPatternDetector::kThirdChannelSilenceDb);
+}
+
+TEST_CASE (CaptureCoordinator_PolarPatternNeedsAThirdMicrophone)
+{
+    // §14.4's rule is stated over three channels: a correlated pair *and* a
+    // third that hears nothing. With two microphones there is no uninvolved
+    // one, and two people at one table correlate perfectly well.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> shared (64);
+    for (size_t i = 0; i < shared.size(); ++i)
+        shared[i] = 0.4f * std::sin (static_cast<float> (i) * 0.3f);
+
+    pushAligned (c, { shared, shared });
+
+    REQUIRE_NEAR (c.getPolarPairCorrelation(), 0.0f, 1e-9);
+}
+
+TEST_CASE (CaptureCoordinator_ANarrowerBlockDoesNotLeaveAnOldChannelInTheMix)
+{
+    // trimFrame is sized to the take's channel list, but a block can carry
+    // fewer channels than that: the aggregate path takes
+    // min(numInputs, channels.size()). MonitorBus::processSample sums the whole
+    // vector, so any entry past the block's own width kept whatever an earlier,
+    // wider block left in it -- a fixed sample added to every sample of the mix
+    // from then on, from a microphone that is no longer arriving. In the
+    // listener's headphones that is a DC offset that does not go away.
+    FakeBackend backend;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (threeMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    std::vector<float> a (64, 0.0f), b (64, 0.0f), loud (64, 0.4f);
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+
+    // Three channels, and the third one is the only one making any sound.
+    const float* three[] = { a.data(), b.data(), loud.data() };
+    c.processAudioBlock (three, 3, outs, 1, 64);
+    REQUIRE (out[0] > 0.3f);
+
+    // The third channel stops arriving. What is left is silent, so the mix must
+    // be silent -- not still carrying the last sample the third one delivered.
+    const float* two[] = { a.data(), b.data() };
+    c.processAudioBlock (two, 2, outs, 1, 64);
+
+    for (int i = 0; i < 64; ++i)
+        REQUIRE (std::abs (out[i]) < 1.0e-6f);
+}
+
+TEST_CASE (CaptureCoordinator_PolarVerdictDoesNotOutliveItsMeasurement)
+{
+    // Every way out of measurePolarPattern clears the correlation except the
+    // one that gives up on a null channel, which returned with the last verdict
+    // still published. §14.4's advice reads that number, so it would keep
+    // firing off a measurement that had stopped being made.
+    FakeBackend backend;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (threeMics(), "out-device"));
+
+    // Two microphones hearing the same room, with a third hearing nothing:
+    // §14.4's shape, and a correlation well above zero.
+    std::vector<float> room (64, 0.0f), quiet (64, 0.0f);
+    for (int i = 0; i < 64; ++i)
+        room[static_cast<size_t> (i)] = std::sin (static_cast<float> (i) * 0.2f) * 0.5f;
+
+    pushAligned (c, { room, room, quiet });
+    REQUIRE (c.getPolarPairCorrelation() > 0.9f);
+
+    // A channel stops being handed over at all.
+    const float* withHole[] = { room.data(), nullptr, quiet.data() };
+    c.processAudioBlock (withHole, 3, nullptr, 0, 64);
+
+    REQUIRE (c.getPolarPairCorrelation() == 0.0f);
 }
