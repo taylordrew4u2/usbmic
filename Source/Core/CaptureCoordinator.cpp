@@ -36,11 +36,18 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
 
     // §3.2: one capture path per device, each with its own ring and PI loop.
     deviceStreams.clear();
+    channelLayouts.clear();
     for (size_t i = 0; i < channels.size(); ++i)
     {
         auto stream = std::make_unique<DeviceInputStream> (sampleRate);
         stream->prepare (sampleRate, bufferSize);
         deviceStreams.push_back (std::move (stream));
+
+        // §2.1 starts afresh for each opened device: the analyzer's 60-second
+        // timeout is measured from the moment the device is seen.
+        auto layout = std::make_unique<ChannelLayout>();
+        layout->analyzer = ChannelLayoutAnalyzer (sampleRate);
+        channelLayouts.push_back (std::move (layout));
     }
 
     // §3.1: until the caller says otherwise, the first included mic is the
@@ -103,7 +110,15 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         auto inputCallback = [this, index] (const float* const* inputs, int numInputs,
                                             float* const*, int, int numSamples)
         {
-            if (inputs != nullptr && numInputs > 0)
+            if (inputs == nullptr || numInputs <= 0)
+                return;
+
+            // §2.1: a device that presents more than one channel gets the side
+            // it is actually using picked for it. One that presents a single
+            // channel has nothing to decide.
+            if (numInputs >= 2)
+                pushDeviceBlockMultiChannel (index, inputs, numInputs, numSamples);
+            else
                 pushDeviceBlock (index, inputs[0], numSamples);
         };
 
@@ -237,6 +252,115 @@ void CaptureCoordinator::pushDeviceBlock (int deviceIndex, const float* samples,
     // §3.2: straight into this device's own ring. The output clock decides when
     // it is consumed, and at what rate.
     deviceStreams[static_cast<size_t> (deviceIndex)]->pushBlock (samples, numSamples);
+}
+
+void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const float* const* inputs,
+                                                      int numInputs, int numSamples) noexcept
+{
+    if (deviceIndex < 0 || deviceIndex >= static_cast<int> (channelLayouts.size())
+        || inputs == nullptr || numInputs < 2 || numSamples <= 0)
+        return;
+
+    auto& layout = *channelLayouts[static_cast<size_t> (deviceIndex)];
+
+    const float* left = inputs[0];
+    const float* right = inputs[1];
+
+    if (left == nullptr || right == nullptr)
+        return pushDeviceBlock (deviceIndex, inputs[0], numSamples);
+
+    // §11: two passes over the block, no allocation, no locking. §2.1 wants a
+    // peak per channel, their correlation, and the difference in their RMS.
+    float peakLeft = 0.0f, peakRight = 0.0f;
+    double sumLL = 0.0, sumRR = 0.0, sumLR = 0.0;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float l = left[i];
+        const float r = right[i];
+
+        peakLeft = std::max (peakLeft, std::abs (l));
+        peakRight = std::max (peakRight, std::abs (r));
+
+        sumLL += static_cast<double> (l) * l;
+        sumRR += static_cast<double> (r) * r;
+        sumLR += static_cast<double> (l) * r;
+    }
+
+    const auto toDb = [] (float linear)
+    {
+        // A floor rather than -inf, so the analyzer's comparisons stay ordered
+        // and a digitally silent channel is simply very quiet.
+        return linear > 1.0e-10f ? 20.0f * std::log10 (linear) : -200.0f;
+    };
+
+    const double rmsLeft = std::sqrt (sumLL / static_cast<double> (numSamples));
+    const double rmsRight = std::sqrt (sumRR / static_cast<double> (numSamples));
+
+    // Pearson correlation over the block. Zero when either side is silent,
+    // which is the honest answer: nothing to be correlated with.
+    const double denominator = std::sqrt (sumLL) * std::sqrt (sumRR);
+    const float correlation = denominator > 1.0e-12
+                                  ? static_cast<float> (sumLR / denominator)
+                                  : 0.0f;
+
+    const float rmsDiffDb = std::abs (toDb (static_cast<float> (rmsLeft))
+                                      - toDb (static_cast<float> (rmsRight)));
+
+    const double blockSeconds = sampleRate > 0.0
+                                    ? static_cast<double> (numSamples) / sampleRate
+                                    : 0.0;
+
+    layout.analyzer.processBlock (toDb (peakLeft), toDb (peakRight),
+                                  correlation, rmsDiffDb, blockSeconds);
+
+    // The side is free to move only until §2.1 has decided, and never once a
+    // take is running: swapping which channel feeds a stem mid-file would put a
+    // discontinuity in the middle of the recording, which is a worse failure
+    // than the one this fixes (§6.5 fixes the take's shape for its duration).
+    if (! layout.frozen)
+    {
+        // Checked before the store, not after. Reversing these leaves a
+        // one-block window in which a take that has just started still adopts a
+        // new side -- which is exactly the discontinuity the freeze exists to
+        // prevent, made rarer and therefore harder to find.
+        if (activePipeline.load (std::memory_order_acquire) != nullptr)
+        {
+            layout.frozen = true;
+        }
+        else
+        {
+            layout.source.store (layout.analyzer.getMonoSourceChannel(), std::memory_order_relaxed);
+            layout.decision.store (static_cast<int> (layout.analyzer.getDecision()),
+                                   std::memory_order_relaxed);
+
+            if (layout.analyzer.getDecision() != ChannelLayoutDecision::Pending)
+                layout.frozen = true;
+        }
+    }
+
+    const int side = layout.source.load (std::memory_order_relaxed);
+
+    // By pointer: collapsing to mono is choosing which channel to read, not
+    // copying one.
+    pushDeviceBlock (deviceIndex, side == 1 ? right : left, numSamples);
+}
+
+int CaptureCoordinator::getChannelLayoutSource (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (channelLayouts.size()))
+        return -1;
+
+    return channelLayouts[static_cast<size_t> (index)]->source.load (std::memory_order_relaxed);
+}
+
+ChannelLayoutDecision CaptureCoordinator::getChannelLayoutDecision (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (channelLayouts.size()))
+        return ChannelLayoutDecision::Pending;
+
+    return static_cast<ChannelLayoutDecision> (
+        channelLayouts[static_cast<size_t> (index)]->decision.load (std::memory_order_relaxed));
 }
 
 void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept

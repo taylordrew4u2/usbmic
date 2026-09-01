@@ -29,6 +29,27 @@ public:
     /// True once either channel has crossed -50dBFS, starting the 3s measurement window.
     bool isWindowActive() const noexcept { return windowActive; }
 
+    /// Which of the two channels the collapsed mono signal should be taken from.
+    ///
+    /// §2.1's first condition is "one channel stays below -80 dBFS", and it does
+    /// not say which -- a device with its capsule wired to the right presents
+    /// exactly like one wired to the left. Taking channel 0 regardless is how a
+    /// right-wired microphone ends up recording silence, so the side has to be
+    /// answered rather than assumed.
+    ///
+    /// Left unless the left has never risen above the silence floor while the
+    /// right has crossed the signal trigger -- the same two thresholds §2.1
+    /// already uses. A tie, a duplicated source and ordinary stereo all give
+    /// left, so this only ever moves for the case it exists for.
+    int getMonoSourceChannel() const noexcept;
+
+    /// Highest peak either channel has reached since the device was seen, in
+    /// dBFS. Exposed because "this side has never made a sound" is the evidence
+    /// behind getMonoSourceChannel(), and a caller showing its working is worth
+    /// more than one asserting a verdict.
+    float getLoudestLeftDb() const noexcept { return loudestLeftDb; }
+    float getLoudestRightDb() const noexcept { return loudestRightDb; }
+
 private:
     double sampleRate;
     double timeSinceConnection = 0.0;
@@ -36,6 +57,14 @@ private:
     bool windowActive = false;
     bool leftSilentWholeWindow = true;
     bool rightSilentWholeWindow = true;
+
+    // Tracked from the first block rather than only inside the measurement
+    // window, so the side is answerable immediately. Waiting for the window
+    // would mean a right-wired microphone recorded silence for the three
+    // seconds §2.1 spends deciding -- and for the full sixty if it stayed
+    // quiet.
+    float loudestLeftDb = -200.0f;
+    float loudestRightDb = -200.0f;
     ChannelLayoutDecision decision = ChannelLayoutDecision::Pending;
 
     static constexpr float kSignalTriggerDb = -50.0f;
