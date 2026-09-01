@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.8.0 — 2026-09-01
+
+### Added -- the camera pictures can be resized from the main screen
+
+A fixed 176px tile was a guess, and the wrong one for half the rigs it will
+meet. One camera across a table wants a picture you can judge focus on; four in
+a row want to fit. Which of those someone is doing is not something the app can
+work out for them, so it is a control rather than a better guess.
+
+Two arrows above the pictures, and the up and down keys, step through five 16:9
+sizes from 120 to 456 wide. The default is the old 176, so nothing moves for
+anyone who does not touch it.
+
+The arrows wrap rather than shrink: ask for a bigger picture with four cameras
+and you get one, on two rows. Squeezing them all onto a single row would make
+the arrows do nothing on exactly the rig that wants them. The height the screen
+declares follows the wrap, so the record button stays on screen rather than
+being pushed under the fold by pictures that grew without saying so.
+
+The buttons disable at the ends of the range, and the keys work only while the
+main screen is the thing on screen -- behind Settings or Cameras they would
+resize something the user cannot see. A focused slider or text box consumes its
+own arrows first, so this cannot steal them from the volume.
+
+The chosen size is remembered across launches. A settings file written before
+this existed has no such key and loads as the default rather than as zero, which
+would have silently shrunk the pictures of everyone who upgraded.
+
+Not visually verified: JUCE implements CameraDevice on macOS and Windows only,
+so the tiles cannot be seen from the Linux build this was written on. The five
+sizes are a considered first guess, not a measured one.
+
 ## v0.7.0 — 2026-08-31
 
 ### Changed -- the cameras are on the main screen now
