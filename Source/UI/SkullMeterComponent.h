@@ -48,6 +48,9 @@ private:
     float currentLevelDb = Metering::kMinDb;
     float currentPeakDb = Metering::kMinDb;
     bool currentClip = false;
+    // §9.3: the count is what makes clip a number rather than only a hue, so it
+    // is read alongside the latch rather than derived from it.
+    int currentClipCount = 0;
 
     // §9.2 palette, verbatim.
     static const juce::Colour kBackground;

@@ -1723,6 +1723,17 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
     updateSetupAdvisorLevels (peaksDb, sinceLastCallSeconds);
 
+    // §14.4, "the sleeper failure": several microphones in omni or stereo in one
+    // room produce heavy bleed, unusable stems and comb filtering, and the
+    // detector for it has never been fed -- so the one piece of advice that
+    // names the fix ("turn its pattern knob to the single-heart setting") could
+    // not fire. Correlation is a sample-level quantity, so it comes from the
+    // capture path rather than from the per-channel peaks above.
+    if (capture != nullptr)
+        setupAdvisor.updatePolarPattern (capture->getPolarPairCorrelation(),
+                                         capture->getPolarThirdChannelPeakDb(),
+                                         sinceLastCallSeconds);
+
     // §3.2 / §3.3: the loop runs in the audio callback; reporting it does not.
     if (capture != nullptr)
     {

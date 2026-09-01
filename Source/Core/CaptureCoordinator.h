@@ -153,6 +153,27 @@ public:
     void setMasterChannel (int index) noexcept;
     int getMasterChannel() const noexcept { return masterChannel; }
 
+    /// §14.4: the strongest inter-channel correlation seen across the rig, and
+    /// the quietest channel outside that pair.
+    ///
+    /// Two microphones hearing the same thing while a third hears nothing is
+    /// what an omni or stereo pattern looks like from the outside -- the pair
+    /// are picking up the room rather than the person in front of them. Only
+    /// the audio path can measure it: correlation is a sample-level quantity
+    /// and the per-channel peaks the advisor is otherwise fed cannot carry it.
+    ///
+    /// Meaningless below three channels, where §14.4's rule has no third
+    /// channel to check, and reported as zero correlation so it cannot trigger.
+    float getPolarPairCorrelation() const noexcept
+    {
+        return polarCorrelation.load (std::memory_order_relaxed);
+    }
+
+    float getPolarThirdChannelPeakDb() const noexcept
+    {
+        return polarThirdPeakDb.load (std::memory_order_relaxed);
+    }
+
     /// §3.3 drift reporting, driven from the UI tick rather than the callback.
     void tickDriftReporting (double elapsedSeconds) noexcept;
 
@@ -227,6 +248,28 @@ private:
     // Written by the audio thread, read by the UI. Relaxed because a stale
     // reading for one frame is harmless and a lock here would not be (§11).
     std::atomic<double> callbackLoad { 0.0 };
+
+    // §14.4, same ownership: written in the callback, read on the UI tick.
+    //
+    // The floor is a "nothing heard yet" value, not a loud one: a peak-hold
+    // that starts at 0 dBFS spends its first seconds decaying down from a level
+    // nothing produced, which would disarm the detector exactly when a take is
+    // starting. Nothing can trigger from it regardless, because the correlation
+    // beside it starts at zero.
+    static constexpr float kPolarFloorDb = -200.0f;
+
+    std::atomic<float> polarCorrelation { 0.0f };
+    std::atomic<float> polarThirdPeakDb { kPolarFloorDb };
+
+    // Peak-held on the audio thread so a loud moment on the third channel
+    // survives until the UI next looks. The tick runs at 2 Hz and sees one
+    // block in several hundred; without the hold, the one thing that should
+    // break a false trigger is the thing most likely to be missed.
+    float polarThirdPeakHeldDb = kPolarFloorDb;
+
+    /// §14.4 measurement over one already-aligned frame block. Real-time safe:
+    /// sums over the block, no allocation, no locking.
+    void measurePolarPattern (const float* const* inputs, int channelCount, int numSamples) noexcept;
 
     void noteCallbackLoad (std::chrono::steady_clock::time_point start, int numSamples) noexcept;
 
