@@ -64,7 +64,22 @@ public:
     bool hasStarted() const noexcept { return started; }
 
     /// §6.5: an unplugged mic keeps its channel and yields silence.
-    void setLive (bool live) noexcept { channelLive.store (live, std::memory_order_relaxed); }
+    ///
+    /// Coming back is not the mirror image of going away. While the channel is
+    /// dead this stream stops consuming, so its ring, its resampler phase and
+    /// its PI loop all still hold the moment the microphone left. Resuming from
+    /// that state replays audio from before the gap, or -- with a dry ring --
+    /// holds the last sample before it as a DC offset for the rest of the take
+    /// while counting every block as an underrun. So a false-to-true transition
+    /// arms a restart, which the next pull() performs on the audio thread.
+    void setLive (bool live) noexcept
+    {
+        if (live && ! channelLive.exchange (true, std::memory_order_relaxed))
+            restartPending.store (true, std::memory_order_release);
+        else
+            channelLive.store (live, std::memory_order_relaxed);
+    }
+
     bool isLive() const noexcept { return channelLive.load (std::memory_order_relaxed); }
 
     /// §3.3 reporting, as a correction against the stream that pulls this one --
@@ -94,6 +109,12 @@ private:
     DriftCompensator compensator;
 
     std::atomic<bool> channelLive { true };
+
+    // Set on the message thread when a channel comes back, consumed by the
+    // audio thread in pull(). The reset itself has to happen there: it touches
+    // the resampler state and the ring's read index, both of which belong to
+    // the consumer.
+    std::atomic<bool> restartPending { false };
     std::atomic<double> driftPpm { 0.0 };
     std::atomic<bool> excessDrift { false };
     std::atomic<uint64_t> underruns { 0 };

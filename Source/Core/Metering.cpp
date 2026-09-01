@@ -5,7 +5,8 @@
 namespace mma {
 
 Metering::Metering (double sampleRateIn) noexcept
-    : sampleRate (sampleRateIn)
+    : sampleRate (sampleRateIn),
+      clipThresholdLinear (std::pow (10.0f, kClipThresholdDb / 20.0f))
 {
 }
 
@@ -20,7 +21,7 @@ void Metering::processAudioBlock (const float* samples, int numSamples) noexcept
 {
     float maxAbs = 0.0f;
     int consecutive = consecutiveClipSamples.load (std::memory_order_relaxed);
-    const float clipLinear = std::pow (10.0f, kClipThresholdDb / 20.0f);
+    const float clipLinear = clipThresholdLinear;
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -50,7 +51,7 @@ void Metering::processAudioBlock (const float* samples, int numSamples) noexcept
 void Metering::pushBlockStats (float maxAbsLinear, int /*numSamplesInBlock*/) noexcept
 {
     latestBlockPeakDb.store (linearToDb (maxAbsLinear), std::memory_order_relaxed);
-    if (maxAbsLinear >= std::pow (10.0f, kClipThresholdDb / 20.0f))
+    if (maxAbsLinear >= clipThresholdLinear)
     {
         clipLatched.store (true, std::memory_order_relaxed);
         clipCount.fetch_add (1, std::memory_order_relaxed);
