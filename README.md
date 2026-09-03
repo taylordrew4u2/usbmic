@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="docs/images/app-icon.png" alt="Multi-Mic Aggregator icon: a bone skull on slate, filled from the jaw up with the accent, the way the app's own level meters fill" width="128">
+  <img src="docs/images/app-icon.png" alt="SobStage icon: a bone skull on slate, filled from the jaw up with the accent, the way the app's own level meters fill" width="128">
 </p>
 
-# Multi-Microphone Aggregator, Recorder, and Monitor
+# SobStage
+
+### Multi-microphone aggregator, recorder, and monitor
 
 Cross-platform desktop application (macOS + Windows) that aggregates up to 8 USB
 microphones, records every microphone to discrete files plus one summed mix
@@ -75,11 +77,11 @@ missing.
 Builds for macOS, Windows and Linux are produced by the
 [Release workflow](.github/workflows/release.yml):
 
-- **macOS** — `MultiMicAggregator-macOS.dmg`, a normal drag-to-install disk
+- **macOS** — `SobStage-macOS.dmg`, a normal drag-to-install disk
   image: mount it and drag the app onto the Applications alias beside it.
-  `MultiMicAggregator-macOS.zip` carries the same `.app` for anyone who would
+  `SobStage-macOS.zip` carries the same `.app` for anyone who would
   rather not mount an image.
-- **Windows and Linux** — `MultiMicAggregator-Windows.zip` and
+- **Windows and Linux** — `SobStage-Windows.zip` and
   `-Linux.zip`.
 - **Tagged releases** — all of the above are attached to the
   [Releases page](../../releases). Start here; this is the supported download.
@@ -152,18 +154,18 @@ The steps below include it.
 
 ### macOS
 
-1. Double-click `MultiMicAggregator-macOS.dmg`. A window opens showing the app
+1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
    and an arrow pointing at your **Applications** folder.
 2. Drag the skull onto **Applications**. That is the install.
 3. **First launch only:** open **Terminal** and run this once:
 
    ```sh
-   xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
+   xattr -dr com.apple.quarantine "/Applications/SobStage.app"
    ```
 
    Then open the app normally. This step is needed because the build is signed
    ad-hoc rather than with a paid Apple Developer ID, so macOS quarantines it;
-   without clearing that flag you get *"Multi-Mic Aggregator is damaged and
+   without clearing that flag you get *"SobStage is damaged and
    can't be opened"*. Nothing is wrong with the download — see
    [Troubleshooting](#troubleshooting-macos) below for the full explanation.
 
@@ -172,13 +174,13 @@ The steps below include it.
    whose ad-hoc signature Gatekeeper will not accept.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
-   Security → Microphone → enable Multi-Mic Aggregator.
+   Security → Microphone → enable SobStage.
 5. Plug in your USB microphones and headphones. Monitoring is live from
    launch; there is nothing to arm.
 
 #### Troubleshooting (macOS)
 
-**"Multi-Mic Aggregator is damaged and can't be opened. You should eject the
+**"SobStage is damaged and can't be opened. You should eject the
 disk image."**
 
 Nothing is damaged and your download is fine — this is what Gatekeeper says
@@ -186,7 +188,7 @@ when a quarantined app's signature does not satisfy it. Control-click → Open
 does *not* clear it. Run this once, in Terminal:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"
+xattr -dr com.apple.quarantine "/Applications/SobStage.app"
 ```
 
 Then open the app normally. If you put the app somewhere other than
@@ -203,9 +205,9 @@ has this same step.
 
 ### Windows
 
-1. Unzip `MultiMicAggregator-Windows.zip` anywhere (e.g. a folder in
+1. Unzip `SobStage-Windows.zip` anywhere (e.g. a folder in
    `Program Files` or your Desktop).
-2. Run `bin\Multi-Mic Aggregator.exe` from the unzipped folder. SmartScreen
+2. Run `bin\SobStage.exe` from the unzipped folder. SmartScreen
    will warn once about an unrecognised app: click **More info → Run anyway**.
 3. If no microphones appear: Settings → Privacy & security → Microphone →
    make sure **Let desktop apps access your microphone** is on.
@@ -213,11 +215,11 @@ has this same step.
 
 ### Linux
 
-1. Unzip `MultiMicAggregator-Linux.zip`.
+1. Unzip `SobStage-Linux.zip`.
 2. From the unzipped folder, run it:
    ```sh
-   chmod +x "bin/Multi-Mic Aggregator"   # zip extraction can drop the execute bit
-   "bin/Multi-Mic Aggregator"
+   chmod +x "bin/SobStage"   # zip extraction can drop the execute bit
+   "bin/SobStage"
    ```
 3. Microphones are found through ALSA. If none appear, check that your user is
    in the `audio` group. For a machine with no sound hardware,
@@ -276,6 +278,18 @@ has this same step.
   into the same session folder as the audio, with no sound track of its own —
   the sound is the WAVs beside it, and `session.json` records the pairing and
   the shared session origin that lines them up in an editor.
+- **Optionally, one file with both.** Off by default. Switch on *Also save
+  video with the sound in one file* in Settings and each camera additionally
+  gets a `..._with-sound.mp4` (`.mkv` on Windows) once the take stops —
+  written **beside** the originals, never instead of them, so a combine that
+  fails costs nothing that was not already saved. The picture is copied rather
+  than re-encoded, so it takes minutes rather than hours and loses no quality;
+  the sound is the MIX, with your trims and the mix-bus limiter already on it.
+  The audio is trimmed to where each camera actually started, because the stems
+  open before any camera does and a take laid together without accounting for
+  that runs a fraction of a second out of sync. **Needs
+  [ffmpeg](https://ffmpeg.org)** (`brew install ffmpeg` on a Mac) — if it is
+  missing the toggle says so, and says it before a take rather than after one.
 - **A camera counts against the card's speed, not just its space.** §6.4 blocks
   arming when the card cannot sustain twice what the take needs; that figure now
   includes the video, because a card that keeps up with eight microphones can
@@ -347,9 +361,9 @@ and this is what came up on the next launch.
   `RECORDINGS-MIRROR` in your home directory, so a card failure is an
   inconvenience rather than data loss. Toggle it in the Settings panel.
 - **Your settings** live beside the log, at
-  `MultiMicAggregator/settings.json`. Delete it to start over from defaults;
+  `SobStage/settings.json`. Delete it to start over from defaults;
   a corrupt or unreadable one is ignored rather than fatal.
-- **The log** lives at `MultiMicAggregator/log.txt` under your user
+- **The log** lives at `SobStage/log.txt` under your user
   application-data directory (`~/Library` on macOS, `%APPDATA%` on Windows,
   `~/.config` on Linux). **Export diagnostics** in the Settings panel bundles
   it with the last five sessions' metadata — never audio.

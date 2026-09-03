@@ -1,4 +1,4 @@
-# Multi-Microphone Aggregator, Recorder, and Monitor
+# SobStage — multi-microphone aggregator, recorder, and monitor
 ## Build Specification — v3, self-contained
 Cross-platform desktop application (macOS + Windows). Aggregates multiple USB microphones into a single input device, records all channels directly to an external card, and outputs one shared live monitor mix to headphones. Must be operable by someone who has never configured audio hardware.
 Reference hardware: Blue Yeti (standard model). Section 14 is written against its measured behavior and constrains decisions elsewhere in this document.

@@ -34,10 +34,10 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
 };
 
-class MultiMicAggregatorApplication : public juce::JUCEApplication
+class SobStageApplication : public juce::JUCEApplication
 {
 public:
-    MultiMicAggregatorApplication() = default;
+    SobStageApplication() = default;
 
     const juce::String getApplicationName() override    { return JUCE_APPLICATION_NAME_STRING; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
@@ -53,7 +53,7 @@ public:
 
         logger = std::make_unique<juce::FileLogger> (
             Application::getLogFile(),
-            "Multi-Mic Aggregator " + getApplicationVersion(),
+            "SobStage " + getApplicationVersion(),
             kMaxLogBytes);
 
         juce::Logger::setCurrentLogger (logger.get());
@@ -105,4 +105,4 @@ private:
 
 } // namespace mma
 
-START_JUCE_APPLICATION (mma::MultiMicAggregatorApplication)
+START_JUCE_APPLICATION (mma::SobStageApplication)

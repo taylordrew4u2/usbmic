@@ -45,7 +45,7 @@ struct AppSettings
     bool askWhereToSaveEveryTime = false;
 
     bool mirrorEnabled = true;                          // §6.3, default on
-    std::string aggregateName = "Multi-Mic Aggregator"; // §7, what other apps see
+    std::string aggregateName = "SobStage"; // §7, what other apps see
     double masterVolume = 70.0;                         // §5.1 default
     bool cameraPreviewFullQuality = false;
 
