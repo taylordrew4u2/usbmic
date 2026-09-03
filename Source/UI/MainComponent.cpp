@@ -237,7 +237,24 @@ MainComponent::MainComponent (Application& app)
     // switched on the pictures fill this height and more, and on an audio-only
     // rig it leaves room under the levels. Sizing to the audio-only case
     // instead would make the window jump every time a camera was switched on.
-    setSize (760, juce::jmax (560, mainScreen.getRequiredHeight() + 24));
+    // Sized to what the content wants, then clamped to what the screen has.
+    //
+    // Component::centreWithSize does not clamp -- it centres at exactly the
+    // size it is given -- so a window taller than the display simply hangs off
+    // both ends of it, taking the record button with it. That was survivable
+    // when the camera pictures were thumbnails and stopped being so the moment
+    // they got big enough to be worth looking at.
+    //
+    // The main screen is inside a viewport, so a window clamped smaller than
+    // its content scrolls rather than clipping.
+    const auto usable = juce::Desktop::getInstance().getDisplays()
+                            .getPrimaryDisplay() != nullptr
+                        ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
+                        : juce::Rectangle<int> (0, 0, 1180, 900);
+
+    setSize (juce::jmin (1180, usable.getWidth()),
+             juce::jlimit (560, juce::jmax (560, usable.getHeight()),
+                           mainScreen.getRequiredHeight() + 24));
 
     // §8.1: meters and status are live from launch, not from record.
     refreshStatus();

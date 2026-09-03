@@ -184,7 +184,18 @@ private:
     /// out in. Kept together because the height depends on both: enlarging past
     /// what fits across wraps rather than shrinking back, which is what makes
     /// the arrows do something on a four-camera rig.
-    int cameraTileWidthAt (int step) const noexcept;
+    /// The tile width for a step, given the width the screen has to spend and
+    /// the height it has left after everything else is laid out.
+    ///
+    /// Both bounds matter. Width alone lets a picture grow until the record
+    /// button is pushed off the bottom of the window, which is the failure this
+    /// screen exists to avoid; height alone ignores what the user asked for by
+    /// making the window wider.
+    int cameraTileWidthFor (int step, int availableWidth, int availableHeight) const noexcept;
+
+    /// Everything resized() lays out that is not the camera row. The camera
+    /// gets what is left, which is what makes a taller window a bigger picture.
+    int nonCameraHeight() const noexcept;
     int cameraRowsNeeded (int tileWidth, int availableWidth) const noexcept;
 
     // Carries the current tile row across iterations of the layout loop. A
