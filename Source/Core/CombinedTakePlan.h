@@ -26,7 +26,12 @@ struct CombinedTakeJob
 {
     std::string videoFile;   ///< "V01_Kitchen-Cam.mov", relative to the session folder
     std::string audioFile;   ///< "MIX.wav", the summed mix with trims and the limiter
-    std::string outputFile;  ///< "V01_Kitchen-Cam_with-sound.mp4"
+    std::string outputFile;  ///< "V01_Kitchen-Cam_with-sound.mov"
+
+    /// The take's bit depth, carried through so the audio can be written at the
+    /// depth it was recorded at rather than being resampled down to fit a
+    /// codec's idea of enough.
+    int audioBitDepth = 24;
 
     /// How far into the audio the video's first frame lands.
     ///
@@ -61,13 +66,19 @@ struct CombinedTakeInput
 /// suffix, so the folder still sorts the way it did and the origin of each
 /// file is readable without opening it.
 ///
-/// The container is chosen by what the camera actually wrote, because the
-/// picture is copied rather than re-encoded -- re-encoding a take would cost
-/// quality nobody asked to spend and minutes nobody asked to wait.
+/// The container is chosen so that *neither* stream has to be re-encoded. The
+/// picture is copied bit for bit whatever happens; the constraint that decides
+/// the container is the audio, because the take is 24-bit PCM and the point is
+/// to keep it that way.
 ///
-///   .mov  ->  .mp4   (what macOS writes; H.264 moves between the two intact)
-///   other ->  .mkv   (Windows writes .wmv, which mp4 cannot legally carry;
-///                     Matroska takes any codec, so the copy still holds)
+///   .mov  ->  .mov   (what macOS writes. Carries PCM natively, so the sound
+///                     arrives at the depth it was recorded at, and every
+///                     editor opens it. mp4 was the previous answer and it is
+///                     the wrong one here: its PCM support is an afterthought,
+///                     so in practice audio in an mp4 is lossy.)
+///   other ->  .mkv   (Windows writes .wmv, which mp4 cannot legally carry.
+///                     Matroska takes any codec, video and FLAC alike, so the
+///                     copy holds on both streams.)
 std::string combinedFileNameFor (const std::string& videoFileName);
 
 /// Builds the plan for a finished take.
@@ -85,6 +96,7 @@ std::string combinedFileNameFor (const std::string& videoFileName);
 /// the muxer's business; what *should* be run is this.
 CombinedTakePlan buildCombinedTakePlan (CombinedVideoMode mode,
                                         const std::vector<CombinedTakeInput>& cameras,
-                                        const std::string& mixFileName);
+                                        const std::string& mixFileName,
+                                        int bitDepth = 24);
 
 } // namespace mma

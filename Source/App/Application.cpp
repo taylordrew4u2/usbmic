@@ -1075,9 +1075,13 @@ void Application::toggleRecording()
         // was -- separate, complete, and playable.
         if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
         {
+            // The take's own bit depth goes with it, so the combined file's
+            // audio is written at the depth it was recorded at rather than
+            // being quietly narrowed on the way out.
             const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
                                                      cameraController.getCombinedTakeInputs(),
-                                                     "MIX.wav");
+                                                     "MIX.wav",
+                                                     currentBitDepth);
 
             if (plan.hasWork())
                 takeCombiner.start (juce::File (currentSessionFolder), plan);

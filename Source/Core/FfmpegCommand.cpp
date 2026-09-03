@@ -27,7 +27,8 @@ std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutab
                                                const std::string& videoPath,
                                                const std::string& audioPath,
                                                const std::string& outputPath,
-                                               double audioLeadSeconds)
+                                               double audioLeadSeconds,
+                                               int audioBitDepth)
 {
     std::vector<std::string> args;
     args.reserve (24);
@@ -75,13 +76,33 @@ std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutab
     args.push_back ("-c:v");
     args.push_back ("copy");
 
-    // The sound is encoded, because neither container carries the take's PCM
-    // in a form every player will open. 256k stereo-equivalent is transparent
-    // for speech at this rate and still small beside the video.
+    // The sound is kept, not re-encoded.
+    //
+    // This was AAC at 256k, which is transparent enough for most listening and
+    // still throws the take away: the stems are 24-bit PCM, and a lossy codec
+    // is a one-way door. Nobody records at 24 bits in order to deliver a
+    // generation-loss copy of it, and a combined file that is worse than the
+    // parts it was made from is not worth making.
+    //
+    // Matroska cannot carry raw PCM as dependably as it carries FLAC, so there
+    // it gets FLAC -- which is lossless, so the samples that come back out are
+    // bit-for-bit the ones that went in.
+    const bool matroska = outputPath.size() >= 4
+                       && outputPath.compare (outputPath.size() - 4, 4, ".mkv") == 0;
+
     args.push_back ("-c:a");
-    args.push_back ("aac");
-    args.push_back ("-b:a");
-    args.push_back ("256k");
+
+    if (matroska)
+    {
+        args.push_back ("flac");
+    }
+    else
+    {
+        // At the depth the take was actually recorded at. Writing 24-bit audio
+        // into a 16-bit stream would quietly discard the bottom eight bits,
+        // which is the exact loss this change exists to avoid.
+        args.push_back (audioBitDepth >= 24 ? "pcm_s24le" : "pcm_s16le");
+    }
 
     // The two streams are the same length to within a frame, but a camera that
     // stopped early must not leave the file running on silence -- or, worse,
