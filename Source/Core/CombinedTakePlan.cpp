@@ -35,14 +35,15 @@ std::string combinedFileNameFor (const std::string& videoFileName)
     // The picture is copied, never re-encoded, so the container has to be one
     // that can legally carry whatever codec the camera chose. mp4 cannot hold
     // VC-1, which is what Windows writes; Matroska can hold anything.
-    const auto container = extensionOf (videoFileName) == ".mov" ? ".mp4" : ".mkv";
+    const auto container = extensionOf (videoFileName) == ".mov" ? ".mov" : ".mkv";
 
     return stemOf (videoFileName) + "_with-sound" + container;
 }
 
 CombinedTakePlan buildCombinedTakePlan (CombinedVideoMode mode,
                                         const std::vector<CombinedTakeInput>& cameras,
-                                        const std::string& mixFileName)
+                                        const std::string& mixFileName,
+                                        int bitDepth)
 {
     CombinedTakePlan plan;
 
@@ -72,6 +73,7 @@ CombinedTakePlan buildCombinedTakePlan (CombinedVideoMode mode,
         job.videoFile = camera.videoFile;
         job.audioFile = mixFileName;
         job.outputFile = combinedFileNameFor (camera.videoFile);
+        job.audioBitDepth = bitDepth;
 
         // Never negative. A camera cannot start before the audio it is being
         // laid against -- the stems are opened first -- and a negative lead

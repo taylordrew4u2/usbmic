@@ -124,7 +124,8 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
                                                 video.getFullPathName().toStdString(),
                                                 audio.getFullPathName().toStdString(),
                                                 output.getFullPathName().toStdString(),
-                                                job.audioLeadSeconds);
+                                                job.audioLeadSeconds,
+                                                job.audioBitDepth);
 
         juce::StringArray argv;
         for (const auto& arg : args)

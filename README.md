@@ -120,8 +120,8 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.9.0**, and the first release called SobStage. The recording
-engine is mature — it is covered by 372
+This is **v0.9.1**, and the first release line called SobStage. The recording
+engine is mature — it is covered by 375
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
@@ -314,13 +314,16 @@ this feature works out for you.
   into the same session folder as the audio, with no sound track of its own —
   the sound is the WAVs beside it, and `session.json` records the pairing and
   the shared session origin that lines them up in an editor.
-- **Optionally, one file with both.** Off by default. Switch on *Also save
-  video with the sound in one file* in Settings and each camera additionally
-  gets a `..._with-sound.mp4` (`.mkv` on Windows) once the take stops —
-  written **beside** the originals, never instead of them, so a combine that
-  fails costs nothing that was not already saved. The picture is copied rather
-  than re-encoded, so it takes minutes rather than hours and loses no quality;
-  the sound is the MIX, with your trims and the mix-bus limiter already on it.
+- **Optionally, one file with both — and nothing is re-encoded.** Off by
+  default. Switch on *Also save video with the sound in one file* in Settings
+  and each camera additionally gets a `..._with-sound.mov` (`.mkv` on Windows)
+  once the take stops — written **beside** the originals, never instead of
+  them, so a combine that fails costs nothing that was not already saved.
+  **The picture is copied bit for bit** and **the sound stays 24-bit PCM**
+  (FLAC in the Matroska case, which is also lossless). The combined file is
+  not a compressed convenience copy: it is the same data in one container, so
+  it is as good as the parts it was made from. The sound is the MIX, with your
+  trims and the mix-bus limiter already on it.
   The audio is trimmed to where each camera actually started, because the stems
   open before any camera does and a take laid together without accounting for
   that runs a fraction of a second out of sync. **Needs
