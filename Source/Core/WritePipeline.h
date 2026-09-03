@@ -1,12 +1,14 @@
 #pragma once
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 #include "RingBuffer.h"
 #include "SessionWriter.h"
 #include "MixBusLimiter.h"
+#include "LoudnessMeter.h"
 
 namespace mma {
 
@@ -70,6 +72,17 @@ public:
 
     bool isRunning() const noexcept { return running.load (std::memory_order_acquire); }
 
+    /// BS.1770 loudness of the mix as written, measured on the writer thread.
+    ///
+    /// Measured here rather than in the audio callback because §11 forbids this
+    /// much arithmetic per block there, and because this is the one place the
+    /// mix exists exactly as it lands on disk -- summed, trimmed and through
+    /// the limiter. A figure taken anywhere earlier would describe a mix nobody
+    /// receives.
+    double getIntegratedLufs() const;
+    double getTruePeakDbtp() const;
+    int getLoudnessBlockCount() const;
+
     /// §6.5: warn at 50% fill, degrade at 90%.
     double getFillFraction() const noexcept { return ring.fillFraction(); }
 
@@ -116,6 +129,12 @@ private:
     std::unique_ptr<SessionWriter> mirrorMixWriter;
     std::atomic<bool> mirroring { false };
     MixBusLimiter mixLimiter;
+
+    // Written by the writer thread, read by the UI. Guarded rather than atomic
+    // because it is a whole object with vectors in it, and the read is a UI
+    // tick rather than anything on a deadline.
+    std::unique_ptr<LoudnessMeter> loudness;
+    mutable std::mutex loudnessLock;
 
     std::vector<float> trimGains;      // linear, from WriteChannelSpec::trimDb
     std::vector<std::atomic<bool>> channelLive;

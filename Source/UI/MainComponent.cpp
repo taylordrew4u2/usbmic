@@ -127,6 +127,20 @@ MainComponent::MainComponent (Application& app)
         application.setMirrorEnabled (enabled);
     };
 
+    advancedPanel.onDeliveryTargetChanged = [this] (juce::String name) {
+        application.setDeliveryTarget (name);
+        refreshAdvanced();
+    };
+
+    advancedPanel.onCombineVideoToggled = [this] (bool enabled) {
+        application.setCombineVideoAndAudio (enabled);
+
+        // Straight back, so switching it on says immediately whether the
+        // machine can actually do it rather than leaving that to be discovered
+        // after the next take.
+        refreshAdvanced();
+    };
+
     advancedPanel.onDestinationFolderClicked = [this] {
         chooseDestinationFolder ([this] { refreshAdvanced(); });
     };
@@ -145,7 +159,7 @@ MainComponent::MainComponent (Application& app)
     advancedPanel.onDiagnosticsExportClicked = [this] {
         // §11: logs, recent session.json files and the device inventory. Never audio.
         const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
-                                     .getNonexistentChildFile ("MultiMicAggregator-diagnostics", ".zip");
+                                     .getNonexistentChildFile ("SobStage-diagnostics", ".zip");
         application.exportDiagnostics (destination);
     };
 
@@ -214,7 +228,16 @@ MainComponent::MainComponent (Application& app)
     // Settings button included -- is on screen at launch. At 480 the bottom
     // row sat below the fold, so the one door into Settings was reachable
     // only by scrolling. The viewport still scrolls on shorter displays.
-    setSize (720, mainScreen.getRequiredHeight() + 24);
+    // A floor as well as the main screen's own ask. The main screen is the
+    // most compact of the three -- Settings and Cameras both need more -- and
+    // sizing the window to the smallest of them left the other two scrolling
+    // from the moment they opened.
+    //
+    // The floor is a compromise rather than a fit: on a rig with a camera
+    // switched on the pictures fill this height and more, and on an audio-only
+    // rig it leaves room under the levels. Sizing to the audio-only case
+    // instead would make the window jump every time a camera was switched on.
+    setSize (760, juce::jmax (560, mainScreen.getRequiredHeight() + 24));
 
     // §8.1: meters and status are live from launch, not from record.
     refreshStatus();
@@ -487,8 +510,12 @@ void MainComponent::refreshStatus()
     {
         framesUntilStatusRefresh = kUiRefreshHz / kStatusRefreshHz;
 
+        // The app's own voice. The figure is the §6.4 remaining-time estimate
+        // either way -- the joke is in the unit, not in the number, so nothing
+        // a user relies on is being played with.
         mainScreen.setRemainingTimeText ("Room for "
-            + Application::formatDuration (application.getRemainingRecordingSeconds()));
+            + Application::formatDuration (application.getRemainingRecordingSeconds())
+            + " of feelings");
 
         // Idle: where the next take will go. Recording: the folder this one is
         // actually in, which is the specific thing a user needs and the parent
@@ -645,6 +672,11 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setAggregateStatus (application.getAggregateStatus());
     advancedPanel.setAggregateName (application.getAggregateDeviceName());
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
+    advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
+                                        application.getCombineUnavailableReason());
+    advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
+                                      application.getDeliveryTarget());
+    advancedPanel.setLoudnessAdvice (application.getLoudnessAdvice());
 
     juce::StringArray outputs;
     for (const auto& name : application.getOutputDeviceNames())

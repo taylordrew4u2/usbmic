@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 #include "../Core/CameraSelection.h"
+#include "../Core/CombinedTakePlan.h"
+#include <vector>
 
 #if JUCE_USE_CAMERA
 #include <juce_video/juce_video.h>
@@ -56,9 +58,21 @@ public:
 
     /// §6.2: one file per camera, in the session folder next to the audio.
     /// Returns false only when nothing could be started at all.
-    bool startRecording (const juce::File& sessionFolder);
+    ///
+    /// `audioStartMs` is the high-resolution millisecond counter read as the
+    /// audio take began. The sound is always started first -- the stem files
+    /// and the writer thread are opened before any camera is asked to record --
+    /// so each camera's file begins some way into the take, and how far in is
+    /// the one number the combining step cannot work out for itself. A camera
+    /// gives no timestamp for its first frame, so this is measured rather than
+    /// assumed: the counter is read again the moment the OS accepts the start.
+    bool startRecording (const juce::File& sessionFolder, double audioStartMs = 0.0);
     void stopRecording();
     bool isRecording() const { return recording; }
+
+    /// What each camera contributed to the take just finished: the file it
+    /// wrote and how late it started. Empty when nothing recorded.
+    std::vector<CombinedTakeInput> getCombinedTakeInputs() const;
 
     /// The file names this take is writing, extension included, for the panels
     /// that tell the user what to expect and what they got.
@@ -87,6 +101,9 @@ private:
         std::unique_ptr<juce::CameraDevice> device;
         int osIndex = -1;
         juce::File recordingFile;
+
+        /// Seconds after the audio's t=0 that this camera's first frame lands.
+        double startOffsetSeconds = 0.0;
     };
 
     // Keyed by the id CameraSelection uses, so the two never have to agree on

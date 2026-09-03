@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Generate the application icon from the app's own §9.2 palette.
+"""Generate the SobStage application icon from the app's own §9.2 palette.
 
-The app's identity is the skull level meter it draws for every microphone, so
-the icon is a skull in the same bone white over the same slate near-black --
-and, like the meter, filled with the accent from the jaw up to a level. That
-fill is the one thing that tells you at 32px what the app is for: a skull is a
-skull, a skull holding a level is a level meter.
+The mark is a sob face: a ring, two eyes, a downturned mouth, and one tear.
 
-It is *designed* here rather than traced from
-SkullMeterComponent::buildSkullSilhouette. That silhouette is a cranium ellipse
-over a tapered trapezoid, and its own comment says real artwork would replace
-it; rendered at icon size with no nasal cavity and no teeth it reads as a
-flowerpot rather than a skull. The palette is shared, the geometry is not.
+It replaces the skull that was here before. The skull came from the level
+meters, which is a good reason for a meter and a poor one for an icon -- at
+32px in a dock, among other icons, a skull with a fill line in it read as a
+flowerpot, and it said "recorder" to nobody. The sob face says the app's name.
+It survives the shrink because it is four shapes with daylight between them,
+and it is legible at a glance in a way a silhouette with internal detail is not.
+
+The tear is the accent, and it is the only saturated thing in the mark. That is
+deliberate: it is the smallest element, so it needs the most contrast to survive
+scaling, and it lands where the eye already goes.
 
 Run:  python3 Tools/make_icon.py
 Out:  Resources/AppIcon.png (1024x1024, transparent rounded corners)
@@ -21,153 +22,92 @@ import os
 from PIL import Image, ImageDraw
 
 # §9.2 palette, from the `palette` namespace in Source/UI/AppLookAndFeel.h.
-BONE = (227, 234, 242)          # palette::bone
-BONE_SHADE = (183, 196, 212)    # bone, shaded, so the skull has form not flatness
-ACCENT = (34, 211, 238)         # palette::accent
-ACCENT_SHADE = (22, 168, 190)
-SOCKET = (10, 14, 19)           # palette::background
+BONE = (227, 234, 242)          # palette::bone -- the face itself
+ACCENT = (34, 211, 238)         # palette::accent -- the tear, and only the tear
 BACKDROP_TOP = (28, 39, 51)     # palette::surfaceHigh
 BACKDROP_BOTTOM = (10, 14, 19)  # palette::background
 
-# Where the accent fill stops, in skull-box units. Chosen so the jaw and the
-# teeth sit inside it and the eye sockets stay clear of it: the fill has to
-# read as a level, and a boundary crossing the sockets reads as damage. It also
-# clears the nasal cavity, which at 0.66 the fill line ran exactly through --
-# so the nose sat on the boundary and the whole thing read as a dip line.
-FILL_LEVEL = 0.700
-
 SIZE = 1024
-SS = 3
+SS = 3  # supersample factor: drawn large, resized down, so every curve is clean
 W = SIZE * SS
-CORNER = int(W * 0.2237)          # macOS squircle corner radius
+
+CORNER = 0.2246 * SIZE  # macOS squircle-ish corner radius at 1024
 
 
-def cubic(p0, c1, c2, p3, steps=90):
-    out = []
-    for i in range(steps + 1):
-        t = i / steps
-        u = 1 - t
-        out.append((
-            u**3 * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t**3 * p3[0],
-            u**3 * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t**3 * p3[1],
-        ))
-    return out
+def lerp(a, b, t):
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
-# Right half of the skull outline, top of the cranium down to the chin, in a
-# unit box. Mirrored to make the left half, so the skull is exactly symmetric.
-HALF = [
-    ((0.500, 0.028), (0.762, 0.028), (0.936, 0.212), (0.936, 0.404)),  # dome -> temple
-    ((0.936, 0.404), (0.936, 0.536), (0.884, 0.596), (0.812, 0.639)),  # temple -> cheekbone
-    ((0.812, 0.639), (0.772, 0.663), (0.748, 0.696), (0.736, 0.744)),  # cheek -> jaw corner
-    ((0.736, 0.744), (0.722, 0.868), (0.638, 0.958), (0.500, 0.972)),  # jaw -> chin
-]
+def backdrop(img):
+    """A vertical gradient, so the mark sits on something with depth rather
+    than on a flat rectangle that reads as a placeholder at large sizes."""
+    d = ImageDraw.Draw(img)
+    for y in range(W):
+        d.line([(0, y), (W, y)], fill=lerp(BACKDROP_TOP, BACKDROP_BOTTOM, y / W))
 
 
-def skull_outline(box):
-    """Unit-space outline scaled into (x, y, w, h)."""
-    bx, by, bw, bh = box
-    pts = []
-    for seg in HALF:
-        pts += cubic(*seg)
-    # Mirror back up the left side.
-    pts += [(1.0 - x, y) for x, y in reversed(pts)]
-    return [(bx + x * bw, by + y * bh) for x, y in pts]
+def rounded_mask():
+    """Transparent corners. Every platform draws its own mask over an icon, but
+    a square PNG shows its corners in file listings and in the DMG window."""
+    mask = Image.new("L", (W, W), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, W - 1, W - 1],
+                                           radius=CORNER * SS, fill=255)
+    return mask
 
 
-def vertical_gradient(top, bottom, height):
-    g = Image.new("RGB", (1, height))
-    px = g.load()
-    for y in range(height):
-        t = y / (height - 1)
-        px[0, y] = tuple(round(a + (b - a) * t) for a, b in zip(top, bottom))
-    return g.resize((W, W))
+def draw_face(d):
+    cx = cy = W / 2
+
+    # The ring. Sized so the face fills the icon without touching the corners,
+    # which is where a platform mask bites hardest.
+    r = W * 0.335
+    stroke = W * 0.052
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=BONE, width=round(stroke))
+
+    # Eyes. Round, and set wide and high -- close-set eyes read as a scowl, and
+    # the expression has to be unhappy rather than angry.
+    eye_r = W * 0.042
+    eye_dx = W * 0.125
+    eye_y = cy - W * 0.075
+    for sx in (-1, 1):
+        ex = cx + sx * eye_dx
+        d.ellipse([ex - eye_r, eye_y - eye_r, ex + eye_r, eye_y + eye_r], fill=BONE)
+
+    # The mouth: an arc of a circle centred *below* the face, so what shows is
+    # the top of that circle -- a frown. Drawing the bottom of a circle centred
+    # above would give the same curve upside down, which is the classic way this
+    # mark comes out smiling.
+    mouth_r = W * 0.15
+    mouth_cy = cy + W * 0.235
+    d.arc([cx - mouth_r, mouth_cy - mouth_r, cx + mouth_r, mouth_cy + mouth_r],
+          start=200, end=340, fill=BONE, width=round(W * 0.042))
+
+    # The tear, under the left eye. A circle and a triangle sharing an edge:
+    # round at the bottom, pointed at the top, which is the shape a falling drop
+    # actually has.
+    # Set low enough to clear the eye. At ty = eye_y + 0.135W the drop's point
+    # landed inside the eye it falls from, and the two merged into one blob the
+    # moment the icon was scaled down.
+    tx = cx - eye_dx
+    ty = eye_y + W * 0.180
+    drop_r = W * 0.043
+    d.ellipse([tx - drop_r, ty - drop_r, tx + drop_r, ty + drop_r], fill=ACCENT)
+    d.polygon([(tx, ty - drop_r * 2.5), (tx - drop_r, ty), (tx + drop_r, ty)],
+              fill=ACCENT)
 
 
 def main():
-    icon = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+    img = Image.new("RGB", (W, W))
+    backdrop(img)
+    draw_face(ImageDraw.Draw(img))
 
-    # Backdrop: slate near-black squircle.
-    mask = Image.new("L", (W, W), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, W - 1, W - 1], CORNER, fill=255)
-    icon.paste(vertical_gradient(BACKDROP_TOP, BACKDROP_BOTTOM, W), (0, 0), mask)
+    out = img.convert("RGBA")
+    out.putalpha(rounded_mask())
+    out = out.resize((SIZE, SIZE), Image.LANCZOS)
 
-    # Skull, centred with margin so it stays clear of the squircle corners.
-    bw = W * 0.615
-    bh = W * 0.680
-    box = ((W - bw) / 2.0, W * 0.150, bw, bh)
-    bx, by, _, _ = box
-
-    skull = Image.new("L", (W, W), 0)
-    ImageDraw.Draw(skull).polygon(skull_outline(box), fill=255)
-
-    # Bone with a soft top-down shade, so it has form rather than reading flat.
-    icon.paste(vertical_gradient(BONE, BONE_SHADE, W), (0, 0), skull)
-
-    # The accent fill, from the jaw up to FILL_LEVEL, clipped to the silhouette
-    # exactly the way SkullMeterComponent clips its own fill to the same shape.
-    fill_top = int(by + FILL_LEVEL * bh)
-    fill_mask = Image.new("L", (W, W), 0)
-    ImageDraw.Draw(fill_mask).rectangle([0, fill_top, W - 1, W - 1], fill=255)
-    fill_mask = Image.composite(skull, Image.new("L", (W, W), 0), fill_mask)
-    icon.paste(vertical_gradient(ACCENT, ACCENT_SHADE, W), (0, 0), fill_mask)
-
-    cut = Image.new("L", (W, W), 0)
-    d = ImageDraw.Draw(cut)
-
-    def ux(v):
-        return bx + v * bw
-
-    def uy(v):
-        return by + v * bh
-
-    # Eye sockets: large and slightly tilted inward. The single strongest cue
-    # that this is a skull, so they get the most area.
-    for cx, tilt in ((0.310, -1), (0.690, 1)):
-        socket = Image.new("L", (W, W), 0)
-        rx, ry = bw * 0.163, bh * 0.132
-        ImageDraw.Draw(socket).ellipse(
-            [ux(cx) - rx, uy(0.408) - ry, ux(cx) + rx, uy(0.408) + ry], fill=255)
-        socket = socket.rotate(tilt * 9, center=(ux(cx), uy(0.408)), resample=Image.BILINEAR)
-        cut.paste(socket, (0, 0), socket)
-
-    # Nasal cavity: inverted teardrop. Without it the face reads as a mask.
-    d.polygon([(ux(0.500), uy(0.512)),
-               (ux(0.573), uy(0.646)),
-               (ux(0.500), uy(0.668)),
-               (ux(0.427), uy(0.646))], fill=255)
-
-    # Mouth: one band of teeth, not two. A second row plus a dividing line
-    # turns into a waffle grid once this is scaled to 32px.
-    left, right = ux(0.300), ux(0.700)
-    top_y, bot_y = uy(0.744), uy(0.862)
-    d.rounded_rectangle([left, top_y, right, bot_y], radius=bw * 0.026, fill=255)
-
-    # Everything cut from the face is clipped to the silhouette, so the mouth
-    # band cannot bleed past the jaw and leave dark tabs floating outside it.
-    cut = Image.composite(cut, Image.new("L", (W, W), 0), skull)
-    icon.paste(Image.new("RGB", (W, W), SOCKET), (0, 0), cut)
-
-    # Put the teeth back as bone bars dividing that band.
-    teeth = Image.new("L", (W, W), 0)
-    td = ImageDraw.Draw(teeth)
-    n = 5
-    for i in range(1, n):
-        x = left + (right - left) * i / n
-        td.rectangle([x - bw * 0.013, top_y, x + bw * 0.013, bot_y], fill=255)
-    teeth = Image.composite(skull, Image.new("L", (W, W), 0), teeth)
-    # In the accent, not in bone: the teeth are below FILL_LEVEL, so painting
-    # them bone would punch two rows of holes in the level.
-    icon.paste(vertical_gradient(ACCENT, ACCENT_SHADE, W), (0, 0), teeth)
-
-    icon = icon.resize((SIZE, SIZE), Image.LANCZOS)
-
-    out_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Resources")
-    os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, "AppIcon.png")
-    icon.save(out)
-    print(f"wrote {out} ({icon.size[0]}x{icon.size[1]})")
+    path = os.path.join(os.path.dirname(__file__), "..", "Resources", "AppIcon.png")
+    out.save(os.path.normpath(path))
+    print("wrote", os.path.normpath(path))
 
 
 if __name__ == "__main__":

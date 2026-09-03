@@ -2,6 +2,8 @@
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Core/ClockMasterResolver.h"
+#include "../Core/CombinedTakePlan.h"
+#include "../Core/LoudnessMeter.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
@@ -178,6 +180,79 @@ void Application::setCameraTileScale (int step)
     saveSettings();
 }
 
+void Application::setCombineVideoAndAudio (bool shouldCombine)
+{
+    if (shouldCombine == combineVideoAndAudio)
+        return;
+
+    combineVideoAndAudio = shouldCombine;
+    saveSettings();
+}
+
+juce::String Application::getCombineUnavailableReason()
+{
+    if (! combineVideoAndAudio)
+        return {};
+
+    if (takeCombiner.findFfmpeg().isNotEmpty())
+        return {};
+
+    // §10.6: named before a take rather than discovered after one. Finding out
+    // that the combined file was never possible is worth knowing while there is
+    // still time to install the thing, not once the recording is over.
+    return "Combined video needs ffmpeg, which isn't installed. Your picture and "
+           "sound will still both be recorded, as separate files. On a Mac: "
+           "brew install ffmpeg.";
+}
+
+void Application::setDeliveryTarget (const juce::String& name)
+{
+    if (name == deliveryTarget)
+        return;
+
+    deliveryTarget = name;
+    saveSettings();
+}
+
+juce::StringArray Application::getDeliveryTargetNames()
+{
+    juce::StringArray names;
+    for (const auto& target : streamingTargets())
+        names.add (juce::String (target.name));
+    return names;
+}
+
+juce::String Application::getLoudnessReading() const
+{
+    if (capture == nullptr || capture->getLoudnessBlockCount() < kMinimumBlocksToJudge)
+        return {};
+
+    const double lufs = capture->getIntegratedLufs();
+
+    if (lufs <= LoudnessMeter::kAbsoluteGateLufs)
+        return {};
+
+    return juce::String (lufs, 1) + " LUFS";
+}
+
+juce::String Application::getLoudnessAdvice() const
+{
+    if (deliveryTarget.isEmpty() || capture == nullptr)
+        return {};
+
+    const auto* target = findStreamingTarget (deliveryTarget.toStdString());
+
+    if (target == nullptr)
+        return {};
+
+    const auto advice = adviseForTarget (*target,
+                                         capture->getIntegratedLufs(),
+                                         capture->getTruePeakDbtp(),
+                                         capture->getLoudnessBlockCount());
+
+    return juce::String (advice.summary);
+}
+
 void Application::openEnabledCameras()
 {
     cameraController.applySelection();
@@ -304,7 +379,7 @@ void Application::publishAggregateDevice()
 void Application::setAggregateDeviceName (const juce::String& name)
 {
     const auto trimmed = name.trim();
-    aggregateName = trimmed.isEmpty() ? juce::String ("Multi-Mic Aggregator") : trimmed;
+    aggregateName = trimmed.isEmpty() ? juce::String ("SobStage") : trimmed;
     publishAggregateDevice();
     saveSettings();
 }
@@ -941,7 +1016,13 @@ void Application::toggleRecording()
                 // camera the user switched on but never looked at is opened
                 // here rather than being quietly left out of the take.
                 openEnabledCameras();
-                cameraController.startRecording (juce::File (folder));
+
+                // recordingStartMs is the audio take's t=0. Handing it over is
+                // what lets each camera record how far into the take its own
+                // first frame lands -- the one number the combining step
+                // cannot work out afterwards, since a camera file carries no
+                // timestamp tying it to the session.
+                cameraController.startRecording (juce::File (folder), recordingStartMs);
 
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
@@ -983,6 +1064,24 @@ void Application::toggleRecording()
         // records are the take's final ones -- and before recordingStartMs is
         // cleared, or every timestamp inside it would read as zero.
         writeSessionMetadata (true);
+
+        // The combined file, if it was asked for. Started only once every input
+        // is closed and complete, and run on its own thread: copying a
+        // four-hour picture is minutes of work, and none of it may happen on
+        // the thread drawing the meters.
+        //
+        // Nothing here can cost anyone the take. The inputs are finished files
+        // that this only reads, and a failure leaves the folder exactly as it
+        // was -- separate, complete, and playable.
+        if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
+        {
+            const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
+                                                     cameraController.getCombinedTakeInputs(),
+                                                     "MIX.wav");
+
+            if (plan.hasWork())
+                takeCombiner.start (juce::File (currentSessionFolder), plan);
+        }
 
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
         // read without becoming furniture.
@@ -2047,11 +2146,22 @@ void Application::loadSettings()
 
     askWhereToSaveEveryTime = rememberedSettings.askWhereToSaveEveryTime;
     mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
-    aggregateName = juce::String (rememberedSettings.aggregateName);
+    // §7: what other apps see. A settings file written under the app's previous
+    // name carries that name here, and carrying it forward would leave the
+    // device in everyone's Zoom and OBS still called the old thing -- a rename
+    // everywhere except the one place other software looks.
+    //
+    // Only the untouched default is moved. Someone who typed their own name
+    // into this field meant it, and it is not ours to overwrite.
+    aggregateName = rememberedSettings.aggregateName == "Multi-Mic Aggregator"
+                        ? juce::String ("SobStage")
+                        : juce::String (rememberedSettings.aggregateName);
     masterVolume = rememberedSettings.masterVolume;
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
     cameraTileScale = rememberedSettings.cameraTileScale;
+    combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
+    deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2106,6 +2216,8 @@ void Application::saveSettings()
     settings.masterVolume = masterVolume;
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
     settings.cameraTileScale = cameraTileScale;
+    settings.combineVideoAndAudio = combineVideoAndAudio;
+    settings.deliveryTarget = deliveryTarget.toStdString();
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });
@@ -2136,9 +2248,34 @@ void Application::saveSettings()
 
 juce::File Application::getLogFile()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-        .getChildFile ("MultiMicAggregator")
-        .getChildFile ("log.txt");
+    return getSupportFolder().getChildFile ("log.txt");
+}
+
+juce::File Application::getSupportFolder()
+{
+    const auto appData = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+    const auto current = appData.getChildFile ("SobStage");
+
+    // The app was called something else before, and everything §2.4 remembers
+    // about a rig -- every microphone's name and trim, which ones are switched
+    // off, the destination folder, the backup setting -- lives in this folder
+    // under that old name. A rename that simply looked somewhere new would
+    // present as every one of those being forgotten, which is precisely the
+    // §10.1 failure the settings file exists to prevent: being asked the same
+    // questions again.
+    //
+    // So the old folder is moved across, once, the first time the new name is
+    // used. Moved rather than copied: two folders would then drift, and the
+    // one being written to is not the one a user going looking would find.
+    if (! current.isDirectory())
+    {
+        const auto previous = appData.getChildFile ("MultiMicAggregator");
+
+        if (previous.isDirectory())
+            previous.moveFileTo (current);
+    }
+
+    return current;
 }
 
 namespace {

@@ -63,7 +63,7 @@ public:
                                                                         &kCFTypeDictionaryKeyCallBacks,
                                                                         &kCFTypeDictionaryValueCallBacks);
 
-        CFStringRef cfName = makeCFString (name.empty() ? "Multi-Mic Aggregator" : name);
+        CFStringRef cfName = makeCFString (name.empty() ? "SobStage" : name);
         CFStringRef cfAggregateUid = makeCFString (kOurAggregateUid);
         CFDictionarySetValue (description, CFSTR (kAudioAggregateDeviceNameKey), cfName);
         CFDictionarySetValue (description, CFSTR (kAudioAggregateDeviceUIDKey), cfAggregateUid);

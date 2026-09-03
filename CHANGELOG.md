@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.9.0 — 2026-09-03
+
+### Added -- aim the loudness at where the take is actually going
+
+Every streaming service turns everything it plays to the same loudness. So
+how loud a take is decides what a listener hears, and the peak meters this app
+already had say nothing about it: two takes peaking at the same number can be
+six decibels apart to the ear, and it is the louder one the platform turns
+down.
+
+Pick where the take is going in Settings and the app measures the mix the way
+the platforms do -- ITU-R BS.1770, K-weighted and gated, the same standard they
+all normalise against -- then says which way to move and by how much. Nothing
+is changed for you. The stems stay at unity, as they always have.
+
+The gating matters more than it sounds. Ungated, a recording of someone talking
+with pauses measures quieter than the same voice without them, so the advice
+would be "turn it up" for nothing more than leaving space to breathe. The two
+gates in the standard are what stop that.
+
+Two things the app now knows that are easy to get wrong:
+
+**Mono needs a different number.** Every file this app writes is mono, and a
+mono file played through both speakers is the same signal twice -- which
+measures 3 LU louder than the single channel. Delivered at Spotify's published
+-14, a mono take plays back at -11: three decibels hotter than everything
+around it, every time. So the aim is -17 mono for Spotify, -19 for Apple
+Podcasts, and the advice says so rather than quietly applying it.
+
+**It will not tell you to clip.** If a take is under the target but its peaks
+are already near the platform's ceiling, the suggested gain is cut to what the
+ceiling allows and the app says why. Meeting a loudness figure by clipping
+trades a number the platform would have fixed anyway for distortion it cannot.
+
+True peak is measured rather than assumed from the sample peak, because a
+waveform can pass between two samples higher than either -- a file that looks
+like it sits at -1 dBFS can still clip a platform's decoder.
+
+Targets are the platforms' own published figures: Spotify, YouTube, Amazon and
+Tidal at -14; Apple Music and Apple Podcasts at -16; EBU R128 broadcast at -23.
+Off by default -- someone recording a rehearsal is not delivering anywhere, and
+a number telling them they are 8 dB under Spotify is noise.
+
+### Changed -- the app is called SobStage
+
+The name changes everywhere it is visible: the window, the .app bundle, the
+Windows executable, the DMG, and the virtual device other apps see in their
+input list. Anyone who had renamed that device keeps their own name; anyone who
+had not will find "SobStage" where "Multi-Mic Aggregator" used to be, and will
+need to pick it again once in Zoom, OBS or whatever else was pointed at it.
+
+Everything the app remembers about a rig moves with it. Every microphone's name
+and trim, which ones are switched off, the destination folder, the backup
+setting and the camera choices all live in a folder named after the app, and a
+rename that simply looked somewhere new would have presented as all of it being
+forgotten -- which is exactly the thing the settings file exists to prevent. The
+old folder is moved across the first time the new name is used.
+
+The internal namespace is still `mma`. It is not visible anywhere a user can
+look, and renaming it would have touched a hundred files without changing
+anything.
+
+### Added -- save the video with the sound in one file
+
+The picture and the sound have always been written separately, for a reason
+worth keeping: the platform camera capture is video-only, the microphones are
+the sound, and one clean track per person is the point of the rig. But separate
+files mean opening an editor before anyone can watch, send or upload a take.
+
+Switching this on writes one more file per camera with both in it, beside the
+originals rather than instead of them. The stems, the mix and the silent video
+all stay exactly where they were, so a combined file that fails to appear costs
+nothing that was not already saved. It is off by default: it costs disk and
+minutes of processing after every take, and nobody who does not want it pays.
+
+The sound is lined up rather than assumed to match. The stems start before any
+camera is asked to record, so a camera's file begins a fraction of a second into
+the take -- small enough to look like nothing, large enough to look wrong.
+How far in is measured for each camera as it starts, and that much is trimmed
+off the front of the audio.
+
+The picture is copied rather than re-encoded, so the file appears in minutes
+rather than hours and loses nothing. That means the container has to be one that
+can carry what the camera already wrote: mp4 on macOS, Matroska on Windows,
+whose format mp4 cannot legally hold.
+
+This needs ffmpeg, which the app cannot install for anyone. If it is missing,
+the toggle says so and says how to get it -- before a take rather than after
+one, since finding out afterwards is too late to do anything about.
+
 ## v0.8.0 — 2026-09-01
 
 ### Added -- the camera pictures can be resized from the main screen

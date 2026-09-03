@@ -45,7 +45,7 @@ struct AppSettings
     bool askWhereToSaveEveryTime = false;
 
     bool mirrorEnabled = true;                          // §6.3, default on
-    std::string aggregateName = "Multi-Mic Aggregator"; // §7, what other apps see
+    std::string aggregateName = "SobStage"; // §7, what other apps see
     double masterVolume = 70.0;                         // §5.1 default
     bool cameraPreviewFullQuality = false;
 
@@ -55,6 +55,20 @@ struct AppSettings
     /// row -- and re-making it every launch is the §10.1 failure of asking the
     /// same question twice.
     int cameraTileScale = 1;
+
+    /// Whether a take also writes one video-with-sound file per camera.
+    ///
+    /// Off by default. It costs disk and minutes of CPU after every take, and
+    /// the picture and sound are already both saved and already aligned by the
+    /// shared session origin -- so this is for the person who wants a file they
+    /// can send without opening an editor, and nobody else pays for it.
+    bool combineVideoAndAudio = false;
+
+    /// Which platform's loudness the take is being aimed at, by name, or empty
+    /// for none. Off by default: someone recording a rehearsal is not
+    /// delivering to anything, and a number telling them they are 8 dB under
+    /// Spotify is noise.
+    std::string deliveryTarget;
 
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
