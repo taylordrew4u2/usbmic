@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.9.3 — 2026-09-03
+
+### Fixed -- the app now reports the version it actually is
+
+`getApplicationVersion()` returned a hardcoded "0.1.0". The window title
+had therefore misreported the version on every build from v0.1.0 to
+v0.9.2 -- nine releases -- and the one place a user could read it was
+wrong the whole time.
+
+It now comes from the version in CMakeLists.txt, which is the single
+place the number is written down, so it cannot go stale again.
+
+### Added -- the version is on screen
+
+Beside the tagline, at the top of the main window. "Which build am I
+running" is the first question asked when a change appears not to have
+arrived, and an answer that takes hunting through menus is an answer
+nobody checks.
+
+This is not hypothetical. A report that the enlarged camera picture had
+not changed turned out to be an older build still installed, and nothing
+in the app could have shown that.
+
+
 ## v0.9.2 — 2026-09-03
 
 ### Changed -- the camera picture is as big as the window will allow
