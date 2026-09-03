@@ -70,6 +70,18 @@ AdvancedPanel::AdvancedPanel()
     mirrorToggle.onClick = [this] { if (onMirrorToggled) onMirrorToggled (mirrorToggle.getToggleState()); };
     addAndMakeVisible (mirrorToggle);
 
+    // Off by default: it costs disk and minutes of CPU after every take, and
+    // the picture and the sound are already both saved and already aligned by
+    // the session origin. Nobody who does not want it should pay for it.
+    combineVideoToggle.setToggleState (false, juce::dontSendNotification);
+    combineVideoToggle.onClick = [this]
+    { if (onCombineVideoToggled) onCombineVideoToggled (combineVideoToggle.getToggleState()); };
+    addAndMakeVisible (combineVideoToggle);
+
+    combineVideoNote.setJustificationType (juce::Justification::topLeft);
+    combineVideoNote.setFont (juce::Font (12.0f));
+    addAndMakeVisible (combineVideoNote);
+
     destinationFolderButton.onClick = [this] { if (onDestinationFolderClicked) onDestinationFolderClicked(); };
     addAndMakeVisible (destinationFolderButton);
 
@@ -385,6 +397,17 @@ void AdvancedPanel::resized()
     // rather than orphaned at the bottom between the aggregate device and the
     // diagnostics button.
     mirrorToggle.setBounds (area.removeFromTop (26));
+
+    // With the backup copy, because both are answers to "what else ends up on
+    // my disk when I stop".
+    combineVideoToggle.setBounds (area.removeFromTop (26));
+
+    // Only takes room when it has something to say, so the panel does not
+    // carry an empty line for everyone whose machine is set up correctly.
+    combineVideoNote.setBounds (combineVideoNote.getText().isEmpty()
+                                    ? juce::Rectangle<int>()
+                                    : area.removeFromTop (32).reduced (20, 0));
+
     area.removeFromTop (16);
 
     section (formatSection);
@@ -422,6 +445,20 @@ void AdvancedPanel::resized()
     area.removeFromTop (16);
 
     diagnosticsExportButton.setBounds (area.removeFromTop (30).removeFromLeft (180));
+}
+
+
+void AdvancedPanel::setCombineVideoState (bool on, const juce::String& unavailableReason)
+{
+    combineVideoToggle.setToggleState (on, juce::dontSendNotification);
+
+    // §10.6: what is missing and what to do about it, under the control it
+    // affects. The toggle stays usable either way -- switching it on with no
+    // ffmpeg installed is a reasonable thing to do just before installing it,
+    // and a disabled control with an explanation nobody can act on is worse
+    // than an enabled one that says what it needs.
+    combineVideoNote.setText (unavailableReason, juce::dontSendNotification);
+    resized();
 }
 
 } // namespace mma

@@ -29,6 +29,7 @@
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
 #include "CameraController.h"
+#include "TakeCombiner.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 #include "../Platform/SystemAggregateDevice.h"
@@ -328,6 +329,20 @@ public:
     void setCameraTileScale (int step);
     int getCameraTileScale() const noexcept { return cameraTileScale; }
 
+    /// Whether a finished take also writes one video-with-sound file per
+    /// camera, beside the separate picture and sound rather than instead of
+    /// them. Off by default: it costs disk and minutes of CPU after every take,
+    /// and both files are already saved and already aligned.
+    void setCombineVideoAndAudio (bool shouldCombine);
+    bool getCombineVideoAndAudio() const noexcept { return combineVideoAndAudio; }
+
+    /// How the combining of the last take is going, for the line that says so.
+    TakeCombiner::Status getCombineStatus() const { return takeCombiner.getStatus(); }
+
+    /// Empty unless the machine has no ffmpeg and the setting is on -- the one
+    /// thing this feature needs that the app cannot install for the user.
+    juce::String getCombineUnavailableReason();
+
     /// §6.5 "target card removed": set when a take was stopped because the
     /// destination stopped accepting writes, and consumed once by the UI that
     /// alerts about it. Empty the rest of the time.
@@ -409,6 +424,8 @@ private:
     // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
     // fixed-width detectors in SetupAdvisor.
     CameraController cameraController;
+    TakeCombiner takeCombiner;
+    bool combineVideoAndAudio = false;
 
     std::unique_ptr<TapToNameDetector> tapDetector;
     int tapDetectorChannels = 0;

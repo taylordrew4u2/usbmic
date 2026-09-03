@@ -56,6 +56,14 @@ struct AppSettings
     /// same question twice.
     int cameraTileScale = 1;
 
+    /// Whether a take also writes one video-with-sound file per camera.
+    ///
+    /// Off by default. It costs disk and minutes of CPU after every take, and
+    /// the picture and sound are already both saved and already aligned by the
+    /// shared session origin -- so this is for the person who wants a file they
+    /// can send without opening an editor, and nobody else pays for it.
+    bool combineVideoAndAudio = false;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,
