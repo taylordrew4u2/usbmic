@@ -120,7 +120,8 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.8.0**. The recording engine is mature — it is covered by 331
+This is **v0.9.0**, and the first release called SobStage. The recording
+engine is mature — it is covered by 372
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
