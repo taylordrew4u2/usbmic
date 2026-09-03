@@ -40,7 +40,19 @@ public:
     SobStageApplication() = default;
 
     const juce::String getApplicationName() override    { return JUCE_APPLICATION_NAME_STRING; }
-    const juce::String getApplicationVersion() override { return "0.1.0"; }
+    const juce::String getApplicationVersion() override
+    {
+        // From CMake's project() version, not typed again here. The literal
+        // this replaces said 0.1.0 on every build from v0.1.0 to v0.9.2, so
+        // the one place a user could read the version was wrong for nine
+        // releases -- and "which build am I running" is the first question
+        // asked when a change appears not to have arrived.
+       #if defined (SOBSTAGE_VERSION_STRING)
+        return SOBSTAGE_VERSION_STRING;
+       #else
+        return "dev";
+       #endif
+    }
     bool moreThanOneInstanceAllowed() override          { return false; }
 
     void initialise (const juce::String&) override
