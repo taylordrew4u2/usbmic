@@ -15,6 +15,7 @@ JsonValue AppSettings::toJson() const
     root["cameraPreviewFullQuality"] = JsonValue (cameraPreviewFullQuality);
     root["cameraTileScale"] = JsonValue (static_cast<double> (cameraTileScale));
     root["combineVideoAndAudio"] = JsonValue (combineVideoAndAudio);
+    root["deliveryTarget"] = JsonValue (deliveryTarget);
 
     JsonValue portArr = JsonValue::makeArray();
     for (const auto& p : ports)
@@ -64,6 +65,7 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("cameraPreviewFullQuality")) s.cameraPreviewFullQuality = p->asBool (false);
     if (auto* p = v.find ("cameraTileScale")) s.cameraTileScale = static_cast<int> (p->asDouble (1.0));
     if (auto* p = v.find ("combineVideoAndAudio")) s.combineVideoAndAudio = p->asBool (false);
+    if (auto* p = v.find ("deliveryTarget")) s.deliveryTarget = p->asString ("");
 
     if (auto* p = v.find ("ports"))
         for (const auto& pv : p->asArray())

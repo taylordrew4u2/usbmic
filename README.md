@@ -261,6 +261,41 @@ has this same step.
   location and an **Open the folder** button. If the files came out empty it
   says so, and says to check the mute switches on the mics.
 
+### Loudness — aiming at where the take is going
+
+- **Every streaming service turns everything it plays to the same loudness.**
+  So how loud your take is decides what people hear, and peak meters can't tell
+  you: two takes peaking at the same number can be 6 dB apart to the ear, and
+  it's the louder one that gets turned down.
+- **Pick where it's going in Settings** and the app measures the mix the way the
+  platforms do — [ITU-R BS.1770](https://www.itu.int/rec/R-REC-BS.1770), K-weighted
+  and gated, the same standard they all normalise against — then says which way
+  to move and by how much. **Nothing is changed for you**; the stems stay at unity.
+- **Mono needs a different number, and this is the part that catches people.**
+  Every file this app writes is mono, and a mono file played through both
+  speakers is the same signal twice — which measures **3 LU louder** than the
+  single channel. Delivered at Spotify's published −14, a mono take plays back
+  at −11: three decibels hotter than everything around it. So the aim here is
+  **−17 mono for Spotify** and **−19 for Apple Podcasts**, and the app says so
+  rather than quietly applying it.
+- **It will never tell you to clip.** Under the target but already peaking near
+  the platform's ceiling? The suggested gain is cut to what the ceiling allows,
+  and it says why. Meeting a loudness figure by clipping trades a number the
+  platform would have fixed anyway for distortion it can't.
+- **True peak, not sample peak.** A waveform can pass between two samples higher
+  than either, so a file that looks like it sits at −1 dBFS can still clip a
+  platform's decoder.
+- Targets are the platforms' own published figures: Spotify, YouTube, Amazon and
+  Tidal at −14 LUFS; Apple Music and Apple Podcasts at −16; EBU R128 broadcast at
+  −23. All with a −1 dBTP ceiling. Off by default — a rehearsal isn't being
+  delivered anywhere.
+
+**What to aim for at the microphone**, which is a different question: record so
+peaks land around −12 to −6 dBFS and never touch 0. Headroom is free before the
+take and impossible after it — a clipped sample cannot be un-clipped, whereas a
+quiet-but-clean take is one gain move from correct, which is exactly the move
+this feature works out for you.
+
 ### Cameras
 
 - **Turn on any camera that's plugged in** from the **Cameras** button on the

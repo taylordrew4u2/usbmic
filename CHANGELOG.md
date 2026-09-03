@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Added -- aim the loudness at where the take is actually going
+
+Every streaming service turns everything it plays to the same loudness. So
+how loud a take is decides what a listener hears, and the peak meters this app
+already had say nothing about it: two takes peaking at the same number can be
+six decibels apart to the ear, and it is the louder one the platform turns
+down.
+
+Pick where the take is going in Settings and the app measures the mix the way
+the platforms do -- ITU-R BS.1770, K-weighted and gated, the same standard they
+all normalise against -- then says which way to move and by how much. Nothing
+is changed for you. The stems stay at unity, as they always have.
+
+The gating matters more than it sounds. Ungated, a recording of someone talking
+with pauses measures quieter than the same voice without them, so the advice
+would be "turn it up" for nothing more than leaving space to breathe. The two
+gates in the standard are what stop that.
+
+Two things the app now knows that are easy to get wrong:
+
+**Mono needs a different number.** Every file this app writes is mono, and a
+mono file played through both speakers is the same signal twice -- which
+measures 3 LU louder than the single channel. Delivered at Spotify's published
+-14, a mono take plays back at -11: three decibels hotter than everything
+around it, every time. So the aim is -17 mono for Spotify, -19 for Apple
+Podcasts, and the advice says so rather than quietly applying it.
+
+**It will not tell you to clip.** If a take is under the target but its peaks
+are already near the platform's ceiling, the suggested gain is cut to what the
+ceiling allows and the app says why. Meeting a loudness figure by clipping
+trades a number the platform would have fixed anyway for distortion it cannot.
+
+True peak is measured rather than assumed from the sample peak, because a
+waveform can pass between two samples higher than either -- a file that looks
+like it sits at -1 dBFS can still clip a platform's decoder.
+
+Targets are the platforms' own published figures: Spotify, YouTube, Amazon and
+Tidal at -14; Apple Music and Apple Podcasts at -16; EBU R128 broadcast at -23.
+Off by default -- someone recording a rehearsal is not delivering anywhere, and
+a number telling them they are 8 dB under Spotify is noise.
+
 ### Changed -- the app is called SobStage
 
 The name changes everywhere it is visible: the window, the .app bundle, the

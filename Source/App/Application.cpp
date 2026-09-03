@@ -3,6 +3,7 @@
 #include "../Platform/ReducedMotion.h"
 #include "../Core/ClockMasterResolver.h"
 #include "../Core/CombinedTakePlan.h"
+#include "../Core/LoudnessMeter.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
@@ -202,6 +203,54 @@ juce::String Application::getCombineUnavailableReason()
     return "Combined video needs ffmpeg, which isn't installed. Your picture and "
            "sound will still both be recorded, as separate files. On a Mac: "
            "brew install ffmpeg.";
+}
+
+void Application::setDeliveryTarget (const juce::String& name)
+{
+    if (name == deliveryTarget)
+        return;
+
+    deliveryTarget = name;
+    saveSettings();
+}
+
+juce::StringArray Application::getDeliveryTargetNames()
+{
+    juce::StringArray names;
+    for (const auto& target : streamingTargets())
+        names.add (juce::String (target.name));
+    return names;
+}
+
+juce::String Application::getLoudnessReading() const
+{
+    if (capture == nullptr || capture->getLoudnessBlockCount() < kMinimumBlocksToJudge)
+        return {};
+
+    const double lufs = capture->getIntegratedLufs();
+
+    if (lufs <= LoudnessMeter::kAbsoluteGateLufs)
+        return {};
+
+    return juce::String (lufs, 1) + " LUFS";
+}
+
+juce::String Application::getLoudnessAdvice() const
+{
+    if (deliveryTarget.isEmpty() || capture == nullptr)
+        return {};
+
+    const auto* target = findStreamingTarget (deliveryTarget.toStdString());
+
+    if (target == nullptr)
+        return {};
+
+    const auto advice = adviseForTarget (*target,
+                                         capture->getIntegratedLufs(),
+                                         capture->getTruePeakDbtp(),
+                                         capture->getLoudnessBlockCount());
+
+    return juce::String (advice.summary);
 }
 
 void Application::openEnabledCameras()
@@ -2112,6 +2161,7 @@ void Application::loadSettings()
                                             ? PreviewQuality::Full : PreviewQuality::Low);
     cameraTileScale = rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
+    deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2167,6 +2217,7 @@ void Application::saveSettings()
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
     settings.cameraTileScale = cameraTileScale;
     settings.combineVideoAndAudio = combineVideoAndAudio;
+    settings.deliveryTarget = deliveryTarget.toStdString();
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });

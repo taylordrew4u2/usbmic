@@ -52,6 +52,8 @@ add_library(mma_core STATIC
     Source/Core/CombinedTakePlan.cpp
     Source/Core/FfmpegCommand.cpp
     Source/Core/FfmpegLocator.cpp
+    Source/Core/LoudnessMeter.cpp
+    Source/Core/StreamingTargets.cpp
     Source/Platform/AlsaBackend.cpp
 )
 # ALSA on Linux: the backend is part of mma_core rather than the app target so

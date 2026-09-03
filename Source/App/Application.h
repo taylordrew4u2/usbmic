@@ -13,6 +13,7 @@
 #include "../Core/SessionRecovery.h"
 #include "../Core/CardRemovalNotice.h"
 #include "../Core/PreflightThroughputTest.h"
+#include "../Core/StreamingTargets.h"
 #include <atomic>
 #include <functional>
 #include <map>
@@ -343,6 +344,23 @@ public:
     /// thing this feature needs that the app cannot install for the user.
     juce::String getCombineUnavailableReason();
 
+    /// Which platform the take is being aimed at, by name, or empty for none.
+    ///
+    /// Streaming services all normalise what they are given to one loudness
+    /// figure, so how loud a take is decides what a listener hears -- and peak
+    /// level, which is all this app showed before, says nothing about it.
+    void setDeliveryTarget (const juce::String& name);
+    juce::String getDeliveryTarget() const { return deliveryTarget; }
+    static juce::StringArray getDeliveryTargetNames();
+
+    /// What the mix measures, and what to do about it for the chosen platform.
+    /// Empty when no platform is chosen.
+    juce::String getLoudnessAdvice() const;
+
+    /// The measured figure on its own, for the line that shows it while a take
+    /// runs. Empty when there is nothing measurable yet.
+    juce::String getLoudnessReading() const;
+
     /// §6.5 "target card removed": set when a take was stopped because the
     /// destination stopped accepting writes, and consumed once by the UI that
     /// alerts about it. Empty the rest of the time.
@@ -433,6 +451,7 @@ private:
     CameraController cameraController;
     TakeCombiner takeCombiner;
     bool combineVideoAndAudio = false;
+    juce::String deliveryTarget;
 
     std::unique_ptr<TapToNameDetector> tapDetector;
     int tapDetectorChannels = 0;

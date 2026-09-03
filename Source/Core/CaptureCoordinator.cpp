@@ -622,6 +622,21 @@ void CaptureCoordinator::measurePolarPattern (const float* const* inputs, int ch
     polarThirdPeakDb.store (polarThirdPeakHeldDb, std::memory_order_relaxed);
 }
 
+double CaptureCoordinator::getIntegratedLufs() const
+{
+    return pipeline != nullptr ? pipeline->getIntegratedLufs() : LoudnessMeter::kSilenceLufs;
+}
+
+double CaptureCoordinator::getTruePeakDbtp() const
+{
+    return pipeline != nullptr ? pipeline->getTruePeakDbtp() : LoudnessMeter::kSilenceLufs;
+}
+
+int CaptureCoordinator::getLoudnessBlockCount() const
+{
+    return pipeline != nullptr ? pipeline->getLoudnessBlockCount() : 0;
+}
+
 void CaptureCoordinator::setMasterChannel (int index) noexcept
 {
     // §3.1: exactly one reference. Nothing about the capture path changes here
