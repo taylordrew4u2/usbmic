@@ -152,6 +152,11 @@ if (MMA_BUILD_APP)
     target_compile_definitions(SobStage PRIVATE
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        # The one place the version is written down is project() above. Anything
+        # that repeats it by hand goes stale the first time it is not updated in
+        # lockstep -- which is exactly what happened to the window title, stuck
+        # reading 0.1.0 while the app shipped 0.9.x.
+        SOBSTAGE_VERSION_STRING="${PROJECT_VERSION}"
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:SobStage,JUCE_PRODUCT_NAME>"
     )
 
@@ -188,6 +193,20 @@ if (MMA_BUILD_APP)
     # standing up JUCE's message manager and a Component on a headless box,
     # which tests the harness rather than the controller.
     # -----------------------------------------------------------------------
+    # A headless layout probe: MainScreen laid out with camera tiles, reporting
+    # the sizes it actually produces. Component layout is arithmetic, so this
+    # needs no display -- which is what lets the camera row be checked on a
+    # machine where no camera can render.
+    add_executable(layout_probe Tools/layout_probe.cpp
+        Source/UI/MainScreen.cpp
+        Source/UI/SkullMeterComponent.cpp
+        Source/UI/MixBarComponent.cpp
+        Source/UI/AppLookAndFeel.cpp)
+    target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1)
+    target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(layout_probe PRIVATE mma_core juce::juce_gui_basics)
+
     if (NOT APPLE AND NOT WIN32)
         add_library(sim_camera OBJECT
             Source/App/CameraController.cpp

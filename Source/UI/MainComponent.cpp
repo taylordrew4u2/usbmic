@@ -76,6 +76,7 @@ MainComponent::MainComponent (Application& app)
         return application.getCameraController().createViewer (id);
     };
 
+    mainScreen.setVersionText ("v" + juce::JUCEApplication::getInstance()->getApplicationVersion());
     mainScreen.setCameraScale (application.getCameraTileScale());
     mainScreen.onCameraScaleChanged = [this] (int step) {
         application.setCameraTileScale (step);

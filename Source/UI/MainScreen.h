@@ -123,6 +123,12 @@ public:
     /// silently delivering a high-latency mix instead of saying so.
     void setMonitorProblemText (const juce::String& text);
 
+    /// The running version, shown beside the tagline. On screen rather than
+    /// behind a menu because "which build am I running" is the first question
+    /// asked when a change appears not to have arrived, and an answer that
+    /// takes hunting is an answer nobody checks.
+    void setVersionText (const juce::String& text);
+
     /// §10.2: the camera's own controls, brought onto the main screen.
     /// "Full preview" is the existing preview-quality choice; "+ Add camera"
     /// opens the panel where cameras are switched on and named.
@@ -140,7 +146,7 @@ private:
     // The masthead. A window with no name in it is a window you have to
     // remember the name of, and the tagline is the one place the app gets to
     // say what it is for before anyone presses anything.
-    juce::Label brandLabel, taglineLabel;
+    juce::Label brandLabel, taglineLabel, versionLabel;
 
     // Section headings, so the screen reads as two things -- the picture and
     // the sound -- rather than one undifferentiated stack of controls.
