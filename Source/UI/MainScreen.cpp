@@ -431,6 +431,20 @@ void MainScreen::releaseCameraViews()
     resized();
 }
 
+void MainScreen::setVisibleHeight (int height)
+{
+    if (height == visibleHeight)
+        return;
+
+    visibleHeight = juce::jmax (0, height);
+    resized();
+}
+
+int MainScreen::layoutHeight() const noexcept
+{
+    return visibleHeight > 0 ? visibleHeight : getHeight();
+}
+
 int MainScreen::cameraRowHeight() const
 {
     // Zero when nothing is switched on, which is what keeps an audio-only rig
@@ -447,9 +461,19 @@ int MainScreen::cameraRowHeight() const
     // What the camera row has to spend: the window, minus everything laid out
     // under it. This is what makes a taller window a taller picture, and what
     // stops a taller picture from pushing the record button off the bottom.
-    const int spare = getHeight() > 0
-                          ? getHeight() - nonCameraHeight() - kCameraControlHeight - 4 - kCameraRowGap
+    const int spare = layoutHeight() > 0
+                          ? layoutHeight() - nonCameraHeight() - kCameraControlHeight - 4 - kCameraRowGap
                           : 0;
+
+    return cameraRowHeightForSpare (spare);
+}
+
+int MainScreen::cameraRowHeightForSpare (int spare) const
+{
+    if (cameraViews.empty())
+        return 0;
+
+    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
 
     const int tileWidth = cameraTileWidthFor (cameraScale, available, spare);
     const int rows = cameraRowsNeeded (tileWidth, available);
@@ -462,11 +486,24 @@ int MainScreen::cameraRowHeight() const
 
 int MainScreen::getRequiredHeight() const
 {
-    // What the content wants, which the owner sizes the window from. The camera
-    // row is measured against the window it will be drawn in, so once that
-    // window exists this reports what is actually on screen rather than what
-    // an unconstrained picture would have asked for.
+    // What the content wants inside the window it has. Never more than the
+    // window can show, because the camera row is measured against the visible
+    // height -- which is what keeps the record button on screen.
     return nonCameraHeight() + cameraRowHeight();
+}
+
+int MainScreen::getPreferredHeight() const
+{
+    // What the content would want if the window were not in the way.
+    //
+    // getRequiredHeight() cannot answer this, and deliberately so: it clamps the
+    // picture to the height that is visible, so it can never ask for more than
+    // it already has. That makes it useless for deciding how big to OPEN the
+    // window, which is a question asked before the right window exists.
+    //
+    // A spare of 0 means "unconstrained" to cameraTileWidthFor, so this is the
+    // fraction of the width the user chose, at 16:9, plus everything under it.
+    return nonCameraHeight() + cameraRowHeightForSpare (0);
 }
 
 int MainScreen::getMicCount() const
@@ -655,7 +692,7 @@ void MainScreen::resized()
 
         // The same two bounds cameraRowHeight() sized this row from, so what is
         // drawn and what was reserved cannot disagree.
-        const int spare = getHeight() - nonCameraHeight() - kCameraControlHeight - 4 - kCameraRowGap;
+        const int spare = layoutHeight() - nonCameraHeight() - kCameraControlHeight - 4 - kCameraRowGap;
         const int tileWidth = cameraTileWidthFor (cameraScale, available, spare);
         const int tileHeight = tileHeightFor (tileWidth);
         const int cellHeight = tileHeight + kCameraCaptionHeight;

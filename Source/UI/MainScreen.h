@@ -32,6 +32,30 @@ public:
     /// The height this screen's content needs. See AdvancedPanel for why a
     /// container asks rather than measures.
     int getRequiredHeight() const;
+
+    /// The height this screen would want if the window were not limiting it --
+    /// the camera picture at the size the user chose, rather than the size it
+    /// has been squeezed to. What an owner deciding how big to open or grow the
+    /// window needs, since getRequiredHeight() is already clamped to the window
+    /// and so can never ask for more room than it has.
+    int getPreferredHeight() const;
+
+    /// How much of this screen the user can actually SEE -- the viewport's
+    /// height, not this component's own.
+    ///
+    /// The two are not the same, and the difference was a feedback loop. The
+    /// camera picture is given the height left over after everything else, and
+    /// it took that from getHeight(). But the owner sizes this component to
+    /// max(viewport, getRequiredHeight()) -- so a taller picture grew the
+    /// canvas, which offered more height, which grew the picture. At the size
+    /// the window actually opens at that settled with 1007px of content inside
+    /// a 560px window: the picture overflowed and the record button sat below
+    /// the fold, which is the one control nobody can afford to go looking for.
+    ///
+    /// Sizing the picture against the viewport breaks the loop, because this is
+    /// an input from the owner rather than something derived from the content.
+    /// Unset (0) means "no owner has said", and getHeight() stands.
+    void setVisibleHeight (int height);
     SkullMeterComponent* getSkullMeter (int index);
 
     void setMixMetering (Metering* meteringSource) { mixBar.setMetering (meteringSource); }
@@ -182,6 +206,14 @@ private:
     std::vector<CameraView> cameraViews;
 
     int cameraScale = 1;
+
+    /// The viewport height the owner last reported; 0 until it does.
+    int visibleHeight = 0;
+
+    /// The height the camera picture is measured against: what the user can
+    /// see, falling back to this component's own height before any owner has
+    /// said otherwise.
+    int layoutHeight() const noexcept;
     juce::TextButton cameraSmallerButton { juce::String::charToString (juce::juce_wchar (0x25bc)) };
     juce::TextButton cameraLargerButton { juce::String::charToString (juce::juce_wchar (0x25b2)) };
     juce::Label cameraSizeLabel;
@@ -216,6 +248,11 @@ private:
 
     /// Height the camera row needs, or zero when no camera is switched on.
     int cameraRowHeight() const;
+
+    /// The camera row's height given a specific amount of leftover space, where
+    /// 0 means "unconstrained". Shared by the clamped and preferred paths so
+    /// they cannot drift apart.
+    int cameraRowHeightForSpare (int spare) const;
 
     juce::TextButton recordButton { "Start recording" };
     juce::Label elapsedLabel, remainingLabel, saveLocationLabel, filesSavingLabel, noMicsLabel, disabledReasonLabel;

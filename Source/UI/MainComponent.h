@@ -51,6 +51,11 @@ private:
     bool advancedVisible = false;
     bool cameraVisible = false;
     int lastCameraHeight = 0;
+
+    /// Grows the window so the main screen's camera row gets the size the user
+    /// asked for. Only ever grows: shrinking would undo a window the user sized
+    /// themselves. Bounded by the display, so it cannot walk off the screen.
+    void growWindowToFitMainScreen();
     int lastMicCount = -1;
     int lastAdvancedMicCount = -1;
     int framesUntilStatusRefresh = 1;
