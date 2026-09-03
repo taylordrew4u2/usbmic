@@ -64,6 +64,12 @@ struct AppSettings
     /// can send without opening an editor, and nobody else pays for it.
     bool combineVideoAndAudio = false;
 
+    /// Which platform's loudness the take is being aimed at, by name, or empty
+    /// for none. Off by default: someone recording a rehearsal is not
+    /// delivering to anything, and a number telling them they are 8 dB under
+    /// Spotify is noise.
+    std::string deliveryTarget;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,

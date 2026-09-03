@@ -127,6 +127,11 @@ MainComponent::MainComponent (Application& app)
         application.setMirrorEnabled (enabled);
     };
 
+    advancedPanel.onDeliveryTargetChanged = [this] (juce::String name) {
+        application.setDeliveryTarget (name);
+        refreshAdvanced();
+    };
+
     advancedPanel.onCombineVideoToggled = [this] (bool enabled) {
         application.setCombineVideoAndAudio (enabled);
 
@@ -223,7 +228,16 @@ MainComponent::MainComponent (Application& app)
     // Settings button included -- is on screen at launch. At 480 the bottom
     // row sat below the fold, so the one door into Settings was reachable
     // only by scrolling. The viewport still scrolls on shorter displays.
-    setSize (720, mainScreen.getRequiredHeight() + 24);
+    // A floor as well as the main screen's own ask. The main screen is the
+    // most compact of the three -- Settings and Cameras both need more -- and
+    // sizing the window to the smallest of them left the other two scrolling
+    // from the moment they opened.
+    //
+    // The floor is a compromise rather than a fit: on a rig with a camera
+    // switched on the pictures fill this height and more, and on an audio-only
+    // rig it leaves room under the levels. Sizing to the audio-only case
+    // instead would make the window jump every time a camera was switched on.
+    setSize (760, juce::jmax (560, mainScreen.getRequiredHeight() + 24));
 
     // §8.1: meters and status are live from launch, not from record.
     refreshStatus();
@@ -660,6 +674,9 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
     advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
                                         application.getCombineUnavailableReason());
+    advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
+                                      application.getDeliveryTarget());
+    advancedPanel.setLoudnessAdvice (application.getLoudnessAdvice());
 
     juce::StringArray outputs;
     for (const auto& name : application.getOutputDeviceNames())

@@ -83,6 +83,39 @@ AdvancedPanel::AdvancedPanel()
     { if (onCombineVideoToggled) onCombineVideoToggled (combineVideoToggle.getToggleState()); };
     addAndMakeVisible (combineVideoToggle);
 
+    deliveryLabel.setText ("Aim the loudness at", juce::dontSendNotification);
+    addAndMakeVisible (deliveryLabel);
+
+    deliveryCombo.onChange = [this]
+    {
+        if (! onDeliveryTargetChanged)
+            return;
+
+        // Item 1 is "Not delivering anywhere", which is the absence of a
+        // choice rather than a choice -- so it reports as empty.
+        const int index = deliveryCombo.getSelectedId() - 2;
+        onDeliveryTargetChanged (index >= 0 && index < deliveryNames.size()
+                                     ? deliveryNames[index] : juce::String());
+    };
+    addAndMakeVisible (deliveryCombo);
+
+    deliveryNote.setText ("Every streaming service turns everything it plays to the same "
+                          "loudness, so how loud you record decides what people hear -- "
+                          "and the peak meters can't tell you. Nothing is changed for you: "
+                          "this measures the mix and says which way to move.",
+                          juce::dontSendNotification);
+    deliveryNote.setJustificationType (juce::Justification::topLeft);
+    deliveryNote.setMinimumHorizontalScale (1.0f);
+    deliveryNote.setFont (juce::Font (12.0f));
+    deliveryNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    addAndMakeVisible (deliveryNote);
+
+    loudnessAdviceLabel.setJustificationType (juce::Justification::topLeft);
+    loudnessAdviceLabel.setMinimumHorizontalScale (1.0f);
+    loudnessAdviceLabel.setFont (juce::Font (13.0f));
+    loudnessAdviceLabel.setColour (juce::Label::textColourId, AppLookAndFeel::accent);
+    addAndMakeVisible (loudnessAdviceLabel);
+
     combineVideoNote.setJustificationType (juce::Justification::topLeft);
     combineVideoNote.setFont (juce::Font (12.0f));
     addAndMakeVisible (combineVideoNote);
@@ -101,6 +134,7 @@ AdvancedPanel::AdvancedPanel()
     const std::pair<juce::Label*, const char*> sections[] = {
         { &storageSection, "WHERE RECORDINGS GO" },
         { &formatSection,  "RECORDING FORMAT" },
+        { &deliverySection, "WHERE IT'S GOING" },
         { &micSection,     "MICROPHONES" },
         { &outputSection,  "MONITORING AND OUTPUT" },
     };
@@ -343,17 +377,26 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kDiagnostics   = 30;
 
     // save-to volume, destination folder, sample rate, bit depth, buffer size,
-    // latency, clock master, output device, backend, aggregate name.
-    constexpr int kRowCount = 10;
+    // latency, delivery target, clock master, output device, backend,
+    // aggregate name.
+    constexpr int kRowCount = 11;
 
     // The gaps resized() leaves between sections that are not a heading's own:
-    // after the format rows, and after the microphone checkbox list.
-    constexpr int kSectionGaps = 12 + 10;
+    // after the format rows, after the delivery block, and after the microphone
+    // checkbox list.
+    constexpr int kSectionGaps = 12 + 12 + 10;
 
-    return kMargins + kCloseButton + (kSection * 4) + (kRow * kRowCount)
+    // The backup copy's note, the combined-video toggle and its note.
+    constexpr int kMirrorNote  = 20;
+    constexpr int kCombine     = 26 + 32;
+
+    // "Where it's going": the explanation and the line of advice under it.
+    constexpr int kDelivery    = 56 + 4 + 36;
+
+    return kMargins + kCloseButton + (kSection * 5) + (kRow * kRowCount)
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
-         + kMirror + kDiagnostics;
+         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics;
 }
 
 void AdvancedPanel::resized()
@@ -423,6 +466,13 @@ void AdvancedPanel::resized()
     row (latencyLabel, latencyValue);
     area.removeFromTop (12);
 
+    section (deliverySection);
+    row (deliveryLabel, deliveryCombo);
+    deliveryNote.setBounds (area.removeFromTop (56));
+    area.removeFromTop (4);
+    loudnessAdviceLabel.setBounds (area.removeFromTop (36));
+    area.removeFromTop (12);
+
     section (micSection);
     micSelectionLabel.setBounds (area.removeFromTop (22));
     for (auto& toggle : micToggles)
@@ -465,6 +515,32 @@ void AdvancedPanel::setCombineVideoState (bool on, const juce::String& unavailab
     // than an enabled one that says what it needs.
     combineVideoNote.setText (unavailableReason, juce::dontSendNotification);
     resized();
+}
+
+
+void AdvancedPanel::setDeliveryTargets (const juce::StringArray& names, const juce::String& chosen)
+{
+    if (names != deliveryNames)
+    {
+        deliveryNames = names;
+        deliveryCombo.clear (juce::dontSendNotification);
+
+        // First, and the default: most takes are not being delivered anywhere,
+        // and telling someone recording a rehearsal that they are 8 dB under
+        // Spotify is noise.
+        deliveryCombo.addItem ("Not delivering anywhere", 1);
+
+        for (int i = 0; i < names.size(); ++i)
+            deliveryCombo.addItem (names[i], i + 2);
+    }
+
+    const int index = deliveryNames.indexOf (chosen);
+    deliveryCombo.setSelectedId (index >= 0 ? index + 2 : 1, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setLoudnessAdvice (const juce::String& text)
+{
+    loudnessAdviceLabel.setText (text, juce::dontSendNotification);
 }
 
 } // namespace mma
