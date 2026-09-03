@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.0.0 — 2026-09-03
+
+The first stable release. No code changes from v0.9.4: this marks the point
+at which the camera work was confirmed on real hardware, which is what the
+0.9.x line was waiting on.
+
+### What 1.0 claims
+
+The feature set is complete and the interface has been used on a Mac. Eight
+microphones to separate tracks, a live mix bus, camera preview and capture,
+combined video-and-audio output, streaming-loudness targets, and session
+recovery are all implemented and covered by 375 tests plus two capture
+harnesses that run on every commit.
+
+### What 1.0 does not claim
+
+Three things remain unproven against real hardware, and 1.0 does not pretend
+otherwise -- see the platform table in README.md:
+
+- **No recording has been made from a physical microphone.** The CoreAudio
+  and WASAPI device layers are exercised every commit against simulated
+  hosts that reproduce the awkward shapes real devices take, but a real
+  driver's timing and firmware quirks are not something a simulation
+  reproduces. Linux is the exception: it is verified against live ALSA.
+- **The ffmpeg muxing has never run.** Combining picture and sound is built
+  and tested as a command, not as an execution. It needs ffmpeg installed
+  (on a Mac: brew install ffmpeg).
+- **The loudness meter has only met synthetic signals.** It matches the
+  BS.1770-4 reference tones to within 0.02 LU, which is the right check, but
+  not the same as a real take.
+
+A first stable release is a statement that the software is finished enough
+to depend on, not that every path has been walked. These are the paths that
+have not.
+
 ## v0.9.4 — 2026-09-03
 
 ### Fixed -- the camera picture fits the window it opens in
