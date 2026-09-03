@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.9.2 — 2026-09-03
+
+### Changed -- the camera picture is as big as the window will allow
+
+The live picture topped out at 456 pixels wide in a 760-pixel window. That
+was enough to tell someone was in shot and not enough to judge focus or
+framing on, which is the entire reason the picture is on the main screen
+rather than behind a door.
+
+It is now sized as a share of the window rather than as a fixed number of
+pixels, defaulting to the whole of the width available. So making the window
+bigger makes the picture bigger -- which is what dragging a window larger was
+asking for, and what the old fixed sizes answered with more empty background.
+
+It grows in both directions. The picture is given the height left after
+everything else on the screen has been laid out, so a taller window is a
+taller picture, and a picture can never grow far enough to push the record
+button off the bottom.
+
+On an ordinary 1680x1050 display that is a 1223x687 picture where the old
+maximum was 456x256 -- about seven times the area -- and on a larger display
+it simply keeps going.
+
+The arrows still work exactly as before, and now choose how much of the
+window to spend on the shot rather than picking from a list of fixed sizes.
+A size chosen before this release is kept; the untouched default is lifted,
+since it was never really a choice.
+
+### Fixed -- the window could open larger than the screen
+
+Sizing the window to its content and centring it did not clamp to the
+display, so a window taller than the screen hung off both ends of it and took
+the record button with it. Harmless while the pictures were thumbnails, and
+not once they were worth looking at. The window is now bounded by the display
+it opens on, and the screen scrolls if its content is taller.
+
 ## v0.9.1 — 2026-09-03
 
 ### Changed -- the combined file no longer re-encodes the sound
