@@ -10,6 +10,10 @@ namespace {
 
 constexpr double kRate = 48000.0;
 
+// Not M_PI -- see the note in LoudnessMeter.cpp. MSVC does not define it from
+// <cmath>, and this file is compiled on Windows too.
+constexpr double kTwoPi = 6.283185307179586476925286766559;
+
 /// A sine at a given amplitude, long enough for the gated measurement to have
 /// plenty of 400 ms blocks to work with.
 std::vector<float> sine (double seconds, double amplitude, double frequency = 1000.0)
@@ -19,7 +23,7 @@ std::vector<float> sine (double seconds, double amplitude, double frequency = 10
 
     for (size_t i = 0; i < count; ++i)
         out[i] = static_cast<float> (amplitude
-                                     * std::sin (2.0 * M_PI * frequency
+                                     * std::sin (kTwoPi * frequency
                                                  * static_cast<double> (i) / kRate));
 
     return out;

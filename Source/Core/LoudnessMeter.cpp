@@ -6,6 +6,12 @@ namespace mma {
 
 namespace {
 
+// Not M_PI: that is a POSIX extension rather than standard C++, and MSVC does
+// not define it from <cmath> without _USE_MATH_DEFINES. Tools/e2e_capture.cpp
+// already carries this note because relying on it broke the Windows build once
+// before; this file did it again.
+constexpr double kPi = 3.14159265358979323846;
+
 // BS.1770's own weighting for a single channel. Left, right and centre all
 // count at 1.0; only the surrounds are lifted, and this app has none.
 constexpr double kChannelWeight = 1.0;
@@ -53,7 +59,7 @@ void LoudnessMeter::buildKWeighting()
         const double G  = 3.999843853973347;   // dB
         const double Q  = 0.7071752369554196;
 
-        const double K = std::tan (M_PI * f0 / sampleRate);
+        const double K = std::tan (kPi * f0 / sampleRate);
         const double Vh = std::pow (10.0, G / 20.0);
         const double Vb = std::pow (Vh, 0.4996667741545416);
 
@@ -71,7 +77,7 @@ void LoudnessMeter::buildKWeighting()
         const double f0 = 38.13547087602444;
         const double Q  = 0.5003270373238773;
 
-        const double K = std::tan (M_PI * f0 / sampleRate);
+        const double K = std::tan (kPi * f0 / sampleRate);
 
         highPass.b0 = 1.0;
         highPass.b1 = -2.0;

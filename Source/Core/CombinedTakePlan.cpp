@@ -1,5 +1,6 @@
 #include "CombinedTakePlan.h"
 #include <algorithm>
+#include <cctype>   // std::tolower, which <algorithm> only happens to drag in
 
 namespace mma {
 
