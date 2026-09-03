@@ -379,6 +379,13 @@ void MainComponent::showSaveLocationPrompt()
                                 application.getCameraController().getSelection().getEnabledCount());
 
     saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
+    // Room for the whole card BEFORE it is shown. ModalCard clamps itself to
+    // the window (getHeight() - 32) and truncates what will not fit -- it is
+    // not inside a viewport, so there is nothing to scroll. In a short window
+    // that put this card's buttons past the bottom edge, which does not look
+    // broken; it looks like a prompt that cannot be answered.
+    growWindowToFit (saveLocationPrompt.getRequiredHeight() + 32);
+
     saveLocationPrompt.setBounds (getLocalBounds());
     saveLocationPrompt.setVisible (true);
     saveLocationPrompt.toFront (true);
@@ -413,6 +420,8 @@ void MainComponent::showRecoveredTakes()
     }
 
     recoveredTakesPanel.setTakes (rows);
+    growWindowToFit (recoveredTakesPanel.getRequiredHeight() + 32);
+
     recoveredTakesPanel.setBounds (getLocalBounds());
     recoveredTakesPanel.setVisible (true);
     recoveredTakesPanel.toFront (true);
@@ -451,6 +460,8 @@ void MainComponent::showSavedTake()
         rows.push_back ({ file.name, file.sizeBytes });
 
     savedTakePanel.setTake (take.folder, take.mirrorFolder, rows);
+    growWindowToFit (savedTakePanel.getRequiredHeight() + 32);
+
     savedTakePanel.setBounds (getLocalBounds());
     savedTakePanel.setVisible (true);
     savedTakePanel.toFront (true);
@@ -783,7 +794,10 @@ void MainComponent::toggleCameras()
     mainViewport.setVisible (! cameraVisible && ! advancedVisible);
 
     if (cameraVisible)
+    {
         cameraViewport.setViewPosition (0, 0);
+        growWindowToFit (cameraPanel.getRequiredHeight());
+    }
 
     resized();
 }
@@ -844,6 +858,11 @@ void MainComponent::refreshCameras()
 
 void MainComponent::growWindowToFitMainScreen()
 {
+    growWindowToFit (mainScreen.getPreferredHeight());
+}
+
+void MainComponent::growWindowToFit (int contentHeight)
+{
     // The window, not this component: setSize() on a DocumentWindow's content
     // resizes the frame around it, which is the thing with the title bar and
     // the position on screen.
@@ -864,7 +883,7 @@ void MainComponent::growWindowToFitMainScreen()
     // so the difference is measured rather than assumed -- a guess here is a
     // few pixels of clipping on one platform and not the other.
     const int chrome = juce::jmax (0, window->getHeight() - getHeight());
-    const int wanted = mainScreen.getPreferredHeight() + 24 + chrome;
+    const int wanted = contentHeight + 24 + chrome;
 
     // Only ever grows. A camera switched off leaves the window where it is:
     // shrinking it would throw away a size the user may have set by hand, and
@@ -918,7 +937,16 @@ void MainComponent::toggleAdvanced()
     // Back to the top on entry, so opening Settings never starts halfway down
     // wherever it was last left.
     if (advancedVisible)
+    {
         advancedViewport.setViewPosition (0, 0);
+
+        // And give it room. The main screen opens the window at the height an
+        // audio-only rig needs, which is shorter than Settings -- so without
+        // this, opening Settings showed its first four rows and put the rest
+        // behind a scrollbar. Every panel that can be opened over the main
+        // screen asks for its own height on the way in.
+        growWindowToFit (advancedPanel.getRequiredHeight());
+    }
 
     resized();
 }

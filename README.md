@@ -1,10 +1,18 @@
 <p align="center">
-  <img src="docs/images/app-icon.png" alt="SobStage icon: a bone skull on slate, filled from the jaw up with the accent, the way the app's own level meters fill" width="128">
+  <img src="docs/images/app-icon.png" alt="SobStage icon: a sobbing face on slate -- a bone ring, two eyes, a frown, and a single cyan tear, the one saturated thing in the mark" width="128">
 </p>
 
 # SobStage
 
 ### Multi-microphone aggregator, recorder, and monitor
+
+<p align="center">
+  <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/tests-375%20passing-brightgreen" alt="375 tests passing">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
+  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
+</p>
 
 Cross-platform desktop application (macOS + Windows) that aggregates up to 8 USB
 microphones, records every microphone to discrete files plus one summed mix
@@ -14,6 +22,41 @@ mix to everyone in the room.
 The full build specification lives in [`docs/SPEC.md`](docs/SPEC.md) and is the
 source of truth for every constant and behavior in this codebase. Where the code
 implements a spec rule, the section number is cited in a comment.
+
+---
+
+## The engineering problem, in one paragraph
+
+Eight USB microphones are eight independent crystal oscillators. No two tick at
+exactly the same rate, so over a four-hour take the tracks slide apart — and a
+multitrack recording whose tracks do not line up is not a recording, it is eight
+files. Fixing that means resampling seven streams continuously against a
+reference, in a callback that may not allocate, may not lock, and may not log,
+while also writing 24-bit audio to disk and feeding a monitor mix back out under
+a latency budget small enough that nobody in the room hears themselves late.
+
+**Measured result: 0.021 ms of inter-channel drift after a four-hour soak,
+against a 1 ms ceiling — a 47× margin.**
+
+| | |
+|---|---|
+| **Clock drift** | PI-loop asynchronous sample-rate conversion, corrected from ring-buffer fill error, clamped to ±200 PPM and slewed at 5 PPM/s so a correction is never audible. The master is a *reference*, not an exemption — it is resampled too. |
+| **Real-time safety** | No allocation, no locking, no logging and no file I/O on any audio thread. Cross-thread handoff is SPSC lock-free ring buffers with acquire/release publication. |
+| **Loudness** | A from-scratch ITU-R BS.1770-4 implementation — K-weighting, 400 ms blocks at 75% overlap, −70 LUFS absolute and −10 LU relative gating, true peak by 4× oversampling. Verified against the standard's own reference tones to **within 0.02 LU** at 44.1, 48 and 96 kHz. |
+| **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
+| **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This found five user-facing defects that were otherwise unreachable from any available machine. |
+
+375 unit tests, two long-running capture harnesses and two platform simulators
+run on macOS, Windows and Linux on every commit.
+
+### Honest limits
+
+The section that is unusual, and deliberate: **[Current status](#current-status)**
+enumerates exactly what has been verified and what has not, at the granularity of
+"compiled" vs "executed" vs "run against real hardware". No recording has yet
+been made from a physical microphone on macOS or Windows. That is stated here,
+in the release notes, and in the platform table below — rather than left for
+someone to discover.
 
 > **Read [Current status](#current-status) before running this on anything you
 > care about.** The engine is complete and measured. The macOS and Windows audio
@@ -28,10 +71,12 @@ implements a spec rule, the section number is cited in a comment.
   <img src="docs/images/main-screen.png" alt="The main screen: three channel strips side by side, a summed mix bar, a session name field, the record button, and a row with monitor volume, mute and Settings" width="660">
 </p>
 
-One channel strip per microphone, laid out like a mixing desk: a skull that
-fills with the level, a peak-hold bar, and the name at its foot. Under them the
-summed mix, the take name, and the one button worth pressing. Everything else —
-how much room is left, where the files are going — sits quietly beneath it.
+One strip per microphone: a skull that fills with the level, the name, a
+peak-hold bar and the number. The summed **MIX** sits on the same row in its own
+lighter cell, because §9.1 requires the bus to be distinguishable from a channel
+at a glance rather than by reading the label. Under them the take name and the
+one button worth pressing; everything else — how much room is left, where the
+files are going, the monitor level — sits quietly in the footer.
 
 <p align="center">
   <img src="docs/images/settings.png" alt="Settings: sections for where recordings go, recording format, and microphones, with a storage picker, per-microphone checkboxes and the clock master control" width="660">
@@ -39,8 +84,10 @@ how much room is left, where the files are going — sits quietly beneath it.
 
 Settings is one screen with a Done button at the top left. Where recordings go
 comes first, because picking a card before a take is what most people open it
-for. Then the format, then which microphones to record and which one carries the
-clock — explained where it is set, rather than assumed.
+for. Then the format, where the take is being delivered (which sets the loudness
+target), and which microphones to record and which one carries the clock — each
+explained where it is set, rather than assumed. Opening it grows the window to
+fit the panel, so nothing arrives already scrolled.
 
 <p align="center">
   <img src="docs/images/save-prompt.png" alt="A card over the main screen headed 'Where does this recording go?', with a name field, the destination folder, the folder name this take will create, the list of files it will contain, the backup copy's location, an 'ask me every time' checkbox, and buttons reading Not yet, Choose a different folder and Start recording" width="660">
@@ -60,13 +107,20 @@ And when the take stops, the files themselves — named, with their sizes, and a
 button that opens the folder. This shot is the virtual-microphone rig, so the
 files really are empty and the card says so instead of calling it saved.
 
-> All four shots are rendered headless on a Linux container by
-> [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh), against the virtual ALSA
-> microphones [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh)
-> creates. That rig serves file-backed devices, which §5.4's exclusive-mode gate
-> correctly refuses to record from — which is what the warning line is saying.
-> The strips read `-60.0`, the floor, because those devices deliver no audio; on
-> real hardware they carry live levels.
+> All four shots are of the v1.0.0 binary, rendered headless on a Linux
+> container by [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the
+> virtual ALSA microphones
+> [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
+> last of them by driving an actual take from record to stop. That rig serves
+> file-backed devices, which §5.4's exclusive-mode gate correctly refuses to
+> record from, which is what the warning line is saying. The strips read
+> `-60.0`, the floor, because those devices deliver no audio; on real hardware
+> they carry live levels.
+>
+> Screenshots in a README go stale silently, and a project whose pictures show a
+> different program than the one you download has told you something before you
+> run it. These are regenerated from the shipping binary, and the version in the
+> masthead is there so any drift is visible rather than assumed.
 
 ## Download
 
@@ -120,7 +174,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.9.4**, and the first release line called SobStage. The recording
+This is **v1.0.0**, the first stable release of SobStage. The recording
 engine is mature — it is covered by 375
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
@@ -129,7 +183,7 @@ much of the *device* layer has been run against a live audio system.
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | Device layer verified in CI | Enumeration, exclusive-mode selection, capture and hot-plug all execute against a live ALSA system on every commit. Expect it to work; report anything that does not. |
-| **macOS** | Device layer simulated in CI, not yet run on hardware | The CoreAudio code is executed on every commit against a simulated HAL that reproduces the awkward shapes real devices take — interleaved stereo buffers, continuous sample-rate ranges, refused hog mode, hotplug. What it has not met is a physical microphone. Treat this release as a first run on real hardware. |
+| **macOS** | App and camera confirmed on hardware; audio device layer simulated in CI | The app has been run on a Mac and the live camera preview confirmed there. The CoreAudio code is executed on every commit against a simulated HAL that reproduces the awkward shapes real devices take — interleaved stereo buffers, continuous sample-rate ranges, refused hog mode, hotplug. What it has still not met is a physical microphone. Treat a first recording as a first run on real hardware. |
 | **Windows** | Device layer simulated in CI, not yet run on hardware | Same position as macOS, for WASAPI: exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake all execute each commit, under sanitizers as well. |
 
 The reason for the split is availability, not design: the automated build
