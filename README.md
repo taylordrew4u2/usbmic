@@ -120,7 +120,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.9.4**, and the first release line called SobStage. The recording
+This is **v1.0.0**, the first stable release of SobStage. The recording
 engine is mature — it is covered by 375
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
@@ -129,7 +129,7 @@ much of the *device* layer has been run against a live audio system.
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | Device layer verified in CI | Enumeration, exclusive-mode selection, capture and hot-plug all execute against a live ALSA system on every commit. Expect it to work; report anything that does not. |
-| **macOS** | Device layer simulated in CI, not yet run on hardware | The CoreAudio code is executed on every commit against a simulated HAL that reproduces the awkward shapes real devices take — interleaved stereo buffers, continuous sample-rate ranges, refused hog mode, hotplug. What it has not met is a physical microphone. Treat this release as a first run on real hardware. |
+| **macOS** | App and camera confirmed on hardware; audio device layer simulated in CI | The app has been run on a Mac and the live camera preview confirmed there. The CoreAudio code is executed on every commit against a simulated HAL that reproduces the awkward shapes real devices take — interleaved stereo buffers, continuous sample-rate ranges, refused hog mode, hotplug. What it has still not met is a physical microphone. Treat a first recording as a first run on real hardware. |
 | **Windows** | Device layer simulated in CI, not yet run on hardware | Same position as macOS, for WASAPI: exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake all execute each commit, under sanitizers as well. |
 
 The reason for the split is availability, not design: the automated build
