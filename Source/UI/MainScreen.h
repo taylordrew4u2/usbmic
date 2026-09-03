@@ -123,6 +123,12 @@ public:
     /// silently delivering a high-latency mix instead of saying so.
     void setMonitorProblemText (const juce::String& text);
 
+    /// §10.2: the camera's own controls, brought onto the main screen.
+    /// "Full preview" is the existing preview-quality choice; "+ Add camera"
+    /// opens the panel where cameras are switched on and named.
+    std::function<void (bool)> onFullPreviewToggled;
+    void setFullPreview (bool on) { fullPreviewToggle.setToggleState (on, juce::dontSendNotification); }
+
     std::function<void()> onRecordButtonClicked;
     std::function<void (double)> onVolumeChanged; // 0-100
     std::function<void()> onAdvancedClicked;
@@ -131,6 +137,30 @@ public:
     std::function<void (int)> onMicNameClicked; // skull index
 
 private:
+    // The masthead. A window with no name in it is a window you have to
+    // remember the name of, and the tagline is the one place the app gets to
+    // say what it is for before anyone presses anything.
+    juce::Label brandLabel, taglineLabel;
+
+    // Section headings, so the screen reads as two things -- the picture and
+    // the sound -- rather than one undifferentiated stack of controls.
+    juce::Label cameraSectionLabel, micSectionLabel;
+
+    juce::ToggleButton fullPreviewToggle { "Full preview" };
+    juce::TextButton addCameraButton { "+ Add camera" };
+
+    /// The sob mark, drawn rather than loaded: it is four shapes, and a PNG
+    /// would need a second copy of the icon kept in step with Tools/make_icon.py
+    /// by hand.
+    void paintBrandMark (juce::Graphics& g, juce::Rectangle<float> bounds) const;
+
+    /// Where the mark goes, set by resized() and read by paint().
+    juce::Rectangle<int> brandMarkBounds;
+
+    /// The REC badge over a live picture, and the rectangles to draw it in --
+    /// one per camera tile, filled during layout.
+    std::vector<juce::Rectangle<int>> cameraRecBadges;
+
     juce::OwnedArray<SkullMeterComponent> skullMeters;
     MixBarComponent mixBar;
 

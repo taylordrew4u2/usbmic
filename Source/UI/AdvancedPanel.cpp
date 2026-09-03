@@ -70,6 +70,11 @@ AdvancedPanel::AdvancedPanel()
     mirrorToggle.onClick = [this] { if (onMirrorToggled) onMirrorToggled (mirrorToggle.getToggleState()); };
     addAndMakeVisible (mirrorToggle);
 
+    mirrorNote.setText ("in case the first copy gets a little damp", juce::dontSendNotification);
+    mirrorNote.setFont (juce::Font (12.0f, juce::Font::italic));
+    mirrorNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    addAndMakeVisible (mirrorNote);
+
     // Off by default: it costs disk and minutes of CPU after every take, and
     // the picture and the sound are already both saved and already aligned by
     // the session origin. Nobody who does not want it should pay for it.
@@ -126,11 +131,11 @@ AdvancedPanel::AdvancedPanel()
     // which makes an unexplained term worse than no term: someone who does not
     // know what a clock master is cannot tell whether they need to care.
     clockMasterHelpLabel.setText (
-        "Clock master: every USB microphone runs on its own crystal, and no two "
-        "tick at exactly the same rate. Every mic is continuously nudged to keep "
-        "the tracks lined up over a long take; this picks which one the drift "
-        "figures above are measured against. Leave this alone unless one mic "
-        "drifts much more than the rest -- the app picks a sensible one for you.",
+        "Every USB microphone runs on its own crystal, and no two tick at exactly "
+        "the same rate. One is chosen as the reference and the others are "
+        "continuously nudged to match it -- that keeps the tracks lined up over "
+        "a long take. Leave this alone unless one mic is being more dramatic "
+        "than the rest.",
         juce::dontSendNotification);
     clockMasterHelpLabel.setJustificationType (juce::Justification::topLeft);
     clockMasterHelpLabel.setMinimumHorizontalScale (1.0f);
@@ -397,6 +402,7 @@ void AdvancedPanel::resized()
     // rather than orphaned at the bottom between the aggregate device and the
     // diagnostics button.
     mirrorToggle.setBounds (area.removeFromTop (26));
+    mirrorNote.setBounds (area.removeFromTop (20).reduced (20, 0));
 
     // With the backup copy, because both are answers to "what else ends up on
     // my disk when I stop".

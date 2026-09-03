@@ -496,8 +496,12 @@ void MainComponent::refreshStatus()
     {
         framesUntilStatusRefresh = kUiRefreshHz / kStatusRefreshHz;
 
+        // The app's own voice. The figure is the §6.4 remaining-time estimate
+        // either way -- the joke is in the unit, not in the number, so nothing
+        // a user relies on is being played with.
         mainScreen.setRemainingTimeText ("Room for "
-            + Application::formatDuration (application.getRemainingRecordingSeconds()));
+            + Application::formatDuration (application.getRemainingRecordingSeconds())
+            + " of feelings");
 
         // Idle: where the next take will go. Recording: the folder this one is
         // actually in, which is the specific thing a user needs and the parent

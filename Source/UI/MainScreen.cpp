@@ -150,6 +150,84 @@ MainScreen::MainScreen()
 
     camerasButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
     addAndMakeVisible (camerasButton);
+
+    // The masthead. Letter-spaced by hand, because a wordmark is the one piece
+    // of type on this screen that is a picture of a word rather than a word.
+    brandLabel.setText ("S O B S T A G E", juce::dontSendNotification);
+    brandLabel.setFont (juce::Font (16.0f, juce::Font::bold));
+    brandLabel.setColour (juce::Label::textColourId, AppLookAndFeel::bone);
+    brandLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (brandLabel);
+
+    taglineLabel.setText ("let's give these tears a stage", juce::dontSendNotification);
+    taglineLabel.setFont (juce::Font (13.0f));
+    taglineLabel.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    taglineLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (taglineLabel);
+
+    // Small, wide-tracked, tertiary: a heading that labels a group without
+    // competing with anything inside it.
+    for (auto* l : { &cameraSectionLabel, &micSectionLabel })
+    {
+        l->setFont (juce::Font (11.0f, juce::Font::bold));
+        l->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+        l->setJustificationType (juce::Justification::centredLeft);
+        addChildComponent (*l);
+    }
+
+    cameraSectionLabel.setText ("C A M E R A", juce::dontSendNotification);
+    micSectionLabel.setText ("M I C R O P H O N E S", juce::dontSendNotification);
+    micSectionLabel.setVisible (true);
+
+    fullPreviewToggle.onClick = [this]
+    { if (onFullPreviewToggled) onFullPreviewToggled (fullPreviewToggle.getToggleState()); };
+    addChildComponent (fullPreviewToggle);
+
+    // The door to the camera panel, on the row it belongs to. The old
+    // "Cameras" button at the foot of the screen stays for the rig that has
+    // none switched on yet -- with no pictures there is no row for this to sit
+    // on, and a user with no camera still has to be able to find the panel.
+    addCameraButton.setColour (juce::TextButton::buttonColourId, AppLookAndFeel::surfaceHigh);
+    addCameraButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
+    addChildComponent (addCameraButton);
+}
+
+void MainScreen::paintBrandMark (juce::Graphics& g, juce::Rectangle<float> b) const
+{
+    // The same four shapes as Tools/make_icon.py, at the size a title bar has.
+    const auto cx = b.getCentreX();
+    const auto cy = b.getCentreY();
+    const auto r = juce::jmin (b.getWidth(), b.getHeight()) * 0.46f;
+
+    g.setColour (AppLookAndFeel::bone);
+    g.drawEllipse (cx - r, cy - r, r * 2.0f, r * 2.0f, juce::jmax (1.2f, r * 0.14f));
+
+    const float eyeR = r * 0.115f;
+    const float eyeDx = r * 0.37f;
+    const float eyeY = cy - r * 0.22f;
+    for (float sx : { -1.0f, 1.0f })
+        g.fillEllipse (cx + sx * eyeDx - eyeR, eyeY - eyeR, eyeR * 2.0f, eyeR * 2.0f);
+
+    // The frown: an arc of a circle centred below the face, so what shows is
+    // its top edge. Centred above, the identical arc reads as a smile.
+    juce::Path mouth;
+    const float mouthR = r * 0.45f;
+    const float mouthCy = cy + r * 0.70f;
+    mouth.addCentredArc (cx, mouthCy, mouthR, mouthR, 0.0f,
+                         juce::MathConstants<float>::pi * 1.28f,
+                         juce::MathConstants<float>::pi * 1.72f, true);
+    g.strokePath (mouth, juce::PathStrokeType (juce::jmax (1.0f, r * 0.12f)));
+
+    // The tear, and the only saturated thing in the mark.
+    g.setColour (AppLookAndFeel::accent);
+    const float dropR = r * 0.12f;
+    const float tx = cx - eyeDx;
+    const float ty = eyeY + r * 0.50f;
+    g.fillEllipse (tx - dropR, ty - dropR, dropR * 2.0f, dropR * 2.0f);
+
+    juce::Path drop;
+    drop.addTriangle (tx, ty - dropR * 2.6f, tx - dropR, ty, tx + dropR, ty);
+    g.fillPath (drop);
 }
 
 MainScreen::~MainScreen() = default;
@@ -311,13 +389,29 @@ int MainScreen::cameraRowHeight() const
 
 int MainScreen::getRequiredHeight() const
 {
-    // The channel-strip row plus every fixed row resized() lays out beneath it,
-    // and the margins around the lot -- plus the camera row when there is one.
-    // Adding it here rather than letting it overflow is what keeps the record
-    // button on screen once the pictures are there: the owner sizes the window
-    // from this, and a row that did not declare itself would simply push the
-    // button below the fold.
-    return 522 + 24 + cameraRowHeight();
+    // Every band resized() lays out, added up, rather than a constant left over
+    // from a layout this no longer is. The old 522 was measured against tall
+    // channel strips and a centred status stack; against the current screen it
+    // left a band of empty background between the advice line and the footer
+    // roughly the height of the record button.
+    constexpr int kMargins       = 32;   // 16 top and bottom
+    constexpr int kHeader        = 36 + 18;
+    constexpr int kMicHeading    = 16 + 6;
+    constexpr int kStripHeight   = 40;
+    constexpr int kStripGap      = 12;
+    constexpr int kActionRow     = 16 + 52;
+    constexpr int kStatusLines   = 18 + 20 + 20;  // files, monitor problem, advice
+    constexpr int kFooter        = 34;
+
+    // MIX is laid out with the microphones, so it counts towards the wrap.
+    const int cells = juce::jmax (1, skullMeters.size() + 1);
+    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 720) - 32);
+    const int perRow = juce::jlimit (1, cells, (available + kStripGap) / (190 + kStripGap));
+    const int rows = (cells + perRow - 1) / perRow;
+
+    return kMargins + kHeader + cameraRowHeight() + kMicHeading
+         + rows * kStripHeight + (rows - 1) * kStripGap
+         + kActionRow + kStatusLines + kFooter;
 }
 
 int MainScreen::getMicCount() const
@@ -410,11 +504,60 @@ void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disab
 void MainScreen::paint (juce::Graphics& g)
 {
     g.fillAll (kBackground);
+
+    if (! brandMarkBounds.isEmpty())
+        paintBrandMark (g, brandMarkBounds.toFloat());
+
+    // A hairline under the masthead, so the title reads as a masthead rather
+    // than as the first row of the content beneath it.
+    if (! brandMarkBounds.isEmpty())
+    {
+        g.setColour (AppLookAndFeel::outline);
+        const int y = brandMarkBounds.getBottom() + 10;
+        g.fillRect (16, y, getWidth() - 32, 1);
+    }
+
+    // §9.3: the picture says it is recording in a word, not only in a colour.
+    // A red dot alone is the one indicator a colour-blind user cannot read, and
+    // it is the one that matters most.
+    for (const auto& badge : cameraRecBadges)
+    {
+        g.setColour (AppLookAndFeel::background.withAlpha (0.72f));
+        g.fillRoundedRectangle (badge.toFloat(), 4.0f);
+
+        auto dot = badge.toFloat().removeFromLeft (16.0f);
+        g.setColour (AppLookAndFeel::danger);
+        g.fillEllipse (dot.withSizeKeepingCentre (7.0f, 7.0f));
+
+        g.setFont (juce::Font (10.0f, juce::Font::bold));
+        g.drawText ("REC", badge.withTrimmedLeft (16), juce::Justification::centredLeft);
+    }
 }
 
 void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
+    cameraRecBadges.clear();
+
+    // The masthead: the mark, the name, the tagline, and the one door out.
+    // Settings moved up here from the foot of the screen because it is a
+    // destination rather than a control -- it belongs with the title, not in
+    // the row where the levels are being set.
+    {
+        auto header = area.removeFromTop (36);
+
+        brandMarkBounds = header.removeFromLeft (28).withSizeKeepingCentre (26, 26);
+        header.removeFromLeft (10);
+
+        advancedButton.setBounds (header.removeFromRight (96).reduced (0, 3));
+        header.removeFromRight (8);
+
+        brandLabel.setBounds (header.removeFromLeft (juce::jmin (128, header.getWidth())));
+        header.removeFromLeft (10);
+        taglineLabel.setBounds (header);
+
+        area.removeFromTop (18);
+    }
 
     // The pictures sit above the levels: the shot is what you look at, the
     // meters are what you glance at, and putting them in that order keeps the
@@ -424,14 +567,25 @@ void MainScreen::resized()
     cameraSizeLabel.setVisible (haveCameras);
     cameraSmallerButton.setVisible (haveCameras);
     cameraLargerButton.setVisible (haveCameras);
+    cameraSectionLabel.setVisible (haveCameras);
+    fullPreviewToggle.setVisible (haveCameras);
+    addCameraButton.setVisible (haveCameras);
 
     if (haveCameras)
     {
         auto cameraArea = area.removeFromTop (cameraRowHeight() - kCameraRowGap);
 
-        // The arrows sit on their own line above the pictures, right-aligned so
-        // they do not wander as the tiles change size underneath them.
+        // One row carrying the heading and everything that acts on the
+        // pictures: what they are, how big, how good the preview is, and how to
+        // add another. Grouped here rather than scattered down the screen,
+        // because they are one job.
         auto controls = cameraArea.removeFromTop (kCameraControlHeight);
+        cameraSectionLabel.setBounds (controls.removeFromLeft (110));
+
+        addCameraButton.setBounds (controls.removeFromRight (108).reduced (0, 1));
+        controls.removeFromRight (10);
+        fullPreviewToggle.setBounds (controls.removeFromRight (108));
+        controls.removeFromRight (10);
         cameraLargerButton.setBounds (controls.removeFromRight (28).reduced (1));
         controls.removeFromRight (4);
         cameraSmallerButton.setBounds (controls.removeFromRight (28).reduced (1));
@@ -487,57 +641,100 @@ void MainScreen::resized()
             else if (view.placeholder != nullptr)
                 view.placeholder->setBounds (tile);
 
+            // Over the top-left of the picture while a take is running, where a
+            // camera's own tally light sits. paint() draws it; the viewer is a
+            // child component, so a badge drawn under it would be invisible --
+            // this is why it is a rectangle collected here rather than a
+            // component added to the tile.
+            if (recording)
+                cameraRecBadges.push_back (tile.reduced (8).removeFromTop (18).removeFromLeft (54));
+
             ++index;
         }
 
         area.removeFromTop (kCameraRowGap);
     }
 
-    // Channel strips: tall and narrow, sitting side by side like a mixing
-    // desk, rather than short wide boxes stretched to fill the width.
-    auto skullRow = area.removeFromTop (230);
+    // The levels, as a row of horizontal strips rather than a rank of tall
+    // channels. The pictures are what take the height now, and a level being
+    // watched out of the corner of an eye is better served by a wide track
+    // than by a tall one: the same information, in the shape the space is.
+    //
+    // MIX rides in the same row as one more strip, because it is one more
+    // level -- it was a full-width bar of its own, which said it was a
+    // different kind of thing than the channels it is the sum of.
+    micSectionLabel.setBounds (area.removeFromTop (16));
+    area.removeFromTop (6);
+
     if (skullMeters.isEmpty())
     {
-        noMicsLabel.setBounds (skullRow);
+        noMicsLabel.setBounds (area.removeFromTop (56));
+        mixBar.setBounds ({});
     }
     else
     {
-        // A strip has a natural width and keeps it. Dividing the full width by
-        // the channel count made two microphones render as two enormous panels
-        // and eight as slivers; a desk's channels are the same size whether
-        // four are in use or twenty.
-        // A strip has a preferred width and a ceiling, rather than one fixed
-        // size. At 84px flat, three microphones sat in a narrow cluster with
-        // most of the window empty on either side; letting them grow towards
-        // 132px fills that space without ever stretching two mics into two
-        // billboards the way dividing the full width used to.
-        constexpr int kPreferredStripWidth = 96;
-        constexpr int kMaxStripWidth       = 132;
-        constexpr int kMinStripWidth       = 52;
+        constexpr int kStripHeight = 40;
+        constexpr int kStripGap    = 12;
+        constexpr int kMinStripWidth = 190;
 
-        const int count = juce::jmax (1, skullMeters.size());
-        const int available = skullRow.getWidth();
+        // MIX is laid out with them, so the wrap has to count it.
+        const int cells = skullMeters.size() + 1;
+        const int available = area.getWidth();
 
-        int meterWidth = juce::jlimit (kMinStripWidth, kMaxStripWidth, available / count);
-        meterWidth = juce::jmax (meterWidth, juce::jmin (kPreferredStripWidth, available / count));
+        const int perRow = juce::jlimit (1, cells,
+                                         (available + kStripGap) / (kMinStripWidth + kStripGap));
+        const int rows = (cells + perRow - 1) / perRow;
 
-        const int wanted = meterWidth * count;
+        auto stripArea = area.removeFromTop (rows * kStripHeight + (rows - 1) * kStripGap);
 
-        // Centred as a block, so a rig of two sits in the middle rather than
-        // hugging the left edge.
-        if (wanted < available)
-            skullRow.removeFromLeft ((available - wanted) / 2);
-        for (auto* meter : skullMeters)
-            meter->setBounds (skullRow.removeFromLeft (meterWidth).reduced (2, 0));
+        juce::Rectangle<int> row;
+        for (int i = 0; i < cells; ++i)
+        {
+            if (i % perRow == 0)
+            {
+                if (i > 0)
+                    stripArea.removeFromTop (kStripGap);
+
+                row = stripArea.removeFromTop (kStripHeight);
+            }
+            else
+            {
+                row.removeFromLeft (kStripGap);
+            }
+
+            // One width for every cell on the screen, taken from a full row.
+            // Sizing the last row's cells to what is left instead stretched a
+            // lone MIX across the entire window, which said it was a different
+            // kind of thing than the channels it is the sum of.
+            const int cellWidth = (available - (perRow - 1) * kStripGap) / perRow;
+
+            auto cell = row.removeFromLeft (juce::jmin (cellWidth, row.getWidth()));
+
+            if (i < skullMeters.size())
+            {
+                skullMeters[i]->setOrientation (SkullMeterComponent::Orientation::Strip);
+                skullMeters[i]->setBounds (cell);
+            }
+            else
+            {
+                mixBar.setBounds (cell);
+            }
+        }
     }
 
-    area.removeFromTop (10);
-    mixBar.setBounds (area.removeFromTop (28));
-    area.removeFromTop (14);
+    area.removeFromTop (16);
 
-    sessionNameEditor.setBounds (area.removeFromTop (28).reduced (area.getWidth() / 6, 0));
-    area.removeFromTop (8);
-    recordButton.setBounds (area.removeFromTop (56));
+    // Side by side: naming the take and starting it are one action, and
+    // stacking them put 8px of nothing between a field and the button that
+    // consumes it while the eye travelled the full width twice.
+    {
+        auto actionRow = area.removeFromTop (52);
+        const int buttonWidth = juce::jlimit (200, 380, actionRow.getWidth() / 2);
+
+        recordButton.setBounds (actionRow.removeFromRight (buttonWidth));
+        actionRow.removeFromRight (14);
+        sessionNameEditor.setBounds (actionRow.withSizeKeepingCentre (actionRow.getWidth(), 40));
+    }
 
     // Only take the row when there is something in it. Reserved unconditionally
     // it left a 28px hole under the record button whenever recording was
@@ -554,38 +751,57 @@ void MainScreen::resized()
         area.removeFromTop (14);
     }
 
-    // Two centred halves while recording, one centred line when not. Splitting
-    // unconditionally left the remaining-time text centred in the right-hand
-    // half -- so it sat off-centre under a centred button, next to a centred
-    // "Saves to" line, for no reason a reader could see.
-    auto statusRow = area.removeFromTop (24);
+    // Elapsed, remaining and the destination all live in the footer now, so
+    // nothing is placed here -- the record button is followed straight by the
+    // lines that qualify it.
+    filesSavingLabel.setBounds (area.removeFromTop (18));
+    monitorProblemLabel.setBounds (area.removeFromTop (20));
+    adviceLabel.setBounds (area.removeFromTop (20));
 
+    // The footer: what the disk knows on the left, what the ears want on the
+    // right. Both are ambient -- neither is something anyone comes to this
+    // screen to do -- so they share one quiet row at the bottom rather than
+    // taking a band of the middle each.
+    auto bottomRow = area.removeFromBottom (34);
+
+    muteButton.setBounds (bottomRow.removeFromRight (76));
+    bottomRow.removeFromRight (8);
+    volumeSlider.setBounds (bottomRow.removeFromRight (220));
+    bottomRow.removeFromRight (16);
+
+    // The door to the cameras only earns a place down here when there is no
+    // camera row carrying "+ Add camera" -- otherwise the same door appears
+    // twice on one screen.
+    if (! haveCameras)
+    {
+        camerasButton.setBounds (bottomRow.removeFromRight (110).reduced (0, 2));
+        bottomRow.removeFromRight (10);
+    }
+    else
+    {
+        camerasButton.setBounds ({});
+    }
+
+    remainingLabel.setJustificationType (juce::Justification::centredLeft);
+    saveLocationLabel.setJustificationType (juce::Justification::centredLeft);
+    elapsedLabel.setJustificationType (juce::Justification::centredLeft);
+
+    // Elapsed only appears while a take is running, and takes the space from
+    // the destination rather than from the capacity figure: during a take, how
+    // long it has been going matters more than where it is going, which has
+    // not changed since it started.
     if (recording)
     {
-        elapsedLabel.setBounds (statusRow.removeFromLeft (statusRow.getWidth() / 2));
-        remainingLabel.setBounds (statusRow);
+        elapsedLabel.setBounds (bottomRow.removeFromLeft (150));
+        remainingLabel.setBounds (bottomRow.removeFromLeft (190));
+        saveLocationLabel.setBounds (bottomRow);
     }
     else
     {
         elapsedLabel.setBounds ({});
-        remainingLabel.setBounds (statusRow);
+        remainingLabel.setBounds (bottomRow.removeFromLeft (juce::jmin (200, bottomRow.getWidth() / 2)));
+        saveLocationLabel.setBounds (bottomRow);
     }
-
-    saveLocationLabel.setBounds (area.removeFromTop (20));
-    filesSavingLabel.setBounds (area.removeFromTop (18));
-    monitorProblemLabel.setBounds (area.removeFromTop (20));
-    adviceLabel.setBounds (area.removeFromTop (20));
-    area.removeFromTop (8);
-
-    auto bottomRow = area.removeFromTop (32);
-
-    // The slider gives up a third of its old width to make room for the second
-    // door. It was two thirds of the row for a control with a 0-100 range;
-    // half is still more resolution than the ear has.
-    volumeSlider.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 2));
-    muteButton.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 3));
-    camerasButton.setBounds (bottomRow.removeFromLeft (bottomRow.getWidth() / 2).reduced (2, 0));
-    advancedButton.setBounds (bottomRow.reduced (2, 0));
 }
 
 } // namespace mma
