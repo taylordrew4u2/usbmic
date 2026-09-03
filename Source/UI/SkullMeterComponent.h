@@ -11,8 +11,28 @@ namespace mma {
 class SkullMeterComponent : public juce::Component, private juce::Timer
 {
 public:
+    /// Which way round the strip is drawn.
+    ///
+    /// Same meter, same state, same §9.3 rules -- only the arrangement differs.
+    /// Tall is the mixing-desk channel: skull above, labels beneath. Strip is
+    /// the horizontal row: a small skull badge, the name, a level track, and
+    /// the number, which is what fits when the picture is the thing taking the
+    /// height and the levels are a glance rather than a study.
+    enum class Orientation
+    {
+        Tall,
+        Strip
+    };
+
     SkullMeterComponent();
     ~SkullMeterComponent() override;
+
+    void setOrientation (Orientation newOrientation)
+    {
+        if (orientation != newOrientation) { orientation = newOrientation; repaint(); }
+    }
+
+    Orientation getOrientation() const noexcept { return orientation; }
 
     void setMetering (Metering* meteringSource) { metering = meteringSource; }
     void setMicName (const juce::String& name)
@@ -39,6 +59,7 @@ public:
 private:
     void timerCallback() override;
 
+    Orientation orientation = Orientation::Tall;
     Metering* metering = nullptr;
     juce::String micName, deviceName;
     bool noSignal = true;
@@ -64,6 +85,14 @@ private:
     static const juce::Colour kDimmedOutline;
     static const juce::Colour kSecondaryText;
     static const juce::Colour kTertiaryText;
+
+    void paintTall (juce::Graphics& g, juce::Rectangle<float> bounds);
+    void paintStrip (juce::Graphics& g, juce::Rectangle<float> bounds);
+
+    /// The skull, filled to the current level, inside the given box. Shared by
+    /// both orientations so the meter cannot come to mean two different things
+    /// depending on which way round it is drawn.
+    void paintSkull (juce::Graphics& g, juce::Rectangle<float> skullBounds, bool withEyes);
 
     juce::Path buildSkullSilhouette (juce::Rectangle<float> bounds) const;
     juce::Colour fillColourForLevel (float levelDb) const;

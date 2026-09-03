@@ -104,6 +104,11 @@ private:
     juce::TextEditor aggregateNameEditor;
     juce::Label aggregateStatusLabel;
     juce::ToggleButton mirrorToggle { "Keep a local backup copy" };
+
+    // The reason, under the switch, in the app's voice. §6.3's backup exists
+    // for the case where the card does not survive the day, and saying that
+    // plainly is what makes someone leave it on.
+    juce::Label mirrorNote;
     juce::ToggleButton combineVideoToggle { "Also save video with the sound in one file" };
 
     // Named under the toggle rather than in an alert, because the answer is

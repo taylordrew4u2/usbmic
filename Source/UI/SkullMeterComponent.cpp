@@ -102,6 +102,14 @@ void SkullMeterComponent::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
 
+    if (orientation == Orientation::Strip)
+        paintStrip (g, bounds);
+    else
+        paintTall (g, bounds);
+}
+
+void SkullMeterComponent::paintTall (juce::Graphics& g, juce::Rectangle<float> bounds)
+{
     // A rounded card with air around it, not a panel painted to the edges.
     // Filling the whole component made every neighbouring strip share a hard
     // seam, so a row of channels read as one striped slab rather than as
@@ -120,7 +128,60 @@ void SkullMeterComponent::paint (juce::Graphics& g)
 
     // Taller and narrower than before: the meter is now the vertical element of
     // a channel strip rather than a square badge with a caption underneath.
-    auto skullBounds = bounds.withTrimmedBottom (bounds.getHeight() * 0.34f).reduced (3.0f);
+    paintSkull (g, bounds.withTrimmedBottom (bounds.getHeight() * 0.34f).reduced (3.0f), true);
+
+    // Channel-strip footer: the level and the name stacked tight under the
+    // meter, the way a mixing desk labels a fader. This used to be three
+    // centred lines spread across the bottom 30% of a wide box, which read as
+    // a caption rather than as a channel.
+    auto textArea = bounds.withTrimmedTop (bounds.getHeight() * 0.66f);
+
+    // Numeric level first and closest to the meter, because it is the thing
+    // that moves and the thing being read while levels are set.
+    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain));
+    g.setColour (noSignal ? kTertiaryText : kBone);
+    const juce::String levelText = noSignal ? juce::String ("--.-")
+                                            : juce::String (currentLevelDb, 1);
+    g.drawText (levelText, textArea.removeFromTop (13.0f).toNearestInt(),
+                juce::Justification::centred);
+
+    // §9.3: "every coloured state also changes shape, text, or number", and
+    // "clip indication cannot depend on hue". The eyes change colour, and the
+    // glow they also carried is switched off for prefers-reduced-motion -- which
+    // left hue alone carrying it for exactly the readers §9.3 protects. So the
+    // clip says itself in words and in a count, on the line that is already
+    // here: no row appears or disappears, so nothing below it moves when a
+    // channel clips.
+    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
+    g.setColour (currentClip ? kClipEyes : kTertiaryText);
+
+    const juce::String peakLine = currentClip
+        ? ("CLIP " + juce::String (juce::jmax (1, currentClipCount)))
+        : (noSignal ? juce::String ("pk --.-") : ("pk " + juce::String (currentPeakDb, 1)));
+
+    g.drawText (peakLine, textArea.removeFromTop (11.0f).toNearestInt(),
+                juce::Justification::centred);
+
+    textArea.removeFromTop (3.0f);
+
+    // The name last and largest of the labels: on a desk the strip is
+    // identified at its foot, and it is what someone points at when they say
+    // "turn that one down".
+    g.setFont (juce::Font (12.0f, juce::Font::bold));
+    g.setColour (kBone);
+    g.drawText (micName, textArea.removeFromTop (15.0f).toNearestInt(),
+                juce::Justification::centred, true);
+
+    g.setFont (juce::Font (9.0f, juce::Font::plain));
+    g.setColour (kSecondaryText);
+    g.drawText (deviceName, textArea.removeFromTop (11.0f).toNearestInt(),
+                juce::Justification::centred, true);
+}
+
+
+void SkullMeterComponent::paintSkull (juce::Graphics& g, juce::Rectangle<float> skullBounds,
+                                      bool withEyes)
+{
     juce::Path silhouette = buildSkullSilhouette (skullBounds);
 
     if (noSignal)
@@ -173,6 +234,9 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         // the "CLIP n" line under the meter is what carries the meaning when
         // the glow is off for reduced motion and hue is all that is left
         // (§9.3). This comment used to claim that text existed. It did not.
+        if (! withEyes)
+            return;
+
         const float eyeY = skullBounds.getY() + skullBounds.getHeight() * 0.32f;
         const float eyeRadius = skullBounds.getWidth() * 0.09f;
         const float leftEyeX = skullBounds.getX() + skullBounds.getWidth() * 0.34f;
@@ -191,52 +255,117 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         }
     }
 
-    // Channel-strip footer: the level and the name stacked tight under the
-    // meter, the way a mixing desk labels a fader. This used to be three
-    // centred lines spread across the bottom 30% of a wide box, which read as
-    // a caption rather than as a channel.
-    auto textArea = bounds.withTrimmedTop (bounds.getHeight() * 0.66f);
+}
 
-    // Numeric level first and closest to the meter, because it is the thing
-    // that moves and the thing being read while levels are set.
+void SkullMeterComponent::paintStrip (juce::Graphics& g, juce::Rectangle<float> bounds)
+{
+    auto card = bounds.reduced (1.0f);
+    g.setColour (kPanel);
+    g.fillRoundedRectangle (card, 10.0f);
+
+    // §14.6, same meaning as in the tall strip: a ring around the channel
+    // currently being heard.
+    if (highlighted)
+    {
+        g.setColour (kBone);
+        g.drawRoundedRectangle (card.reduced (1.0f), 9.0f, 2.0f);
+    }
+
+    auto inner = card.reduced (10.0f, 6.0f);
+
+    // The badge: a ring that fills from the bottom with the level, echoing the
+    // app's own mark. Not the skull silhouette -- squeezed into a 26px square
+    // it loses its jaw and its sockets and reads as a flowerpot, which is the
+    // exact failure that took the skull off the icon. The tall meter keeps the
+    // skull; at that size it is still a skull.
+    const float badgeSize = juce::jmin (inner.getHeight(), 26.0f);
+    auto badge = inner.removeFromLeft (badgeSize).withSizeKeepingCentre (badgeSize, badgeSize);
+
+    if (noSignal)
+    {
+        g.setColour (kDimmedOutline.withAlpha (0.55f));
+        g.drawEllipse (badge.reduced (1.5f), 1.5f);
+    }
+    else
+    {
+        const float norm = juce::jlimit (0.0f, 1.0f,
+                                         (currentLevelDb - Metering::kMinDb)
+                                             / (Metering::kMaxDb - Metering::kMinDb));
+
+        g.setColour (kEmptyInterior);
+        g.fillEllipse (badge.reduced (1.5f));
+
+        // Filled from the bottom, exactly as the skull fills from the jaw, so
+        // the two orientations mean the same thing.
+        {
+            juce::Graphics::ScopedSaveState save (g);
+            auto fill = badge.withTop (badge.getBottom() - badge.getHeight() * norm);
+            g.reduceClipRegion (fill.toNearestInt());
+            g.setColour (fillColourForLevel (currentLevelDb));
+            g.fillEllipse (badge.reduced (1.5f));
+        }
+
+        g.setColour (currentClip ? kClipEyes : kBone.withAlpha (0.72f));
+        g.drawEllipse (badge.reduced (1.5f), currentClip ? 2.0f : 1.2f);
+    }
+
+    inner.removeFromLeft (10.0f);
+
+    // The number is right-aligned and reserved first, so the track between the
+    // name and it does not change length as the level moves.
+    auto valueArea = inner.removeFromRight (58.0f);
+    inner.removeFromRight (8.0f);
+
+    // §9.3: clip says itself in words and in a count, not in a hue. This is the
+    // strip's version of the tall layout's "CLIP n" line -- same rule, and the
+    // number it replaces is the one the reader is already looking at.
     g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain));
-    g.setColour (noSignal ? kTertiaryText : kBone);
-    const juce::String levelText = noSignal ? juce::String ("--.-")
-                                            : juce::String (currentLevelDb, 1);
-    g.drawText (levelText, textArea.removeFromTop (13.0f).toNearestInt(),
-                juce::Justification::centred);
+    g.setColour (currentClip ? kClipEyes : (noSignal ? kTertiaryText : kBone));
+    g.drawText (currentClip ? ("CLIP " + juce::String (juce::jmax (1, currentClipCount)))
+                            : (noSignal ? juce::String ("--.-") : juce::String (currentLevelDb, 1)),
+                valueArea.toNearestInt(), juce::Justification::centredRight);
 
-    // §9.3: "every coloured state also changes shape, text, or number", and
-    // "clip indication cannot depend on hue". The eyes change colour, and the
-    // glow they also carried is switched off for prefers-reduced-motion -- which
-    // left hue alone carrying it for exactly the readers §9.3 protects. So the
-    // clip says itself in words and in a count, on the line that is already
-    // here: no row appears or disappears, so nothing below it moves when a
-    // channel clips.
-    g.setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
-    g.setColour (currentClip ? kClipEyes : kTertiaryText);
-
-    const juce::String peakLine = currentClip
-        ? ("CLIP " + juce::String (juce::jmax (1, currentClipCount)))
-        : (noSignal ? juce::String ("pk --.-") : ("pk " + juce::String (currentPeakDb, 1)));
-
-    g.drawText (peakLine, textArea.removeFromTop (11.0f).toNearestInt(),
-                juce::Justification::centred);
-
-    textArea.removeFromTop (3.0f);
-
-    // The name last and largest of the labels: on a desk the strip is
-    // identified at its foot, and it is what someone points at when they say
-    // "turn that one down".
+    // A fixed budget, so every strip's track starts at the same x and the row
+    // reads as a column of levels. Taken as a fraction of what was left after
+    // the track was reserved, this came out at ~33px and every name on the
+    // screen rendered as an ellipsis.
+    const float nameWidth = juce::jlimit (60.0f, 120.0f, inner.getWidth() * 0.45f);
+    auto nameArea = inner.removeFromLeft (nameWidth);
     g.setFont (juce::Font (12.0f, juce::Font::bold));
     g.setColour (kBone);
-    g.drawText (micName, textArea.removeFromTop (15.0f).toNearestInt(),
-                juce::Justification::centred, true);
+    g.drawText (micName, nameArea.toNearestInt(), juce::Justification::centredLeft, true);
 
-    g.setFont (juce::Font (9.0f, juce::Font::plain));
-    g.setColour (kSecondaryText);
-    g.drawText (deviceName, textArea.removeFromTop (11.0f).toNearestInt(),
-                juce::Justification::centred, true);
+    inner.removeFromLeft (8.0f);
+
+    // The track. A hairline well with the level laid over it, so an idle
+    // channel still shows where its level would appear rather than showing
+    // nothing at all -- an empty row and a broken row must not look alike.
+    auto track = inner.withSizeKeepingCentre (inner.getWidth(), 4.0f);
+    g.setColour (kEmptyInterior);
+    g.fillRoundedRectangle (track, 2.0f);
+
+    if (! noSignal)
+    {
+        const float norm = juce::jlimit (0.0f, 1.0f,
+                                         (currentLevelDb - Metering::kMinDb)
+                                             / (Metering::kMaxDb - Metering::kMinDb));
+
+        if (norm > 0.0f)
+        {
+            g.setColour (fillColourForLevel (currentLevelDb));
+            g.fillRoundedRectangle (track.withWidth (track.getWidth() * norm), 2.0f);
+        }
+
+        // Peak hold, as a bone tick rather than a bar: the same information the
+        // tall meter draws across the skull, in the space this one has.
+        const float peakNorm = juce::jlimit (0.0f, 1.0f,
+                                             (currentPeakDb - Metering::kMinDb)
+                                                 / (Metering::kMaxDb - Metering::kMinDb));
+        const float peakX = track.getX() + track.getWidth() * peakNorm;
+        g.setColour (kBone);
+        g.fillRect (juce::Rectangle<float> (peakX - 1.0f, track.getY() - 3.0f, 2.0f,
+                                            track.getHeight() + 6.0f));
+    }
 }
 
 void SkullMeterComponent::resized() {}
