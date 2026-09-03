@@ -555,7 +555,7 @@ private:
 
     /// What was read at launch. Kept because devices and cameras arrive later
     /// than the file does, so it has to stay around to be matched against them.
-    int cameraTileScale = 1;
+    int cameraTileScale = 5;
     AppSettings rememberedSettings;
     /// Suppresses saving while the loaded settings are still being applied, so
     /// a half-applied rig cannot be written back over a complete one.

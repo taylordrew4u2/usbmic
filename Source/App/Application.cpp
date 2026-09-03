@@ -2163,7 +2163,17 @@ void Application::loadSettings()
     masterVolume = rememberedSettings.masterVolume;
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
-    cameraTileScale = rememberedSettings.cameraTileScale;
+    // The size table these index into roughly doubled at every step, because
+    // the old top of the range -- 456px in a 760px window -- was not a picture
+    // anyone could judge focus on. A settings file written before that carries
+    // the old default, 1, which was never a choice so much as the value nobody
+    // had reason to change; lifting exactly that one to the new default is what
+    // stops the enlargement from reaching only people installing fresh.
+    //
+    // Any other remembered value was somebody moving the arrows on purpose, and
+    // it is kept: the same index is a much larger picture now anyway.
+    cameraTileScale = rememberedSettings.cameraTileScale == 1 ? 5
+                                                             : rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
 

@@ -120,7 +120,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v0.9.1**, and the first release line called SobStage. The recording
+This is **v0.9.2**, and the first release line called SobStage. The recording
 engine is mature — it is covered by 375
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
