@@ -172,6 +172,11 @@ MainScreen::MainScreen()
     taglineLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (taglineLabel);
 
+    versionLabel.setFont (juce::Font (11.0f));
+    versionLabel.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    versionLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (versionLabel);
+
     // Small, wide-tracked, tertiary: a heading that labels a group without
     // competing with anything inside it.
     for (auto* l : { &cameraSectionLabel, &micSectionLabel })
@@ -197,6 +202,11 @@ MainScreen::MainScreen()
     addCameraButton.setColour (juce::TextButton::buttonColourId, AppLookAndFeel::surfaceHigh);
     addCameraButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
     addChildComponent (addCameraButton);
+}
+
+void MainScreen::setVersionText (const juce::String& text)
+{
+    versionLabel.setText (text, juce::dontSendNotification);
 }
 
 void MainScreen::paintBrandMark (juce::Graphics& g, juce::Rectangle<float> b) const
@@ -595,6 +605,8 @@ void MainScreen::resized()
         header.removeFromLeft (10);
 
         advancedButton.setBounds (header.removeFromRight (96).reduced (0, 3));
+        header.removeFromRight (8);
+        versionLabel.setBounds (header.removeFromRight (56));
         header.removeFromRight (8);
 
         brandLabel.setBounds (header.removeFromLeft (juce::jmin (128, header.getWidth())));
