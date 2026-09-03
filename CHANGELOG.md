@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.9.4 — 2026-09-03
+
+### Fixed -- the camera picture fits the window it opens in
+
+The picture was measured against the wrong height, and three faults came
+out of that one cause.
+
+MainScreen gives the picture whatever height is left over, and took that
+from its own getHeight(). But the owner sizes MainScreen to
+max(viewport, requiredHeight) -- so a taller picture grew the canvas,
+which offered more spare height, which grew the picture again. It settled
+at the fraction cap: 1007px of content inside the 560px window the app
+opens at. The picture overflowed the window, and the record button went
+below the fold.
+
+It is now measured against the viewport -- what the user can actually see
+-- which is an input from the owner rather than something derived from the
+content, so the loop cannot form.
+
+### Fixed -- switching a camera on makes room for it
+
+That change alone left the picture small at launch (352px wide), because
+the window opens sized for an audio-only rig and never grew when a camera
+arrived. Switching one on now grows the window to fit it, bounded by the
+display, and only ever upward: a window sized by hand is never shrunk
+behind the user's back.
+
+At the size the app opens at, the picture is now 1146x644 -- the full
+width of the window.
+
+### Fixed -- no more empty band above the footer
+
+With the window free to grow, the opening height no longer has to reserve
+space for cameras nobody switched on, so it drops from 560 to the window's
+own 420 minimum. An audio-only rig had been opening with roughly 250px of
+empty background between the last status line and the footer.
+
+### Added -- the layout check now tests the size the window actually opens at
+
+Every case in Tools/layout_probe had assumed a window someone had already
+dragged bigger, which is exactly how a picture that was small on launch
+went out reported as large. It now covers the real opening size and prints
+OVERFLOWS WINDOW when content does not fit, so this class of fault fails
+loudly instead of needing to be noticed.
+
 ## v0.9.3 — 2026-09-03
 
 ### Fixed -- the app now reports the version it actually is
