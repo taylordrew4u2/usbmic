@@ -140,7 +140,7 @@ AdvancedPanel::AdvancedPanel()
     // not per keystroke -- each change replaces a device other apps may be
     // recording from.
     addAndMakeVisible (aggregateNameLabel);
-    aggregateNameEditor.setTextToShowWhenEmpty ("Multi-Mic Aggregator", juce::Colours::grey);
+    aggregateNameEditor.setTextToShowWhenEmpty ("SobStage", juce::Colours::grey);
     aggregateNameEditor.onReturnKey = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
     aggregateNameEditor.onFocusLost = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
     addAndMakeVisible (aggregateNameEditor);

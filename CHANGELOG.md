@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Changed -- the app is called SobStage
+
+The name changes everywhere it is visible: the window, the .app bundle, the
+Windows executable, the DMG, and the virtual device other apps see in their
+input list. Anyone who had renamed that device keeps their own name; anyone who
+had not will find "SobStage" where "Multi-Mic Aggregator" used to be, and will
+need to pick it again once in Zoom, OBS or whatever else was pointed at it.
+
+Everything the app remembers about a rig moves with it. Every microphone's name
+and trim, which ones are switched off, the destination folder, the backup
+setting and the camera choices all live in a folder named after the app, and a
+rename that simply looked somewhere new would have presented as all of it being
+forgotten -- which is exactly the thing the settings file exists to prevent. The
+old folder is moved across the first time the new name is used.
+
+The internal namespace is still `mma`. It is not visible anywhere a user can
+look, and renaming it would have touched a hundred files without changing
+anything.
+
+### Added -- save the video with the sound in one file
+
+The picture and the sound have always been written separately, for a reason
+worth keeping: the platform camera capture is video-only, the microphones are
+the sound, and one clean track per person is the point of the rig. But separate
+files mean opening an editor before anyone can watch, send or upload a take.
+
+Switching this on writes one more file per camera with both in it, beside the
+originals rather than instead of them. The stems, the mix and the silent video
+all stay exactly where they were, so a combined file that fails to appear costs
+nothing that was not already saved. It is off by default: it costs disk and
+minutes of processing after every take, and nobody who does not want it pays.
+
+The sound is lined up rather than assumed to match. The stems start before any
+camera is asked to record, so a camera's file begins a fraction of a second into
+the take -- small enough to look like nothing, large enough to look wrong.
+How far in is measured for each camera as it starts, and that much is trimmed
+off the front of the audio.
+
+The picture is copied rather than re-encoded, so the file appears in minutes
+rather than hours and loses nothing. That means the container has to be one that
+can carry what the camera already wrote: mp4 on macOS, Matroska on Windows,
+whose format mp4 cannot legally hold.
+
+This needs ffmpeg, which the app cannot install for anyone. If it is missing,
+the toggle says so and says how to get it -- before a take rather than after
+one, since finding out afterwards is too late to do anything about.
+
 ## v0.8.0 — 2026-09-01
 
 ### Added -- the camera pictures can be resized from the main screen

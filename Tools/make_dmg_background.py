@@ -61,7 +61,7 @@ def main():
 
     d = ImageDraw.Draw(img)
 
-    centred(d, 40 * SS, "Multi-Mic Aggregator", load_font(25 * SS, bold=True), BONE)
+    centred(d, 40 * SS, "SobStage", load_font(25 * SS, bold=True), BONE)
     centred(d, 78 * SS, "Drag the skull onto Applications", load_font(14 * SS), SECONDARY)
 
     # Arrow between the two icon positions the AppleScript sets (165 and 495).
@@ -86,7 +86,7 @@ def main():
     centred(d, 318 * SS, "First launch: after dragging, run this once in Terminal",
             load_font(13 * SS), BONE)
     centred(d, 344 * SS,
-            'xattr -dr com.apple.quarantine "/Applications/Multi-Mic Aggregator.app"',
+            'xattr -dr com.apple.quarantine "/Applications/SobStage.app"',
             load_font(11 * SS, mono=True), ACCENT)
     centred(d, 372 * SS, "Needed because this build has no paid Apple certificate.",
             load_font(11 * SS), TERTIARY)

@@ -32,13 +32,13 @@ jobs:
           # CGWindowListCreateImage, which the macOS 15+ SDK marks unavailable.
           - os: macos-14
             label: macOS
-            artifact: MultiMicAggregator-macOS
+            artifact: SobStage-macOS
           - os: windows-latest
             label: Windows
-            artifact: MultiMicAggregator-Windows
+            artifact: SobStage-Windows
           - os: ubuntu-latest
             label: Linux
-            artifact: MultiMicAggregator-Linux
+            artifact: SobStage-Linux
 
     steps:
       - uses: actions/checkout@v4
@@ -132,7 +132,7 @@ jobs:
           codesign --force --sign - --timestamp=none "$app"
           codesign --verify --strict --verbose=2 "$app"
 
-          staging="${RUNNER_TEMP}/dmg/Multi-Mic Aggregator"
+          staging="${RUNNER_TEMP}/dmg/SobStage"
           rm -rf "${RUNNER_TEMP}/dmg"
           mkdir -p "$staging/.background"
 
@@ -151,16 +151,16 @@ jobs:
           # is no room for Finder to write the .DS_Store that *holds* the layout,
           # and the layout silently does not stick.
           rw="${RUNNER_TEMP}/rw.dmg"
-          hdiutil create -volname "Multi-Mic Aggregator" -srcfolder "$staging" \
+          hdiutil create -volname "SobStage" -srcfolder "$staging" \
             -ov -format UDRW -fs HFS+ -size 250m "$rw"
 
           # Mount at the default /Volumes location, and WITHOUT -nobrowse.
           # Finder only knows about disks it has been told to browse and that
           # live under /Volumes: a custom mountpoint plus -nobrowse is invisible
           # to it, which is exactly why the first attempt at this failed with
-          # `Finder got an error: Can't get disk "Multi-Mic Aggregator" (-1728)`
+          # `Finder got an error: Can't get disk "SobStage" (-1728)`
           # and shipped a plain window.
-          mountpoint="/Volumes/Multi-Mic Aggregator"
+          mountpoint="/Volumes/SobStage"
           hdiutil attach "$rw"
 
           # Lay the window out so opening the image *is* the instructions: the
@@ -171,7 +171,7 @@ jobs:
           # at column 0, which would end this YAML block scalar early.
           osascript \
             -e 'tell application "Finder"' \
-            -e '  tell disk "Multi-Mic Aggregator"' \
+            -e '  tell disk "SobStage"' \
             -e '    open' \
             -e '    set current view of container window to icon view' \
             -e '    set toolbar visible of container window to false' \
@@ -201,15 +201,15 @@ jobs:
           hdiutil detach "$mountpoint"
 
           hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 \
-            -o "MultiMicAggregator-macOS.dmg" -ov
-          hdiutil verify "MultiMicAggregator-macOS.dmg"
+            -o "SobStage-macOS.dmg" -ov
+          hdiutil verify "SobStage-macOS.dmg"
 
           # Prove the signature survived the image round-trip, rather than
           # assuming it did. This is the check that would have caught the
           # "damaged" failure before anyone downloaded it.
           verify="${RUNNER_TEMP}/dmg-verify"
           rm -rf "$verify"; mkdir -p "$verify"
-          hdiutil attach "MultiMicAggregator-macOS.dmg" \
+          hdiutil attach "SobStage-macOS.dmg" \
             -mountpoint "$verify" -nobrowse -readonly
           codesign --verify --strict --verbose=2 "$verify/$appname"
           test -f "$verify/.background/background.png"
@@ -238,8 +238,8 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: MultiMicAggregator-macOS-dmg
-          path: MultiMicAggregator-macOS.dmg
+          name: SobStage-macOS-dmg
+          path: SobStage-macOS.dmg
           if-no-files-found: error
 
   release:

@@ -330,7 +330,7 @@ void Application::publishAggregateDevice()
 void Application::setAggregateDeviceName (const juce::String& name)
 {
     const auto trimmed = name.trim();
-    aggregateName = trimmed.isEmpty() ? juce::String ("Multi-Mic Aggregator") : trimmed;
+    aggregateName = trimmed.isEmpty() ? juce::String ("SobStage") : trimmed;
     publishAggregateDevice();
     saveSettings();
 }
@@ -2097,7 +2097,16 @@ void Application::loadSettings()
 
     askWhereToSaveEveryTime = rememberedSettings.askWhereToSaveEveryTime;
     mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
-    aggregateName = juce::String (rememberedSettings.aggregateName);
+    // §7: what other apps see. A settings file written under the app's previous
+    // name carries that name here, and carrying it forward would leave the
+    // device in everyone's Zoom and OBS still called the old thing -- a rename
+    // everywhere except the one place other software looks.
+    //
+    // Only the untouched default is moved. Someone who typed their own name
+    // into this field meant it, and it is not ours to overwrite.
+    aggregateName = rememberedSettings.aggregateName == "Multi-Mic Aggregator"
+                        ? juce::String ("SobStage")
+                        : juce::String (rememberedSettings.aggregateName);
     masterVolume = rememberedSettings.masterVolume;
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
@@ -2188,9 +2197,34 @@ void Application::saveSettings()
 
 juce::File Application::getLogFile()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-        .getChildFile ("MultiMicAggregator")
-        .getChildFile ("log.txt");
+    return getSupportFolder().getChildFile ("log.txt");
+}
+
+juce::File Application::getSupportFolder()
+{
+    const auto appData = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+    const auto current = appData.getChildFile ("SobStage");
+
+    // The app was called something else before, and everything §2.4 remembers
+    // about a rig -- every microphone's name and trim, which ones are switched
+    // off, the destination folder, the backup setting -- lives in this folder
+    // under that old name. A rename that simply looked somewhere new would
+    // present as every one of those being forgotten, which is precisely the
+    // §10.1 failure the settings file exists to prevent: being asked the same
+    // questions again.
+    //
+    // So the old folder is moved across, once, the first time the new name is
+    // used. Moved rather than copied: two folders would then drift, and the
+    // one being written to is not the one a user going looking would find.
+    if (! current.isDirectory())
+    {
+        const auto previous = appData.getChildFile ("MultiMicAggregator");
+
+        if (previous.isDirectory())
+            previous.moveFileTo (current);
+    }
+
+    return current;
 }
 
 namespace {

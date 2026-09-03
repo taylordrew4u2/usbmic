@@ -154,7 +154,7 @@ MainComponent::MainComponent (Application& app)
     advancedPanel.onDiagnosticsExportClicked = [this] {
         // §11: logs, recent session.json files and the device inventory. Never audio.
         const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
-                                     .getNonexistentChildFile ("MultiMicAggregator-diagnostics", ".zip");
+                                     .getNonexistentChildFile ("SobStage-diagnostics", ".zip");
         application.exportDiagnostics (destination);
     };
 

@@ -369,6 +369,13 @@ public:
     /// logger before anything else has a chance to fail.
     static juce::File getLogFile();
 
+    /// The folder the log and the settings share.
+    ///
+    /// Also where the app's previous name is dealt with: everything §2.4
+    /// remembers about a rig was written under it, and the first call after
+    /// the rename moves that folder across rather than starting empty.
+    static juce::File getSupportFolder();
+
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
     std::unique_ptr<CaptureCoordinator> capture;
@@ -443,7 +450,7 @@ private:
     void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
     std::unique_ptr<SystemAggregateDevice> systemAggregate;
-    juce::String aggregateName { "Multi-Mic Aggregator" };
+    juce::String aggregateName { "SobStage" };
     // What was last published, so device-change churn republishes only on a
     // real difference -- destroying a device another app is recording from is
     // justified when hardware changed, never as a side effect of a no-op.
