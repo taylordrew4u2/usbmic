@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.9.1 — 2026-09-03
+
+### Changed -- the combined file no longer re-encodes the sound
+
+The picture was always copied bit for bit. The sound was not: it was going out
+as 256 kbps AAC, which is transparent enough for most listening and still
+throws the take away. The stems are 24-bit PCM, and a lossy codec is a one-way
+door -- nobody records at 24 bits in order to deliver a generation-loss copy of
+it, and a combined file worse than the parts it was made from is not worth
+making.
+
+The audio is now kept as it was recorded: 24-bit PCM in a `.mov`, or FLAC in
+the Matroska case, which is also lossless. Neither stream is re-encoded any
+more, so the combined file is exactly as good as the stems and the video beside
+it.
+
+That changed the container on macOS from `.mp4` to `.mov`. mp4's PCM support is
+an afterthought, so audio in an mp4 is lossy in practice; `.mov` carries PCM
+natively, is what the camera already writes, and opens in every editor.
+
+The audio is also written at the depth the take was actually recorded at rather
+than a fixed one, so a 24-bit take does not quietly lose its bottom eight bits
+on the way out.
+
 ## v0.9.0 — 2026-09-03
 
 ### Added -- aim the loudness at where the take is actually going

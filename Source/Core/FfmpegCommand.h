@@ -22,7 +22,8 @@ std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutab
                                                const std::string& videoPath,
                                                const std::string& audioPath,
                                                const std::string& outputPath,
-                                               double audioLeadSeconds);
+                                               double audioLeadSeconds,
+                                               int audioBitDepth = 24);
 
 /// Seconds as ffmpeg wants them: fixed-point with millisecond resolution and a
 /// dot, whatever the machine's locale would otherwise do to the decimal
