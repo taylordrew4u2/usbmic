@@ -5,12 +5,20 @@
 namespace mma {
 
 namespace {
-    // 16:9 wells. The default (index 1) is sized so four of them still leave the
-    // meters and the record button on screen together -- which is the entire
-    // point of putting them here -- and the steps either side exist because that
-    // trade-off is not the same for everyone: one camera across a table wants a
-    // picture you can judge focus on, four in a row want to fit.
-    constexpr int kCameraTileWidths[] = { 120, 176, 248, 340, 456 };
+    // 16:9 wells.
+    //
+    // These used to top out at 456px in a 760px window, which made "as large as
+    // it goes" a picture occupying a third of the screen. The point of putting
+    // the camera on the main screen is to be able to see the shot -- to judge
+    // focus and framing on it -- and at 456 you could tell someone was there
+    // and not much else. Every step is roughly doubled, the top of the range
+    // now exceeds any window this opens at, and the layout clamps to whatever
+    // width is actually available, so the largest step means "fill the window"
+    // rather than a number that stopped being big years ago.
+    //
+    // The bottom of the range is still small, because a four-camera rig that
+    // wants everything on one row has not gone away.
+    constexpr int kCameraTileWidths[] = { 240, 400, 620, 880, 1180, 1560 };
     constexpr int kCameraScaleSteps = static_cast<int> (std::size (kCameraTileWidths));
 
     constexpr int kCameraCaptionHeight = 16;
@@ -377,7 +385,7 @@ int MainScreen::cameraRowHeight() const
     // how many tiles fit across and therefore how many rows they wrap onto. Its
     // own width is the honest answer; before the first resize() there is none,
     // so fall back to the window width the owner opens at.
-    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 720) - 32);
+    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
     const int tileWidth = juce::jmin (cameraTileWidthAt (cameraScale), juce::jmax (72, available));
     const int rows = cameraRowsNeeded (tileWidth, available);
     const int cellHeight = tileHeightFor (tileWidth) + kCameraCaptionHeight;
@@ -405,7 +413,7 @@ int MainScreen::getRequiredHeight() const
 
     // MIX is laid out with the microphones, so it counts towards the wrap.
     const int cells = juce::jmax (1, skullMeters.size() + 1);
-    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 720) - 32);
+    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
     const int perRow = juce::jlimit (1, cells, (available + kStripGap) / (190 + kStripGap));
     const int rows = (cells + perRow - 1) / perRow;
 
