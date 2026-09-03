@@ -69,6 +69,15 @@ public:
     /// without this the panel is a dead end with no way back.
     std::function<void()> onCloseClicked;
     std::function<void (bool)> onMirrorToggled;
+
+    /// Whether a finished take also writes one video-with-sound file per
+    /// camera. Beside the separate files, never instead of them.
+    std::function<void (bool)> onCombineVideoToggled;
+
+    /// Sets that toggle and the sentence under it. `unavailableReason` is empty
+    /// when the machine can actually do this, and otherwise says what is
+    /// missing -- named here, before a take, rather than in an alert after one.
+    void setCombineVideoState (bool on, const juce::String& unavailableReason);
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&)> onClockMasterChanged;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
@@ -95,6 +104,12 @@ private:
     juce::TextEditor aggregateNameEditor;
     juce::Label aggregateStatusLabel;
     juce::ToggleButton mirrorToggle { "Keep a local backup copy" };
+    juce::ToggleButton combineVideoToggle { "Also save video with the sound in one file" };
+
+    // Named under the toggle rather than in an alert, because the answer is
+    // "install a thing", and an alert after the take is the wrong moment to
+    // learn that.
+    juce::Label combineVideoNote;
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };

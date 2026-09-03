@@ -127,6 +127,15 @@ MainComponent::MainComponent (Application& app)
         application.setMirrorEnabled (enabled);
     };
 
+    advancedPanel.onCombineVideoToggled = [this] (bool enabled) {
+        application.setCombineVideoAndAudio (enabled);
+
+        // Straight back, so switching it on says immediately whether the
+        // machine can actually do it rather than leaving that to be discovered
+        // after the next take.
+        refreshAdvanced();
+    };
+
     advancedPanel.onDestinationFolderClicked = [this] {
         chooseDestinationFolder ([this] { refreshAdvanced(); });
     };
@@ -645,6 +654,8 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setAggregateStatus (application.getAggregateStatus());
     advancedPanel.setAggregateName (application.getAggregateDeviceName());
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
+    advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
+                                        application.getCombineUnavailableReason());
 
     juce::StringArray outputs;
     for (const auto& name : application.getOutputDeviceNames())

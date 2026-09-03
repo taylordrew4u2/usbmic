@@ -2,6 +2,7 @@
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Core/ClockMasterResolver.h"
+#include "../Core/CombinedTakePlan.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
@@ -176,6 +177,31 @@ void Application::setCameraTileScale (int step)
 
     cameraTileScale = step;
     saveSettings();
+}
+
+void Application::setCombineVideoAndAudio (bool shouldCombine)
+{
+    if (shouldCombine == combineVideoAndAudio)
+        return;
+
+    combineVideoAndAudio = shouldCombine;
+    saveSettings();
+}
+
+juce::String Application::getCombineUnavailableReason()
+{
+    if (! combineVideoAndAudio)
+        return {};
+
+    if (takeCombiner.findFfmpeg().isNotEmpty())
+        return {};
+
+    // §10.6: named before a take rather than discovered after one. Finding out
+    // that the combined file was never possible is worth knowing while there is
+    // still time to install the thing, not once the recording is over.
+    return "Combined video needs ffmpeg, which isn't installed. Your picture and "
+           "sound will still both be recorded, as separate files. On a Mac: "
+           "brew install ffmpeg.";
 }
 
 void Application::openEnabledCameras()
@@ -941,7 +967,13 @@ void Application::toggleRecording()
                 // camera the user switched on but never looked at is opened
                 // here rather than being quietly left out of the take.
                 openEnabledCameras();
-                cameraController.startRecording (juce::File (folder));
+
+                // recordingStartMs is the audio take's t=0. Handing it over is
+                // what lets each camera record how far into the take its own
+                // first frame lands -- the one number the combining step
+                // cannot work out afterwards, since a camera file carries no
+                // timestamp tying it to the session.
+                cameraController.startRecording (juce::File (folder), recordingStartMs);
 
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
@@ -983,6 +1015,24 @@ void Application::toggleRecording()
         // records are the take's final ones -- and before recordingStartMs is
         // cleared, or every timestamp inside it would read as zero.
         writeSessionMetadata (true);
+
+        // The combined file, if it was asked for. Started only once every input
+        // is closed and complete, and run on its own thread: copying a
+        // four-hour picture is minutes of work, and none of it may happen on
+        // the thread drawing the meters.
+        //
+        // Nothing here can cost anyone the take. The inputs are finished files
+        // that this only reads, and a failure leaves the folder exactly as it
+        // was -- separate, complete, and playable.
+        if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
+        {
+            const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
+                                                     cameraController.getCombinedTakeInputs(),
+                                                     "MIX.wav");
+
+            if (plan.hasWork())
+                takeCombiner.start (juce::File (currentSessionFolder), plan);
+        }
 
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
         // read without becoming furniture.
@@ -2052,6 +2102,7 @@ void Application::loadSettings()
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
     cameraTileScale = rememberedSettings.cameraTileScale;
+    combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2106,6 +2157,7 @@ void Application::saveSettings()
     settings.masterVolume = masterVolume;
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
     settings.cameraTileScale = cameraTileScale;
+    settings.combineVideoAndAudio = combineVideoAndAudio;
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });

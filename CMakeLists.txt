@@ -49,6 +49,9 @@ add_library(mma_core STATIC
     Source/Core/PermissionGuidance.cpp
     Source/Core/CaptureCoordinator.cpp
     Source/Core/DeviceInputStream.cpp
+    Source/Core/CombinedTakePlan.cpp
+    Source/Core/FfmpegCommand.cpp
+    Source/Core/FfmpegLocator.cpp
     Source/Platform/AlsaBackend.cpp
 )
 # ALSA on Linux: the backend is part of mma_core rather than the app target so
@@ -141,6 +144,7 @@ if (MMA_BUILD_APP)
         Source/UI/Main.cpp
         Source/App/Application.cpp
         Source/App/CameraController.cpp
+        Source/App/TakeCombiner.cpp
     )
 
     target_compile_definitions(MultiMicAggregator PRIVATE
