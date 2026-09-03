@@ -28,10 +28,10 @@ DISPLAY_NUM="${MMA_DISPLAY:-:99}"
 # screenshot presented as evidence for a change the binary did not contain.
 APP=""
 for CANDIDATE in \
-  "build/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" \
-  "build/MultiMicAggregator_artefacts/Multi-Mic Aggregator" \
-  "build-app/MultiMicAggregator_artefacts/Release/Multi-Mic Aggregator" \
-  "build-app/MultiMicAggregator_artefacts/Multi-Mic Aggregator"
+  "build/SobStage_artefacts/Release/SobStage" \
+  "build/SobStage_artefacts/SobStage" \
+  "build-app/SobStage_artefacts/Release/SobStage" \
+  "build-app/SobStage_artefacts/SobStage"
 do
   [ -x "$CANDIDATE" ] || continue
   if [ -z "$APP" ] || [ "$CANDIDATE" -nt "$APP" ]; then APP="$CANDIDATE"; fi

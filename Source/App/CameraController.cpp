@@ -186,7 +186,7 @@ juce::String CameraController::getPlannedFileNameFor (const std::string& deviceI
     return {};
 }
 
-bool CameraController::startRecording (const juce::File& sessionFolder)
+bool CameraController::startRecording (const juce::File& sessionFolder, double audioStartMs)
 {
 #if JUCE_USE_CAMERA
     if (recording)
@@ -212,6 +212,16 @@ bool CameraController::startRecording (const juce::File& sessionFolder)
         // Quality 2 is JUCE's highest. There is no setting for this and there
         // should not be: nobody wants the take they cannot redo in medium.
         entry->second.device->startRecordingToFile (file, 2);
+
+        // Read after the call returns, not before. What matters is when the OS
+        // actually began taking frames, and opening a camera file is the slow
+        // part -- timing it from before the call would under-report the gap by
+        // exactly the amount that matters.
+        entry->second.startOffsetSeconds =
+            audioStartMs > 0.0
+                ? juce::jmax (0.0, (juce::Time::getMillisecondCounterHiRes() - audioStartMs) / 1000.0)
+                : 0.0;
+
         ++started;
     }
 
@@ -223,9 +233,37 @@ bool CameraController::startRecording (const juce::File& sessionFolder)
 
     return recording;
 #else
-    juce::ignoreUnused (sessionFolder);
+    juce::ignoreUnused (sessionFolder, audioStartMs);
     return false;
 #endif
+}
+
+std::vector<CombinedTakeInput> CameraController::getCombinedTakeInputs() const
+{
+    std::vector<CombinedTakeInput> inputs;
+
+#if JUCE_USE_CAMERA
+    // In the order the plans are built, so the combined files line up with the
+    // numbering on everything else in the folder.
+    for (const auto& plan : selection.buildPlans())
+    {
+        const auto entry = open.find (plan.deviceId);
+
+        if (entry == open.end())
+            continue;
+
+        // A camera that was opened but never got as far as a file contributes
+        // an empty name, which the plan skips. That is deliberate: the caller
+        // should not have to know which cameras failed, only that this one has
+        // nothing to combine.
+        const auto& file = entry->second.recordingFile;
+
+        inputs.push_back ({ file.existsAsFile() ? file.getFileName().toStdString() : std::string(),
+                            entry->second.startOffsetSeconds });
+    }
+#endif
+
+    return inputs;
 }
 
 void CameraController::stopRecording()

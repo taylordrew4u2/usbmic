@@ -69,6 +69,23 @@ public:
     /// without this the panel is a dead end with no way back.
     std::function<void()> onCloseClicked;
     std::function<void (bool)> onMirrorToggled;
+
+    /// Whether a finished take also writes one video-with-sound file per
+    /// camera. Beside the separate files, never instead of them.
+    std::function<void (bool)> onCombineVideoToggled;
+
+    /// Which platform the take is aimed at, by name; empty means none.
+    std::function<void (juce::String)> onDeliveryTargetChanged;
+
+    /// Fills the picker, selects one, and sets the line under it that says what
+    /// the mix currently measures and what to do about it.
+    void setDeliveryTargets (const juce::StringArray& names, const juce::String& chosen);
+    void setLoudnessAdvice (const juce::String& text);
+
+    /// Sets that toggle and the sentence under it. `unavailableReason` is empty
+    /// when the machine can actually do this, and otherwise says what is
+    /// missing -- named here, before a take, rather than in an alert after one.
+    void setCombineVideoState (bool on, const juce::String& unavailableReason);
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&)> onClockMasterChanged;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
@@ -95,10 +112,31 @@ private:
     juce::TextEditor aggregateNameEditor;
     juce::Label aggregateStatusLabel;
     juce::ToggleButton mirrorToggle { "Keep a local backup copy" };
+
+    // The reason, under the switch, in the app's voice. §6.3's backup exists
+    // for the case where the card does not survive the day, and saying that
+    // plainly is what makes someone leave it on.
+    juce::Label mirrorNote;
+    juce::ToggleButton combineVideoToggle { "Also save video with the sound in one file" };
+
+    // Named under the toggle rather than in an alert, because the answer is
+    // "install a thing", and an alert after the take is the wrong moment to
+    // learn that.
+    juce::Label combineVideoNote;
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
     juce::TextButton closeButton { "< Done" };
+
+    // Where the take is going, and how loud that place wants it. In its own
+    // section because it is a decision about delivery rather than about the
+    // rig -- the answer changes per project, not per machine.
+    juce::Label deliverySection;
+    juce::Label deliveryLabel;
+    juce::ComboBox deliveryCombo;
+    juce::Label deliveryNote;
+    juce::Label loudnessAdviceLabel;
+    juce::StringArray deliveryNames;
 
     juce::Label micSelectionLabel;
     juce::Label storageLabel;

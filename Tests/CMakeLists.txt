@@ -28,6 +28,8 @@ add_executable(mma_core_tests
     test_SetupAdvisor.cpp
     test_SampleFormat.cpp
     test_WritePipeline.cpp
+    test_CombinedTake.cpp
+    test_Loudness.cpp
     test_TapToNameDetector.cpp
     test_PermissionGuidance.cpp
     test_CaptureCoordinator.cpp

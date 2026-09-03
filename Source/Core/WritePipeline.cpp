@@ -103,6 +103,13 @@ bool WritePipeline::start (const std::string& sessionFolder,
     stemScratch.assign (drainFrames, 0.0f);
     mixScratch.assign (drainFrames, 0.0f);
 
+    {
+        // Constructed here because this is where the rate is known, and the
+        // K-weighting filter has to be built for the rate it will actually see.
+        const std::lock_guard<std::mutex> lock (loudnessLock);
+        loudness = std::make_unique<LoudnessMeter> (rate);
+    }
+
     framesAccepted.store (0, std::memory_order_relaxed);
     framesDropped.store (0, std::memory_order_relaxed);
 
@@ -320,6 +327,15 @@ void WritePipeline::drainOnce (bool finalFlush)
         for (size_t f = 0; f < frames; ++f)
             mixScratch[f] = MixBusLimiter::processSample (mixScratch[f]);
 
+        // Measured from the same buffer that is about to be written, after the
+        // limiter, so the loudness reported is the loudness of the file.
+        {
+            const std::lock_guard<std::mutex> lock (loudnessLock);
+
+            if (loudness != nullptr)
+                loudness->process (mixScratch.data(), frames);
+        }
+
         if (! mixWriter->writeInterleaved (mixScratch.data(), frames))
             cardWriteFailed.store (true, std::memory_order_release);
 
@@ -357,6 +373,24 @@ void WritePipeline::drainOnce (bool finalFlush)
         if (! finalFlush && frames < framesCapacity)
             return;
     }
+}
+
+double WritePipeline::getIntegratedLufs() const
+{
+    const std::lock_guard<std::mutex> lock (loudnessLock);
+    return loudness != nullptr ? loudness->getIntegratedLufs() : LoudnessMeter::kSilenceLufs;
+}
+
+double WritePipeline::getTruePeakDbtp() const
+{
+    const std::lock_guard<std::mutex> lock (loudnessLock);
+    return loudness != nullptr ? loudness->getTruePeakDbtp() : LoudnessMeter::kSilenceLufs;
+}
+
+int WritePipeline::getLoudnessBlockCount() const
+{
+    const std::lock_guard<std::mutex> lock (loudnessLock);
+    return loudness != nullptr ? loudness->getBlockCount() : 0;
 }
 
 void WritePipeline::runWriterThread()

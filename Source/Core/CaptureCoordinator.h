@@ -105,6 +105,13 @@ public:
     bool hasMirrorWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasMirrorWriteFailed(); }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
 
+    /// BS.1770 loudness of the mix as written. What every streaming platform
+    /// normalises against, and the only figure that says how loud a take will
+    /// actually sound -- peak level says nothing about it.
+    double getIntegratedLufs() const;
+    double getTruePeakDbtp() const;
+    int getLoudnessBlockCount() const;
+
     /// One microphone's audio callback (§3.2). Separate USB devices run on
     /// independent clocks, so each one delivers on its own thread and into its
     /// own ring rather than as one aligned block.

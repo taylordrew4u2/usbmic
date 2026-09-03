@@ -13,6 +13,7 @@
 #include "../Core/SessionRecovery.h"
 #include "../Core/CardRemovalNotice.h"
 #include "../Core/PreflightThroughputTest.h"
+#include "../Core/StreamingTargets.h"
 #include <atomic>
 #include <functional>
 #include <map>
@@ -29,6 +30,7 @@
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
 #include "CameraController.h"
+#include "TakeCombiner.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 #include "../Platform/SystemAggregateDevice.h"
@@ -328,6 +330,37 @@ public:
     void setCameraTileScale (int step);
     int getCameraTileScale() const noexcept { return cameraTileScale; }
 
+    /// Whether a finished take also writes one video-with-sound file per
+    /// camera, beside the separate picture and sound rather than instead of
+    /// them. Off by default: it costs disk and minutes of CPU after every take,
+    /// and both files are already saved and already aligned.
+    void setCombineVideoAndAudio (bool shouldCombine);
+    bool getCombineVideoAndAudio() const noexcept { return combineVideoAndAudio; }
+
+    /// How the combining of the last take is going, for the line that says so.
+    TakeCombiner::Status getCombineStatus() const { return takeCombiner.getStatus(); }
+
+    /// Empty unless the machine has no ffmpeg and the setting is on -- the one
+    /// thing this feature needs that the app cannot install for the user.
+    juce::String getCombineUnavailableReason();
+
+    /// Which platform the take is being aimed at, by name, or empty for none.
+    ///
+    /// Streaming services all normalise what they are given to one loudness
+    /// figure, so how loud a take is decides what a listener hears -- and peak
+    /// level, which is all this app showed before, says nothing about it.
+    void setDeliveryTarget (const juce::String& name);
+    juce::String getDeliveryTarget() const { return deliveryTarget; }
+    static juce::StringArray getDeliveryTargetNames();
+
+    /// What the mix measures, and what to do about it for the chosen platform.
+    /// Empty when no platform is chosen.
+    juce::String getLoudnessAdvice() const;
+
+    /// The measured figure on its own, for the line that shows it while a take
+    /// runs. Empty when there is nothing measurable yet.
+    juce::String getLoudnessReading() const;
+
     /// §6.5 "target card removed": set when a take was stopped because the
     /// destination stopped accepting writes, and consumed once by the UI that
     /// alerts about it. Empty the rest of the time.
@@ -353,6 +386,13 @@ public:
     /// §11: where the running log lives. Public so Main.cpp can install the
     /// logger before anything else has a chance to fail.
     static juce::File getLogFile();
+
+    /// The folder the log and the settings share.
+    ///
+    /// Also where the app's previous name is dealt with: everything §2.4
+    /// remembers about a rig was written under it, and the first call after
+    /// the rename moves that folder across rather than starting empty.
+    static juce::File getSupportFolder();
 
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
@@ -409,6 +449,9 @@ private:
     // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
     // fixed-width detectors in SetupAdvisor.
     CameraController cameraController;
+    TakeCombiner takeCombiner;
+    bool combineVideoAndAudio = false;
+    juce::String deliveryTarget;
 
     std::unique_ptr<TapToNameDetector> tapDetector;
     int tapDetectorChannels = 0;
@@ -426,7 +469,7 @@ private:
     void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
     std::unique_ptr<SystemAggregateDevice> systemAggregate;
-    juce::String aggregateName { "Multi-Mic Aggregator" };
+    juce::String aggregateName { "SobStage" };
     // What was last published, so device-change churn republishes only on a
     // real difference -- destroying a device another app is recording from is
     // justified when hardware changed, never as a side effect of a no-op.
