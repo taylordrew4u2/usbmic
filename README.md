@@ -100,6 +100,16 @@ stated rather than left to be discovered. Answering it once is the whole cost �
 every press of record after this starts immediately.
 
 <p align="center">
+  <img src="docs/images/recording.png" alt="A take in progress: the record button is red and reads 'Recording. Tap to stop.', a green line says '5 files -- 670 bytes so far', and the footer reads 'Recording for 0m 06s' beside the session folder being written into" width="660">
+</p>
+
+A take running. The button says what pressing it does now, not what it did a
+moment ago; the green line names the files appearing on disk as they appear,
+and the footer counts the take and the room left beside the folder it is
+writing into. §6.2's question — "is it actually recording, and where?" — is
+answered on screen rather than by going to look.
+
+<p align="center">
   <img src="docs/images/saved-take.png" alt="A card headed 'Saved.' showing the session folder path, '5 files, 3.2 KB', each file listed with its size, a warning that the files are empty, and buttons reading Done and Open the folder" width="660">
 </p>
 
@@ -107,15 +117,42 @@ And when the take stops, the files themselves — named, with their sizes, and a
 button that opens the folder. This shot is the virtual-microphone rig, so the
 files really are empty and the card says so instead of calling it saved.
 
-> All four shots are of the v1.0.0 binary, rendered headless on a Linux
+> All five shots are of the v1.0.0 binary, rendered headless on a Linux
 > container by [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the
 > virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
-> last of them by driving an actual take from record to stop. That rig serves
-> file-backed devices, which §5.4's exclusive-mode gate correctly refuses to
-> record from, which is what the warning line is saying. The strips read
-> `-60.0`, the floor, because those devices deliver no audio; on real hardware
-> they carry live levels.
+> last three by driving an actual take from record to stop.
+>
+> **Why the meters read `-60.0` and the files come out empty.** §5.4 requires the
+> monitor output to be exclusive-mode, which on ALSA means a name beginning
+> `hw:` — a real card. This container has no kernel sound layer at all (no
+> `/proc/asound`), so no such device exists, and the app is honest about it in
+> the amber line. In the GUI the capture path is driven by that monitor
+> callback, so with no output to drive it the take records silence — and then
+> says so, which is what the warning on the "Saved." card is. §0.1 asks that
+> lost audio be *reported* rather than swallowed, and that card is the report.
+>
+> The record path itself is not in question, and is not taken on trust:
+> [`Tools/live_capture.cpp`](Tools/live_capture.cpp) drives the same ALSA
+> backend directly, against the same fixture, and checks the bytes that come
+> out —
+>
+> ```
+> Audio through the real driver (backend callback, contiguous):
+>   mic1: 440=0.2000 1k=0.0001   mic2: 440=0.0001 1k=0.2000  (48128 / 48128 frames)
+>   PASS  both devices delivered a full second
+>   PASS  mic 1 delivers its own 440 Hz tone, cleanly
+>   PASS  mic 2 delivers its own 1000 Hz tone, cleanly
+>
+> Full stack on the real backend:
+>   files: A=192000 B=192000 MIX=192000 bytes
+>   PASS  all three files were written with audio
+>   PASS  every stem and the mix are frame-locked
+>   PASS  the stems and mix carry signal, not silence
+> ```
+>
+> On hardware with a real output the strips carry live levels and the files
+> carry audio.
 >
 > Screenshots in a README go stale silently, and a project whose pictures show a
 > different program than the one you download has told you something before you
