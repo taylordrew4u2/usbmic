@@ -56,6 +56,11 @@ private:
     /// asked for. Only ever grows: shrinking would undo a window the user sized
     /// themselves. Bounded by the display, so it cannot walk off the screen.
     void growWindowToFitMainScreen();
+
+    /// The same, for any content height -- the panels that open over the main
+    /// screen ask for their own on the way in, so none of them opens showing
+    /// its first few rows with the rest behind a scrollbar.
+    void growWindowToFit (int contentHeight);
     int lastMicCount = -1;
     int lastAdvancedMicCount = -1;
     int framesUntilStatusRefresh = 1;
