@@ -2172,7 +2172,7 @@ void Application::loadSettings()
     //
     // Any other remembered value was somebody moving the arrows on purpose, and
     // it is kept: the same index is a much larger picture now anyway.
-    cameraTileScale = rememberedSettings.cameraTileScale == 1 ? 3
+    cameraTileScale = rememberedSettings.cameraTileScale == 1 ? 5
                                                              : rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);

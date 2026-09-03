@@ -5,21 +5,20 @@
 namespace mma {
 
 namespace {
-    // 16:9 wells.
+    // 16:9 wells, sized as a share of the width the screen actually has rather
+    // than as fixed pixel counts.
     //
-    // These used to top out at 456px in a 760px window, which made "as large as
-    // it goes" a picture occupying a third of the screen. The point of putting
-    // the camera on the main screen is to be able to see the shot -- to judge
-    // focus and framing on it -- and at 456 you could tell someone was there
-    // and not much else. Every step is roughly doubled, the top of the range
-    // now exceeds any window this opens at, and the layout clamps to whatever
-    // width is actually available, so the largest step means "fill the window"
-    // rather than a number that stopped being big years ago.
+    // A pixel table was the wrong shape for this control. It made "as large as
+    // it goes" a number, so a bigger window bought only more empty space around
+    // the same picture -- which is the opposite of what dragging a window
+    // larger is asking for. As a fraction, the picture grows with the window
+    // and the arrows choose how much of it to spend on the shot.
     //
     // The bottom of the range is still small, because a four-camera rig that
-    // wants everything on one row has not gone away.
-    constexpr int kCameraTileWidths[] = { 240, 400, 620, 880, 1180, 1560 };
-    constexpr int kCameraScaleSteps = static_cast<int> (std::size (kCameraTileWidths));
+    // wants everything on one row has not gone away; the top is the whole
+    // width, which is what someone who has made the window big wanted from it.
+    constexpr double kCameraWidthFractions[] = { 0.22, 0.32, 0.45, 0.62, 0.80, 1.00 };
+    constexpr int kCameraScaleSteps = static_cast<int> (std::size (kCameraWidthFractions));
 
     constexpr int kCameraCaptionHeight = 16;
     constexpr int kCameraRowGap       = 12;
@@ -267,9 +266,57 @@ int MainScreen::getCameraScaleStepCount() noexcept
     return kCameraScaleSteps;
 }
 
-int MainScreen::cameraTileWidthAt (int step) const noexcept
+int MainScreen::nonCameraHeight() const noexcept
 {
-    return kCameraTileWidths[juce::jlimit (0, kCameraScaleSteps - 1, step)];
+    // Every band resized() lays out beneath the pictures. Kept here rather than
+    // inline in getRequiredHeight() because the camera sizing needs the same
+    // number: the picture is given the height that is left over, and "left
+    // over" is only meaningful against this.
+    constexpr int kMargins     = 32;   // 16 top and bottom
+    constexpr int kHeader      = 36 + 18;
+    constexpr int kMicHeading  = 16 + 6;
+    constexpr int kStripHeight = 40;
+    constexpr int kStripGap    = 12;
+    constexpr int kActionRow   = 16 + 52;
+    constexpr int kStatusLines = 18 + 20 + 20;  // files, monitor problem, advice
+    constexpr int kFooter      = 34;
+
+    // MIX is laid out with the microphones, so it counts towards the wrap.
+    const int cells = juce::jmax (1, skullMeters.size() + 1);
+    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
+    const int perRow = juce::jlimit (1, cells, (available + kStripGap) / (190 + kStripGap));
+    const int rows = (cells + perRow - 1) / perRow;
+
+    return kMargins + kHeader + kMicHeading
+         + rows * kStripHeight + (rows - 1) * kStripGap
+         + kActionRow + kStatusLines + kFooter;
+}
+
+int MainScreen::cameraTileWidthFor (int step, int availableWidth,
+                                    int availableHeight) const noexcept
+{
+    const auto fraction = kCameraWidthFractions[juce::jlimit (0, kCameraScaleSteps - 1, step)];
+
+    int width = juce::jmax (72, static_cast<int> (availableWidth * fraction));
+
+    // Then the height it has to fit in. Without this, widening the window makes
+    // the picture taller than the window has room for and the record button
+    // goes below the fold -- so "make it bigger" would cost the user the one
+    // control they came to the screen to press.
+    //
+    // A non-positive height means the screen has not been laid out yet, and
+    // there is nothing to clamp against; the width alone stands until it has.
+    if (availableHeight > 0)
+    {
+        const int rows = juce::jmax (1, cameraRowsNeeded (width, availableWidth));
+        const int perRowHeight = (availableHeight - (rows - 1) * kCameraTileGap) / rows
+                               - kCameraCaptionHeight;
+
+        if (perRowHeight > 0)
+            width = juce::jmin (width, (perRowHeight * 16) / 9);
+    }
+
+    return juce::jmax (72, juce::jmin (width, availableWidth));
 }
 
 int MainScreen::cameraRowsNeeded (int tileWidth, int availableWidth) const noexcept
@@ -386,7 +433,15 @@ int MainScreen::cameraRowHeight() const
     // own width is the honest answer; before the first resize() there is none,
     // so fall back to the window width the owner opens at.
     const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
-    const int tileWidth = juce::jmin (cameraTileWidthAt (cameraScale), juce::jmax (72, available));
+
+    // What the camera row has to spend: the window, minus everything laid out
+    // under it. This is what makes a taller window a taller picture, and what
+    // stops a taller picture from pushing the record button off the bottom.
+    const int spare = getHeight() > 0
+                          ? getHeight() - nonCameraHeight() - kCameraControlHeight - 4 - kCameraRowGap
+                          : 0;
+
+    const int tileWidth = cameraTileWidthFor (cameraScale, available, spare);
     const int rows = cameraRowsNeeded (tileWidth, available);
     const int cellHeight = tileHeightFor (tileWidth) + kCameraCaptionHeight;
 
@@ -397,29 +452,11 @@ int MainScreen::cameraRowHeight() const
 
 int MainScreen::getRequiredHeight() const
 {
-    // Every band resized() lays out, added up, rather than a constant left over
-    // from a layout this no longer is. The old 522 was measured against tall
-    // channel strips and a centred status stack; against the current screen it
-    // left a band of empty background between the advice line and the footer
-    // roughly the height of the record button.
-    constexpr int kMargins       = 32;   // 16 top and bottom
-    constexpr int kHeader        = 36 + 18;
-    constexpr int kMicHeading    = 16 + 6;
-    constexpr int kStripHeight   = 40;
-    constexpr int kStripGap      = 12;
-    constexpr int kActionRow     = 16 + 52;
-    constexpr int kStatusLines   = 18 + 20 + 20;  // files, monitor problem, advice
-    constexpr int kFooter        = 34;
-
-    // MIX is laid out with the microphones, so it counts towards the wrap.
-    const int cells = juce::jmax (1, skullMeters.size() + 1);
-    const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
-    const int perRow = juce::jlimit (1, cells, (available + kStripGap) / (190 + kStripGap));
-    const int rows = (cells + perRow - 1) / perRow;
-
-    return kMargins + kHeader + cameraRowHeight() + kMicHeading
-         + rows * kStripHeight + (rows - 1) * kStripGap
-         + kActionRow + kStatusLines + kFooter;
+    // What the content wants, which the owner sizes the window from. The camera
+    // row is measured against the window it will be drawn in, so once that
+    // window exists this reports what is actually on screen rather than what
+    // an unconstrained picture would have asked for.
+    return nonCameraHeight() + cameraRowHeight();
 }
 
 int MainScreen::getMicCount() const
@@ -603,7 +640,11 @@ void MainScreen::resized()
         cameraArea.removeFromTop (4);
 
         const int available = cameraArea.getWidth();
-        const int tileWidth = juce::jmin (cameraTileWidthAt (cameraScale), juce::jmax (72, available));
+
+        // The same two bounds cameraRowHeight() sized this row from, so what is
+        // drawn and what was reserved cannot disagree.
+        const int spare = getHeight() - nonCameraHeight() - kCameraControlHeight - 4 - kCameraRowGap;
+        const int tileWidth = cameraTileWidthFor (cameraScale, available, spare);
         const int tileHeight = tileHeightFor (tileWidth);
         const int cellHeight = tileHeight + kCameraCaptionHeight;
 
