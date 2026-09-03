@@ -253,9 +253,18 @@ MainComponent::MainComponent (Application& app)
                         ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
                         : juce::Rectangle<int> (0, 0, 1180, 900);
 
+    // The floor matches the window's own minimum height rather than sitting
+    // 140px above it. At 560 an audio-only rig opened with a band of empty
+    // background between the last status line and the footer, because the
+    // content it has to show is barely 330px tall -- the space the pictures
+    // would occupy, reserved on behalf of cameras nobody had switched on.
+    //
+    // Opening to the content is only safe because switching a camera on now
+    // grows the window (growWindowToFitMainScreen); before that, a window this
+    // size would have had nowhere to put the picture.
     setSize (juce::jmin (1180, usable.getWidth()),
-             juce::jlimit (560, juce::jmax (560, usable.getHeight()),
-                           mainScreen.getRequiredHeight() + 24));
+             juce::jlimit (420, juce::jmax (420, usable.getHeight()),
+                           mainScreen.getPreferredHeight() + 24));
 
     // §8.1: meters and status are live from launch, not from record.
     refreshStatus();
@@ -810,11 +819,18 @@ void MainComponent::refreshCameras()
             if (camera.enabled)
                 tiles.push_back ({ camera.id, camera.displayName });
 
-        const int before = mainScreen.getRequiredHeight();
+        const int before = mainScreen.getPreferredHeight();
         mainScreen.setCameraTiles (tiles);
 
-        if (mainScreen.getRequiredHeight() != before)
+        if (mainScreen.getPreferredHeight() != before)
+        {
+            // Switching a camera on is a request to SEE it. Without this the
+            // window keeps the height an audio-only rig needed, and the picture
+            // is squeezed into whatever was left -- 352px wide in the window
+            // this opens at, which is not a preview anyone can frame a shot in.
+            growWindowToFitMainScreen();
             resized();
+        }
     }
 
     const int requiredHeight = cameraPanel.getRequiredHeight();
@@ -824,6 +840,52 @@ void MainComponent::refreshCameras()
         lastCameraHeight = requiredHeight;
         resized();
     }
+}
+
+void MainComponent::growWindowToFitMainScreen()
+{
+    // The window, not this component: setSize() on a DocumentWindow's content
+    // resizes the frame around it, which is the thing with the title bar and
+    // the position on screen.
+    auto* window = getTopLevelComponent();
+
+    // Before this component is put inside a window, the top level IS this
+    // component, and resizing it here would fight the owner that is about to
+    // size it. Nothing to grow until there is a frame to grow.
+    if (window == nullptr || window == this)
+        return;
+
+    const auto usable = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
+                        ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
+                        : juce::Rectangle<int> (0, 0, 1180, 900);
+
+    // What the window would have to be for the picture to come out at the size
+    // the user picked. The frame is taller than its content by the title bar,
+    // so the difference is measured rather than assumed -- a guess here is a
+    // few pixels of clipping on one platform and not the other.
+    const int chrome = juce::jmax (0, window->getHeight() - getHeight());
+    const int wanted = mainScreen.getPreferredHeight() + 24 + chrome;
+
+    // Only ever grows. A camera switched off leaves the window where it is:
+    // shrinking it would throw away a size the user may have set by hand, and
+    // "it resized itself smaller behind my back" is worse than a little slack.
+    const int height = juce::jlimit (window->getHeight(),
+                                     juce::jmax (window->getHeight(), usable.getHeight()),
+                                     wanted);
+
+    if (height == window->getHeight())
+        return;
+
+    window->setSize (window->getWidth(), height);
+
+    // Keep it on the screen. Growing from a window already near the bottom
+    // would otherwise push its lower edge -- and the record button with it --
+    // past the edge of the display.
+    const int top = juce::jlimit (usable.getY(),
+                                  juce::jmax (usable.getY(), usable.getBottom() - height),
+                                  window->getY());
+
+    window->setTopLeftPosition (window->getX(), top);
 }
 
 void MainComponent::toggleAdvanced()
@@ -888,6 +950,12 @@ void MainComponent::resized()
         content.setSize (juce::jmax (1, width),
                          juce::jmax (viewport.getHeight(), requiredHeight));
     };
+
+    // Before fit(), not after: the camera picture is sized against this, and
+    // fit() then asks how tall the content wants to be. Telling it afterwards
+    // would measure the picture against the previous window size for one frame,
+    // which is visible as a jump every time the window is dragged.
+    mainScreen.setVisibleHeight (mainViewport.getHeight());
 
     fit (mainViewport, mainScreen, mainScreen.getRequiredHeight());
     fit (advancedViewport, advancedPanel, advancedPanel.getRequiredHeight());
