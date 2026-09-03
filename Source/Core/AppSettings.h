@@ -55,10 +55,13 @@ struct AppSettings
     /// row -- and re-making it every launch is the §10.1 failure of asking the
     /// same question twice.
     ///
-    /// The default is deliberately well up the range. Someone who has switched
-    /// a camera on wants to see the shot, and the first thing they saw was a
-    /// thumbnail they had to go hunting for arrows to enlarge.
-    int cameraTileScale = 3;
+    /// The default is the top of the range -- the picture takes the full width
+    /// the window has. Someone who has switched a camera on wants to see the
+    /// shot, and the first thing they saw was a thumbnail they had to go
+    /// hunting for arrows to enlarge. The layout gives it only the height left
+    /// after everything else, so filling the width cannot cost the record
+    /// button its place on screen.
+    int cameraTileScale = 5;
 
     /// Whether a take also writes one video-with-sound file per camera.
     ///

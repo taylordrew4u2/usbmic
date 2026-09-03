@@ -135,10 +135,11 @@ TEST_CASE (AppSettings_CameraTileScaleDefaultsWhenAbsent)
     // rather than zero, which is the smallest tile and would silently shrink
     // the pictures of everyone who upgrades.
     //
-    // That default is well up the range on purpose: someone who has switched a
-    // camera on wants to see the shot, and the first thing they saw was a
-    // thumbnail they had to hunt for arrows to enlarge.
+    // That default is the top of the range on purpose: the steps are shares of
+    // the window's width, so the largest means "fill it", and someone who has
+    // switched a camera on wants to see the shot rather than a thumbnail they
+    // have to hunt for arrows to enlarge.
     const auto restored = AppSettings::fromJsonString ("{}");
 
-    REQUIRE (restored.cameraTileScale == 3);
+    REQUIRE (restored.cameraTileScale == 5);
 }
