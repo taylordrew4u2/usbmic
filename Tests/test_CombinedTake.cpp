@@ -69,7 +69,7 @@ TEST_CASE (CombinedTake_NamesTheOutputAfterTheVideoItCameFrom)
 {
     // §6.2: the folder still sorts the way it did, and every file says where it
     // came from without being opened.
-    REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.mov") == "V01_Kitchen-Cam_with-sound.mp4");
+    REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.mov") == "V01_Kitchen-Cam_with-sound.mov");
 }
 
 TEST_CASE (CombinedTake_ContainerFollowsWhatTheCameraActuallyWrote)
@@ -79,11 +79,11 @@ TEST_CASE (CombinedTake_ContainerFollowsWhatTheCameraActuallyWrote)
     // the VC-1 that Windows writes; Matroska holds anything. Picking mp4 for
     // both would produce a file that either fails to write or fails to play,
     // on the platform that cannot be tested from here.
-    REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.mov") == "V01_Kitchen-Cam_with-sound.mp4");
+    REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.mov") == "V01_Kitchen-Cam_with-sound.mov");
     REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.wmv") == "V01_Kitchen-Cam_with-sound.mkv");
 
     // Case is the OS's business, not ours.
-    REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.MOV") == "V01_Kitchen-Cam_with-sound.mp4");
+    REQUIRE (combinedFileNameFor ("V01_Kitchen-Cam.MOV") == "V01_Kitchen-Cam_with-sound.mov");
 }
 
 TEST_CASE (CombinedTake_ACameraThatWroteNothingIsSkippedNotFatal)
@@ -143,23 +143,61 @@ TEST_CASE (CombinedTake_ANegativeOffsetIsNotTrustedIntoTheCommand)
     REQUIRE (plan.jobs[0].audioLeadSeconds == 0.0);
 }
 
-TEST_CASE (FfmpegCommand_CopiesThePictureAndEncodesTheSound)
+TEST_CASE (FfmpegCommand_NeitherStreamIsReEncoded)
 {
     const auto args = buildFfmpegArguments ("/usr/bin/ffmpeg", "/take/V01.mov",
-                                            "/take/MIX.wav", "/take/V01_with-sound.mp4", 0.25);
+                                            "/take/MIX.wav", "/take/V01_with-sound.mov", 0.25);
 
     REQUIRE (args.front() == "/usr/bin/ffmpeg");
 
     // The picture is the one thing that cannot be recaptured, so it is copied.
     REQUIRE (valueAfter (args, "-c:v") == "copy");
-    REQUIRE (valueAfter (args, "-c:a") == "aac");
+
+    // And the sound is kept at the depth it was recorded at. This was AAC, and
+    // AAC is a one-way door: nobody records at 24 bits in order to deliver a
+    // generation-loss copy. A combined file worse than the parts it was made
+    // from is not worth making.
+    REQUIRE (valueAfter (args, "-c:a") == "pcm_s24le");
+    REQUIRE_FALSE (contains (args, "-b:a")); // a bitrate at all means something lossy
 
     // Both streams named explicitly: ffmpeg's default mapping picks one stream
     // per type across all inputs by a rule that is not this one.
     REQUIRE (contains (args, "0:v:0"));
     REQUIRE (contains (args, "1:a:0"));
 
-    REQUIRE (args.back() == "/take/V01_with-sound.mp4");
+    REQUIRE (args.back() == "/take/V01_with-sound.mov");
+}
+
+TEST_CASE (FfmpegCommand_AudioIsWrittenAtTheDepthItWasRecordedAt)
+{
+    // Writing a 24-bit take into a 16-bit stream would discard the bottom eight
+    // bits without saying so -- exactly the loss this is meant to prevent.
+    const auto deep = buildFfmpegArguments ("ffmpeg", "/v.mov", "/a.wav", "/o.mov", 0.0, 24);
+    REQUIRE (valueAfter (deep, "-c:a") == "pcm_s24le");
+
+    const auto shallow = buildFfmpegArguments ("ffmpeg", "/v.mov", "/a.wav", "/o.mov", 0.0, 16);
+    REQUIRE (valueAfter (shallow, "-c:a") == "pcm_s16le");
+}
+
+TEST_CASE (FfmpegCommand_MatroskaGetsFlacWhichIsAlsoLossless)
+{
+    // Matroska carries FLAC more dependably than raw PCM, and FLAC is lossless
+    // -- the samples that come out are bit-for-bit the ones that went in. So
+    // the Windows path loses nothing either.
+    const auto args = buildFfmpegArguments ("ffmpeg", "/v.wmv", "/a.wav", "/o.mkv", 0.0, 24);
+
+    REQUIRE (valueAfter (args, "-c:v") == "copy");
+    REQUIRE (valueAfter (args, "-c:a") == "flac");
+    REQUIRE_FALSE (contains (args, "-b:a"));
+}
+
+TEST_CASE (CombinedTake_TheTakesBitDepthReachesTheJob)
+{
+    const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined, twoCameras(), "MIX.wav", 16);
+
+    REQUIRE (plan.jobs.size() == 2);
+    REQUIRE (plan.jobs[0].audioBitDepth == 16);
+    REQUIRE (plan.jobs[1].audioBitDepth == 16);
 }
 
 TEST_CASE (FfmpegCommand_SeeksTheInputRatherThanDecodingAndDiscarding)
