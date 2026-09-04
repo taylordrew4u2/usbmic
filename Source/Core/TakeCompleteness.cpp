@@ -35,6 +35,20 @@ constexpr float kSilenceFloor = 0.0000316f;
 
 } // namespace
 
+TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files,
+                                 float peakWritten, float peakArrived)
+{
+    const auto base = judgeTakeAudio (files, peakWritten);
+
+    // Audio came in and none of it reached the files. Nothing about the user's
+    // hardware explains that -- the samples were here.
+    if ((base == TakeAudioVerdict::OnlySilence || base == TakeAudioVerdict::NothingWritten)
+        && peakArrived >= kSilenceFloor)
+        return TakeAudioVerdict::DroppedByApp;
+
+    return base;
+}
+
 TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files, float peakAbs)
 {
     int64_t audioBytes = 0;
