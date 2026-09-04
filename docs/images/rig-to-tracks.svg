@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 480" width="980" height="480" role="img"
+     aria-label="How a rig becomes tracks. A one-input microphone makes one take channel and one file. A four-input interface makes four take channels and four files, because one device is not one microphone. A livestream mixer that is also the headphone output is a single device opened once, carrying the microphones in and the monitor mix back out on the same stream.">
+  <defs>
+    <style>
+      .bg   { fill: #0d1117; }
+      .card { fill: #161b22; stroke: #30363d; stroke-width: 1; }
+      .dev  { fill: #1f2630; stroke: #3d4653; stroke-width: 1; }
+      .file { fill: #12241f; stroke: #2b6b52; stroke-width: 1; }
+      .t    { fill: #e6edf3; font-family: sans-serif; font-size: 13px; }
+      .dim  { fill: #8b949e; font-family: sans-serif; font-size: 11.5px; }
+      .col  { fill: #6e7681; font-family: sans-serif; font-size: 11px; letter-spacing: 1px; }
+      .head { fill: #e6edf3; font-family: sans-serif; font-size: 14px; font-weight: bold; }
+      .mono { fill: #7ee2b8; font-family: monospace; font-size: 11.5px; }
+      .flow { stroke: #22d3ee; stroke-width: 1.6; fill: none; }
+      .fill { fill: #22d3ee; }
+      .back { stroke: #d29922; stroke-width: 1.6; fill: none; stroke-dasharray: 5 3; }
+      .bfil { fill: #d29922; }
+      .amb  { fill: #d29922; font-family: sans-serif; font-size: 11.5px; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="980" height="480" rx="10"/>
+
+  <text class="head" x="28" y="36">One device is not one microphone</text>
+  <text class="dim"  x="28" y="56">What the OS reports, what SobStage records, and what lands on the card.</text>
+
+  <text class="col" x="28"  y="86">DEVICE THE OS REPORTS</text>
+  <text class="col" x="392" y="86">TAKE CHANNELS</text>
+  <text class="col" x="716" y="86">FILES WRITTEN</text>
+
+  <!-- ── Row 1: one microphone, one input ───────────────────────────── -->
+  <rect class="dev" x="28" y="98" width="270" height="54" rx="7"/>
+  <text class="t"   x="46" y="122">Blue Yeti</text>
+  <text class="dim" x="46" y="140">1 input</text>
+
+  <line class="flow" x1="306" y1="125" x2="376" y2="125"/>
+  <path class="fill" d="M 376 120 L 386 125 L 376 130 z"/>
+
+  <rect class="card" x="392" y="98" width="270" height="54" rx="7"/>
+  <text class="t" x="410" y="130">Blue Yeti</text>
+
+  <line class="flow" x1="670" y1="125" x2="700" y2="125"/>
+  <path class="fill" d="M 700 120 L 710 125 L 700 130 z"/>
+
+  <rect class="file" x="716" y="98" width="236" height="54" rx="7"/>
+  <text class="mono" x="734" y="130">01_Blue-Yeti.wav</text>
+
+  <!-- ── Row 2: an interface, four inputs ───────────────────────────── -->
+  <rect class="dev" x="28" y="170" width="270" height="134" rx="7"/>
+  <text class="t"   x="46" y="196">Scarlett 18i8</text>
+  <text class="dim" x="46" y="214">4 inputs -- four people</text>
+  <text class="dim" x="46" y="248">Taking a single channel from</text>
+  <text class="dim" x="46" y="266">this discarded three of them,</text>
+  <text class="dim" x="46" y="284">without saying so.</text>
+
+  <line class="flow" x1="306" y1="237" x2="376" y2="237"/>
+  <path class="fill" d="M 376 232 L 386 237 L 376 242 z"/>
+
+  <rect class="card" x="392" y="170" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="189">Scarlett 18i8 1</text>
+  <rect class="card" x="392" y="205" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="224">Scarlett 18i8 2</text>
+  <rect class="card" x="392" y="240" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="259">Scarlett 18i8 3</text>
+  <rect class="card" x="392" y="275" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="294">Scarlett 18i8 4</text>
+
+  <line class="flow" x1="670" y1="237" x2="700" y2="237"/>
+  <path class="fill" d="M 700 232 L 710 237 L 700 242 z"/>
+
+  <rect class="file" x="716" y="170" width="236" height="134" rx="7"/>
+  <text class="mono" x="734" y="194">01_Scarlett-18i8-1.wav</text>
+  <text class="mono" x="734" y="216">02_Scarlett-18i8-2.wav</text>
+  <text class="mono" x="734" y="238">03_Scarlett-18i8-3.wav</text>
+  <text class="mono" x="734" y="260">04_Scarlett-18i8-4.wav</text>
+  <text class="dim"  x="734" y="288">plus MIX.wav, always</text>
+
+  <!-- ── Row 3: a mixer that is also the output ─────────────────────── -->
+  <rect class="dev" x="28" y="322" width="270" height="134" rx="7"/>
+  <text class="t"   x="46" y="348">Livestream mixer</text>
+  <text class="dim" x="46" y="366">2 inputs, and the headphones</text>
+  <text class="dim" x="46" y="400">One box in both directions, so</text>
+  <text class="dim" x="46" y="418">it is opened once. Claiming it</text>
+  <text class="dim" x="46" y="436">twice is refused by macOS.</text>
+
+  <line class="flow" x1="306" y1="360" x2="376" y2="360"/>
+  <path class="fill" d="M 376 355 L 386 360 L 376 365 z"/>
+
+  <rect class="card" x="392" y="322" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="341">Livestream mixer 1</text>
+  <rect class="card" x="392" y="357" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="376">Livestream mixer 2</text>
+
+  <line class="back" x1="386" y1="424" x2="316" y2="424"/>
+  <path class="bfil" d="M 316 419 L 306 424 L 316 429 z"/>
+
+  <rect class="card" x="392" y="410" width="270" height="28" rx="6"/>
+  <text class="t" x="410" y="429">one live mix, everyone hears it</text>
+
+  <line class="flow" x1="670" y1="360" x2="700" y2="360"/>
+  <path class="fill" d="M 700 355 L 710 360 L 700 365 z"/>
+
+  <rect class="file" x="716" y="322" width="236" height="80" rx="7"/>
+  <text class="mono" x="734" y="348">01_Livestream-mixer-1.wav</text>
+  <text class="mono" x="734" y="370">02_Livestream-mixer-2.wav</text>
+  <text class="dim"  x="734" y="392">plus MIX.wav</text>
+
+  <line class="flow" x1="734" y1="424" x2="750" y2="424"/>
+  <path class="fill" d="M 750 419 L 760 424 L 750 429 z"/>
+  <text class="dim" x="768" y="428">microphones in</text>
+  <line class="back" x1="734" y1="446" x2="750" y2="446"/>
+  <path class="bfil" d="M 750 441 L 760 446 L 750 451 z"/>
+  <text class="amb" x="768" y="450">monitor mix out</text>
+</svg>

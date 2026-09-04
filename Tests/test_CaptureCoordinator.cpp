@@ -137,6 +137,121 @@ TEST_CASE (CaptureCoordinator_ClosesStreamsWhenAnInputFailsToOpen)
     REQUIRE_FALSE (c.getMonitorProblem().empty());
 }
 
+TEST_CASE (CaptureCoordinator_OpensAMixerThatIsAlsoTheOutputExactlyOnce)
+{
+    // A small livestream mixer presents its microphone inputs and its monitor
+    // output as ONE duplex device. Opening it for output, taking hog mode on
+    // it, then opening it again for input asks macOS for a second IOProc on a
+    // device this process has just claimed exclusively -- and the refusal
+    // arrives as "couldn't be opened for recording" against a microphone that
+    // is plugged in and working.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    std::vector<CaptureChannel> mixerChannels {
+        { "mixer", "PUP 1", "01_PUP-1", 0.0f },
+        { "mixer", "PUP 2", "02_PUP-2", 0.0f },
+    };
+    mixerChannels[1].deviceChannel = 1;
+
+    REQUIRE (c.startMonitoring (mixerChannels, "mixer"));
+
+    REQUIRE (backend.outputStreamsOpened == 1);
+    // The microphones ride on the output stream, so nothing opens the device
+    // a second time.
+    REQUIRE (backend.inputStreamsOpened == 0);
+}
+
+TEST_CASE (CaptureCoordinator_AMixerThatIsAlsoTheOutputStillRecordsBothMics)
+{
+    // Opening once must not cost the microphones: the one callback carries both
+    // halves of the cycle, so both people still reach their own channel.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    std::vector<CaptureChannel> mixerChannels {
+        { "mixer", "PUP 1", "01_PUP-1", 0.0f },
+        { "mixer", "PUP 2", "02_PUP-2", 0.0f },
+    };
+    mixerChannels[1].deviceChannel = 1;
+
+    REQUIRE (c.startMonitoring (mixerChannels, "mixer"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    std::vector<float> in0 (64, 0.10f), in1 (64, 0.80f);
+    std::vector<float> outL (64, 0.0f), outR (64, 0.0f);
+    const float* ins[] = { in0.data(), in1.data() };
+    float* outs[] = { outL.data(), outR.data() };
+
+    // The output stream's callback, which on this rig is the only one there is:
+    // it reads the microphones and fills the headphones in the same cycle.
+    REQUIRE (backend.captured != nullptr);
+
+    // Enough cycles to clear pre-roll (§5.4: kPreRollBlocks of the buffer).
+    for (int i = 0; i < 16; ++i)
+        backend.captured (ins, 2, outs, 2, 64);
+
+    for (int i = 0; i < 30; ++i)
+    {
+        c.getChannelMetering (0)->tick (1.0 / 60.0);
+        c.getChannelMetering (1)->tick (1.0 / 60.0);
+    }
+
+    // Each microphone reached its OWN channel: input 1 carries the louder
+    // signal, so channel 1 must read higher than channel 0. One collapsed into
+    // the other, or either dropped, fails this.
+    REQUIRE (c.getChannelMetering (1)->getDisplayedLevelDb()
+             > c.getChannelMetering (0)->getDisplayedLevelDb() + 3.0f);
+
+    // And the headphones were still filled from the same callback.
+    bool anyOutput = false;
+    for (int i = 0; i < 64; ++i)
+        if (outL[i] != 0.0f) { anyOutput = true; break; }
+    REQUIRE (anyOutput);
+}
+
+TEST_CASE (CaptureCoordinator_ASliceLargerThanTheNominalBufferIsStillRecorded)
+{
+    // CoreAudio is allowed to hand the callback more frames than the buffer
+    // size that was asked for, and CoreAudioBackend sizes its own scratch for
+    // exactly that. This one did not: an oversized slice made the whole pull
+    // return early, so no audio, no meters and no error -- the silent failure
+    // §0.1 forbids.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    REQUIRE (backend.inputCallbacks.size() == 2);
+
+    std::vector<float> loud (128, 0.80f), quiet (128, 0.05f);
+    const float* loudIn[] = { loud.data() };
+    const float* quietIn[] = { quiet.data() };
+
+    std::vector<float> out (128, 0.0f);
+    float* outs[] = { out.data() };
+
+    // 128 frames against a 64-frame nominal buffer: double, which is what the
+    // HAL's own headroom allows for.
+    for (int i = 0; i < 16; ++i)
+    {
+        backend.inputCallbacks[0] (loudIn, 1, nullptr, 0, 128);
+        backend.inputCallbacks[1] (quietIn, 1, nullptr, 0, 128);
+        c.processOutputBlock (outs, 1, 128);
+    }
+
+    for (int i = 0; i < 60; ++i)
+    {
+        c.getChannelMetering (0)->tick (1.0 / 60.0);
+        c.getChannelMetering (1)->tick (1.0 / 60.0);
+    }
+
+    // The audio arrived rather than being dropped on the floor.
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() > Metering::kMinDb + 6.0f);
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb()
+             > c.getChannelMetering (1)->getDisplayedLevelDb() + 6.0f);
+}
+
 TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
 {
     // §0.1: the backend knows the cause and the coordinator used to discard it,

@@ -55,8 +55,18 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // reference §3.3's drift figures are quoted against.
     setMasterChannel (channels.empty() ? -1 : 0);
 
+    // Sized with the same headroom CoreAudioBackend gives its own scratch, and
+    // for the same reason: the HAL is allowed to hand the callback a larger
+    // slice than the nominal buffer. Sized to the nominal buffer alone, one
+    // oversized slice made this whole function return without pulling a single
+    // frame -- no audio, no meters, no error, which is the silent failure §0.1
+    // exists to forbid. The guard below still stands for anything beyond even
+    // this, but it is now a bound rather than an ordinary occurrence.
+    constexpr int kCallbackSizeHeadroom = 2;
+
     deviceScratch.assign (std::max<size_t> (1, channels.size())
-                              * static_cast<size_t> (std::max (1, bufferSize)), 0.0f);
+                              * static_cast<size_t> (std::max (1, bufferSize))
+                              * kCallbackSizeHeadroom, 0.0f);
     devicePointers.assign (std::max<size_t> (1, channels.size()), nullptr);
 
     // Precomputed so the callback never calls a dB->linear conversion per sample.
@@ -79,12 +89,52 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         }
     }
 
+    // Grouped before the output opens, because a mixer that is also the
+    // headphone output is ONE device and must be opened once.
+    //
+    // A small livestream mixer presents its microphone inputs and its monitor
+    // output as a single duplex device. Opening it for output, taking hog mode
+    // on it, and then opening it again for input asks macOS for a second IOProc
+    // on a device this process has just claimed exclusively -- and the refusal
+    // arrives as "couldn't be opened for recording" against a microphone that
+    // is plugged in and working.
+    //
+    // One IOProc is also simply how CoreAudio means a duplex device to be
+    // driven: it hands that single proc both halves of the same cycle.
+    std::map<std::string, std::vector<size_t>> byDevice;
+
+    for (size_t i = 0; i < channels.size(); ++i)
+        byDevice[channels[i].deviceId].push_back (i);
+
+    // The take channels, if any, that come off the very device feeding the
+    // headphones. Empty on a rig where the microphones and the output are
+    // different boxes, which leaves that rig working exactly as before.
+    std::vector<std::pair<int, int>> outputDeviceRouting;
+
+    if (! outputDeviceId.empty())
+    {
+        const auto shared = byDevice.find (outputDeviceId);
+
+        if (shared != byDevice.end())
+        {
+            outputDeviceRouting = routingFor (shared->second);
+            byDevice.erase (shared);
+        }
+    }
+
     // §5.2: exactly one output stream, ever. It is also the clock -- §3.1 needs
     // one timebase, and the device feeding the headphones is the one whose
     // deadline actually matters.
-    auto outputCallback = [this] (const float* const*, int,
-                                  float* const* outputs, int numOutputs, int numSamples)
+    auto outputCallback = [this, outputDeviceRouting] (const float* const* inputs, int numInputs,
+                                                       float* const* outputs, int numOutputs,
+                                                       int numSamples)
     {
+        // Both halves of one cycle on a duplex mixer. The microphones are read
+        // from the same callback that fills the headphones, because they are
+        // the same device and there is only one stream open on it.
+        if (! outputDeviceRouting.empty())
+            fanOutDeviceInputs (outputDeviceRouting, inputs, numInputs, numSamples);
+
         processOutputBlock (outputs, numOutputs, numSamples);
     };
 
@@ -101,59 +151,23 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         return false;
     }
 
-    // One stream per DEVICE, not per channel.
+    // One stream per remaining DEVICE, not per channel.
     //
     // An audio interface with four microphones plugged into it is one device
     // presenting four inputs, and four take channels come off it. Opening that
     // device once per channel would ask the OS for the same exclusive stream
     // four times; on macOS the second open is refused and the take dies with a
     // message naming a microphone that is plugged in and working.
-    //
-    // So the streams are grouped here, and each device's callback fans its
-    // inputs out to the take channels that asked for them.
-    std::map<std::string, std::vector<size_t>> byDevice;
-
-    for (size_t i = 0; i < channels.size(); ++i)
-        byDevice[channels[i].deviceId].push_back (i);
-
     for (const auto& [deviceId, channelIndices] : byDevice)
     {
-        // Which take channel each of this device's inputs belongs to. Captured
-        // by value into the callback so the audio thread never reaches back
-        // into a container the UI thread can touch.
-        std::vector<std::pair<int, int>> routing; // { device input, take channel }
-        routing.reserve (channelIndices.size());
-
-        for (const auto i : channelIndices)
-            routing.push_back ({ channels[i].deviceChannel, static_cast<int> (i) });
+        // Captured by value into the callback so the audio thread never reaches
+        // back into a container the UI thread can touch.
+        const auto routing = routingFor (channelIndices);
 
         auto inputCallback = [this, routing] (const float* const* inputs, int numInputs,
                                               float* const*, int, int numSamples)
         {
-            if (inputs == nullptr || numInputs <= 0)
-                return;
-
-            // §2.1's stereo collapse applies to a device the take takes ONE
-            // channel from: a USB mic presenting the same voice on both sides,
-            // or with one side silent. Where the take wants more than one
-            // channel from this device, the sides are different microphones and
-            // collapsing them would throw a person away -- which is §2.1's
-            // "otherwise record true stereo", finally honoured.
-            if (routing.size() == 1 && routing[0].first == 0)
-            {
-                const int channel = routing[0].second;
-
-                if (numInputs >= 2)
-                    pushDeviceBlockMultiChannel (channel, inputs, numInputs, numSamples);
-                else
-                    pushDeviceBlock (channel, inputs[0], numSamples);
-
-                return;
-            }
-
-            for (const auto& [deviceInput, takeChannel] : routing)
-                if (deviceInput < numInputs && inputs[deviceInput] != nullptr)
-                    pushDeviceBlock (takeChannel, inputs[deviceInput], numSamples);
+            fanOutDeviceInputs (routing, inputs, numInputs, numSamples);
         };
 
         if (! backend.openInputStream (deviceId, sampleRate, bufferSize, inputCallback))
@@ -176,6 +190,46 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
 
     monitoring = true;
     return true;
+}
+
+std::vector<std::pair<int, int>> CaptureCoordinator::routingFor (const std::vector<size_t>& channelIndices) const
+{
+    std::vector<std::pair<int, int>> routing; // { device input, take channel }
+    routing.reserve (channelIndices.size());
+
+    for (const auto i : channelIndices)
+        routing.push_back ({ channels[i].deviceChannel, static_cast<int> (i) });
+
+    return routing;
+}
+
+void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, int>>& routing,
+                                             const float* const* inputs, int numInputs,
+                                             int numSamples) noexcept
+{
+    if (inputs == nullptr || numInputs <= 0)
+        return;
+
+    // §2.1's stereo collapse applies to a device the take takes ONE channel
+    // from: a USB mic presenting the same voice on both sides, or with one side
+    // silent. Where the take wants more than one channel from this device, the
+    // sides are different microphones and collapsing them would throw a person
+    // away -- which is §2.1's "otherwise record true stereo", finally honoured.
+    if (routing.size() == 1 && routing[0].first == 0)
+    {
+        const int channel = routing[0].second;
+
+        if (numInputs >= 2)
+            pushDeviceBlockMultiChannel (channel, inputs, numInputs, numSamples);
+        else
+            pushDeviceBlock (channel, inputs[0], numSamples);
+
+        return;
+    }
+
+    for (const auto& [deviceInput, takeChannel] : routing)
+        if (deviceInput < numInputs && inputs[deviceInput] != nullptr)
+            pushDeviceBlock (takeChannel, inputs[deviceInput], numSamples);
 }
 
 void CaptureCoordinator::stopMonitoring()
