@@ -37,8 +37,35 @@ RateNegotiationResult SampleRateNegotiator::negotiate (const std::vector<DeviceR
 
     if (! common.empty())
     {
-        // Highest common rate, capped at 48kHz.
-        result.chosenRate = *common.rbegin();
+        // A rate every device is already running at, if there is one and it is
+        // common. Switching is the step that fails: an interface clock-locked
+        // to 44.1 kHz lists 48 kHz and then refuses the write, and the take
+        // never starts. Staying put cannot fail.
+        uint32_t alreadyRunning = 0;
+
+        for (const auto& d : devices)
+        {
+            if (d.currentRate == 0 || common.count (d.currentRate) == 0)
+            {
+                alreadyRunning = 0;
+                break;
+            }
+
+            if (alreadyRunning == 0)
+                alreadyRunning = d.currentRate;
+            else if (alreadyRunning != d.currentRate)
+            {
+                // The rig disagrees with itself, so something must move
+                // whatever we pick. Fall through to highest-common and let §3
+                // resample the ones that cannot follow.
+                alreadyRunning = 0;
+                break;
+            }
+        }
+
+        // Highest common rate, capped at 48kHz, unless the whole rig is already
+        // sitting on one.
+        result.chosenRate = alreadyRunning != 0 ? alreadyRunning : *common.rbegin();
     }
     else
     {
