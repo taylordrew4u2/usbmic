@@ -268,25 +268,53 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         if (! d.included)
             continue;
 
-        ++index;
-
         // §4: trim and the assigned name are persisted against the physical
         // port, so they follow the mic across replug rather than across slot.
         const auto persisted = portIdentityStore.get (d.identity);
 
-        CaptureChannel c;
-        c.deviceId = d.identity.key();
-        c.displayName = (persisted.has_value() && ! persisted->assignedName.empty())
-                            ? persisted->assignedName : d.displayName;
+        // One channel per input the device presents.
+        //
+        // A device with one input is one microphone, as before. A device with
+        // several is an interface with several microphones plugged into it, and
+        // each of them is a person who expects their own track. Taking one
+        // channel from any device -- which is what this did -- silently
+        // discarded everybody but the first, and if their microphone was on one
+        // of the discarded inputs they got a silent recording with no
+        // explanation.
+        //
+        // Two inputs stay one channel: that is the §2.1 case this app was built
+        // for, a USB mic presenting the same voice on both sides or with one
+        // side silent, and the analyzer in the capture path decides between
+        // them. Above two, a device is an interface and every input is its own
+        // microphone.
+        const int inputs = d.inputChannelCount > 2 ? d.inputChannelCount : 1;
 
-        // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name, so
-        // the stems sort in channel order in any file browser.
-        char prefix[4] = {};
-        std::snprintf (prefix, sizeof (prefix), "%02d", index);
-        c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
-        c.trimDb = persisted.has_value() ? persisted->trimDb : 0.0f;
+        for (int input = 0; input < inputs; ++input)
+        {
+            ++index;
 
-        channels.push_back (std::move (c));
+            CaptureChannel c;
+            c.deviceId = d.identity.key();
+            c.deviceChannel = input;
+            c.displayName = (persisted.has_value() && ! persisted->assignedName.empty())
+                                ? persisted->assignedName : d.displayName;
+
+            // An interface's inputs all carry the device's name, which would
+            // give four identical strips and four identically-named files. The
+            // input number is what tells them apart, and it is the number
+            // printed next to the socket the microphone is plugged into.
+            if (inputs > 1)
+                c.displayName += " " + std::to_string (input + 1);
+
+            // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name,
+            // so the stems sort in channel order in any file browser.
+            char prefix[4] = {};
+            std::snprintf (prefix, sizeof (prefix), "%02d", index);
+            c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
+            c.trimDb = persisted.has_value() ? persisted->trimDb : 0.0f;
+
+            channels.push_back (std::move (c));
+        }
     }
 
     return channels;
@@ -489,6 +517,7 @@ void Application::onDeviceListChanged()
             state.identity.serial = d.serialNumber;
         state.displayName = d.name;
         state.isBuiltIn = d.isBuiltIn;
+        state.inputChannelCount = std::max (1, d.maxInputChannels);
         seen.push_back (std::move (state));
         ++order;
     }

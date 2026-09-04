@@ -27,6 +27,13 @@ struct MicDeviceState
     /// and drift exactly as the cap does, because `included` is the single flag
     /// every one of those paths already consults.
     bool userEnabled = true;
+
+    /// How many inputs this device presents.
+    ///
+    /// One device is not one microphone. An interface with four mics plugged
+    /// into it reports four, and each is a separate person who expects their
+    /// own track.
+    int inputChannelCount = 1;
 };
 
 /// §1 8-mic cap, §3.1 master selection, §3.3 master failover. Pure logic over

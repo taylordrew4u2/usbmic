@@ -19,6 +19,21 @@ struct CaptureChannel
     std::string displayName;
     std::string fileName; // §6.2 sanitized, e.g. "01_Yeti-Kitchen"
     float trimDb = 0.0f;
+
+    /// Which input of that device this channel takes.
+    ///
+    /// One device is not one microphone. An audio interface with four mics
+    /// plugged into it is a single device presenting four inputs, and the app
+    /// used to take exactly one channel from any device -- §2.1's stereo
+    /// collapse, applied to an interface, silently discarded every input but
+    /// one. Somebody recording two people through one interface got one of
+    /// them, and if their microphone happened to be on the discarded input,
+    /// they got silence.
+    ///
+    /// §2.1 already said so: collapse to mono when a side is silent or
+    /// duplicated, "otherwise record true stereo". The otherwise was never
+    /// implemented.
+    int deviceChannel = 0;
 };
 
 /// Opens the audio streams and routes their callbacks. This is the piece that
