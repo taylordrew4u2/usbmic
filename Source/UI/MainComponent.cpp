@@ -459,7 +459,7 @@ void MainComponent::showSavedTake()
     for (const auto& file : take.files)
         rows.push_back ({ file.name, file.sizeBytes });
 
-    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows);
+    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows, take.verdict);
     growWindowToFit (savedTakePanel.getRequiredHeight() + 32);
 
     savedTakePanel.setBounds (getLocalBounds());

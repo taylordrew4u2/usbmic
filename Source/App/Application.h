@@ -2,6 +2,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <memory>
 #include "../Core/DeviceManager.h"
+#include "../Core/TakeCompleteness.h"
 #include "../Core/RecordingEngine.h"
 #include "../Core/MonitorBus.h"
 #include "../Core/MixBusLimiter.h"
@@ -166,6 +167,13 @@ public:
         juce::String folder;
         juce::String mirrorFolder;
         std::vector<SavedFile> files;
+
+        /// Decided by the engine, not by the panel. The panel can see file
+        /// sizes and nothing else, so it cannot tell a real take from a
+        /// full-length silent one -- and a panel reaching its own verdict is
+        /// how it once came to warn that files were empty while the status
+        /// line beside it said "Saved to ...".
+        TakeAudioVerdict verdict = TakeAudioVerdict::NotJudged;
     };
     bool consumeSavedTake (SavedTake& out);
 
@@ -416,6 +424,11 @@ private:
     // at stop against the finalized files. Keeps the §10.6 status line and the
     // saved-take card telling the same story.
     bool lastTakeHeldNoAudio = false;
+
+    /// What the last take actually held. Distinguishes "nothing arrived" from
+    /// "a stream ran and was flat" -- two different causes, two different
+    /// things for the user to go and check.
+    TakeAudioVerdict lastTakeVerdict = TakeAudioVerdict::NotJudged;
 
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
