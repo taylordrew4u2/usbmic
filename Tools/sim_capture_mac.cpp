@@ -193,6 +193,89 @@ int main()
     std::remove ((dir + "/01_Board.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // ---------------------------------------------------------------------
+    // An interface with four microphones plugged into it.
+    //
+    // One device, four inputs, four people. The app used to take exactly one
+    // channel from any device -- §2.1's stereo collapse, applied to an
+    // interface -- so three of the four were discarded without a word, and
+    // anyone whose microphone was on a discarded input got silence.
+    // ---------------------------------------------------------------------
+    std::printf ("\nAn interface with four microphones on four inputs\n");
+    fakeca::reset();
+
+    const auto rig = fakeca::addDevice (microphone ("4-in Interface", "uid-rig", 4,
+                                                    fakeca::BufferShape::interleaved));
+
+    mma::CoreAudioBackend backend2;
+    mma::CaptureCoordinator four (backend2, rate, block);
+
+    // What Application::buildCaptureChannels now produces for a 4-input device.
+    std::vector<mma::CaptureChannel> band;
+    for (int i = 0; i < 4; ++i)
+    {
+        mma::CaptureChannel c;
+        c.deviceId = "uid-rig";
+        c.deviceChannel = i;
+        c.displayName = "Mic " + std::to_string (i + 1);
+        c.fileName = "0" + std::to_string (i + 1) + "_Mic-" + std::to_string (i + 1);
+        band.push_back (c);
+    }
+
+    if (! four.startMonitoring (band, {}))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", four.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    check (true, "one stream opens for the device, not one per microphone");
+
+    if (! four.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    std::vector<float> out4 (static_cast<size_t> (block) * 2, 0.0f);
+    float* outs4[] = { out4.data(), out4.data() + block };
+
+    // A different tone per input, so a channel landing in the wrong file is a
+    // failure rather than something that happens to look right.
+    for (int i = 0; i < blocks; ++i)
+    {
+        const std::vector<std::vector<float>> signal {
+            tone (block, 220.0, rate, 0.5f),
+            tone (block, 440.0, rate, 0.5f),
+            tone (block, 880.0, rate, 0.5f),
+            tone (block, 1760.0, rate, 0.5f),
+        };
+
+        fakeca::pumpInput (rig, signal);
+        four.processOutputBlock (outs4, 2, block);
+    }
+
+    four.stopRecording();
+    four.stopMonitoring();
+
+    bool everyMicRecorded = true;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        uint32_t f = 0;
+        const auto path = dir + "/0" + std::to_string (i + 1) + "_Mic-" + std::to_string (i + 1) + ".wav";
+        const auto p = peakOf24BitWav (path, f);
+
+        std::printf ("  Mic %d: %u frames, peak %d\n", i + 1, f, p);
+
+        if (! (f > 0 && p > 100000))
+            everyMicRecorded = false;
+
+        std::remove (path.c_str());
+    }
+
+    check (everyMicRecorded, "all four microphones reach their own file with signal");
+    std::remove ((dir + "/MIX.wav").c_str());
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -1,4 +1,5 @@
 #include "CaptureCoordinator.h"
+#include <map>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -100,31 +101,65 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         return false;
     }
 
-    for (size_t i = 0; i < channels.size(); ++i)
-    {
-        // Bound to its own index. Passing one shared callback to every device
-        // was the bug this replaces: each device delivers only its own audio,
-        // so a shared callback wrote every microphone into channel 0.
-        const int index = static_cast<int> (i);
+    // One stream per DEVICE, not per channel.
+    //
+    // An audio interface with four microphones plugged into it is one device
+    // presenting four inputs, and four take channels come off it. Opening that
+    // device once per channel would ask the OS for the same exclusive stream
+    // four times; on macOS the second open is refused and the take dies with a
+    // message naming a microphone that is plugged in and working.
+    //
+    // So the streams are grouped here, and each device's callback fans its
+    // inputs out to the take channels that asked for them.
+    std::map<std::string, std::vector<size_t>> byDevice;
 
-        auto inputCallback = [this, index] (const float* const* inputs, int numInputs,
-                                            float* const*, int, int numSamples)
+    for (size_t i = 0; i < channels.size(); ++i)
+        byDevice[channels[i].deviceId].push_back (i);
+
+    for (const auto& [deviceId, channelIndices] : byDevice)
+    {
+        // Which take channel each of this device's inputs belongs to. Captured
+        // by value into the callback so the audio thread never reaches back
+        // into a container the UI thread can touch.
+        std::vector<std::pair<int, int>> routing; // { device input, take channel }
+        routing.reserve (channelIndices.size());
+
+        for (const auto i : channelIndices)
+            routing.push_back ({ channels[i].deviceChannel, static_cast<int> (i) });
+
+        auto inputCallback = [this, routing] (const float* const* inputs, int numInputs,
+                                              float* const*, int, int numSamples)
         {
             if (inputs == nullptr || numInputs <= 0)
                 return;
 
-            // §2.1: a device that presents more than one channel gets the side
-            // it is actually using picked for it. One that presents a single
-            // channel has nothing to decide.
-            if (numInputs >= 2)
-                pushDeviceBlockMultiChannel (index, inputs, numInputs, numSamples);
-            else
-                pushDeviceBlock (index, inputs[0], numSamples);
+            // §2.1's stereo collapse applies to a device the take takes ONE
+            // channel from: a USB mic presenting the same voice on both sides,
+            // or with one side silent. Where the take wants more than one
+            // channel from this device, the sides are different microphones and
+            // collapsing them would throw a person away -- which is §2.1's
+            // "otherwise record true stereo", finally honoured.
+            if (routing.size() == 1 && routing[0].first == 0)
+            {
+                const int channel = routing[0].second;
+
+                if (numInputs >= 2)
+                    pushDeviceBlockMultiChannel (channel, inputs, numInputs, numSamples);
+                else
+                    pushDeviceBlock (channel, inputs[0], numSamples);
+
+                return;
+            }
+
+            for (const auto& [deviceInput, takeChannel] : routing)
+                if (deviceInput < numInputs && inputs[deviceInput] != nullptr)
+                    pushDeviceBlock (takeChannel, inputs[deviceInput], numSamples);
         };
 
-        if (! backend.openInputStream (channels[i].deviceId, sampleRate, bufferSize, inputCallback))
+        if (! backend.openInputStream (deviceId, sampleRate, bufferSize, inputCallback))
         {
-            monitorProblem = channels[i].displayName + " couldn't be opened for recording.";
+            monitorProblem = channels[channelIndices.front()].displayName
+                           + " couldn't be opened for recording.";
             backend.closeAllStreams();
             return false;
         }
