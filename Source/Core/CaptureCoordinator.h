@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
@@ -55,6 +56,19 @@ public:
     /// monitor path is unavailable (§5.4).
     bool startMonitoring (const std::vector<CaptureChannel>& channels,
                           const std::string& outputDeviceId);
+
+    /// Which take channel each of a device's inputs belongs to.
+    std::vector<std::pair<int, int>> routingFor (const std::vector<size_t>& channelIndices) const;
+
+    /// Hands one device's inputs to the take channels that asked for them.
+    ///
+    /// Shared by the ordinary microphone streams and by the output stream on a
+    /// duplex mixer, so a rig where the microphones and the headphones are the
+    /// same box routes audio through exactly the same code as one where they
+    /// are not.
+    void fanOutDeviceInputs (const std::vector<std::pair<int, int>>& routing,
+                             const float* const* inputs, int numInputs,
+                             int numSamples) noexcept;
 
     void stopMonitoring();
 

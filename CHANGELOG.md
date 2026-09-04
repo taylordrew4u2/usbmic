@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.3.0 -- 2026-09-04
+
+### Fixed -- a mixer that is also your headphones is opened once, not twice
+
+A small livestream mixer presents its microphone inputs and its monitor output
+as a SINGLE duplex device. SobStage opened it for output, took hog mode on it --
+§5.4 requires the monitor path be exclusive -- and then opened it a second time
+for input. That asks macOS for another claim on a device this process has just
+taken exclusively, and the refusal arrives as:
+
+    <mic name> couldn't be opened for recording.
+
+against a microphone that is plugged in and working. Because every take channel
+on that rig comes off the one device, the whole capture failed, which is a
+silent recording from hardware with nothing wrong with it.
+
+The device is now opened once and that single stream carries both halves of the
+cycle: the microphones are read from the same callback that fills the
+headphones, which is also how CoreAudio means a duplex device to be driven. A
+rig where the microphones and the output are different boxes is untouched.
+
+### Fixed -- an oversized callback no longer drops the whole block in silence
+
+CoreAudio is allowed to hand a callback more frames than the buffer size that
+was asked for, and `CoreAudioBackend` sizes its own scratch for exactly that.
+The coordinator did not: one oversized slice made the entire pull return early,
+so no audio, no meters and no error -- the silent failure §0.1 forbids. Its
+scratch now carries the same headroom the backend gives its own.
+
+### Documentation
+
+A diagram of how a rig becomes tracks, covering the single-input microphone, the
+multi-input interface, and the duplex mixer -- the mapping that was got wrong
+repeatedly and is impossible to see from the UI alone.
+
 ## v1.2.2 -- 2026-09-04
 
 ### Fixed -- when a microphone won't open, the app says why
