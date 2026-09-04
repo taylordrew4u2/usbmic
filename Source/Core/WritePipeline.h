@@ -93,6 +93,11 @@ public:
     /// audio was lost, which §0.1 treats as the one unacceptable failure.
     uint64_t getFramesDropped() const noexcept { return framesDropped.load (std::memory_order_relaxed); }
 
+    /// The largest absolute sample value written since start(), across every
+    /// channel. Zero means this take wrote nothing but silence -- which size
+    /// alone cannot tell you, because a dead stream still fills the files.
+    float getPeakWritten() const noexcept { return peakWritten.load (std::memory_order_relaxed); }
+
     /// §6.5 "target card removed": true once a write to the destination itself
     /// has failed, which is what pulling the card mid-take looks like from here.
     ///
@@ -143,6 +148,9 @@ private:
     std::atomic<bool> running { false };
     std::atomic<uint64_t> framesAccepted { 0 };
     std::atomic<uint64_t> framesDropped { 0 };
+
+    /// Loudest sample written this take; reset by start().
+    std::atomic<float> peakWritten { 0.0f };
 
     int numChannels = 0;
     double sampleRate = 48000.0;

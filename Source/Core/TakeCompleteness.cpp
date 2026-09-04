@@ -26,6 +26,46 @@ bool isMetadata (const std::string& name)
 
 } // namespace
 
+namespace {
+
+/// -90 dBFS. Chosen well below any real microphone path's noise floor: a 24-bit
+/// LSB sits near -138 dBFS and preamp noise in a quiet room is nowhere near
+/// this low, so nothing that actually recorded can fall under it.
+constexpr float kSilenceFloor = 0.0000316f;
+
+} // namespace
+
+TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files, float peakAbs)
+{
+    int64_t audioBytes = 0;
+    int audioFiles = 0;
+
+    for (const auto& f : files)
+    {
+        if (isMetadata (f.name))
+            continue;
+
+        audioBytes += f.sizeBytes;
+        ++audioFiles;
+    }
+
+    if (audioFiles == 0)
+        return TakeAudioVerdict::NotJudged;
+
+    // Nothing arrived at all: the files are headers. Reported separately from
+    // silence because the causes are different and so is what the user should
+    // go and check.
+    if (audioBytes < static_cast<int64_t> (audioFiles) * 1024)
+        return TakeAudioVerdict::NothingWritten;
+
+    // A negative peak means no measurement was taken. Never report silence on
+    // the strength of one that was not made.
+    if (peakAbs >= 0.0f && peakAbs < kSilenceFloor)
+        return TakeAudioVerdict::OnlySilence;
+
+    return TakeAudioVerdict::Recorded;
+}
+
 bool takeHoldsNoAudio (const std::vector<TakeFile>& files)
 {
     int64_t audioBytes = 0;
