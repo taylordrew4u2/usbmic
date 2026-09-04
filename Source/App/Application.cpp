@@ -511,22 +511,20 @@ void Application::onDeviceListChanged()
 
     auto inputDevices = audioBackend->enumerateInputDevices();
 
-    std::vector<DeviceRateCapability> rateCapabilities;
+    // Rates per device, kept by identity so the §2.2 vote can be taken AFTER
+    // inclusion is known. Taken here, over every device the OS lists, it
+    // included microphones nobody is recording -- and a MacBook's built-in mic
+    // sitting at 48 kHz outvoted the interface the take actually uses, which is
+    // exactly how a rig at 44.1 kHz was told to be 48.
+    std::vector<EnumeratedDeviceRates> enumeratedRates;
+    enumeratedRates.reserve (inputDevices.size());
+
     std::vector<MicDeviceState> seen;
     seen.reserve (inputDevices.size());
 
     int order = 0;
     for (const auto& d : inputDevices)
     {
-        DeviceRateCapability cap;
-        cap.deviceIndex = order;
-        cap.supportedRates = d.supportedSampleRates;
-
-        // §2.2 prefers a rate the hardware is already on. Advertising a rate is
-        // not the same as switching to it, and the switch is what fails.
-        cap.currentRate = d.currentSampleRate;
-        rateCapabilities.push_back (cap);
-
         MicDeviceState state;
         state.identity.locationId = d.usbLocationId;
         if (! d.serialNumber.empty())
@@ -534,6 +532,12 @@ void Application::onDeviceListChanged()
         state.displayName = d.name;
         state.isBuiltIn = d.isBuiltIn;
         state.inputChannelCount = std::max (1, d.maxInputChannels);
+
+        // §2.2 prefers a rate the hardware is already on. Advertising a rate is
+        // not the same as being willing to switch to it, and the switch is what
+        // fails.
+        enumeratedRates.push_back ({ state.identity.key(), d.supportedSampleRates, d.currentSampleRate });
+
         seen.push_back (std::move (state));
         ++order;
     }
@@ -549,8 +553,20 @@ void Application::onDeviceListChanged()
     // once at launch.
     applyRememberedDeviceSettings();
 
-    // §2.2: the rate the rig is already on where they agree, else highest
-    // common, capped at 48kHz. Never rejects a device.
+    // §2.2: only the microphones actually being recorded get a vote. A device
+    // the take does not use cannot be made to resample, cannot go out of sync,
+    // and cannot be harmed by the choice -- so letting it constrain the rate
+    // only ever costs the microphones that ARE being recorded.
+    std::vector<std::string> includedKeys;
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            includedKeys.push_back (d.identity.key());
+
+    const auto rateCapabilities = SampleRateNegotiator::votingDevices (includedKeys, enumeratedRates);
+
+    // The rate the rig is already on where they agree, else highest common,
+    // capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
 
     // What Settings can offer: rates every microphone can reach, under the cap.

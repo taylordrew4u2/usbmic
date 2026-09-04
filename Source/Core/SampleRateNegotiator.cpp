@@ -15,18 +15,33 @@ RateNegotiationResult SampleRateNegotiator::negotiate (const std::vector<DeviceR
         return result;
     }
 
+    // The rates a device can actually do: what it advertises, plus the rate it
+    // is running at right now.
+    //
+    // A device running at 44.1 kHz supports 44.1 kHz, whatever its advertised
+    // list says -- it is doing it. Some interfaces report only the rate they
+    // would prefer, and taking that list as the whole truth ruled out the one
+    // rate guaranteed to work.
+    auto ratesFor = [] (const DeviceRateCapability& d)
+    {
+        std::set<uint32_t> rates;
+
+        for (auto rate : d.supportedRates)
+            if (rate <= kRateCap)
+                rates.insert (rate);
+
+        if (d.currentRate != 0 && d.currentRate <= kRateCap)
+            rates.insert (d.currentRate);
+
+        return rates;
+    };
+
     // Rates <= 48kHz common to every device.
-    std::set<uint32_t> common;
-    for (auto rate : devices.front().supportedRates)
-        if (rate <= kRateCap)
-            common.insert (rate);
+    std::set<uint32_t> common = ratesFor (devices.front());
 
     for (size_t i = 1; i < devices.size(); ++i)
     {
-        std::set<uint32_t> deviceRates;
-        for (auto rate : devices[i].supportedRates)
-            if (rate <= kRateCap)
-                deviceRates.insert (rate);
+        const std::set<uint32_t> deviceRates = ratesFor (devices[i]);
 
         std::set<uint32_t> intersection;
         std::set_intersection (common.begin(), common.end(),
@@ -95,6 +110,28 @@ RateNegotiationResult SampleRateNegotiator::negotiate (const std::vector<DeviceR
     }
 
     return result;
+}
+
+std::vector<DeviceRateCapability>
+    SampleRateNegotiator::votingDevices (const std::vector<std::string>& includedDeviceKeys,
+                                         const std::vector<EnumeratedDeviceRates>& enumerated)
+{
+    std::vector<DeviceRateCapability> out;
+    int index = 0;
+    for (const auto& key : includedDeviceKeys)
+    {
+        const auto found = std::find_if (enumerated.begin(), enumerated.end(),
+                                         [&key] (const EnumeratedDeviceRates& e)
+                                         { return e.deviceKey == key; });
+        if (found == enumerated.end())
+            continue;
+        DeviceRateCapability cap;
+        cap.deviceIndex = index++;
+        cap.supportedRates = found->supportedRates;
+        cap.currentRate = found->currentRate;
+        out.push_back (std::move (cap));
+    }
+    return out;
 }
 
 } // namespace mma
