@@ -480,3 +480,52 @@ TEST_CASE (DeviceManager_DeselectedMicIsNotChosenAsClockMaster)
     REQUIRE (master != nullptr);
     REQUIRE (master->identity.locationId == "uid-b");
 }
+
+TEST_CASE (DeviceManager_ReEnumerationRefreshesHowManyInputsADeviceHas)
+{
+    // How many inputs a device presents belongs to the OS, and a device the
+    // manager already knows must have it refreshed like any other OS-owned
+    // fact.
+    //
+    // It was not, and that silently defeated the whole multi-input feature: an
+    // interface added through addDevice(), or present before the first
+    // enumeration, kept the default of one input forever. The app went on
+    // building one take channel for a four-microphone interface, which is the
+    // exact bug the channel count exists to fix.
+    DeviceManager m;
+
+    MicDeviceState early;
+    early.identity.locationId = "loc-interface";
+    early.displayName = "Interface";
+    early.inputChannelCount = 1;   // what any path that does not know better sets
+    m.addDevice (early);
+
+    MicDeviceState reported;
+    reported.identity.locationId = "loc-interface";
+    reported.displayName = "Interface";
+    reported.inputChannelCount = 4; // what the OS actually says
+
+    m.syncToEnumeration ({ reported });
+
+    REQUIRE (m.getDevices().size() == 1);
+    REQUIRE (m.getDevices()[0].inputChannelCount == 4);
+}
+
+TEST_CASE (DeviceManager_AnInterfaceContributesOneChannelPerInput)
+{
+    // The rule that decides how many strips and files a device produces.
+    //
+    // One input is one microphone. Two stays one -- §2.1's USB mic presenting
+    // the same voice on both sides, which the capture path's analyzer resolves.
+    // Above two, the device is an interface and every input is somebody's
+    // microphone, each of whom expects their own track.
+    REQUIRE (takeChannelsForDevice (1) == 1);
+    REQUIRE (takeChannelsForDevice (2) == 1);
+    REQUIRE (takeChannelsForDevice (4) == 4);
+    REQUIRE (takeChannelsForDevice (8) == 8);
+
+    // A device reporting nothing usable is still one microphone, never zero:
+    // zero channels is a take with no files in it.
+    REQUIRE (takeChannelsForDevice (0) == 1);
+    REQUIRE (takeChannelsForDevice (-1) == 1);
+}
