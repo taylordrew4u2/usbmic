@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SobStage VERSION 1.2.0 LANGUAGES CXX)
+project(SobStage VERSION 1.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,7 @@ add_library(mma_core STATIC
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
+    Source/Core/ChannelPlan.cpp
     Source/Core/ClockMasterResolver.cpp
     Source/Core/TakeCompleteness.cpp
     Source/Core/RecordingEngine.cpp

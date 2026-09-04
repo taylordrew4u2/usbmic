@@ -727,9 +727,20 @@ void MainComponent::refreshAdvanced()
     for (int i = 0; i < micCount; ++i)
         micNames.add (application.getMicDisplayName (i));
 
-    std::vector<std::pair<juce::String, bool>> micSelections;
+    std::vector<AdvancedPanel::MicChoice> micSelections;
     for (const auto& m : application.getMicSelections())
-        micSelections.push_back ({ m.displayName, m.enabled });
+    {
+        // An interface is one row, because it is switched on and off as one
+        // thing -- but it is several microphones, and the row has to say so.
+        // A user with two people plugged into one interface saw a single line
+        // here and read it as the app refusing to take their second mic.
+        auto label = m.displayName;
+
+        if (m.channelCount > 1)
+            label += " (" + juce::String (m.channelCount) + " microphones)";
+
+        micSelections.push_back ({ label, m.displayName, m.enabled });
+    }
     advancedPanel.setMicSelections (micSelections);
 
     // Adding or removing a microphone changes how tall the panel needs to be,

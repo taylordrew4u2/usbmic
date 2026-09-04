@@ -211,13 +211,13 @@ void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce
     fillCombo (outputDeviceCombo, names, selected);
 }
 
-void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics)
+void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
 {
     // Rebuilt only when the set of names changes. The panel repaints at 2 Hz,
     // and recreating the toggles every tick would fight the user's click.
     juce::StringArray incoming;
     for (const auto& m : mics)
-        incoming.add (m.first);
+        incoming.add (m.label);
 
     if (incoming != lastMicNames)
     {
@@ -226,8 +226,11 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
 
         for (const auto& m : mics)
         {
-            auto toggle = std::make_unique<juce::ToggleButton> (m.first);
-            const auto name = m.first;
+            auto toggle = std::make_unique<juce::ToggleButton> (m.label);
+
+            // The DEVICE name, not the label: the label carries the microphone
+            // count, and the app looks the device up by its own name.
+            const auto name = m.deviceName;
 
             // Deferred rather than called straight through. Ticking a box
             // rebuilds the audio streams, and a rebuild can reach back into
@@ -260,7 +263,7 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
     // State is refreshed every tick regardless, so a change made elsewhere --
     // the 8-mic cap, a device leaving -- shows up here.
     for (size_t i = 0; i < micToggles.size() && i < mics.size(); ++i)
-        micToggles[i]->setToggleState (mics[i].second, juce::dontSendNotification);
+        micToggles[i]->setToggleState (mics[i].enabled, juce::dontSendNotification);
 }
 
 void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)

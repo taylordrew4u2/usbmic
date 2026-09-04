@@ -2,6 +2,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <memory>
 #include "../Core/DeviceManager.h"
+#include "../Core/ChannelPlan.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Core/RecordingEngine.h"
 #include "../Core/MonitorBus.h"
@@ -213,6 +214,12 @@ public:
         juce::String displayName;
         bool enabled = true;
         bool isBuiltIn = false;
+        /// How many microphones this one device records. An interface is a
+        /// single row here -- it is switched on and off as one thing -- so
+        /// without this the list looked identical whether the box had one
+        /// microphone on it or four, and a user with two people plugged into an
+        /// interface read the single row as the app refusing their second mic.
+        int channelCount = 1;
     };
     std::vector<MicSelection> getMicSelections() const;
 
@@ -524,12 +531,22 @@ private:
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
 
-    /// The user's name for a device if it has one, its product string
-    /// otherwise, and `fallback` when the device is no longer enumerated at
-    /// all -- which is exactly the case mid-take, where the channel outlives
-    /// the microphone that was unplugged from it.
-    juce::String nameForDevice (const std::string& identityKey,
-                                const juce::String& fallback) const;
+
+    /// The name one INPUT of a device is known by -- the port's name resolved
+    /// live, so a rename mid-take reaches the strip, plus the input number that
+    /// tells an interface's microphones apart.
+    ///
+    /// Answering per device cannot do this: asked about four inputs of one
+    /// interface it gave the same name four times, while the four files were
+    /// correctly named apart. The screen and the disk disagreed about who was
+    /// who. Empty when the device is no longer enumerated at all -- exactly the
+    /// case mid-take, where the channel outlives the microphone unplugged from
+    /// it, and the caller falls back to the name the channel opened with.
+    juce::String nameForChannel (const std::string& identityKey, int deviceChannel) const;
+
+    /// The rig as the channel planner sees it: every included device, with
+    /// §2.4's remembered name and §2.1 verdict already resolved.
+    std::vector<ChannelPlanDevice> planDevices() const;
 
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 folder name for a take started at `now` under `name`, including the

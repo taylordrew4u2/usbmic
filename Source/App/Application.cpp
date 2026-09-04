@@ -258,10 +258,9 @@ void Application::openEnabledCameras()
     cameraController.applySelection();
 }
 
-std::vector<CaptureChannel> Application::buildCaptureChannels() const
+std::vector<ChannelPlanDevice> Application::planDevices() const
 {
-    std::vector<CaptureChannel> channels;
-    int index = 0;
+    std::vector<ChannelPlanDevice> out;
 
     for (const auto& d : deviceManager.getDevices())
     {
@@ -272,56 +271,62 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         // port, so they follow the mic across replug rather than across slot.
         const auto persisted = portIdentityStore.get (d.identity);
 
-        // One channel per input the device presents.
-        //
-        // A device with one input is one microphone, as before. A device with
-        // several is an interface with several microphones plugged into it, and
-        // each of them is a person who expects their own track. Taking one
-        // channel from any device -- which is what this did -- silently
-        // discarded everybody but the first, and if their microphone was on one
-        // of the discarded inputs they got a silent recording with no
-        // explanation.
-        //
-        // Two inputs stay one channel: that is the §2.1 case this app was built
-        // for, a USB mic presenting the same voice on both sides or with one
-        // side silent, and the analyzer in the capture path decides between
-        // them. Above two, a device is an interface and every input is its own
-        // microphone.
-        // §2.4 remembers §2.1's verdict per port. Only a decision that was
-        // actually made collapses a two-input device; the default of "no
-        // decision yet" keeps both sides.
-        const bool knownDuplicateStereo = persisted.has_value()
-                                       && persisted->hasChannelLayoutDecision
-                                       && persisted->channelLayoutIsMono;
+        ChannelPlanDevice p;
+        p.deviceKey = d.identity.key();
+        p.productName = d.displayName;
+        p.inputChannelCount = d.inputChannelCount;
 
-        const int inputs = takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo);
-
-        for (int input = 0; input < inputs; ++input)
+        if (persisted.has_value())
         {
-            ++index;
+            p.assignedName = persisted->assignedName;
 
-            CaptureChannel c;
-            c.deviceId = d.identity.key();
-            c.deviceChannel = input;
-            c.displayName = (persisted.has_value() && ! persisted->assignedName.empty())
-                                ? persisted->assignedName : d.displayName;
-
-            // An interface's inputs all carry the device's name, which would
-            // give four identical strips and four identically-named files. The
-            // input number is what tells them apart, and it is the number
-            // printed next to the socket the microphone is plugged into.
-            if (inputs > 1)
-                c.displayName += " " + std::to_string (input + 1);
-
-            // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name,
-            // so the stems sort in channel order in any file browser.
-            char prefix[4] = {};
-            std::snprintf (prefix, sizeof (prefix), "%02d", index);
-            c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
-            c.trimDb = persisted.has_value() ? persisted->trimDb : 0.0f;
-
-            channels.push_back (std::move (c));
+            // §2.4 remembers §2.1's verdict per port. Only a decision that was
+            // actually made collapses a two-input device; the default of "no
+            // decision yet" keeps both sides.
+            p.knownDuplicateStereo = persisted->hasChannelLayoutDecision
+                                  && persisted->channelLayoutIsMono;
         }
+
+        out.push_back (std::move (p));
+    }
+
+    return out;
+}
+
+std::vector<CaptureChannel> Application::buildCaptureChannels() const
+{
+    // One channel per input the device presents, decided in exactly one place.
+    //
+    // A device with one input is one microphone. A device with several is an
+    // interface with several microphones plugged into it, and each of them is a
+    // person who expects their own track. Taking one channel from any device --
+    // which is what this did -- silently discarded everybody but the first, and
+    // if their microphone was on one of the discarded inputs they got a silent
+    // recording with no explanation.
+    std::vector<CaptureChannel> channels;
+    int index = 0;
+
+    for (const auto& planned : planChannels (planDevices()))
+    {
+        ++index;
+
+        CaptureChannel c;
+        c.deviceId = planned.deviceKey;
+        c.deviceChannel = planned.deviceChannel;
+        c.displayName = planned.displayName;
+
+        // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name,
+        // so the stems sort in channel order in any file browser.
+        char prefix[4] = {};
+        std::snprintf (prefix, sizeof (prefix), "%02d", index);
+        c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
+
+        for (const auto& d : deviceManager.getDevices())
+            if (d.identity.key() == planned.deviceKey)
+                if (const auto persisted = portIdentityStore.get (d.identity))
+                    c.trimDb = persisted->trimDb;
+
+        channels.push_back (std::move (c));
     }
 
     return channels;
@@ -768,37 +773,46 @@ Metering* Application::getMixMetering()
     return capture != nullptr ? &capture->getMixMetering() : nullptr;
 }
 
-juce::String Application::nameForDevice (const std::string& identityKey,
-                                         const juce::String& fallback) const
+juce::String Application::nameForChannel (const std::string& identityKey, int deviceChannel) const
 {
     for (const auto& d : deviceManager.getDevices())
     {
         if (d.identity.key() != identityKey)
             continue;
 
+        const auto persisted = portIdentityStore.get (d.identity);
+
         // The name the user gave this port wins over the product string --
         // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
-        if (const auto persisted = portIdentityStore.get (d.identity))
-            if (! persisted->assignedName.empty())
-                return juce::String (persisted->assignedName);
+        std::string base = d.displayName;
+        bool knownDuplicateStereo = false;
 
-        return juce::String (d.displayName);
+        if (persisted.has_value())
+        {
+            if (! persisted->assignedName.empty())
+                base = persisted->assignedName;
+
+            knownDuplicateStereo = persisted->hasChannelLayoutDecision
+                                && persisted->channelLayoutIsMono;
+        }
+
+        const int inputs = takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo);
+
+        return juce::String (plannedChannelName (base, deviceChannel, inputs));
     }
 
-    return fallback;
+    return {};
 }
 
 juce::String Application::getMicProductName (int index) const
 {
     // §14.6: with four identical microphones on a desk, the name the user gave
     // a port is what identifies it -- but the hardware's own name is what tells
-    // them which *kind* of thing it is. The strip has always reserved a line
-    // for it under the bold name and always drawn it empty, because
-    // setDeviceName() had no callers anywhere.
+    // them which *kind* of thing it is.
     //
-    // Resolved in the take's channel space while one is running, for the same
-    // reason getMicDisplayName is: after a mid-take unplug the device list and
-    // the channel list are different lengths.
+    // Resolved in channel space, not device space, for the same reason
+    // getMicDisplayName is: an interface contributes several channels, and
+    // after a mid-take unplug the two lists are different lengths.
     std::string key;
     juce::String fallback;
 
@@ -814,24 +828,13 @@ juce::String Application::getMicProductName (int index) const
     }
     else
     {
-        int seen = 0;
-        for (const auto& d : deviceManager.getDevices())
-        {
-            if (! d.included)
-                continue;
+        const auto plan = planChannels (planDevices());
 
-            if (seen == index)
-            {
-                key = d.identity.key();
-                fallback = juce::String (d.displayName);
-                break;
-            }
-
-            ++seen;
-        }
-
-        if (key.empty())
+        if (index < 0 || index >= static_cast<int> (plan.size()))
             return {};
+
+        key = plan[static_cast<size_t> (index)].deviceKey;
+        fallback = juce::String (plan[static_cast<size_t> (index)].displayName);
     }
 
     juce::String product = fallback;
@@ -861,22 +864,23 @@ juce::String Application::getMicDisplayName (int index) const
             return {};
 
         const auto& ch = channels[static_cast<size_t> (index)];
-        return nameForDevice (ch.deviceId, juce::String (ch.displayName));
+        const auto live = nameForChannel (ch.deviceId, ch.deviceChannel);
+
+        // Empty means the device is no longer enumerated -- it was unplugged
+        // mid-take. The name the channel opened with is the honest answer.
+        return live.isNotEmpty() ? live : juce::String (ch.displayName);
     }
 
-    int seen = 0;
-    for (const auto& d : deviceManager.getDevices())
-    {
-        if (! d.included)
-            continue;
+    // Outside a take, the same plan the take would use. Walking the device list
+    // instead is what made a two-input interface show one microphone until the
+    // moment recording began -- which reads as an app that cannot see the
+    // second microphone at all, and was reported as exactly that.
+    const auto plan = planChannels (planDevices());
 
-        if (seen == index)
-            return nameForDevice (d.identity.key(), juce::String (d.displayName));
+    if (index < 0 || index >= static_cast<int> (plan.size()))
+        return {};
 
-        ++seen;
-    }
-
-    return {};
+    return juce::String (plan[static_cast<size_t> (index)].displayName);
 }
 
 void Application::setMicAssignedName (int index, const juce::String& name)
@@ -1323,10 +1327,15 @@ int Application::getIncludedMicCount() const
     if (capture != nullptr && capture->isRecording())
         return static_cast<int> (capture->getChannels().size());
 
+    // Outside a take, the count the take WOULD produce. Counting included
+    // devices instead under-counted every interface: a two-input interface
+    // showed one strip and reserved disk for one track, then recorded two.
+    // §6.4's remaining-time figure was wrong by the input multiplier -- double
+    // on a 2-input box, quadruple on a 4-input one -- which is a promise of
+    // recording time the disk cannot keep.
     int count = 0;
-    for (const auto& d : deviceManager.getDevices())
-        if (d.included)
-            ++count;
+    for (const auto& d : planDevices())
+        count += takeChannelsForDevice (d.inputChannelCount, d.knownDuplicateStereo);
 
     return count;
 }
@@ -1692,7 +1701,17 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
     std::vector<MicSelection> out;
 
     for (const auto& d : deviceManager.getDevices())
-        out.push_back ({ juce::String (d.displayName), d.userEnabled, d.isBuiltIn });
+    {
+        const auto persisted = portIdentityStore.get (d.identity);
+        const bool knownDuplicateStereo = persisted.has_value()
+                                       && persisted->hasChannelLayoutDecision
+                                       && persisted->channelLayoutIsMono;
+
+        out.push_back ({ juce::String (d.displayName),
+                         d.userEnabled,
+                         d.isBuiltIn,
+                         takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) });
+    }
 
     return out;
 }
