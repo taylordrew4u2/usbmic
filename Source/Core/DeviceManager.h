@@ -16,11 +16,25 @@ namespace mma {
 /// believed a four-microphone interface had one microphone on it, and nothing
 /// anywhere could have caught it.
 ///
-/// One input is one microphone. Two stays one: that is §2.1's case, a USB mic
-/// presenting the same voice on both sides or with one side silent, and the
-/// capture path's analyzer decides between them. Above two, a device is an
-/// interface and every input is somebody's microphone.
-int takeChannelsForDevice (int inputChannelCount) noexcept;
+/// One input is one microphone. Every input above that is also a microphone,
+/// unless §2.1 has positively decided otherwise.
+///
+/// Two inputs used to collapse to one on the assumption that a two-channel
+/// device is a USB mic presenting the same voice on both sides. That is one
+/// kind of two-input device. The other is a two-input interface with two
+/// people plugged into it, which is the commonest small multi-mic rig there
+/// is, and for those the assumption threw a person away.
+///
+/// §0.1 settles which way to guess. Keeping both sides of a duplicated mono
+/// mic costs a redundant file, which is untidy. Collapsing two microphones
+/// into one loses somebody's audio entirely, with nothing said. Those are not
+/// comparable, so both are kept until §2.1's analyzer has actually looked at
+/// the audio and said they are the same source -- a decision §2.4 remembers
+/// per port, so the second take on a stereo USB mic collapses correctly.
+/// `knownDuplicateStereo` is §2.4's remembered §2.1 verdict for this port: true
+/// only when the analyzer has actually decided the two sides carry the same
+/// source. Absent a decision it is false, and both sides are kept.
+int takeChannelsForDevice (int inputChannelCount, bool knownDuplicateStereo = false) noexcept;
 
 struct MicDeviceState
 {
