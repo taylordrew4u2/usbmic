@@ -158,8 +158,17 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
 
         if (! backend.openInputStream (deviceId, sampleRate, bufferSize, inputCallback))
         {
+            // §0.1: the backend knows why and this used to throw it away, so the
+            // user was told a microphone "couldn't be opened" and left to guess
+            // between a dead cable, a rate mismatch, a missing permission and
+            // another app holding the device. The monitor path above has always
+            // reported the cause; the microphone path is no different.
+            const auto reason = backend.getLastOpenError();
+
             monitorProblem = channels[channelIndices.front()].displayName
-                           + " couldn't be opened for recording.";
+                           + " couldn't be opened for recording."
+                           + (reason.empty() ? std::string() : " " + reason);
+
             backend.closeAllStreams();
             return false;
         }

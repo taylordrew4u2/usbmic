@@ -276,6 +276,29 @@ int MainScreen::getCameraScaleStepCount() noexcept
     return kCameraScaleSteps;
 }
 
+int MainScreen::monitorProblemHeight() const noexcept
+{
+    constexpr int kLineHeight = 17;
+    constexpr int kOneLine    = 20;
+
+    const auto text = monitorProblemLabel.getText();
+
+    if (text.isEmpty())
+        return kOneLine;
+
+    const int width = juce::jmax (1, getWidth() - 32);
+    const int textWidth = juce::roundToInt (monitorProblemLabel.getFont()
+                                                .getStringWidthFloat (text));
+
+    // The wrap JUCE will apply when it draws, worked out ahead of it so the
+    // band reserved is the band needed. Capped: a runaway message must not push
+    // the record button off the screen, which is the one control that cannot be
+    // allowed to go looking for.
+    const int lines = juce::jlimit (1, 4, (textWidth + width - 1) / width);
+
+    return juce::jmax (kOneLine, lines * kLineHeight + 3);
+}
+
 int MainScreen::nonCameraHeight() const noexcept
 {
     // Every band resized() lays out beneath the pictures. Kept here rather than
@@ -288,7 +311,10 @@ int MainScreen::nonCameraHeight() const noexcept
     constexpr int kStripHeight = 40;
     constexpr int kStripGap    = 12;
     constexpr int kActionRow   = 16 + 52;
-    constexpr int kStatusLines = 18 + 20 + 20;  // files, monitor problem, advice
+    // files, monitor problem, advice. The monitor problem is measured rather
+    // than assumed: it grows to fit a reason, and a band reserved at one line
+    // while three are drawn is content spilling past the bottom of the window.
+    const int kStatusLines = 18 + monitorProblemHeight() + 20;
     constexpr int kFooter      = 34;
 
     // MIX is laid out with the microphones, so it counts towards the wrap.
@@ -853,7 +879,13 @@ void MainScreen::resized()
     // nothing is placed here -- the record button is followed straight by the
     // lines that qualify it.
     filesSavingLabel.setBounds (area.removeFromTop (18));
-    monitorProblemLabel.setBounds (area.removeFromTop (20));
+
+    // Sized to the message, not to one line. This label carries the reason a
+    // microphone would not open -- which rate the interface is running at, that
+    // macOS has not granted microphone access, that another app holds the
+    // device -- and a fixed 20px row clipped all of it to the first few words,
+    // leaving the same dead end the reason was written to end.
+    monitorProblemLabel.setBounds (area.removeFromTop (monitorProblemHeight()));
     adviceLabel.setBounds (area.removeFromTop (20));
 
     // The footer: what the disk knows on the left, what the ears want on the

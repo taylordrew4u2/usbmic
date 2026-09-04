@@ -6,6 +6,8 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include <cmath>
 #include <vector>
 
@@ -191,6 +193,20 @@ double getNominalSampleRate (AudioObjectID device)
         return 0.0;
 
     return static_cast<double> (rate);
+}
+
+/// A sample rate as a person says it: "48 kHz", not "48000.000000".
+std::string formatRate (double rate)
+{
+    const double khz = rate / 1000.0;
+    char text[32] = {};
+
+    if (std::abs (khz - std::round (khz)) < 0.01)
+        std::snprintf (text, sizeof (text), "%d kHz", static_cast<int> (std::round (khz)));
+    else
+        std::snprintf (text, sizeof (text), "%.1f kHz", khz);
+
+    return text;
 }
 
 bool setNominalSampleRate (AudioObjectID device, double sampleRate)
@@ -513,12 +529,28 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     const AudioObjectID device = findDeviceByUID (deviceId);
 
     if (device == kAudioObjectUnknown || ! callback)
+    {
+        lastOpenError = "This microphone is no longer connected. Unplug it and plug it back in, "
+                        "then try again.";
         return false;
+    }
 
     // Match the negotiated rate (§2.2) before the IOProc starts, so the device
     // is not still converting when audio begins.
     if (! setNominalSampleRate (device, sampleRate))
+    {
+        // Name both rates. "Couldn't be opened" sends the user hunting through
+        // cables for a fault that is one number in a settings pane, and the
+        // rate the device is actually running at is the whole answer.
+        const double actual = getNominalSampleRate (device);
+
+        lastOpenError = "This interface is running at " + formatRate (actual)
+                      + " and won't change to the " + formatRate (sampleRate)
+                      + " this recording uses. Set the recording to "
+                      + formatRate (actual) + " in Settings, or change the interface "
+                      + "to " + formatRate (sampleRate) + " in Audio MIDI Setup.";
         return false;
+    }
 
     // §5.4 buffer ladder: the requested size is a target, and CoreAudio clamps
     // it to what the device allows. Failing to set it is not fatal -- a larger
@@ -545,11 +577,22 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
 
     if (AudioDeviceCreateIOProcID (device, ioProcTrampoline, stream.get(), &stream->ioProcId) != noErr
         || stream->ioProcId == nullptr)
+    {
+        lastOpenError = "macOS wouldn't let this app attach to this interface. Another app is "
+                        "usually holding it -- close anything else recording or streaming from "
+                        "it, then try again.";
         return false;
+    }
 
     if (AudioDeviceStart (device, stream->ioProcId) != noErr)
     {
         AudioDeviceDestroyIOProcID (device, stream->ioProcId);
+
+        // The commonest cause by far, and the one with a fix the user can
+        // actually carry out: macOS has not been told this app may listen.
+        lastOpenError = "macOS wouldn't start this interface. Check that SobStage is allowed to "
+                        "use the microphone in System Settings > Privacy & Security > Microphone, "
+                        "and that no other app is recording from it.";
         return false;
     }
 
@@ -600,6 +643,11 @@ bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDevic
 bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double sampleRate,
                                         int bufferSizeSamples, AudioCallback callback)
 {
+    // Cleared here, not in openStream: the output path clears it before taking
+    // hog mode and sets its own reason on failure, and reporting that message
+    // against a microphone would name the wrong device entirely.
+    lastOpenError.clear();
+
     return openStream (inputDeviceId, sampleRate, bufferSizeSamples, std::move (callback), false);
 }
 
