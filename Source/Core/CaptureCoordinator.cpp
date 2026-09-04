@@ -442,6 +442,35 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
 
+    // The loudest sample that ARRIVED, measured here -- before the writer gets
+    // a say, and on the same buffer the meters are about to read.
+    //
+    // The writer already tracks what it managed to WRITE. The pair is what
+    // makes a silent take diagnosable: audio arriving and nothing written can
+    // only be the writer refusing blocks, which is a fault in this app, and
+    // saying so is the difference between a user checking their microphone for
+    // an hour and knowing at a glance that it is not their rig.
+    {
+        float arrived = 0.0f;
+
+        for (int ch = 0; ch < channelCount; ++ch)
+        {
+            if (inputs[ch] == nullptr)
+                continue;
+
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float magnitude = inputs[ch][i] < 0.0f ? -inputs[ch][i] : inputs[ch][i];
+
+                if (magnitude > arrived)
+                    arrived = magnitude;
+            }
+        }
+
+        if (arrived > peakArrived.load (std::memory_order_relaxed))
+            peakArrived.store (arrived, std::memory_order_relaxed);
+    }
+
     // §14.4: measured here because this is the one place every channel is
     // aligned in the same frame block -- the per-device path has just pulled
     // them onto one timebase, and the aggregate path is handed them that way.
