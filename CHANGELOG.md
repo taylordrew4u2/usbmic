@@ -2,6 +2,24 @@
 
 ## v1.0.3 — 2026-09-04
 
+### Added -- the macOS recording path is tested end to end
+
+sim_coreaudio proved the backend hands over the right samples. live_capture
+proved the coordinator and writer turn samples into files. Nothing joined
+them, and the join is where macOS actually lives -- so three things reached
+users untested:
+
+- live_capture's fixture microphones are mono, so the stereo path, which is
+  what a USB mixer or any stereo interface takes through §2.1's
+  channel-layout analysis, had never reached a file in any test.
+- every harness and every unit test recorded at 16 bits. The app ships 24.
+- the backend had only ever been asked for audio in isolation, never while
+  a take was running.
+
+Tools/sim_capture_mac closes all three: a stereo interleaved device, at 24
+bits, recorded through the real coordinator into real files, with the bytes
+checked rather than the file size. It runs in CI on every platform.
+
 ### Added -- a silent take now says whose fault it is
 
 When a take comes back with no sound, the single most useful thing to know
