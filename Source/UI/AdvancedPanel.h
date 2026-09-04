@@ -45,8 +45,16 @@ public:
     /// Fills a combo without firing onChange -- otherwise refreshing the list
     /// would read back as the user having picked something.
     void setOutputDevices (const juce::StringArray& names, const juce::String& selected);
+    /// One row in the microphone list: what it reads as, and the device name
+    /// the app matches it back to.
+    ///
+    /// The two are not the same once the row says how many microphones the
+    /// device carries. Matching on the visible text would then fail to find the
+    /// device, and the tick box would silently do nothing.
+    struct MicChoice { juce::String label, deviceName; bool enabled = false; };
+
     /// The microphones the OS reports and whether each is currently selected.
-    void setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics);
+    void setMicSelections (const std::vector<MicChoice>& mics);
 
     /// Volumes to offer as save destinations: display name, path, and whether
     /// it is the one currently in use.
