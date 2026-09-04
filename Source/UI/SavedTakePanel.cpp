@@ -54,7 +54,8 @@ SavedTakePanel::~SavedTakePanel() = default;
 
 void SavedTakePanel::setTake (const juce::String& folder,
                               const juce::String& mirrorFolder,
-                              const std::vector<FileRow>& files)
+                              const std::vector<FileRow>& files,
+                              TakeAudioVerdict verdict)
 {
     folderValue.setText (folder, juce::dontSendNotification);
 
@@ -90,10 +91,22 @@ void SavedTakePanel::setTake (const juce::String& folder,
                             + juce::File::descriptionOfSizeInBytes (total),
                         juce::dontSendNotification);
 
-    // The rule lives in Core now, because the status line has to reach the same
-    // verdict: it used to say "Saved to ..." while this panel warned the files
-    // were empty, and two copies of a rule are two chances to disagree.
-    everythingWasEmpty = takeHoldsNoAudio (forJudging);
+    // Handed in, not worked out here. The status line and this panel have to
+    // reach the same verdict -- they once disagreed, this warning the files
+    // were empty while the line beside it said "Saved to ..." -- and only the
+    // engine can tell a real take from a full-length silent one, because from
+    // here the two are the same list of megabyte files.
+    everythingWasEmpty = verdict == TakeAudioVerdict::NothingWritten
+                      || verdict == TakeAudioVerdict::OnlySilence;
+
+    emptyWarning.setText (verdict == TakeAudioVerdict::OnlySilence
+                              ? "These files are silent. The microphones were connected, but no "
+                                "sound reached them -- check they aren't muted at their own "
+                                "switches, and that the right input is selected."
+                              : "These files are empty. Check that the microphones aren't muted "
+                                "at their own switches, then record again.",
+                          juce::dontSendNotification);
+
     emptyWarning.setVisible (everythingWasEmpty);
 
     mirrorValue.setVisible (mirrorFolder.isNotEmpty());

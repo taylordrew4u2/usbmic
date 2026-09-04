@@ -1050,6 +1050,12 @@ void Application::toggleRecording()
     }
     else
     {
+        // Before stopRecording(), which moves the pipeline out and destroys it.
+        // Read after, this is always -1 and no take could ever be reported as
+        // silent -- the measurement has to be taken while the thing that made
+        // it still exists.
+        const float takePeak = capture != nullptr ? capture->getPeakWritten() : -1.0f;
+
         // §6.1: stop the writer first so every buffered frame reaches the files
         // before the engine reports the take finished.
         if (capture != nullptr)
@@ -1102,7 +1108,12 @@ void Application::toggleRecording()
             for (const auto& f : listSessionFiles (lastSessionFolder))
                 written.push_back ({ f.name.toStdString(), f.sizeBytes });
 
-            lastTakeHeldNoAudio = takeHoldsNoAudio (written);
+            lastTakeVerdict = judgeTakeAudio (written, takePeak);
+
+            // Both failures mean the same thing to anyone deciding whether to
+            // record it again: there is no audio in that folder.
+            lastTakeHeldNoAudio = lastTakeVerdict == TakeAudioVerdict::NothingWritten
+                               || lastTakeVerdict == TakeAudioVerdict::OnlySilence;
         }
 
         // §6.2: the take is on disk and the UI has not shown where yet. Only
@@ -1250,6 +1261,7 @@ bool Application::consumeSavedTake (SavedTake& out)
     out.folder = lastSessionFolder;
     out.mirrorFolder = lastMirrorFolder;
     out.files = listSessionFiles (lastSessionFolder);
+    out.verdict = lastTakeVerdict;
 
     return true;
 }
@@ -2048,6 +2060,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // §0.1: never claim audio that is not there. A take whose files hold
         // nothing but headers is where the take went, not what it saved, and
         // saying "Saved" would be the one word the user needed to be false.
+        // A stream that ran for the whole take and carried nothing is a
+        // different fault from one that never arrived, and sending someone to
+        // check the drive when the problem is a muted microphone wastes the
+        // one moment they are still standing next to the rig.
+        if (lastTakeVerdict == TakeAudioVerdict::OnlySilence)
+            return "Recording stopped, but the files in " + lastSessionFolder
+                   + " are silent -- the microphones were connected but sent no sound.";
+
         if (lastTakeHeldNoAudio)
             return "Recording stopped, but the files in " + lastSessionFolder
                    + " are empty -- no audio reached the drive.";

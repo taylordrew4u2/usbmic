@@ -85,6 +85,11 @@ public:
 
     uint64_t getFramesDropped() const noexcept { return pipeline != nullptr ? pipeline->getFramesDropped() : 0; }
 
+    /// The loudest sample the current take has written, or -1 when there is no
+    /// pipeline to have measured one. Negative means "not measured" to
+    /// judgeTakeAudio, which never reports silence on a reading nobody took.
+    float getPeakWritten() const noexcept { return pipeline != nullptr ? pipeline->getPeakWritten() : -1.0f; }
+
     /// §6.5: shed the stems and keep the mix when the ring is nearly full and
     /// there is no mirror to fall back on.
     void fallBackToMixOnly() noexcept { if (pipeline != nullptr) pipeline->fallBackToMixOnly(); }

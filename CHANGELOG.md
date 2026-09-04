@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.0.1 — 2026-09-04
+
+### Fixed -- a take that records silence is no longer called saved
+
+Reported from a real Mac: the files came out with no sound in them, and the
+app said nothing about it.
+
+The rule that decides whether a take holds audio judged it by file size
+alone -- under a kilobyte per file meant nothing was written. That catches
+a card pulled before any audio landed, and misses the failure people
+actually hit. A device that is present and streaming digital silence -- a
+microphone muted at its own switch, a dead channel on an interface, a USB
+board whose audio never carried signal -- fills every stem for the full
+length of the take. The files are megabytes. The rule weighed the bytes,
+found plenty, and the app said "Saved." over a folder holding nothing.
+
+That is §0.1's one unacceptable failure: audio lost without a word.
+
+The writer now tracks the loudest sample it writes, and the verdict uses
+that alongside the file sizes. Three outcomes, and the two failures are
+told apart because they send you to look at different things:
+
+- nothing arrived -- "the files are empty, no audio reached the drive"
+- a stream ran and was flat -- "the files are silent, the microphones were
+  connected but sent no sound"
+- a real take -- "Saved to ..."
+
+The silence bar is -90 dBFS. A 24-bit LSB sits near -138 dBFS and preamp
+noise in a quiet room is far above -90, so a whisper is still a recording;
+only a genuinely dead stream falls under it.
+
+The saved-take panel is now told the verdict rather than working it out.
+It can see file sizes and nothing else, so from there a silent take and a
+good one are the same list of megabyte files -- and a panel reaching its
+own verdict is how it once came to warn that files were empty while the
+status line beside it said "Saved to ...".
+
 ## v1.0.0 — 2026-09-03
 
 The first stable release. No code changes from v0.9.4: this marks the point
