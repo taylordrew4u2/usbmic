@@ -3,6 +3,11 @@
 
 namespace mma {
 
+int takeChannelsForDevice (int inputChannelCount) noexcept
+{
+    return inputChannelCount > 2 ? inputChannelCount : 1;
+}
+
 bool DeviceManager::addDevice (MicDeviceState device)
 {
     // Reject a device we already know. This used to append unconditionally, so
@@ -86,6 +91,20 @@ bool DeviceManager::syncToEnumeration (const std::vector<MicDeviceState>& seen)
         }
 
         it->isBuiltIn = s.isBuiltIn;
+
+        // How many inputs the device presents is the OS's to say, and it has to
+        // be refreshed here like any other fact the OS owns.
+        //
+        // Leaving it out meant an interface already in the list kept whatever
+        // count it was first added with -- the default of 1 for any device that
+        // arrived through addDevice() or was restored at startup -- so the app
+        // went on believing a four-input interface had one microphone on it, and
+        // the fix for exactly that bug never fired.
+        if (it->inputChannelCount != s.inputChannelCount)
+        {
+            it->inputChannelCount = s.inputChannelCount;
+            changed = true;
+        }
     }
 
     if (changed)

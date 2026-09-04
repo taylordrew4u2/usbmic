@@ -6,6 +6,22 @@
 
 namespace mma {
 
+/// How many take channels a device presenting `inputChannelCount` inputs
+/// contributes, and therefore how many strips and files it produces.
+///
+/// This lives in Core, and is a free function rather than a line inside the
+/// app's channel builder, because that builder needs JUCE and so cannot be
+/// reached by these tests at all. The rule went in untested once already and
+/// was defeated by a device whose input count was never refreshed -- the app
+/// believed a four-microphone interface had one microphone on it, and nothing
+/// anywhere could have caught it.
+///
+/// One input is one microphone. Two stays one: that is §2.1's case, a USB mic
+/// presenting the same voice on both sides or with one side silent, and the
+/// capture path's analyzer decides between them. Above two, a device is an
+/// interface and every input is somebody's microphone.
+int takeChannelsForDevice (int inputChannelCount) noexcept;
+
 struct MicDeviceState
 {
     PortIdentity identity;
