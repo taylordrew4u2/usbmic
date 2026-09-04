@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.4.1 -- 2026-09-04
+
+### Fixed -- a microphone nobody is recording no longer decides the sample rate
+
+v1.4.0 was supposed to keep the recording on whatever rate the interface was
+already using. On the rig that reported it, nothing changed: the app still
+demanded 48 kHz from hardware locked at 44.1, and still would not open.
+
+The vote was taken over every microphone the OS lists, not the ones being
+recorded. A MacBook's built-in microphone sitting at 48 kHz -- switched off, no
+strip on screen, no file in the take -- outvoted the interface the recording
+actually runs on. The rig "disagreed", so v1.4.0's rule fell through to
+highest-common, which is exactly where it came in.
+
+A microphone nobody is recording cannot resample, cannot drift, and cannot be
+harmed by the choice. Letting it constrain the rate only ever costs the
+microphones that are. Only included devices vote now.
+
+### Fixed -- the rate a device is running at counts as a rate it supports
+
+An interface advertising only 48 kHz while sitting at 44.1 is doing 44.1. Some
+report only the rate they would prefer, and taking that list as the whole truth
+ruled out the one rate guaranteed to work -- the one already running.
+
+### The rule now lives where the tests can reach it
+
+`SampleRateNegotiator::votingDevices()` decides who votes, in Core, tested. It
+was app code, which needs JUCE and no headless test can reach -- which is how
+v1.4.0 shipped a fix that could not fire on the hardware that reported the bug.
+The same mistake as v1.1.0.
+
 ## v1.4.0 -- 2026-09-04
 
 ### Fixed -- the app stays on the rate your interface is already using
