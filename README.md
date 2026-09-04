@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-384%20passing-brightgreen" alt="384 tests passing">
+  <img src="https://img.shields.io/badge/tests-394%20passing-brightgreen" alt="394 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This found five user-facing defects that were otherwise unreachable from any available machine. |
 
-384 unit tests, two long-running capture harnesses and two platform simulators
+394 unit tests, two long-running capture harnesses and two platform simulators
 run on macOS, Windows and Linux on every commit.
 
 ### Honest limits
@@ -64,6 +64,36 @@ someone to discover.
 > device layers, but have still never run against real hardware, because no
 > build environment here has an audio device. That distinction is stated
 > precisely below rather than glossed.
+
+## How your rig becomes tracks
+
+<p align="center">
+  <img src="docs/images/rig-to-tracks.svg" alt="Three rows showing how devices become tracks. A one-input Blue Yeti becomes one take channel and one file. A four-input Scarlett 18i8 becomes four take channels and four files. A livestream mixer with two inputs that is also the headphone output becomes two take channels, with the monitor mix flowing back out over the same single stream." width="880">
+</p>
+
+The rule that matters, because getting it wrong is silent: **one device is not
+one microphone.** An interface with four people plugged into it is a single
+device presenting four inputs, and each of those is somebody who expects their
+own track. Taking one channel per device — which this did — discarded everyone
+but the first, and if the discarded input carried the microphone that mattered,
+the take came back silent from a rig that was working perfectly.
+
+A two-input device is the ambiguous case: it might be a stereo USB microphone
+putting the same voice on both sides, or two people on a small interface. §0.1
+settles which way to guess. Keeping both sides of a duplicated mono mic costs a
+redundant file; collapsing two microphones into one loses somebody entirely,
+with nothing said. Those are not comparable, so both sides are kept until §2.1's
+analyzer has actually listened and found them identical — a verdict §2.4
+remembers per port, so a stereo mic still collapses correctly from its second
+take onward.
+
+The third row is the case that is easy to get wrong twice. A small livestream
+mixer is *one* device in both directions: it carries the microphones in and the
+monitor mix back out. Opening it for output, claiming it exclusively, and then
+opening it again for input asks macOS for a second claim on a device this
+process has just taken — and the refusal arrives as "couldn't be opened for
+recording" against a microphone that is plugged in and working. So it is opened
+once, and that single stream carries both halves of the cycle.
 
 ## What it looks like
 
@@ -211,8 +241,8 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v1.2.2**. The recording
-engine is mature — it is covered by 384
+This is **v1.3.0**. The recording
+engine is mature — it is covered by 394
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
