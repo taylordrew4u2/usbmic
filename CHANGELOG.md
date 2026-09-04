@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.0.2 — 2026-09-04
+
+### Fixed -- a take could record silence while the meters showed signal
+
+Reported from a real Mac: the on-screen meters moved while the user
+talked, and the files came out silent.
+
+The capture path hands the writer whatever channels the device delivered,
+clamped to the take's channel list. The writer then required that count to
+match the take's exactly, and rejected the whole block when it did not --
+every channel of it, including the ones that had arrived intact. If a
+device simply reports fewer inputs than the take was built for, that is not
+an occasional dropped block: it is the entire recording.
+
+It was invisible on screen because metering happens after, reads the same
+buffer, and has no equivalent check. So the app displayed live level for
+audio it was dropping on the floor, which is §0.1's unacceptable failure at
+its largest -- everything lost, nothing said.
+
+The earlier audit found this code and fixed the wrong half of it. It saw
+that a rejected block left framesDropped at zero and made it count instead,
+which made the loss visible without stopping it. The remedy was wrong: §6.5
+already settles what to do when a channel is not there, for the case of a
+mic unplugged mid-take -- the file layout holds and that channel writes
+silence. A short block is the same problem and now gets the same answer, so
+every channel that arrives is written.
+
+A block carrying MORE channels than the take is the genuinely lossy case,
+since those samples have nowhere to go. Those are still counted, and the
+channels that fit are still written rather than the whole block going in
+the bin.
+
 ## v1.0.1 — 2026-09-04
 
 ### Fixed -- a take that records silence is no longer called saved

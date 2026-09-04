@@ -124,17 +124,29 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
     if (! running.load (std::memory_order_acquire) || numSamples <= 0)
         return false;
 
-    if (numChannels_ != numChannels)
-    {
-        // A block that does not match the take's channel count cannot be
-        // written -- the file layout is fixed for the take (§6.5) and there is
-        // no honest way to widen or narrow a frame. But it is still audio that
-        // arrived and was not recorded, so §0.1 requires it be counted. This
-        // used to return false and count nothing, which made the loss invisible
-        // in exactly the place the user is told to look.
+    // A block whose channel count does not match the take's is still written.
+    //
+    // This used to reject the whole block. The file layout is fixed for the
+    // take (§6.5) and cannot widen or narrow, which is true -- but throwing the
+    // block away does not preserve the layout, it just loses every channel that
+    // DID arrive, for as long as the mismatch lasts. When a device delivers
+    // fewer channels than the take expects, that is the entire recording.
+    //
+    // It presented on a real Mac as silent files while the meters moved: the
+    // metering loop reads the same buffer a moment later and has no equivalent
+    // check, so the app showed live level for audio it was dropping. §0.1 makes
+    // unreported loss the one unacceptable failure, and this was the largest
+    // possible version of it.
+    //
+    // §6.5 already settles what to do, for the case where a mic is unplugged
+    // mid-take: the layout holds and the absent channel writes silence. A short
+    // block is the same problem and gets the same answer. A block WIDER than
+    // the take is different -- those samples have nowhere to go, so they are
+    // genuinely lost and are counted.
+    const int usableChannels = std::min (numChannels_, numChannels);
+
+    if (numChannels_ > numChannels)
         framesDropped.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
-        return false;
-    }
 
     // Interleave straight into the ring. Writing per-frame keeps the audio
     // thread free of any temporary buffer, which §11 would not allow it to
@@ -180,8 +192,10 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
             for (int ch = 0; ch < numChannels; ++ch)
             {
                 // §6.5: an unplugged mic writes silence into its existing channel
-                // rather than the file layout changing mid-recording.
-                const bool live = channelLive[static_cast<size_t> (ch)].load (std::memory_order_relaxed);
+                // rather than the file layout changing mid-recording. A channel
+                // the block does not carry at all is the same case.
+                const bool live = ch < usableChannels
+                               && channelLive[static_cast<size_t> (ch)].load (std::memory_order_relaxed);
                 const float sample = (live && channelData[ch] != nullptr)
                                          ? channelData[ch][frameOffset + f]
                                          : 0.0f;
