@@ -107,15 +107,57 @@ TEST_CASE (WritePipeline_AcceptsBlocksAndCountsFrames)
     p.stop();
 }
 
-TEST_CASE (WritePipeline_RejectsAChannelCountMismatch)
+TEST_CASE (WritePipeline_AShortBlockIsWrittenRatherThanThrownAway)
 {
+    // The device delivered fewer channels than the take is recording. This
+    // used to reject the whole block, and that lost the channels that DID
+    // arrive -- every one of them, for the whole take.
+    //
+    // On a real Mac that presented as silent files while the on-screen meters
+    // moved: metering reads the same buffer a moment later and has no such
+    // check, so the app showed live level for audio it was dropping on the
+    // floor. §0.1 calls unreported loss the one unacceptable failure, and
+    // discarding every channel because one was missing is the largest possible
+    // version of it.
+    //
+    // §6.5 already says what to do, for the case where a mic is unplugged
+    // mid-take: the file layout is fixed and the missing channel writes
+    // silence. A short block is the same shape of problem and gets the same
+    // answer.
     WritePipeline p;
     REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
 
     std::vector<float> a (64, 0.1f);
     const float* chans[] = { a.data() };
-    // A changing channel count mid-take would corrupt the file layout (§6.5).
-    REQUIRE_FALSE (p.pushBlock (chans, 1, 64));
+
+    REQUIRE (p.pushBlock (chans, 1, 64));
+    REQUIRE (p.getFramesAccepted() == 64);
+
+    // Nothing was lost: every channel that arrived was written. The missing
+    // one had no audio to lose.
+    REQUIRE (p.getFramesDropped() == 0);
+
+    // And the channel that did arrive is what makes the take non-silent.
+    REQUIRE (p.getPeakWritten() > 0.0f);
+
+    p.stop();
+}
+
+TEST_CASE (WritePipeline_ABlockWiderThanTheTakeCountsTheChannelsItCannotHold)
+{
+    // The other direction: more channels arrived than the take has files for.
+    // The file layout cannot widen mid-take, so those samples genuinely are
+    // lost and §0.1 requires them counted -- but the channels that DO fit are
+    // still written rather than the whole block going in the bin.
+    WritePipeline p;
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> a (64, 0.1f), b (64, 0.2f), c (64, 0.3f);
+    const float* chans[] = { a.data(), b.data(), c.data() };
+
+    REQUIRE (p.pushBlock (chans, 3, 64));
+    REQUIRE (p.getFramesAccepted() == 64);
+    REQUIRE (p.getFramesDropped() == 64);   // the third channel had nowhere to go
 
     p.stop();
 }
@@ -596,15 +638,25 @@ TEST_CASE (WritePipeline_AFreshTakeIsNotStillDegraded)
     std::remove ((dir + "/MIX.wav").c_str());
 }
 
-TEST_CASE (WritePipeline_AMismatchedBlockIsCountedAsLostNotSilentlyDiscarded)
+TEST_CASE (WritePipeline_AShortBlockKeepsTheChannelsThatArrived)
 {
-    // §0.1 makes unreported loss the one unacceptable failure. A block whose
-    // channel count does not match the take cannot be written -- the file
-    // layout is fixed for the take (§6.5) and there is no honest way to widen
-    // or narrow a frame -- but it is still audio that arrived and was not
-    // recorded, and it used to leave framesDropped at zero.
+    // This test used to assert the opposite, and the assertion was the bug.
     //
-    // Zero dropped frames is what the app shows the user as "nothing was lost".
+    // The earlier audit found that a mismatched block was discarded without
+    // being counted, and fixed the counting: §0.1 makes unreported loss the one
+    // unacceptable failure, so the block was still dropped but framesDropped
+    // rose. That made the loss visible. It did not stop it.
+    //
+    // The remedy was wrong. When a capture path hands over fewer channels than
+    // it opened with, dropping the block loses every channel that DID arrive,
+    // for as long as the mismatch lasts -- which, if the device simply reports
+    // fewer inputs than the take was built for, is the whole recording. On a
+    // real Mac that presented as silent files with the meters moving, because
+    // metering reads the same buffer afterwards and has no matching check.
+    //
+    // §6.5 already had the answer for a mic that goes away mid-take: the file
+    // layout holds and the missing channel writes silence. A short block is the
+    // same problem, so it gets the same answer, and nothing is lost.
     const auto dir = tempDir();
     std::vector<WriteChannelSpec> channels = { { "mismatch-a", 0.0f }, { "mismatch-b", 0.0f } };
 
@@ -621,8 +673,12 @@ TEST_CASE (WritePipeline_AMismatchedBlockIsCountedAsLostNotSilentlyDiscarded)
     // fewer channels than it opened with looks like from here.
     const float* one[1] = { a.data() };
 
-    REQUIRE_FALSE (p.pushBlock (one, 1, 128));
-    REQUIRE (p.getFramesDropped() == 128);
+    REQUIRE (p.pushBlock (one, 1, 128));
+
+    // Written, not binned -- and nothing counted as lost, because the channel
+    // that was missing had no audio to lose.
+    REQUIRE (p.getFramesAccepted() == 256);
+    REQUIRE (p.getFramesDropped() == 0);
 
     p.stop();
 
