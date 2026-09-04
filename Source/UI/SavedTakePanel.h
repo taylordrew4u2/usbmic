@@ -1,5 +1,6 @@
 #pragma once
 #include "ModalCard.h"
+#include "../Core/TakeCompleteness.h"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -24,9 +25,14 @@ public:
         int64_t sizeBytes = 0;
     };
 
+    /// `verdict` comes from the engine. The panel deliberately does not work
+    /// it out: it can see file sizes and nothing else, and a take that ran for
+    /// its full length carrying silence looks identical to a good one from
+    /// here. Only the writer knows whether any signal actually went past.
     void setTake (const juce::String& folder,
                   const juce::String& mirrorFolder,
-                  const std::vector<FileRow>& files);
+                  const std::vector<FileRow>& files,
+                  TakeAudioVerdict verdict);
 
     /// §6.5: the take was stopped by the drive going away rather than by the
     /// user. Shown loudly above the file list, and the heading stops claiming

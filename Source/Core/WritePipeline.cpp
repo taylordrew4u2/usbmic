@@ -112,6 +112,7 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
     framesAccepted.store (0, std::memory_order_relaxed);
     framesDropped.store (0, std::memory_order_relaxed);
+    peakWritten.store (0.0f, std::memory_order_relaxed);
 
     running.store (true, std::memory_order_release);
     writerThread = std::thread ([this] { runWriterThread(); });
@@ -163,6 +164,17 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
                                           numSamples - frameOffset);
         float* destination = interleaveScratch.data();
 
+        // The loudest sample this take has written, tracked as the samples go
+        // past rather than by reading the files back afterwards. A take whose
+        // stems are full length and completely flat is indistinguishable from a
+        // good one by size alone, and that is what let the app hand over
+        // silence saying "Saved." -- see judgeTakeAudio.
+        //
+        // A local float through the loop, one relaxed atomic store per chunk:
+        // §11 allows no locking here, and this costs a compare per sample on a
+        // value already in a register.
+        float chunkPeak = 0.0f;
+
         for (int f = 0; f < chunkFrames; ++f)
         {
             for (int ch = 0; ch < numChannels; ++ch)
@@ -170,11 +182,23 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
                 // §6.5: an unplugged mic writes silence into its existing channel
                 // rather than the file layout changing mid-recording.
                 const bool live = channelLive[static_cast<size_t> (ch)].load (std::memory_order_relaxed);
-                *destination++ = (live && channelData[ch] != nullptr)
-                                     ? channelData[ch][frameOffset + f]
-                                     : 0.0f;
+                const float sample = (live && channelData[ch] != nullptr)
+                                         ? channelData[ch][frameOffset + f]
+                                         : 0.0f;
+
+                *destination++ = sample;
+
+                const float magnitude = sample < 0.0f ? -sample : sample;
+
+                if (magnitude > chunkPeak)
+                    chunkPeak = magnitude;
             }
         }
+
+        // Monotonic max. This is the only producer, so a plain load/store pair
+        // cannot lose an update to a racing writer.
+        if (chunkPeak > peakWritten.load (std::memory_order_relaxed))
+            peakWritten.store (chunkPeak, std::memory_order_relaxed);
 
         ring.write (interleaveScratch.data(),
                     static_cast<size_t> (chunkFrames) * static_cast<size_t> (numChannels));

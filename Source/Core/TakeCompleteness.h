@@ -26,4 +26,33 @@ struct TakeFile
 /// status line is the one a user reads while walking away.
 bool takeHoldsNoAudio (const std::vector<TakeFile>& files);
 
+/// What a finished take actually holds.
+enum class TakeAudioVerdict
+{
+    NotJudged,      ///< No audio files: nothing this rule was written for.
+    Recorded,       ///< Signal reached the files.
+    NothingWritten, ///< Headers only -- the stream never arrived.
+    OnlySilence     ///< Full-length files, every sample of them flat.
+};
+
+/// The verdict on a take, from the files on disk AND the loudest sample that
+/// actually reached the writer.
+///
+/// File size alone cannot see the failure that matters most here. A device
+/// that is present and streaming digital silence -- a mic muted at its own
+/// switch, a dead channel on an interface, a USB board whose audio never
+/// carried signal -- produces stems that are megabytes long and completely
+/// flat. takeHoldsNoAudio weighs bytes, so it calls that a recording, and the
+/// app says "Saved." over a folder holding nothing. §0.1 names unreported loss
+/// as the one unacceptable failure, and that is exactly what it is.
+///
+/// `peakAbs` is the largest absolute sample value the take wrote, or negative
+/// when nobody measured one -- in which case silence is never reported, because
+/// a measurement that was not taken is not evidence.
+///
+/// The silence bar is -90 dBFS. Real microphone paths carry preamp noise far
+/// above that even in a quiet room, so a whisper still counts as a recording;
+/// only a genuinely dead stream falls under it.
+TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files, float peakAbs);
+
 } // namespace mma
