@@ -131,3 +131,47 @@ TEST_CASE (SampleRate_ABackendThatCannotReportTheCurrentRateBehavesAsBefore)
 
     REQUIRE (SampleRateNegotiator::negotiate ({ d }).chosenRate == 48000);
 }
+
+TEST_CASE (SampleRate_AMicrophoneNobodyIsRecordingGetsNoVote)
+{
+    // The reported rig: a PUPGSIS mixer at 44.1 kHz that the take uses, and a
+    // MacBook built-in microphone at 48 kHz that it does not. Letting the
+    // built-in vote made the rig "disagree", which fell back to highest-common
+    // 48 kHz -- on hardware locked at 44.1, so the take would not open at all.
+    const std::vector<EnumeratedDeviceRates> enumerated {
+        { "mixer",    { 44100, 48000 }, 44100 },
+        { "built-in", { 44100, 48000 }, 48000 },
+    };
+
+    const auto voting = SampleRateNegotiator::votingDevices ({ "mixer" }, enumerated);
+
+    REQUIRE (voting.size() == 1);
+    REQUIRE (SampleRateNegotiator::negotiate (voting).chosenRate == 44100);
+
+    // And with the built-in included, something must move whatever is picked,
+    // so the old rule stands.
+    const auto both = SampleRateNegotiator::votingDevices ({ "mixer", "built-in" }, enumerated);
+
+    REQUIRE (both.size() == 2);
+    REQUIRE (SampleRateNegotiator::negotiate (both).chosenRate == 48000);
+}
+
+TEST_CASE (SampleRate_AnUnknownDeviceKeyIsSkippedRatherThanGuessed)
+{
+    const std::vector<EnumeratedDeviceRates> enumerated { { "mixer", { 48000 }, 48000 } };
+
+    REQUIRE (SampleRateNegotiator::votingDevices ({ "gone" }, enumerated).empty());
+}
+
+TEST_CASE (SampleRate_TheRateADeviceIsRunningAtCountsAsSupported)
+{
+    // An interface that advertises only 48 kHz while sitting at 44.1 is doing
+    // 44.1 -- it is running at it. Taking the advertised list as the whole
+    // truth ruled out the one rate guaranteed to work.
+    DeviceRateCapability d;
+    d.deviceIndex = 0;
+    d.supportedRates = { 48000 };
+    d.currentRate = 44100;
+
+    REQUIRE (SampleRateNegotiator::negotiate ({ d }).chosenRate == 44100);
+}
