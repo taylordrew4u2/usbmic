@@ -90,6 +90,17 @@ public:
     /// judgeTakeAudio, which never reports silence on a reading nobody took.
     float getPeakWritten() const noexcept { return pipeline != nullptr ? pipeline->getPeakWritten() : -1.0f; }
 
+    /// The loudest sample that reached this coordinator, whether or not the
+    /// writer accepted it. Paired with getPeakWritten() it separates "no audio
+    /// arrived" from "audio arrived and this app dropped it".
+    float getPeakArrived() const noexcept { return peakArrived.load (std::memory_order_relaxed); }
+
+    /// Frames the writer could not take. Zero on a healthy take.
+    uint64_t getFramesAcceptedCount() const noexcept
+    { return pipeline != nullptr ? pipeline->getFramesAccepted() : 0; }
+
+    void resetArrivalPeak() noexcept { peakArrived.store (0.0f, std::memory_order_relaxed); }
+
     /// §6.5: shed the stems and keep the mix when the ring is nearly full and
     /// there is no mirror to fall back on.
     void fallBackToMixOnly() noexcept { if (pipeline != nullptr) pipeline->fallBackToMixOnly(); }
@@ -204,6 +215,9 @@ private:
     MonitorBus monitorBus;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
+
+    /// Loudest sample seen arriving, across the whole take.
+    std::atomic<float> peakArrived { 0.0f };
 
     /// §2.1 per device, for the ones that arrive with more than one channel.
     ///

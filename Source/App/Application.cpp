@@ -1055,6 +1055,7 @@ void Application::toggleRecording()
         // silent -- the measurement has to be taken while the thing that made
         // it still exists.
         const float takePeak = capture != nullptr ? capture->getPeakWritten() : -1.0f;
+        const float arrivedPeak = capture != nullptr ? capture->getPeakArrived() : -1.0f;
 
         // §6.1: stop the writer first so every buffered frame reaches the files
         // before the engine reports the take finished.
@@ -1108,12 +1109,13 @@ void Application::toggleRecording()
             for (const auto& f : listSessionFiles (lastSessionFolder))
                 written.push_back ({ f.name.toStdString(), f.sizeBytes });
 
-            lastTakeVerdict = judgeTakeAudio (written, takePeak);
+            lastTakeVerdict = judgeTakeAudio (written, takePeak, arrivedPeak);
 
             // Both failures mean the same thing to anyone deciding whether to
             // record it again: there is no audio in that folder.
             lastTakeHeldNoAudio = lastTakeVerdict == TakeAudioVerdict::NothingWritten
-                               || lastTakeVerdict == TakeAudioVerdict::OnlySilence;
+                               || lastTakeVerdict == TakeAudioVerdict::OnlySilence
+                               || lastTakeVerdict == TakeAudioVerdict::DroppedByApp;
         }
 
         // §6.2: the take is on disk and the UI has not shown where yet. Only
@@ -2064,6 +2066,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // different fault from one that never arrived, and sending someone to
         // check the drive when the problem is a muted microphone wastes the
         // one moment they are still standing next to the rig.
+        // Not the user's rig. Say so plainly rather than sending them to check
+        // hardware that was working the whole time.
+        if (lastTakeVerdict == TakeAudioVerdict::DroppedByApp)
+            return "Recording stopped, and the sound did not reach the files in "
+                   + lastSessionFolder
+                   + " -- your microphones were working. This is a fault in SobStage.";
+
         if (lastTakeVerdict == TakeAudioVerdict::OnlySilence)
             return "Recording stopped, but the files in " + lastSessionFolder
                    + " are silent -- the microphones were connected but sent no sound.";

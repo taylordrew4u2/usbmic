@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.0.3 — 2026-09-04
+
+### Added -- the macOS recording path is tested end to end
+
+sim_coreaudio proved the backend hands over the right samples. live_capture
+proved the coordinator and writer turn samples into files. Nothing joined
+them, and the join is where macOS actually lives -- so three things reached
+users untested:
+
+- live_capture's fixture microphones are mono, so the stereo path, which is
+  what a USB mixer or any stereo interface takes through §2.1's
+  channel-layout analysis, had never reached a file in any test.
+- every harness and every unit test recorded at 16 bits. The app ships 24.
+- the backend had only ever been asked for audio in isolation, never while
+  a take was running.
+
+Tools/sim_capture_mac closes all three: a stereo interleaved device, at 24
+bits, recorded through the real coordinator into real files, with the bytes
+checked rather than the file size. It runs in CI on every platform.
+
+### Added -- a silent take now says whose fault it is
+
+When a take comes back with no sound, the single most useful thing to know
+is whether any audio arrived. If none did, the rig is worth checking: a
+mute switch, a cable, the wrong input selected. If audio DID arrive and
+none of it reached the files, nothing about the rig explains it -- the
+samples were here and this program lost them.
+
+The app could not tell those apart, so it said "silent" for both, and the
+only available next step was to go and check hardware that may have been
+working perfectly the whole time.
+
+The capture path now records the loudest sample that ARRIVED, alongside the
+loudest the writer managed to WRITE. When audio arrived and nothing was
+written, the take is reported as a fault in SobStage, in those words,
+rather than as a silent microphone.
+
+This is the §0.1 rule taken one step further. Reporting that audio was lost
+is the requirement; saying which half of the system lost it is what makes
+the report worth reading.
+
 ## v1.0.2 — 2026-09-04
 
 ### Fixed -- a take could record silence while the meters showed signal

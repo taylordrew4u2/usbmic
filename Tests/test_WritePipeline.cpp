@@ -686,3 +686,48 @@ TEST_CASE (WritePipeline_AShortBlockKeepsTheChannelsThatArrived)
     std::remove ((dir + "/mismatch-b.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 }
+
+TEST_CASE (WritePipeline_TwentyFourBitIsTheDepthTheAppShipsAndMustCarrySignal)
+{
+    // Every other test in this file, and both capture harnesses, run at 16
+    // bits. The app records at 24. So the depth that actually ships had never
+    // been executed by anything -- the exact shape of gap that let five
+    // defects live in the platform backends until they were simulated.
+    //
+    // A wrong conversion or a header disagreeing with the data here produces
+    // full-length files that play as silence, which is indistinguishable from
+    // a dead microphone unless someone looks at the bytes.
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = { { "depth24", 0.0f } };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 24, "2026-09-04T00:00:00Z"));
+
+    std::vector<float> loud (512, 0.5f);
+    const float* chans[] = { loud.data() };
+
+    REQUIRE (p.pushBlock (chans, 1, 512));
+    REQUIRE (waitForDrain (p));
+    p.stop();
+
+    std::ifstream f (dir + "/depth24.wav", std::ios::binary);
+    REQUIRE (f.is_open());
+
+    // Three bytes per frame for one channel, so the data chunk is 512 * 3.
+    REQUIRE (readU32LE (f, kDataSizeOffset) == 512 * 3);
+
+    // And the samples are the value that went in, not zero. 0.5 * 8388607
+    // rounds to 4194304 = 0x400000, little-endian 00 00 40.
+    f.seekg (kAudioDataOffset);
+    unsigned char b[3] = { 0, 0, 0 };
+    f.read (reinterpret_cast<char*> (b), 3);
+
+    const int32_t sample = static_cast<int32_t> (b[0])
+                         | (static_cast<int32_t> (b[1]) << 8)
+                         | (static_cast<int32_t> (b[2]) << 16);
+
+    REQUIRE (sample == 4194304);
+
+    std::remove ((dir + "/depth24.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+}
