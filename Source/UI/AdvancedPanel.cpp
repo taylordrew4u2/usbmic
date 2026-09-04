@@ -12,7 +12,7 @@ void configureRow (juce::Label& label, juce::Label& value, const juce::String& t
 
 AdvancedPanel::AdvancedPanel()
 {
-    configureRow (sampleRateLabel, sampleRateValue, "Sample rate");
+    sampleRateLabel.setText ("Sample rate", juce::dontSendNotification);
     configureRow (bitDepthLabel, bitDepthValue, "Bit depth");
     configureRow (bufferSizeLabel, bufferSizeValue, "Buffer size");
     configureRow (latencyLabel, latencyValue, "Measured latency");
@@ -61,6 +61,17 @@ AdvancedPanel::AdvancedPanel()
     outputDeviceCombo.onChange = [this] {
         if (onOutputDeviceChanged)
             onOutputDeviceChanged (outputDeviceCombo.getText());
+    };
+
+    addAndMakeVisible (sampleRateCombo);
+    sampleRateCombo.onChange = [this] {
+        if (! onSampleRateChanged)
+            return;
+
+        // Item 1 is Automatic. The ids above it are the rate in Hz, so the
+        // selection carries its own meaning and no parallel table can drift.
+        const int id = sampleRateCombo.getSelectedId();
+        onSampleRateChanged (id <= 1 ? 0u : static_cast<uint32_t> (id));
     };
 
     trimViewport.setViewedComponent (&trimContainer, false);
@@ -190,6 +201,16 @@ AdvancedPanel::AdvancedPanel()
 AdvancedPanel::~AdvancedPanel() = default;
 
 namespace {
+/// A rate as a person says it: "44.1 kHz", not "44100".
+juce::String rateText (uint32_t rate)
+{
+    const double khz = rate / 1000.0;
+
+    return std::abs (khz - std::floor (khz)) < 0.01
+         ? juce::String (static_cast<int> (khz)) + " kHz"
+         : juce::String (khz, 1) + " kHz";
+}
+
 void fillCombo (juce::ComboBox& combo, const juce::StringArray& names, const juce::String& selected)
 {
     combo.clear (juce::dontSendNotification);
@@ -209,6 +230,44 @@ void fillCombo (juce::ComboBox& combo, const juce::StringArray& names, const juc
 void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce::String& selected)
 {
     fillCombo (outputDeviceCombo, names, selected);
+}
+
+void AdvancedPanel::setSampleRates (const std::vector<uint32_t>& rates, uint32_t current)
+{
+    // Rebuilt only when the offered set or the selection changes: this runs on
+    // the panel's refresh tick, and repopulating under the user's cursor would
+    // fight a menu they have open.
+    juce::String signature;
+    for (auto r : rates)
+        signature += juce::String (static_cast<int> (r)) + ",";
+    signature += "@" + juce::String (static_cast<int> (current));
+
+    if (signature == lastSampleRateSignature)
+        return;
+
+    lastSampleRateSignature = signature;
+    sampleRateCombo.clear (juce::dontSendNotification);
+
+    // "Automatic" first and selected by default, because staying on whatever
+    // the hardware is already doing is what works; the explicit rates are the
+    // escape hatch, not the ordinary path.
+    sampleRateCombo.addItem ("Automatic (" + rateText (current) + ")", 1);
+
+    for (auto r : rates)
+        sampleRateCombo.addItem (rateText (r), static_cast<int> (r));
+
+    sampleRateCombo.setSelectedId (1, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setSampleRateSelection (uint32_t chosen)
+{
+    if (sampleRateCombo.getNumItems() == 0)
+        return;
+
+    const int id = chosen == 0 ? 1 : static_cast<int> (chosen);
+
+    if (sampleRateCombo.getSelectedId() != id)
+        sampleRateCombo.setSelectedId (id, juce::dontSendNotification);
 }
 
 void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
@@ -463,7 +522,7 @@ void AdvancedPanel::resized()
     area.removeFromTop (16);
 
     section (formatSection);
-    row (sampleRateLabel, sampleRateValue);
+    row (sampleRateLabel, sampleRateCombo);
     row (bitDepthLabel, bitDepthValue);
     row (bufferSizeLabel, bufferSizeValue);
     row (latencyLabel, latencyValue);

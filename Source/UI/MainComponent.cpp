@@ -124,6 +124,10 @@ MainComponent::MainComponent (Application& app)
         application.setOutputDeviceByName (name);
     };
 
+    advancedPanel.onSampleRateChanged = [this] (uint32_t rate) {
+        application.setSampleRateOverride (rate);
+    };
+
     advancedPanel.onMirrorToggled = [this] (bool enabled) {
         application.setMirrorEnabled (enabled);
     };
@@ -701,7 +705,9 @@ void MainComponent::rebindMeters()
 
 void MainComponent::refreshAdvanced()
 {
-    advancedPanel.setSampleRate (application.getSampleRate());
+    advancedPanel.setSampleRates (application.getAvailableSampleRates(),
+                                  static_cast<uint32_t> (application.getSampleRate() + 0.5));
+    advancedPanel.setSampleRateSelection (application.getSampleRateOverride());
     advancedPanel.setBitDepth (application.getBitDepth());
     advancedPanel.setBufferSize (application.getCurrentBufferSize());
     advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
