@@ -29,6 +29,12 @@
 
 namespace {
 
+// Not M_PI: that is a POSIX extension rather than standard C++, and MSVC does
+// not define it from <cmath> without _USE_MATH_DEFINES. e2e_capture.cpp already
+// carries this same note, having broken the Windows build the same way -- and
+// this harness went and did it again, so here it is a third time.
+constexpr double kTwoPi = 6.283185307179586476925286766559;
+
 int failures = 0;
 
 void check (bool condition, const std::string& what)
@@ -62,7 +68,7 @@ std::vector<float> tone (int frames, double hz, double rate, float amplitude)
     std::vector<float> v (static_cast<size_t> (frames));
     for (int i = 0; i < frames; ++i)
         v[static_cast<size_t> (i)] =
-            amplitude * static_cast<float> (std::sin (2.0 * M_PI * hz * i / rate));
+            amplitude * static_cast<float> (std::sin (kTwoPi * hz * i / rate));
     return v;
 }
 
