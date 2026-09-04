@@ -276,6 +276,81 @@ int main()
     check (everyMicRecorded, "all four microphones reach their own file with signal");
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // ---------------------------------------------------------------------
+    // A TWO-input interface with two people plugged into it.
+    //
+    // The commonest small multi-mic rig there is, and the one the earlier fix
+    // did not cover: two inputs collapsed to one on the assumption that any
+    // two-channel device is a stereo USB mic. One of the two people was
+    // discarded, and if it was the person holding the microphone that mattered,
+    // the take came back silent.
+    // ---------------------------------------------------------------------
+    std::printf ("\nA two-input interface with two people on it\n");
+    fakeca::reset();
+
+    const auto pair = fakeca::addDevice (microphone ("2-in Interface", "uid-pair", 2,
+                                                     fakeca::BufferShape::interleaved));
+
+    mma::CoreAudioBackend backend3;
+    mma::CaptureCoordinator two (backend3, rate, block);
+
+    std::vector<mma::CaptureChannel> duo;
+    for (int i = 0; i < 2; ++i)
+    {
+        mma::CaptureChannel c;
+        c.deviceId = "uid-pair";
+        c.deviceChannel = i;
+        c.displayName = "Person " + std::to_string (i + 1);
+        c.fileName = "0" + std::to_string (i + 1) + "_Person-" + std::to_string (i + 1);
+        duo.push_back (c);
+    }
+
+    if (! two.startMonitoring (duo, {}))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", two.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    if (! two.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    std::vector<float> out2 (static_cast<size_t> (block) * 2, 0.0f);
+    float* outs2[] = { out2.data(), out2.data() + block };
+
+    // Only the SECOND person is speaking. Under the old rule §2.1 picked a
+    // side, and picking the quiet one produced exactly the reported symptom:
+    // a silent recording from a rig that was working.
+    for (int i = 0; i < blocks; ++i)
+    {
+        const std::vector<std::vector<float>> signal {
+            std::vector<float> (static_cast<size_t> (block), 0.0f),
+            tone (block, 440.0, rate, 0.5f),
+        };
+
+        fakeca::pumpInput (pair, signal);
+        two.processOutputBlock (outs2, 2, block);
+    }
+
+    two.stopRecording();
+    two.stopMonitoring();
+
+    uint32_t f1 = 0, f2 = 0;
+    const auto p1 = peakOf24BitWav (dir + "/01_Person-1.wav", f1);
+    const auto p2 = peakOf24BitWav (dir + "/02_Person-2.wav", f2);
+
+    std::printf ("  Person 1 (silent): %u frames, peak %d\n", f1, p1);
+    std::printf ("  Person 2 (talking): %u frames, peak %d\n", f2, p2);
+
+    check (f1 > 0, "the quiet person still gets a file, at full length");
+    check (p2 > 100000, "and the person actually talking is recorded");
+
+    std::remove ((dir + "/01_Person-1.wav").c_str());
+    std::remove ((dir + "/02_Person-2.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }

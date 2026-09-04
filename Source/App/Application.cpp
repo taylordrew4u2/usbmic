@@ -287,7 +287,14 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         // side silent, and the analyzer in the capture path decides between
         // them. Above two, a device is an interface and every input is its own
         // microphone.
-        const int inputs = takeChannelsForDevice (d.inputChannelCount);
+        // §2.4 remembers §2.1's verdict per port. Only a decision that was
+        // actually made collapses a two-input device; the default of "no
+        // decision yet" keeps both sides.
+        const bool knownDuplicateStereo = persisted.has_value()
+                                       && persisted->hasChannelLayoutDecision
+                                       && persisted->channelLayoutIsMono;
+
+        const int inputs = takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo);
 
         for (int input = 0; input < inputs; ++input)
         {

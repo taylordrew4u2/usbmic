@@ -3,9 +3,18 @@
 
 namespace mma {
 
-int takeChannelsForDevice (int inputChannelCount) noexcept
+int takeChannelsForDevice (int inputChannelCount, bool knownDuplicateStereo) noexcept
 {
-    return inputChannelCount > 2 ? inputChannelCount : 1;
+    if (inputChannelCount <= 1)
+        return 1;
+
+    // The one case where collapsing is right, and only once §2.1 has looked at
+    // the audio and said so. A guess is not evidence, and guessing wrong here
+    // costs a person.
+    if (inputChannelCount == 2 && knownDuplicateStereo)
+        return 1;
+
+    return inputChannelCount;
 }
 
 bool DeviceManager::addDevice (MicDeviceState device)

@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.2.0 — 2026-09-04
+
+### Fixed -- two microphones on a two-input interface are both recorded
+
+A two-input interface with two people plugged into it is the commonest
+small multi-mic rig there is, and this app collapsed it to a single track.
+
+Two channels were assumed to be a stereo USB microphone presenting the same
+voice on both sides, so §2.1 picked one side and discarded the other. One of
+the two people was thrown away without a word -- and if the discarded side
+was the one carrying the microphone that mattered, the whole take came back
+silent from a rig that was working perfectly.
+
+v1.1.0 addressed this for interfaces with more than two inputs and left
+two-input devices collapsing exactly as before, which is why it changed
+nothing for the rig that reported it.
+
+§0.1 settles which way to guess when the app cannot tell the two apart.
+Keeping both sides of a duplicated mono microphone costs a redundant file,
+which is untidy. Collapsing two microphones into one loses somebody's audio
+entirely, with nothing said. Those are not comparable, so both sides are now
+kept until §2.1's analyzer has actually examined the audio and decided they
+carry the same source -- a verdict §2.4 already remembers per port, so a
+stereo USB mic still collapses correctly from its second take onward.
+
+Covered in Tools/sim_capture_mac by the failure as reported: a two-input
+interface where only the second person is speaking, checked to confirm both
+files exist at full length and the talking one carries signal.
+
 ## v1.1.1 — 2026-09-04
 
 ### Fixed -- the interface fix in v1.1.0 never actually took effect

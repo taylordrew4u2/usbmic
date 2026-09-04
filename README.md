@@ -211,7 +211,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v1.1.1**. The recording
+This is **v1.2.0**. The recording
 engine is mature — it is covered by 384
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how

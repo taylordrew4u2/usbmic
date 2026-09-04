@@ -520,9 +520,26 @@ TEST_CASE (DeviceManager_AnInterfaceContributesOneChannelPerInput)
     // Above two, the device is an interface and every input is somebody's
     // microphone, each of whom expects their own track.
     REQUIRE (takeChannelsForDevice (1) == 1);
-    REQUIRE (takeChannelsForDevice (2) == 1);
     REQUIRE (takeChannelsForDevice (4) == 4);
     REQUIRE (takeChannelsForDevice (8) == 8);
+
+    // Two inputs are two microphones until proven otherwise. A two-input
+    // interface with two people plugged into it is the commonest small
+    // multi-mic rig there is, and this used to collapse it to one, throwing a
+    // person away on the assumption that any two-channel device is a stereo
+    // USB mic.
+    REQUIRE (takeChannelsForDevice (2) == 2);
+
+    // Collapsed only once §2.1 has looked at the audio and said the two sides
+    // carry the same source -- §2.4 remembers that per port.
+    REQUIRE (takeChannelsForDevice (2, true) == 1);
+
+    // A decision nobody made is not evidence.
+    REQUIRE (takeChannelsForDevice (2, false) == 2);
+
+    // The verdict only ever collapses a stereo pair. It cannot cut an
+    // interface down, whatever is remembered about it.
+    REQUIRE (takeChannelsForDevice (4, true) == 4);
 
     // A device reporting nothing usable is still one microphone, never zero:
     // zero channels is a take with no files in it.
