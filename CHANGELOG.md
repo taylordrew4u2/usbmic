@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.2.1 -- 2026-09-04
+
+### Fixed -- the screen agreed with the files about how many microphones there are
+
+v1.2.0 made a two-input interface record two tracks. It did not make the app
+*look* like it had. Everything the user sees before pressing record was still
+counted per device, while the recording itself was counted per input, and the
+two answers disagreed:
+
+- The main screen showed **one** meter strip for a two-input interface, and
+  only grew to two at the moment recording started. Before that, the app
+  looked exactly like one that could not see the second microphone -- which is
+  how it was reported.
+- The Settings list showed one row for the interface with nothing to say it
+  carried two microphones, so the row read as the app refusing the second mic.
+- §6.4's remaining-time figure was computed for the device count, so it
+  promised twice the recording time a two-input interface would actually fit,
+  and four times on a four-input one. The disk cannot keep that promise.
+
+### Fixed -- an interface's microphones are told apart on screen, not just on disk
+
+Asked for the name of a channel, the app answered per device. On a four-input
+interface that gave four identically-named strips over four correctly-named
+files: the meters were right, the files were right, and there was no way to
+tell which meter belonged to which person.
+
+### How this is prevented from coming back
+
+The rule was written down twice -- once in the capture builder, per input, and
+once in the screen's accessors, per device -- and the copies drifted. There is
+now one description of what a rig records, `planChannels()` in Core, and every
+caller resolves through it. It is Core rather than app code for the reason
+`takeChannelsForDevice` was moved there: the app's builder needs JUCE and the
+headless tests cannot reach it, so a rule that lives only there is a rule
+nothing checks.
+
 ## v1.2.0 — 2026-09-04
 
 ### Fixed -- two microphones on a two-input interface are both recorded
