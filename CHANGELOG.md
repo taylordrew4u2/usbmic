@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.2.2 -- 2026-09-04
+
+### Fixed -- when a microphone won't open, the app says why
+
+"PUPGSIS-T12S 1 couldn't be opened for recording." was the whole message, and
+it named a microphone rather than a cause. Four different faults produced that
+one sentence, and they have four different fixes:
+
+- the interface is running at a sample rate the recording isn't using
+- macOS has not granted SobStage microphone access
+- another app is holding the interface
+- the microphone was unplugged between being listed and being opened
+
+The backend knew which of those it was at the moment it failed and threw the
+answer away. §0.1 is about audio, but the principle is the same: the app knew
+and said nothing, and the person was left to guess. The monitor-output path had
+always reported its cause; the microphone path now does too, naming the rates
+involved where a rate is the problem, and where to change them.
+
+### Fixed -- a reason that doesn't fit on one line is no longer clipped
+
+The problem line was a fixed 20px band, so a message long enough to explain
+anything was cut off after a few words -- which left exactly the dead end the
+message was written to end. It now grows with its text, capped at four lines so
+a runaway message can never push the record button off the bottom of the
+window, and `layout_probe` checks the screen still fits.
+
 ## v1.2.1 -- 2026-09-04
 
 ### Fixed -- the screen agreed with the files about how many microphones there are

@@ -44,6 +44,7 @@ public:
     std::string exclusiveReason;
     bool failOutputOpen = false;
     bool failInputOpen = false;
+    std::string inputOpenError;
 
     int inputStreamsOpened = 0;
     int outputStreamsOpened = 0;
@@ -82,6 +83,8 @@ public:
         captured = std::move (cb);
         return true;
     }
+
+    std::string getLastOpenError() const override { return inputOpenError; }
 
     void closeAllStreams() override { ++closeAllCalls; }
 };
@@ -132,6 +135,29 @@ TEST_CASE (CaptureCoordinator_ClosesStreamsWhenAnInputFailsToOpen)
     // A half-open set of streams would leave the device hogged.
     REQUIRE (backend.closeAllCalls >= 1);
     REQUIRE_FALSE (c.getMonitorProblem().empty());
+}
+
+TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
+{
+    // §0.1: the backend knows the cause and the coordinator used to discard it,
+    // leaving the user to guess between a dead cable, a sample-rate mismatch, a
+    // missing macOS permission and another app holding the interface. Those
+    // have four different fixes and one message.
+    FakeBackend backend;
+    backend.failInputOpen = true;
+    backend.inputOpenError = "This interface is running at 48 kHz and won't change to the 44.1 kHz "
+                             "this recording uses.";
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    REQUIRE_FALSE (c.startMonitoring (twoMics(), "out-device"));
+
+    const auto problem = c.getMonitorProblem();
+
+    // Still names the microphone, so the user knows which one.
+    REQUIRE (problem.find ("Kitchen") != std::string::npos);
+    // And now says what to do about it.
+    REQUIRE (problem.find ("48 kHz") != std::string::npos);
+    REQUIRE (problem.find ("44.1 kHz") != std::string::npos);
 }
 
 TEST_CASE (CaptureCoordinator_ProducesTheMonitorMixFromEveryMic)

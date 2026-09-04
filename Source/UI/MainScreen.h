@@ -147,6 +147,10 @@ public:
     /// silently delivering a high-latency mix instead of saying so.
     void setMonitorProblemText (const juce::String& text);
 
+    /// The band the problem line was given, so a headless probe can prove the
+    /// message is not being clipped.
+    int getMonitorProblemBandHeight() const noexcept { return monitorProblemHeight(); }
+
     /// The running version, shown beside the tagline. On screen rather than
     /// behind a menu because "which build am I running" is the first question
     /// asked when a change appears not to have arrived, and an answer that
@@ -245,6 +249,13 @@ private:
     // not changed. Rebuilding a viewer per frame would flicker and churn the
     // device.
     std::vector<std::string> lastTileIds;
+
+    /// The band the monitor-problem line needs, grown to fit its message.
+    ///
+    /// The message names a cause and what to do about it, which does not fit on
+    /// one line at this width. Clipping it leaves exactly the dead end the
+    /// reason exists to end, so the band is measured from the text.
+    int monitorProblemHeight() const noexcept;
 
     /// Height the camera row needs, or zero when no camera is switched on.
     int cameraRowHeight() const;
