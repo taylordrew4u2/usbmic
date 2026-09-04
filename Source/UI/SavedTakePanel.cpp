@@ -97,9 +97,14 @@ void SavedTakePanel::setTake (const juce::String& folder,
     // engine can tell a real take from a full-length silent one, because from
     // here the two are the same list of megabyte files.
     everythingWasEmpty = verdict == TakeAudioVerdict::NothingWritten
-                      || verdict == TakeAudioVerdict::OnlySilence;
+                      || verdict == TakeAudioVerdict::OnlySilence
+                      || verdict == TakeAudioVerdict::DroppedByApp;
 
-    emptyWarning.setText (verdict == TakeAudioVerdict::OnlySilence
+    emptyWarning.setText (verdict == TakeAudioVerdict::DroppedByApp
+                          ? "The sound reached SobStage but not these files, so your "
+                            "microphones were working -- this is a fault in the app, not "
+                            "your setup. Please report it."
+                          : verdict == TakeAudioVerdict::OnlySilence
                               ? "These files are silent. The microphones were connected, but no "
                                 "sound reached them -- check they aren't muted at their own "
                                 "switches, and that the right input is selected."

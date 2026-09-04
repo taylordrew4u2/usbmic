@@ -103,3 +103,33 @@ TEST_CASE (TakeCompleteness_AnUnmeasuredPeakNeverReportsSilence)
     REQUIRE (judgeTakeAudio ({ { "MIX.wav", 5'000'000 } }, -1.0f)
              == TakeAudioVerdict::Recorded);
 }
+
+TEST_CASE (TakeCompleteness_AudioThatArrivedAndWasNotWrittenIsThisAppsFault)
+{
+    // The distinction that matters most when a take comes back silent. If no
+    // audio arrived, the rig is worth checking: a mute switch, a cable, an
+    // input selection. If audio DID arrive and none of it reached the files,
+    // nothing about the rig explains it -- the samples were here and this
+    // program lost them.
+    //
+    // Telling those apart is the difference between someone spending an hour
+    // on their microphone and knowing at a glance it was never the microphone.
+    const std::vector<TakeFile> fullLength { { "MIX.wav", 5'000'000 },
+                                             { "01_Kitchen.wav", 5'000'000 } };
+    const std::vector<TakeFile> headersOnly { { "MIX.wav", 44 }, { "01_Kitchen.wav", 44 } };
+
+    // Written nothing, but plenty arrived.
+    REQUIRE (judgeTakeAudio (fullLength, 0.0f, 0.5f) == TakeAudioVerdict::DroppedByApp);
+    REQUIRE (judgeTakeAudio (headersOnly, 0.0f, 0.5f) == TakeAudioVerdict::DroppedByApp);
+
+    // Nothing arrived either: the rig really is silent, and that is what to say.
+    REQUIRE (judgeTakeAudio (fullLength, 0.0f, 0.0f) == TakeAudioVerdict::OnlySilence);
+    REQUIRE (judgeTakeAudio (headersOnly, 0.0f, 0.0f) == TakeAudioVerdict::NothingWritten);
+
+    // A healthy take is unaffected by either reading.
+    REQUIRE (judgeTakeAudio (fullLength, 0.5f, 0.5f) == TakeAudioVerdict::Recorded);
+
+    // No arrival measurement: fall back to what the files and the write say,
+    // never invent a fault out of a number nobody took.
+    REQUIRE (judgeTakeAudio (fullLength, 0.0f, -1.0f) == TakeAudioVerdict::OnlySilence);
+}

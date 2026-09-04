@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.0.3 — 2026-09-04
+
+### Added -- a silent take now says whose fault it is
+
+When a take comes back with no sound, the single most useful thing to know
+is whether any audio arrived. If none did, the rig is worth checking: a
+mute switch, a cable, the wrong input selected. If audio DID arrive and
+none of it reached the files, nothing about the rig explains it -- the
+samples were here and this program lost them.
+
+The app could not tell those apart, so it said "silent" for both, and the
+only available next step was to go and check hardware that may have been
+working perfectly the whole time.
+
+The capture path now records the loudest sample that ARRIVED, alongside the
+loudest the writer managed to WRITE. When audio arrived and nothing was
+written, the take is reported as a fault in SobStage, in those words,
+rather than as a silent microphone.
+
+This is the §0.1 rule taken one step further. Reporting that audio was lost
+is the requirement; saying which half of the system lost it is what makes
+the report worth reading.
+
 ## v1.0.2 — 2026-09-04
 
 ### Fixed -- a take could record silence while the meters showed signal
