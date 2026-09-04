@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.1.1 — 2026-09-04
+
+### Fixed -- the interface fix in v1.1.0 never actually took effect
+
+v1.1.0 made a device contribute one take channel per input it presents.
+For anyone whose interface was already in the device list, it changed
+nothing at all, and the report was exactly that: absolutely nothing
+changed.
+
+How many inputs a device has is the OS's to say, and syncToEnumeration
+refreshes what the OS owns each time the device list changes -- the display
+name, whether it is built in. The input count was not in that list. So a
+device that arrived by any other route, or was present before the first
+enumeration, kept the default of one input for the rest of the session. The
+app went on believing a four-microphone interface had one microphone on it,
+and the v1.1.0 rule never fired.
+
+The count is now refreshed like every other fact the OS owns.
+
+### Added -- the rule that decides this is testable now
+
+The decision lived inside the app's channel builder, which needs JUCE and so
+cannot be reached by the Core tests at all. That is how it shipped untested
+and how the stale count went unnoticed: nothing anywhere could have caught
+either.
+
+takeChannelsForDevice() is a plain Core function now, with the reconcile
+covered by a test that fails against the old code.
+
 ## v1.1.0 — 2026-09-04
 
 ### Fixed -- an audio interface's microphones are all recorded, not just one

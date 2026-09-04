@@ -287,7 +287,7 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         // side silent, and the analyzer in the capture path decides between
         // them. Above two, a device is an interface and every input is its own
         // microphone.
-        const int inputs = d.inputChannelCount > 2 ? d.inputChannelCount : 1;
+        const int inputs = takeChannelsForDevice (d.inputChannelCount);
 
         for (int input = 0; input < inputs; ++input)
         {
