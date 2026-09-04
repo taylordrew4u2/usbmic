@@ -252,6 +252,39 @@ void aDeviceThatCannotReachTheRateIsRefused()
 
     check (! backend.openInputStream ("uid-stuck", 48000.0, 256, capture.callback()),
            "the open is refused rather than silently running at the wrong rate");
+
+    // §0.1: refusing is only half the job. "Couldn't be opened for recording"
+    // sends someone hunting through cables for a fault that is one number in a
+    // settings pane, and the app knew the number the whole time.
+    const auto reason = backend.getLastOpenError();
+    std::printf ("  reason: %s\n", reason.c_str());
+
+    check (! reason.empty(), "and says why, rather than leaving the user to guess");
+    check (reason.find ("44.1 kHz") != std::string::npos,
+           "naming the rate the interface is actually running at");
+    check (reason.find ("48 kHz") != std::string::npos,
+           "and the rate the recording wants");
+}
+
+/// A microphone unplugged between being listed and being opened. The message
+/// has to say THAT, not offer a sample-rate lecture about a device that is no
+/// longer there.
+void aMicrophoneThatVanishedSaysSo()
+{
+    std::printf ("\nA mic that was unplugged between being listed and being opened\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (! backend.openInputStream ("uid-gone", 48000.0, 256, capture.callback()),
+           "the open is refused");
+
+    const auto reason = backend.getLastOpenError();
+    std::printf ("  reason: %s\n", reason.c_str());
+
+    check (reason.find ("no longer connected") != std::string::npos,
+           "and says the microphone is gone, not that some rate is wrong");
 }
 
 /// §5.4: the monitor path is exclusive or it is nothing. Reporting success
@@ -431,6 +464,7 @@ int main()
     continuousSampleRateRangeIsExpanded();
     aDeviceAlreadyAtTheRequestedRateStillOpens();
     aDeviceThatCannotReachTheRateIsRefused();
+    aMicrophoneThatVanishedSaysSo();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
