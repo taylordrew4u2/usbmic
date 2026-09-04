@@ -456,6 +456,7 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         d.isBuiltIn = (readTransportType (deviceId) == kAudioDeviceTransportTypeBuiltIn);
         d.maxInputChannels = wantInput ? channels : 0;
         d.supportedSampleRates = querySupportedSampleRates (deviceId);
+        d.currentSampleRate = static_cast<uint32_t> (getNominalSampleRate (deviceId) + 0.5);
         d.isMicrophone = wantInput;
         result.push_back (d);
     }

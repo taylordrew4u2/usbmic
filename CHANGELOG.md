@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.4.0 -- 2026-09-04
+
+### Fixed -- the app stays on the rate your interface is already using
+
+A PUPGSIS mixer running at 44.1 kHz, which advertises 48 kHz and then refuses
+to switch to it, could not record at all:
+
+    PUPGSIS-T12S 1 couldn't be opened for recording. This interface is running
+    at 44.1 kHz and won't change to the 48 kHz this recording uses.
+
+§2.2 chose the highest rate common to every device, which is right on paper and
+worth nothing when the hardware will not move. An interface clock-locked to
+44.1, or one another process has a claim on, lists 48 kHz among its
+capabilities and refuses the write -- and the take never starts.
+
+The rule now has one exception: when every device is ALREADY running at one
+common rate, that rate is chosen even if a higher one is also available.
+Switching is the step that fails; staying put cannot. The difference between
+44.1 and 48 kHz is inaudible next to a recording that did not happen. A rig
+whose devices disagree still gets highest-common, and §3 resamples whichever
+cannot follow.
+
+### Added -- Sample rate is a control in Settings, not a read-only line
+
+The message above told people to "set the recording to 44.1 kHz in Settings".
+Settings displayed the sample rate and offered no way to change it, so the one
+instruction on screen named a control that did not exist.
+
+It is now a picker, defaulting to **Automatic**, listing the rates every
+microphone in the rig can actually reach. The choice is remembered, and is
+ignored if the rig later cannot reach it -- a rate pinned for last week's
+interface must not silently break this week's.
+
 ## v1.3.0 -- 2026-09-04
 
 ### Fixed -- a mixer that is also your headphones is opened once, not twice

@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <vector>
+#include <cstdint>
 #include <memory>
 #include <utility>
 
@@ -25,8 +26,19 @@ public:
     int getRequiredHeight() const;
     void paint (juce::Graphics& g) override;
 
-    void setSampleRate (double rate) { sampleRateValue.setText (juce::String (rate, 0) + " Hz", juce::dontSendNotification); }
     void setBitDepth (int bits) { bitDepthValue.setText (juce::String (bits) + "-bit", juce::dontSendNotification); }
+
+    /// The rates this rig can actually record at, and the one in use.
+    ///
+    /// This was a read-only line, and the app told people to change it here --
+    /// so the one instruction on screen named a control that did not exist.
+    void setSampleRates (const std::vector<uint32_t>& rates, uint32_t current);
+
+    /// Reflects the stored choice without firing onSampleRateChanged.
+    void setSampleRateSelection (uint32_t chosen);
+
+    /// "Automatic" or a rate in Hz; 0 means automatic.
+    std::function<void (uint32_t)> onSampleRateChanged;
     void setBufferSize (int samples) { bufferSizeValue.setText (juce::String (samples) + " samples", juce::dontSendNotification); }
     void setMeasuredLatency (double ms) { latencyValue.setText (juce::String (ms, 1) + " ms", juce::dontSendNotification); }
     void setActiveBackendDescription (const juce::String& text) { backendValue.setText (text, juce::dontSendNotification); }
@@ -115,6 +127,8 @@ private:
     void layOutTrimRows();
     juce::Label outputDeviceLabel;
     juce::ComboBox outputDeviceCombo;
+    juce::ComboBox sampleRateCombo;
+    juce::String lastSampleRateSignature;
     juce::Label backendLabel, backendValue;
     juce::Label aggregateNameLabel;
     juce::TextEditor aggregateNameEditor;

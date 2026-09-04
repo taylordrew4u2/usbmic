@@ -521,6 +521,10 @@ void Application::onDeviceListChanged()
         DeviceRateCapability cap;
         cap.deviceIndex = order;
         cap.supportedRates = d.supportedSampleRates;
+
+        // §2.2 prefers a rate the hardware is already on. Advertising a rate is
+        // not the same as switching to it, and the switch is what fails.
+        cap.currentRate = d.currentSampleRate;
         rateCapabilities.push_back (cap);
 
         MicDeviceState state;
@@ -545,9 +549,45 @@ void Application::onDeviceListChanged()
     // once at launch.
     applyRememberedDeviceSettings();
 
-    // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
+    // §2.2: the rate the rig is already on where they agree, else highest
+    // common, capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
-    currentSampleRate = rateResult.chosenRate;
+
+    // What Settings can offer: rates every microphone can reach, under the cap.
+    availableSampleRates.clear();
+
+    if (! rateCapabilities.empty())
+    {
+        for (auto rate : rateCapabilities.front().supportedRates)
+        {
+            if (rate > SampleRateNegotiator::kRateCap)
+                continue;
+
+            const bool everyDeviceHasIt =
+                std::all_of (rateCapabilities.begin(), rateCapabilities.end(),
+                             [rate] (const DeviceRateCapability& c)
+                             {
+                                 return std::find (c.supportedRates.begin(),
+                                                   c.supportedRates.end(), rate)
+                                     != c.supportedRates.end();
+                             });
+
+            if (everyDeviceHasIt)
+                availableSampleRates.push_back (rate);
+        }
+
+        std::sort (availableSampleRates.begin(), availableSampleRates.end());
+    }
+
+    // A pinned rate wins, but only while the rig can actually reach it --
+    // otherwise a choice made for last week's interface silently breaks this
+    // week's, which is the failure this whole control exists to end.
+    const bool overrideReachable =
+        sampleRateOverride != 0
+        && std::find (availableSampleRates.begin(), availableSampleRates.end(),
+                      sampleRateOverride) != availableSampleRates.end();
+
+    currentSampleRate = overrideReachable ? sampleRateOverride : rateResult.chosenRate;
 
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
@@ -2260,6 +2300,7 @@ void Application::loadSettings()
                                                              : rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
+    sampleRateOverride = rememberedSettings.sampleRateOverride;
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2298,6 +2339,20 @@ void Application::applyRememberedDeviceSettings()
     applyingRememberedSettings = false;
 }
 
+void Application::setSampleRateOverride (uint32_t rate)
+{
+    if (sampleRateOverride == rate)
+        return;
+
+    sampleRateOverride = rate;
+    saveSettings();
+
+    // The rate is fixed for the life of a stream (§5.4), so the streams are
+    // reopened rather than nudged. handleDeviceChange re-runs §2.2 and applies
+    // the new choice through exactly the path a hot-plug takes.
+    onDeviceListChanged();
+}
+
 void Application::saveSettings()
 {
     // Guarded so applying a loaded file cannot write a half-applied rig back
@@ -2316,6 +2371,7 @@ void Application::saveSettings()
     settings.cameraTileScale = cameraTileScale;
     settings.combineVideoAndAudio = combineVideoAndAudio;
     settings.deliveryTarget = deliveryTarget.toStdString();
+    settings.sampleRateOverride = sampleRateOverride;
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });

@@ -192,6 +192,17 @@ public:
 
     /// §10.3 Advanced panel contents.
     double getSampleRate() const { return currentSampleRate; }
+
+    /// The rates every microphone in the rig can record at, for the Settings
+    /// picker. Ascending, capped at §2.2's 48 kHz.
+    std::vector<uint32_t> getAvailableSampleRates() const { return availableSampleRates; }
+
+    /// The rate the user pinned, or 0 for automatic.
+    uint32_t getSampleRateOverride() const noexcept { return sampleRateOverride; }
+
+    /// Pin a rate, or 0 to go back to automatic. Persists and reopens the
+    /// streams, because the rate is fixed for the life of a stream (§5.4).
+    void setSampleRateOverride (uint32_t rate);
     int getBitDepth() const { return currentBitDepth; }
     double getMeasuredLatencyMs() const { return measuredLatencyMs; }
     juce::String getActiveBackendDescription() const;
@@ -587,6 +598,12 @@ private:
     /// than the file does, so it has to stay around to be matched against them.
     int cameraTileScale = 5;
     AppSettings rememberedSettings;
+
+    /// The rates every included microphone can reach, for the Settings picker.
+    std::vector<uint32_t> availableSampleRates;
+
+    /// A rate the user pinned, or 0 for automatic (§2.2 decides).
+    uint32_t sampleRateOverride = 0;
     /// Suppresses saving while the loaded settings are still being applied, so
     /// a half-applied rig cannot be written back over a complete one.
     bool applyingRememberedSettings = false;

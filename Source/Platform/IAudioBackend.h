@@ -15,6 +15,9 @@ struct AudioDeviceDescriptor
     bool isBuiltIn = false;    // the machine's own mic, not something plugged in
     int maxInputChannels = 0;
     std::vector<uint32_t> supportedSampleRates;
+    /// The rate the device is running at now, or 0 when the backend cannot say.
+    /// Advertising a rate is not the same as being willing to switch to it.
+    uint32_t currentSampleRate = 0;
     std::vector<int> supportedBitDepths;
     bool isMicrophone = false;
     bool hasPhysicalHeadphoneJack = false; // relevant for output-device candidates (§5.3)
