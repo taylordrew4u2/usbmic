@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.1.0 — 2026-09-04
+
+### Fixed -- an audio interface's microphones are all recorded, not just one
+
+Reported from a real rig: "it's not letting me add the mics I have
+connected to my interface."
+
+One device is not one microphone. An interface with four microphones
+plugged into it is a single device presenting four inputs, and this app
+took exactly one channel from any device it opened. §2.1's stereo collapse
+-- written for a USB mic that presents the same voice on both sides -- was
+being applied to interfaces, where the two sides are two different people.
+It picked one and discarded the rest without a word. Inputs three and four
+were never even read.
+
+Anyone recording several people through one interface got one of them. If
+their own microphone happened to be on a discarded input, they got a
+silent recording and nothing on screen explaining why.
+
+§2.1 had already said what should happen: collapse to mono when a side is
+silent or duplicated, "otherwise record true stereo". The otherwise was
+never implemented.
+
+A device now contributes one take channel per input it presents, each with
+its own strip, its own name and its own file. Two-input devices are
+unchanged -- that is the USB-mic case §2.1 was written for, and the
+analyzer still decides. Above two, a device is an interface and every input
+is a microphone.
+
+The streams are also grouped by device now. Opening one stream per channel
+would have asked the OS for the same exclusive device once per microphone,
+and on macOS the second request is refused -- the take would have died
+naming a microphone that was plugged in and working.
+
+Covered by Tools/sim_capture_mac: a four-input interface carrying a
+different tone on each input, recorded through the real coordinator, with
+every tone checked into its own file.
+
 ## v1.0.3 — 2026-09-04
 
 ### Added -- the macOS recording path is tested end to end
