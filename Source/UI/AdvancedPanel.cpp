@@ -50,11 +50,12 @@ AdvancedPanel::AdvancedPanel()
         l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
     }
 
-    addAndMakeVisible (clockMasterCombo);
-    clockMasterCombo.onChange = [this] {
-        if (onClockMasterChanged)
-            onClockMasterChanged (clockMasterCombo.getText());
-    };
+    // Not a picker. The clock master is this computer, always: every
+    // microphone is corrected onto the machine's own clock, so there is
+    // nothing to choose and a choice would have had no audible consequence.
+    clockMasterValue.setText ("This computer", juce::dontSendNotification);
+    clockMasterValue.setColour (juce::Label::textColourId, AppLookAndFeel::bone);
+    addAndMakeVisible (clockMasterValue);
 
     addAndMakeVisible (outputDeviceCombo);
     outputDeviceCombo.onChange = [this] {
@@ -196,10 +197,9 @@ AdvancedPanel::AdvancedPanel()
     // know what a clock master is cannot tell whether they need to care.
     clockMasterHelpLabel.setText (
         "Every USB microphone runs on its own crystal, and no two tick at exactly "
-        "the same rate. One is chosen as the reference and the others are "
-        "continuously nudged to match it -- that keeps the tracks lined up over "
-        "a long take. Leave this alone unless one mic is being more dramatic "
-        "than the rest.",
+        "the same rate. All of them are continuously nudged to match this "
+        "computer's clock, so the tracks stay lined up over a long take. "
+        "There is nothing to set here.",
         juce::dontSendNotification);
     clockMasterHelpLabel.setJustificationType (juce::Justification::topLeft);
     clockMasterHelpLabel.setMinimumHorizontalScale (1.0f);
@@ -409,11 +409,6 @@ void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
             storageCombo.setSelectedItemIndex (static_cast<int> (i), juce::dontSendNotification);
 }
 
-void AdvancedPanel::setClockMasters (const juce::StringArray& names, const juce::String& selected)
-{
-    fillCombo (clockMasterCombo, names, selected);
-}
-
 void AdvancedPanel::setTrimChannels (const juce::StringArray& micNames,
                                      const std::function<float (int)>& currentTrimDb)
 {
@@ -600,7 +595,7 @@ void AdvancedPanel::resized()
     }
     area.removeFromTop (10);
 
-    row (clockMasterLabel, clockMasterCombo);
+    row (clockMasterLabel, clockMasterValue);
     clockMasterHelpLabel.setBounds (area.removeFromTop (64));
     area.removeFromTop (8);
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5.1 -- 2026-09-05
+
+### Changed -- the clock master is this computer, always; the picker is gone
+
+Every microphone was already corrected onto the output clock -- the machine's
+own. Naming one microphone as "master" changed nothing about that path; it
+only moved which crystal the drift figures were quoted against, and handed the
+user a picker for a choice with no audible consequence. (The picker had also
+been showing nothing selected since v1.2.1, because it was filled with
+per-input strip names while its selection was a device name.)
+
+Drift is now measured against this computer, so every microphone's figure
+means the same thing, no master can be unplugged mid-take, and Settings shows
+"This computer" where the picker was.
+
+### Documentation
+
+The Settings screenshot in the README was two versions stale: it showed sample
+rate, bit depth and buffer size as read-only text, and the microphone rows
+without their input counts. Retaken from the current build.
+
 ## v1.5.0 -- 2026-09-05
 
 ### Added -- sample rate, bit depth and buffer size are controls, like Audio MIDI Setup

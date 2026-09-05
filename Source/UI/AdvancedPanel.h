@@ -79,7 +79,6 @@ public:
     struct VolumeChoice { juce::String label, path; bool current = false; };
     void setStorageVolumes (const std::vector<VolumeChoice>& volumes);
 
-    void setClockMasters (const juce::StringArray& names, const juce::String& selected);
 
     /// §4: one trim slider per microphone, rebuilt when the mic set changes.
     /// currentTrimDb supplies each row's starting value.
@@ -113,7 +112,6 @@ public:
     /// missing -- named here, before a take, rather than in an alert after one.
     void setCombineVideoState (bool on, const juce::String& unavailableReason);
     std::function<void()> onDestinationFolderClicked;
-    std::function<void (const juce::String&)> onClockMasterChanged;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
     std::function<void (const juce::String&)> onStorageVolumeChosen;
     std::function<void (const juce::String&)> onOutputDeviceChanged;
@@ -124,8 +122,7 @@ private:
     juce::ComboBox bitDepthCombo, bufferSizeCombo;
     juce::String lastBitDepthSignature, lastBufferSignature;
     juce::Label latencyLabel, latencyValue;
-    juce::Label clockMasterLabel;
-    juce::ComboBox clockMasterCombo;
+    juce::Label clockMasterLabel, clockMasterValue;
     juce::Label driftLabel; // per-device drift in PPM, populated externally as a multi-line label
     juce::Viewport trimViewport; // per-microphone trim sliders, one row per device
     juce::Component trimContainer;

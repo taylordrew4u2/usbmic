@@ -114,9 +114,16 @@ files are going, the monitor level — sits quietly in the footer.
 
 Settings is one screen with a Done button at the top left. Where recordings go
 comes first, because picking a card before a take is what most people open it
-for. Then the format, where the take is being delivered (which sets the loudness
-target), and which microphones to record and which one carries the clock — each
-explained where it is set, rather than assumed. Opening it grows the window to
+for. Then the format — sample rate, bit depth and buffer size, each a real
+control rather than a readout, the way Audio MIDI Setup treats them: pick it,
+the app tries it, and if the hardware refuses the main screen says so by name.
+Automatic is the default for rate and buffer, and it stays on whatever rate the
+interface is already running rather than forcing one the hardware may refuse.
+Then where the take is being delivered (which sets the loudness target), and
+which microphones to record — each explained where it is set, rather than
+assumed. Every microphone is locked to this computer's clock, so there is no
+clock master to choose. An interface with several inputs is one
+row that says how many microphones it carries. Opening it grows the window to
 fit the panel, so nothing arrives already scrolled.
 
 <p align="center">
@@ -241,7 +248,7 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v1.5.0**. The recording
+This is **v1.5.1**. The recording
 engine is mature — it is covered by 405
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
