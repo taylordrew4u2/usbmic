@@ -210,6 +210,15 @@ void continuousSampleRateRangeIsExpanded()
     check (has (44100) && has (48000) && has (88200) && has (96000),
            "every standard rate inside the range is reported");
     check (! has (192000), "a rate outside the range is not");
+
+    // §2.2 stays on the rate the hardware is already using, and it can only do
+    // that if the backend says what that rate is. Nothing checked this, so a
+    // field left at 0 would have silently reverted the whole rule to
+    // highest-common -- which is exactly how a fix for a 44.1 kHz interface
+    // shipped unable to fire on it.
+    std::printf ("  current rate reported: %u Hz\n", devices.front().currentSampleRate);
+    check (devices.front().currentSampleRate == 48000,
+           "and the rate the device is running at RIGHT NOW is reported, not left at 0");
 }
 
 /// Another process holding the device makes the rate write fail even when the
@@ -232,6 +241,31 @@ void aDeviceAlreadyAtTheRequestedRateStillOpens()
            "the stream opens despite the refused write");
     check (fakeca::isRunning (id), "and actually starts");
     backend.closeAllStreams();
+}
+
+/// The reported rig: an interface sitting at 44.1 kHz. The backend must say so,
+/// because §2.2's whole "stay put" rule is built on that one number.
+void aDeviceAt44100ReportsThatAsItsCurrentRate()
+{
+    std::printf ("\nAn interface running at 44.1 kHz\n");
+    fakeca::reset();
+
+    auto spec = microphone ("PUP Mixer", "uid-pup", 2, fakeca::BufferShape::interleaved);
+    spec.rateRanges = { { 44100.0, 48000.0 } };
+    spec.currentRate = 44100.0;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    const auto devices = backend.enumerateInputDevices();
+
+    check (devices.size() == 1, "the interface enumerates");
+
+    if (devices.empty())
+        return;
+
+    std::printf ("  current rate reported: %u Hz\n", devices.front().currentSampleRate);
+    check (devices.front().currentSampleRate == 44100,
+           "and reports 44.1 kHz, which is what lets the take stay there");
 }
 
 /// The converse: a device that cannot reach the requested rate must fail rather
@@ -465,6 +499,7 @@ int main()
     aDeviceAlreadyAtTheRequestedRateStillOpens();
     aDeviceThatCannotReachTheRateIsRefused();
     aMicrophoneThatVanishedSaysSo();
+    aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
