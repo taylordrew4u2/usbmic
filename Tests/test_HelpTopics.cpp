@@ -57,7 +57,10 @@ TEST_CASE (HelpTopics_NamesTheCausesTheAppHasBeenBittenBy)
 
 TEST_CASE (HelpTopics_ChecklistStepsAreNumberedInOrder)
 {
-    const auto& body = HelpTopics::all().front().body;
+    // A copy, not a reference into the temporary all() returns: that
+    // reference dangled, and on macOS read freed memory as an empty body.
+    const auto topics = HelpTopics::all();
+    const auto& body = topics.front().body;
     int expected = 1;
 
     for (size_t pos = 0; pos < body.size(); )
