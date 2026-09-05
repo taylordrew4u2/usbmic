@@ -563,7 +563,28 @@ void Application::onDeviceListChanged()
         if (d.included)
             includedKeys.push_back (d.identity.key());
 
-    const auto rateCapabilities = SampleRateNegotiator::votingDevices (includedKeys, enumeratedRates);
+    auto rateCapabilities = SampleRateNegotiator::votingDevices (includedKeys, enumeratedRates);
+
+    // Microphones are included but none of them matched what the OS listed.
+    // That is a key mismatch somewhere upstream, and the honest response is to
+    // let every enumerated device vote rather than let negotiate() see an empty
+    // list and hand back its 48 kHz default -- which would be the very "demand
+    // a rate the hardware refuses" failure this rule exists to end, arriving
+    // silently through a side door.
+    if (rateCapabilities.empty() && ! includedKeys.empty())
+    {
+        jassertfalse; // a device in the take that the OS did not list?
+        int index = 0;
+
+        for (const auto& e : enumeratedRates)
+        {
+            DeviceRateCapability cap;
+            cap.deviceIndex = index++;
+            cap.supportedRates = e.supportedRates;
+            cap.currentRate = e.currentRate;
+            rateCapabilities.push_back (std::move (cap));
+        }
+    }
 
     // The rate the rig is already on where they agree, else highest common,
     // capped at 48kHz. Never rejects a device.

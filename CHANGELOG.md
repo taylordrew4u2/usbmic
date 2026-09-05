@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.4.2 -- 2026-09-05
+
+### Verified -- the backend actually reports the rate a device is running at
+
+v1.4.1's rule depends on one number: the rate the interface is on right now.
+Nothing checked that CoreAudioBackend reports it. A field left at 0 would have
+silently reverted the whole rule to highest-common -- the same way v1.4.0
+shipped unable to fire. `sim_coreaudio` now drives the real backend against a
+fake interface sitting at 44.1 kHz and asserts it says 44100.
+
+### Fixed -- a key mismatch can no longer silently reselect 48 kHz
+
+If the microphones in the take fail to match what the OS listed, the negotiator
+would have been handed an empty list and returned its 48 kHz default -- the
+exact failure this rule exists to end, through a side door. Every enumerated
+device votes instead, and a debug build asserts.
+
 ## v1.4.1 -- 2026-09-04
 
 ### Fixed -- a microphone nobody is recording no longer decides the sample rate
