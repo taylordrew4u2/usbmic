@@ -775,7 +775,12 @@ void MainComponent::refreshAdvanced()
         volumes.push_back ({ v.displayName, v.path, v.isCurrent });
     advancedPanel.setStorageVolumes (volumes);
 
-    advancedPanel.setClockMasters (micNames, application.getClockMasterName());
+    // Device names, not the per-channel strip names in micNames: the clock
+    // master is a device, and the selection is matched by name. Offering
+    // "Scarlett 2i2 1" and "Scarlett 2i2 2" against a selection of
+    // "Scarlett 2i2" matched nothing and the picker showed blank.
+    advancedPanel.setClockMasters (application.getClockMasterChoices(),
+                                   application.getClockMasterName());
 
     // Rebuilt only when the mic set changes: doing it every tick would reset a
     // slider out from under the user mid-drag.

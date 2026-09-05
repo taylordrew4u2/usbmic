@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.1 -- 2026-09-05
+
+### Fixed -- the Clock master picker showed nothing selected
+
+Since v1.2.1 the microphone strips have been named per input ("Scarlett 2i2
+1", "Scarlett 2i2 2"), and the Clock master picker was filled from those
+names. Its selection is a device name ("Scarlett 2i2"), because §3.1's clock
+master is a device -- one box carries the clock. The two never matched, so the
+box sat blank, though the app was still choosing a master correctly
+underneath. The picker now lists devices.
+
+### Documentation
+
+The Settings screenshot in the README was two versions stale: it showed sample
+rate, bit depth and buffer size as read-only text, and the microphone rows
+without their input counts. Retaken from the current build.
+
 ## v1.5.0 -- 2026-09-05
 
 ### Added -- sample rate, bit depth and buffer size are controls, like Audio MIDI Setup

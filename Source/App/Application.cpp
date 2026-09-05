@@ -1711,6 +1711,17 @@ const std::vector<std::string>& Application::getOutputDeviceNames() const
     return outputDeviceNames;
 }
 
+juce::StringArray Application::getClockMasterChoices() const
+{
+    juce::StringArray names;
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            names.add (juce::String (d.displayName));
+
+    return names;
+}
+
 juce::String Application::getClockMasterName() const
 {
     if (const auto* master = deviceManager.selectDefaultMaster())
