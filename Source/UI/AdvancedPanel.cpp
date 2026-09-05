@@ -13,8 +13,8 @@ void configureRow (juce::Label& label, juce::Label& value, const juce::String& t
 AdvancedPanel::AdvancedPanel()
 {
     sampleRateLabel.setText ("Sample rate", juce::dontSendNotification);
-    configureRow (bitDepthLabel, bitDepthValue, "Bit depth");
-    configureRow (bufferSizeLabel, bufferSizeValue, "Buffer size");
+    bitDepthLabel.setText ("Bit depth", juce::dontSendNotification);
+    bufferSizeLabel.setText ("Buffer size", juce::dontSendNotification);
     configureRow (latencyLabel, latencyValue, "Measured latency");
     clockMasterLabel.setText ("Clock master", juce::dontSendNotification);
     driftLabel.setText ("Per-device drift (PPM)", juce::dontSendNotification);
@@ -24,8 +24,8 @@ AdvancedPanel::AdvancedPanel()
     aggregateNameLabel.setText ("Combined device name", juce::dontSendNotification);
     destinationFolderLabel.setText ("Destination folder", juce::dontSendNotification);
 
-    for (auto* c : { &sampleRateLabel, &sampleRateValue, &bitDepthLabel, &bitDepthValue,
-                     &bufferSizeLabel, &bufferSizeValue, &latencyLabel, &latencyValue,
+    for (auto* c : { &sampleRateLabel, &bitDepthLabel,
+                     &bufferSizeLabel, &latencyLabel, &latencyValue,
                      &clockMasterLabel, &driftLabel, &outputDeviceLabel, &backendLabel,
                      &backendValue, &destinationFolderLabel })
         addAndMakeVisible (c);
@@ -38,8 +38,7 @@ AdvancedPanel::AdvancedPanel()
                      &micSelectionLabel })
         l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
 
-    for (auto* v : { &sampleRateValue, &bitDepthValue, &bufferSizeValue, &latencyValue,
-                     &backendValue })
+    for (auto* v : { &latencyValue, &backendValue })
         v->setColour (juce::Label::textColourId, AppLookAndFeel::bone);
 
     // Supporting text, not body text: the drift report, the aggregate status
@@ -61,6 +60,26 @@ AdvancedPanel::AdvancedPanel()
     outputDeviceCombo.onChange = [this] {
         if (onOutputDeviceChanged)
             onOutputDeviceChanged (outputDeviceCombo.getText());
+    };
+
+    // The three format controls. These were read-only lines, and the app once
+    // told a user to change one of them here -- so the instruction on screen
+    // named a control that did not exist. Like Audio MIDI Setup: pick it, the
+    // app tries it, and if the hardware refuses the main screen says so.
+    addAndMakeVisible (bitDepthCombo);
+    bitDepthCombo.onChange = [this] {
+        if (onBitDepthChanged && bitDepthCombo.getSelectedId() > 0)
+            onBitDepthChanged (bitDepthCombo.getSelectedId());
+    };
+
+    addAndMakeVisible (bufferSizeCombo);
+    bufferSizeCombo.onChange = [this] {
+        if (! onBufferSizeChanged)
+            return;
+
+        // Item 1 is Automatic; every other id is the size in samples.
+        const int id = bufferSizeCombo.getSelectedId();
+        onBufferSizeChanged (id <= 1 ? 0 : id);
     };
 
     addAndMakeVisible (sampleRateCombo);
@@ -257,6 +276,43 @@ void AdvancedPanel::setSampleRates (const std::vector<uint32_t>& rates, uint32_t
         sampleRateCombo.addItem (rateText (r), static_cast<int> (r));
 
     sampleRateCombo.setSelectedId (1, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setBitDepthChoice (int current)
+{
+    const juce::String signature (current);
+
+    if (signature == lastBitDepthSignature)
+        return;
+
+    lastBitDepthSignature = signature;
+    bitDepthCombo.clear (juce::dontSendNotification);
+
+    for (int bits : { 16, 24, 32 })
+        bitDepthCombo.addItem (juce::String (bits) + "-bit", bits);
+
+    bitDepthCombo.setSelectedId (current, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setBufferSizeChoice (int current, int pinned)
+{
+    const juce::String signature = juce::String (current) + "@" + juce::String (pinned);
+
+    if (signature == lastBufferSignature)
+        return;
+
+    lastBufferSignature = signature;
+    bufferSizeCombo.clear (juce::dontSendNotification);
+
+    // Automatic first: §5.4's ladder starts small and steps up only when the
+    // machine cannot keep up, which is what most people want without knowing
+    // they want it. The fixed sizes are for someone who does know.
+    bufferSizeCombo.addItem ("Automatic (" + juce::String (current) + " samples)", 1);
+
+    for (int size : { 64, 128, 256, 512, 1024 })
+        bufferSizeCombo.addItem (juce::String (size) + " samples", size);
+
+    bufferSizeCombo.setSelectedId (pinned > 0 ? pinned : 1, juce::dontSendNotification);
 }
 
 void AdvancedPanel::setSampleRateSelection (uint32_t chosen)
@@ -523,8 +579,8 @@ void AdvancedPanel::resized()
 
     section (formatSection);
     row (sampleRateLabel, sampleRateCombo);
-    row (bitDepthLabel, bitDepthValue);
-    row (bufferSizeLabel, bufferSizeValue);
+    row (bitDepthLabel, bitDepthCombo);
+    row (bufferSizeLabel, bufferSizeCombo);
     row (latencyLabel, latencyValue);
     area.removeFromTop (12);
 

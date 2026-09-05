@@ -64,10 +64,10 @@ void Application::initialise()
     if (audioBackend != nullptr)
     {
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
-                                                        bufferLadder.getCurrentSize());
+                                                        desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
         captureRate = currentSampleRate;
-        captureBufferSize = bufferLadder.getCurrentSize();
+        captureBufferSize = desiredBufferSize();
 
         // OS device-change notifications arrive on the backend's own thread --
         // a CoreAudio listener thread on macOS, the COM notification thread on
@@ -348,15 +348,15 @@ void Application::restartCapture()
     // change means a new coordinator -- carrying the listening level across,
     // since the user did not ask for it to jump.
     if (audioBackend != nullptr
-        && (captureRate != currentSampleRate || captureBufferSize != bufferLadder.getCurrentSize()))
+        && (captureRate != currentSampleRate || captureBufferSize != desiredBufferSize()))
     {
         capture->stopMonitoring();
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
-                                                        bufferLadder.getCurrentSize());
+                                                        desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
 
         captureRate = currentSampleRate;
-        captureBufferSize = bufferLadder.getCurrentSize();
+        captureBufferSize = desiredBufferSize();
     }
 
     auto channels = buildCaptureChannels();
@@ -590,41 +590,31 @@ void Application::onDeviceListChanged()
     // capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
 
-    // What Settings can offer: rates every microphone can reach, under the cap.
-    availableSampleRates.clear();
-
-    if (! rateCapabilities.empty())
+    // What Settings can offer: every rate any recorded microphone reports,
+    // plus whatever each is running at now. Like Audio MIDI Setup, the whole
+    // list, not a pre-filtered one -- the user is choosing for their hardware,
+    // and a device that cannot follow is resampled by §3 or, if it refuses to
+    // open, says so on the main screen by name.
     {
-        for (auto rate : rateCapabilities.front().supportedRates)
+        std::set<uint32_t> offered;
+
+        for (const auto& c : rateCapabilities)
         {
-            if (rate > SampleRateNegotiator::kRateCap)
-                continue;
+            for (auto rate : c.supportedRates)
+                offered.insert (rate);
 
-            const bool everyDeviceHasIt =
-                std::all_of (rateCapabilities.begin(), rateCapabilities.end(),
-                             [rate] (const DeviceRateCapability& c)
-                             {
-                                 return std::find (c.supportedRates.begin(),
-                                                   c.supportedRates.end(), rate)
-                                     != c.supportedRates.end();
-                             });
-
-            if (everyDeviceHasIt)
-                availableSampleRates.push_back (rate);
+            if (c.currentRate != 0)
+                offered.insert (c.currentRate);
         }
 
-        std::sort (availableSampleRates.begin(), availableSampleRates.end());
+        availableSampleRates.assign (offered.begin(), offered.end());
     }
 
-    // A pinned rate wins, but only while the rig can actually reach it --
-    // otherwise a choice made for last week's interface silently breaks this
-    // week's, which is the failure this whole control exists to end.
-    const bool overrideReachable =
-        sampleRateOverride != 0
-        && std::find (availableSampleRates.begin(), availableSampleRates.end(),
-                      sampleRateOverride) != availableSampleRates.end();
-
-    currentSampleRate = overrideReachable ? sampleRateOverride : rateResult.chosenRate;
+    // A pinned rate is honoured, full stop. The earlier rule quietly dropped a
+    // pin the rig "could not reach" and fell back to automatic, which from the
+    // user's side is a control that does nothing. §0.1's spirit: if the choice
+    // cannot be met, say so -- the open path names the device and both rates.
+    currentSampleRate = sampleRateOverride != 0 ? sampleRateOverride : rateResult.chosenRate;
 
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
@@ -2338,6 +2328,12 @@ void Application::loadSettings()
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
     sampleRateOverride = rememberedSettings.sampleRateOverride;
+    bufferSizeOverride = rememberedSettings.bufferSizeOverride;
+
+    if (rememberedSettings.bitDepthOverride == 16
+        || rememberedSettings.bitDepthOverride == 24
+        || rememberedSettings.bitDepthOverride == 32)
+        currentBitDepth = rememberedSettings.bitDepthOverride;
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2390,6 +2386,36 @@ void Application::setSampleRateOverride (uint32_t rate)
     onDeviceListChanged();
 }
 
+void Application::setBitDepthOverride (int bits)
+{
+    if (bits != 16 && bits != 24 && bits != 32)
+        return;
+
+    if (currentBitDepth == bits)
+        return;
+
+    // Bit depth is a property of the files, chosen when a take starts, so this
+    // needs no stream reopened -- it simply applies to the next press of record.
+    currentBitDepth = bits;
+    saveSettings();
+}
+
+void Application::setBufferSizeOverride (int samples)
+{
+    if (samples < 0)
+        return;
+
+    if (bufferSizeOverride == samples)
+        return;
+
+    bufferSizeOverride = samples;
+    saveSettings();
+
+    // Fixed for the life of a stream (§5.4), so the streams are reopened
+    // through the same path a hot-plug takes.
+    onDeviceListChanged();
+}
+
 void Application::saveSettings()
 {
     // Guarded so applying a loaded file cannot write a half-applied rig back
@@ -2409,6 +2435,8 @@ void Application::saveSettings()
     settings.combineVideoAndAudio = combineVideoAndAudio;
     settings.deliveryTarget = deliveryTarget.toStdString();
     settings.sampleRateOverride = sampleRateOverride;
+    settings.bitDepthOverride = currentBitDepth == 24 ? 0 : currentBitDepth;
+    settings.bufferSizeOverride = bufferSizeOverride;
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });

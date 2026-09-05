@@ -17,6 +17,8 @@ JsonValue AppSettings::toJson() const
     root["combineVideoAndAudio"] = JsonValue (combineVideoAndAudio);
     root["deliveryTarget"] = JsonValue (deliveryTarget);
     root["sampleRateOverride"] = JsonValue (static_cast<double> (sampleRateOverride));
+    root["bitDepthOverride"] = JsonValue (static_cast<double> (bitDepthOverride));
+    root["bufferSizeOverride"] = JsonValue (static_cast<double> (bufferSizeOverride));
 
     JsonValue portArr = JsonValue::makeArray();
     for (const auto& p : ports)
@@ -69,6 +71,10 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("deliveryTarget")) s.deliveryTarget = p->asString ("");
     if (auto* p = v.find ("sampleRateOverride"))
         s.sampleRateOverride = static_cast<uint32_t> (p->asDouble (0.0));
+    if (auto* p = v.find ("bitDepthOverride"))
+        s.bitDepthOverride = static_cast<int> (p->asDouble (0.0));
+    if (auto* p = v.find ("bufferSizeOverride"))
+        s.bufferSizeOverride = static_cast<int> (p->asDouble (0.0));
 
     if (auto* p = v.find ("ports"))
         for (const auto& pv : p->asArray())

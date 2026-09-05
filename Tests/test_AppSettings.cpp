@@ -143,3 +143,29 @@ TEST_CASE (AppSettings_CameraTileScaleDefaultsWhenAbsent)
 
     REQUIRE (restored.cameraTileScale == 5);
 }
+
+TEST_CASE (AppSettings_FormatOverridesRoundTrip)
+{
+    // Sample rate, bit depth and buffer size were read-only lines in Settings.
+    // Now that they are controls, a choice has to survive a relaunch -- a pin
+    // that vanished on restart would read as the control doing nothing.
+    AppSettings s;
+    s.sampleRateOverride = 44100;
+    s.bitDepthOverride = 16;
+    s.bufferSizeOverride = 256;
+
+    const auto back = AppSettings::fromJsonString (s.toJsonString());
+
+    REQUIRE (back.sampleRateOverride == 44100u);
+    REQUIRE (back.bitDepthOverride == 16);
+    REQUIRE (back.bufferSizeOverride == 256);
+}
+
+TEST_CASE (AppSettings_FormatOverridesDefaultToAutomatic)
+{
+    const auto s = AppSettings::fromJsonString ("{}");
+
+    REQUIRE (s.sampleRateOverride == 0u);
+    REQUIRE (s.bitDepthOverride == 0);
+    REQUIRE (s.bufferSizeOverride == 0);
+}
