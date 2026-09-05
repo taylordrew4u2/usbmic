@@ -204,6 +204,14 @@ public:
     /// streams, because the rate is fixed for the life of a stream (§5.4).
     void setSampleRateOverride (uint32_t rate);
     int getBitDepth() const { return currentBitDepth; }
+    /// Pin the bit depth of every take from now on (16, 24 or 32). Persists.
+    void setBitDepthOverride (int bits);
+
+    /// The user's pinned buffer size, or 0 for automatic.
+    int getBufferSizeOverride() const noexcept { return bufferSizeOverride; }
+    /// Pin the buffer size, or 0 to hand it back to §5.4's ladder. Persists and
+    /// reopens the streams, since the size is fixed for the life of a stream.
+    void setBufferSizeOverride (int samples);
     double getMeasuredLatencyMs() const { return measuredLatencyMs; }
     juce::String getActiveBackendDescription() const;
     /// Display names of every candidate monitor output, and of every mic that
@@ -267,7 +275,7 @@ public:
     /// §5.4: report a callback overrun. Returns true when it pushed the buffer
     /// up a rung, so the caller can tell the user why latency just changed.
     bool noteCallbackOverrun();
-    int getCurrentBufferSize() const { return bufferLadder.getCurrentSize(); }
+    int getCurrentBufferSize() const { return desiredBufferSize(); }
 
     /// §5.4 requires every buffer step logged in session.json.
     const std::vector<BufferSizeChange>& getBufferSizeChanges() const { return bufferLadder.getChangeLog(); }
@@ -604,6 +612,16 @@ private:
 
     /// A rate the user pinned, or 0 for automatic (§2.2 decides).
     uint32_t sampleRateOverride = 0;
+
+    /// Pinned in Settings, or 0 for automatic. The ladder still runs underneath
+    /// so handing control back later resumes from where it would have been.
+    int bufferSizeOverride = 0;
+
+    /// The buffer the streams are opened with: the user's pin, else the ladder.
+    int desiredBufferSize() const noexcept
+    {
+        return bufferSizeOverride > 0 ? bufferSizeOverride : bufferLadder.getCurrentSize();
+    }
     /// Suppresses saving while the loaded settings are still being applied, so
     /// a half-applied rig cannot be written back over a complete one.
     bool applyingRememberedSettings = false;

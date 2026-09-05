@@ -26,7 +26,10 @@ public:
     int getRequiredHeight() const;
     void paint (juce::Graphics& g) override;
 
-    void setBitDepth (int bits) { bitDepthValue.setText (juce::String (bits) + "-bit", juce::dontSendNotification); }
+    /// Bit depth as a control. 16, 24 or 32; `current` is what the next take
+    /// will use.
+    void setBitDepthChoice (int current);
+    std::function<void (int)> onBitDepthChanged;
 
     /// The rates this rig can actually record at, and the one in use.
     ///
@@ -39,7 +42,10 @@ public:
 
     /// "Automatic" or a rate in Hz; 0 means automatic.
     std::function<void (uint32_t)> onSampleRateChanged;
-    void setBufferSize (int samples) { bufferSizeValue.setText (juce::String (samples) + " samples", juce::dontSendNotification); }
+    /// Buffer size as a control. `current` is the size in use; `pinned` is the
+    /// user's choice, 0 meaning automatic (§5.4's ladder).
+    void setBufferSizeChoice (int current, int pinned);
+    std::function<void (int)> onBufferSizeChanged;
     void setMeasuredLatency (double ms) { latencyValue.setText (juce::String (ms, 1) + " ms", juce::dontSendNotification); }
     void setActiveBackendDescription (const juce::String& text) { backendValue.setText (text, juce::dontSendNotification); }
     void setDriftReport (const juce::String& text) { driftLabel.setText (text, juce::dontSendNotification); }
@@ -113,9 +119,10 @@ public:
     std::function<void (const juce::String&)> onOutputDeviceChanged;
 
 private:
-    juce::Label sampleRateLabel, sampleRateValue;
-    juce::Label bitDepthLabel, bitDepthValue;
-    juce::Label bufferSizeLabel, bufferSizeValue;
+    juce::Label sampleRateLabel;
+    juce::Label bitDepthLabel, bufferSizeLabel;
+    juce::ComboBox bitDepthCombo, bufferSizeCombo;
+    juce::String lastBitDepthSignature, lastBufferSignature;
     juce::Label latencyLabel, latencyValue;
     juce::Label clockMasterLabel;
     juce::ComboBox clockMasterCombo;

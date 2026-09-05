@@ -85,6 +85,13 @@ struct AppSettings
     /// nothing here to change.
     uint32_t sampleRateOverride = 0;
 
+    /// Bit depth the user pinned in Settings, or 0 for the default (24-bit).
+    int bitDepthOverride = 0;
+
+    /// Buffer size the user pinned in Settings, or 0 for automatic -- §5.4's
+    /// ladder, which starts small and steps up only on overruns.
+    int bufferSizeOverride = 0;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,
