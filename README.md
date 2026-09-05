@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-409%20passing-brightgreen" alt="409 tests passing">
+  <img src="https://img.shields.io/badge/tests-413%20passing-brightgreen" alt="413 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This found five user-facing defects that were otherwise unreachable from any available machine. |
 
-409 unit tests, two long-running capture harnesses and two platform simulators
+413 unit tests, two long-running capture harnesses and two platform simulators
 run on macOS, Windows and Linux on every commit.
 
 ### Honest limits
@@ -98,7 +98,7 @@ once, and that single stream carries both halves of the cycle.
 ## What it looks like
 
 <p align="center">
-  <img src="docs/images/main-screen.png" alt="The main screen: three channel strips side by side, a summed mix bar, a session name field, the record button, and a row with monitor volume, mute and Settings" width="660">
+  <img src="docs/images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help and Settings in the masthead" width="660">
 </p>
 
 One strip per microphone: a skull that fills with the level, the name, a
@@ -112,7 +112,8 @@ files are going, the monitor level — sits quietly in the footer.
   <img src="docs/images/settings.png" alt="Settings: sections for where recordings go, recording format, and microphones, with a storage picker, per-microphone checkboxes and the clock master control" width="660">
 </p>
 
-Settings is one screen with a Done button at the top left. Where recordings go
+Settings is one screen with a Done button at the top left, and Help beside
+it. Where recordings go
 comes first, because picking a card before a take is what most people open it
 for. Then the format — sample rate, bit depth and buffer size, each a real
 control rather than a readout, the way Audio MIDI Setup treats them: pick it,
@@ -126,9 +127,26 @@ socket underneath it, so an eight-input interface with two people on it
 records two files rather than eight; and clicking a strip's name on the main
 screen names that socket's person, not the whole box. Both are port memory:
 they follow the interface across a replug and a relaunch. Every microphone is
-locked to this computer's clock, so there is no clock master to choose. An interface with several inputs is one
-row that says how many microphones it carries. Opening it grows the window to
-fit the panel, so nothing arrives already scrolled.
+locked to this computer's clock, so there is no clock master to choose.
+Opening it grows the window to fit the panel, so nothing arrives already
+scrolled.
+
+<p align="center">
+  <img src="docs/images/help.png" alt="Help: headings over plain paragraphs -- the recording is silent, dynamic or condenser microphone, the amber line under the strips, sample rate bit depth and buffer size, a mixer or interface with several sockets, where the files are, still stuck -- with Open Settings and Export diagnostics buttons at the bottom" width="660">
+</p>
+
+Help is the third door, beside Settings in the masthead and again beside Done
+on the Settings screen. It answers "why is it silent?" in the app, in the
+order the causes actually turn up. First the checklist for a mixer or
+interface: the box ticked in Settings, microphone permission, the channel
+unmuted with its faders up, the USB send (LOOPBACK on a PUPGSIS T12S)
+switched on, the gain up, and then speak and watch the skull. Then whether the
+microphone is dynamic or a condenser that needs 48 V the mixer may not have;
+what the amber line under the strips means and what to do about each cause it
+names; what to choose for sample rate, bit depth and buffer size and why; how
+an interface with several sockets is shown and named; where the files are;
+and what to send when none of that applied. The words live in `Source/Core`
+rather than in the UI, so a test holds them to account.
 
 <p align="center">
   <img src="docs/images/save-prompt.png" alt="A card over the main screen headed 'Where does this recording go?', with a name field, the destination folder, the folder name this take will create, the list of files it will contain, the backup copy's location, an 'ask me every time' checkbox, and buttons reading Not yet, Choose a different folder and Start recording" width="660">
@@ -376,6 +394,9 @@ has this same step.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
+- **Help** is in the masthead beside Settings. If a meter is flat or a take
+  came out silent, start there: it lists the causes in the order they actually
+  turn up, with what to do about each.
 - If the sound ever cuts out on its own, that is the feedback protection —
   the mute button becomes **Unmute (sound was cut)** and pressing it brings
   the sound back.

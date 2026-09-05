@@ -158,6 +158,9 @@ MainScreen::MainScreen()
     camerasButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
     addAndMakeVisible (camerasButton);
 
+    helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
+    addAndMakeVisible (helpButton);
+
     // The masthead. Letter-spaced by hand, because a wordmark is the one piece
     // of type on this screen that is a picture of a word rather than a word.
     brandLabel.setText ("S O B S T A G E", juce::dontSendNotification);
@@ -668,6 +671,8 @@ void MainScreen::resized()
         header.removeFromLeft (10);
 
         advancedButton.setBounds (header.removeFromRight (96).reduced (0, 3));
+        header.removeFromRight (8);
+        helpButton.setBounds (header.removeFromRight (64).reduced (0, 3));
         header.removeFromRight (8);
         versionLabel.setBounds (header.removeFromRight (56));
         header.removeFromRight (8);
