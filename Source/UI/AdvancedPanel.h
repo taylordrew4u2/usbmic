@@ -69,7 +69,17 @@ public:
     /// The two are not the same once the row says how many microphones the
     /// device carries. Matching on the visible text would then fail to find the
     /// device, and the tick box would silently do nothing.
-    struct MicChoice { juce::String label, deviceName; bool enabled = false; };
+    struct MicChoice
+    {
+        juce::String label, deviceName;
+        bool enabled = false;
+
+        /// One per socket on an interface. Each is its own tick box, indented
+        /// under the box it belongs to, so an eight-input interface with two
+        /// people on it records two files rather than eight.
+        struct Input { int index = 0; juce::String label; bool enabled = true; };
+        std::vector<Input> inputs;
+    };
 
     /// The microphones the OS reports and whether each is currently selected.
     void setMicSelections (const std::vector<MicChoice>& mics);
@@ -113,6 +123,8 @@ public:
     void setCombineVideoState (bool on, const juce::String& unavailableReason);
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
+    /// (device name, physical input, enabled)
+    std::function<void (const juce::String&, int, bool)> onInputEnabledChanged;
     std::function<void (const juce::String&)> onStorageVolumeChosen;
     std::function<void (const juce::String&)> onOutputDeviceChanged;
 
@@ -179,6 +191,9 @@ private:
     juce::Label storageSection, formatSection, micSection, outputSection;
     std::vector<int> ruleYs;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;
+    /// Parallel to micToggles: true for a socket row, which is indented under
+    /// its box and enabled only while the box itself is.
+    std::vector<bool> micToggleIsInput;
     juce::StringArray lastMicNames;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AdvancedPanel)

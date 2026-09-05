@@ -236,6 +236,16 @@ public:
         /// microphone on it or four, and a user with two people plugged into an
         /// interface read the single row as the app refusing their second mic.
         int channelCount = 1;
+
+        /// On an interface, one entry per socket: switchable on its own, and
+        /// labelled with whatever its person has been named.
+        struct Input
+        {
+            int index = 0;
+            juce::String label;
+            bool enabled = true;
+        };
+        std::vector<Input> inputs;
     };
     std::vector<MicSelection> getMicSelections() const;
 
@@ -258,6 +268,10 @@ public:
     /// Ticking or clearing a microphone in Settings. Rebuilds the audio streams
     /// only when the flag actually changed.
     void setMicEnabledByName (const juce::String& displayName, bool enabled);
+
+    /// Switch one socket of an interface on or off. Port memory, so it follows
+    /// the box across a replug; reopens the streams outside a take.
+    void setInputEnabled (const juce::String& displayName, int input, bool enabled);
     void setDestinationFolder (const juce::File& folder);
 
     /// §5.3 output selection result for the Advanced panel, and the plain-language
