@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.6.0 -- 2026-09-05
+
+### Added -- choose which sockets of an interface to record
+
+An interface is one row in Settings, with a tick box per physical input
+indented under it. An eight-input box with two people on it used to record
+eight files, six of them silence, and report room for a fraction of the take
+it could actually hold. Untick the unused sockets and they are not recorded:
+no strip, no file, no share of the disk estimate. The sockets left keep their
+physical numbers, so "input 3" is still the one labelled 3 on the box.
+
+### Added -- name each socket of an interface separately
+
+Clicking a strip's name used to name the whole box, so both people on a
+two-input interface became "Kitchen 1" and "Kitchen 2". On an interface each
+socket is a person, and naming a strip now names that socket: "Alex" and
+"Sam", used on the strips and in the stem filenames, with no socket number
+after a name that already says who it is. A single-input microphone still
+takes the name as before.
+
+Both are port memory (§2.4): they follow the interface across a replug and a
+relaunch, verified by a round-trip test.
+
 ## v1.5.1 -- 2026-09-05
 
 ### Changed -- the clock master is this computer, always; the picker is gone

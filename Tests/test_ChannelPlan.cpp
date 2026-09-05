@@ -84,3 +84,49 @@ TEST_CASE (ChannelPlan_ChannelsRunInDeviceOrderAcrossARig)
     REQUIRE (plan[2].deviceChannel == 1);
     REQUIRE (plan[3].deviceKey == "c");
 }
+
+TEST_CASE (ChannelPlan_ASwitchedOffInputIsNotRecordedAndTheRestKeepTheirNumbers)
+{
+    // An eight-input interface with two people on inputs 1 and 3. Recording
+    // all eight wrote six files of silence and quartered the remaining-time
+    // estimate. The unused sockets are switched off; the used ones keep the
+    // number printed beside them on the box.
+    auto d = iface ("if", "Scarlett 18i8", 4);
+    d.disabledInputs = { 1, 3 };
+
+    const auto plan = planChannels ({ d });
+
+    REQUIRE (plan.size() == 2);
+    REQUIRE (plan[0].deviceChannel == 0);
+    REQUIRE (plan[0].displayName == "Scarlett 18i8 1");
+    REQUIRE (plan[1].deviceChannel == 2);
+    REQUIRE (plan[1].displayName == "Scarlett 18i8 3");
+}
+
+TEST_CASE (ChannelPlan_ANamedInputIsCalledByThatName)
+{
+    // On an interface each socket is a person. "Scarlett 2i2 2" is not who
+    // they are; "Sam" is, and a name needs no socket number after it.
+    auto d = iface ("if", "Scarlett 2i2", 2);
+    d.inputNames[1] = "Sam";
+
+    const auto plan = planChannels ({ d });
+
+    REQUIRE (plan.size() == 2);
+    REQUIRE (plan[0].displayName == "Scarlett 2i2 1");
+    REQUIRE (plan[1].displayName == "Sam");
+}
+
+TEST_CASE (ChannelPlan_AnInputNameBeatsTheBoxName)
+{
+    // Naming the box AND an input: the input's own name wins for that socket,
+    // and the box name carries the rest.
+    auto d = iface ("if", "Scarlett 2i2", 2);
+    d.assignedName = "Kitchen";
+    d.inputNames[0] = "Alex";
+
+    const auto plan = planChannels ({ d });
+
+    REQUIRE (plan[0].displayName == "Alex");
+    REQUIRE (plan[1].displayName == "Kitchen 2");
+}

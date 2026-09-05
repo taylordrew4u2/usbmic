@@ -125,6 +125,10 @@ MainComponent::MainComponent (Application& app)
         application.setSampleRateOverride (rate);
     };
 
+    advancedPanel.onInputEnabledChanged = [this] (const juce::String& device, int input, bool enabled) {
+        application.setInputEnabled (device, input, enabled);
+    };
+
     advancedPanel.onBitDepthChanged = [this] (int bits) {
         application.setBitDepthOverride (bits);
     };
@@ -751,7 +755,15 @@ void MainComponent::refreshAdvanced()
         if (m.channelCount > 1)
             label += " (" + juce::String (m.channelCount) + " microphones)";
 
-        micSelections.push_back ({ label, m.displayName, m.enabled });
+        AdvancedPanel::MicChoice choice;
+        choice.label = label;
+        choice.deviceName = m.displayName;
+        choice.enabled = m.enabled;
+
+        for (const auto& in : m.inputs)
+            choice.inputs.push_back ({ in.index, in.label, in.enabled });
+
+        micSelections.push_back (std::move (choice));
     }
     advancedPanel.setMicSelections (micSelections);
 

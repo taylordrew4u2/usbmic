@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,13 @@ struct ChannelPlanDevice
     /// §2.4's remembered §2.1 verdict: true only once the analyzer has decided
     /// the two sides carry the same source.
     bool knownDuplicateStereo = false;
+
+    /// Physical inputs switched off in Settings. Not recorded, no strip, no
+    /// file; the remaining inputs keep their socket numbers.
+    std::vector<int> disabledInputs;
+
+    /// A name per physical input, used verbatim in place of "<box> N".
+    std::map<int, std::string> inputNames;
 };
 
 /// One take channel: a strip on screen, and a file on disk. The two must agree,

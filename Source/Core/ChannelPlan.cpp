@@ -1,4 +1,5 @@
 #include "ChannelPlan.h"
+#include <algorithm>
 #include "DeviceManager.h"
 
 namespace mma {
@@ -27,10 +28,24 @@ std::vector<PlannedChannel> planChannels (const std::vector<ChannelPlanDevice>& 
 
         for (int input = 0; input < inputs; ++input)
         {
+            // A socket switched off in Settings is not recorded at all. The
+            // ones left keep their physical numbers -- input 2 is still the
+            // socket labelled 2 on the box, whatever happened to input 1.
+            if (std::find (d.disabledInputs.begin(), d.disabledInputs.end(), input)
+                != d.disabledInputs.end())
+                continue;
+
             PlannedChannel c;
             c.deviceKey = d.deviceKey;
             c.deviceChannel = input;
-            c.displayName = plannedChannelName (base, input, inputs);
+
+            // A name given to this input names the person on it, and needs no
+            // socket number to be told apart.
+            const auto named = d.inputNames.find (input);
+            c.displayName = named != d.inputNames.end() && ! named->second.empty()
+                          ? named->second
+                          : plannedChannelName (base, input, inputs);
+
             channels.push_back (std::move (c));
         }
     }

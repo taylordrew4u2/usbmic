@@ -328,41 +328,41 @@ void AdvancedPanel::setSampleRateSelection (uint32_t chosen)
 
 void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
 {
-    // Rebuilt only when the set of names changes. The panel repaints at 2 Hz,
+    // Rebuilt only when the set of rows changes. The panel repaints at 2 Hz,
     // and recreating the toggles every tick would fight the user's click.
     juce::StringArray incoming;
     for (const auto& m : mics)
+    {
         incoming.add (m.label);
+        for (const auto& in : m.inputs)
+            incoming.add ("  " + in.label);
+    }
 
     if (incoming != lastMicNames)
     {
         micToggles.clear();
+        micToggleIsInput.clear();
         lastMicNames = incoming;
 
+        // Deferred rather than called straight through. Ticking a box rebuilds
+        // the audio streams, and a rebuild can reach back into this panel;
+        // destroying a button from inside its own click handler is a crash
+        // JUCE gives no warning about. Reading the state here and doing the
+        // work on the next message keeps the button alive for the whole of
+        // its own callback.
+        //
+        // The SafePointer is built outside the inner lambda and captured by
+        // copy rather than constructed in its init-capture: inside a nested
+        // lambda MSVC resolves `this` to the enclosing closure object, so the
+        // init-capture form compiled on Clang and GCC and failed on Windows.
         for (const auto& m : mics)
         {
             auto toggle = std::make_unique<juce::ToggleButton> (m.label);
+            const auto name = m.deviceName; // the DEVICE name, which the app looks up by
 
-            // The DEVICE name, not the label: the label carries the microphone
-            // count, and the app looks the device up by its own name.
-            const auto name = m.deviceName;
-
-            // Deferred rather than called straight through. Ticking a box
-            // rebuilds the audio streams, and a rebuild can reach back into
-            // this panel; destroying a button from inside its own click
-            // handler is a crash JUCE gives no warning about. Reading the
-            // state here and doing the work on the next message keeps the
-            // button alive for the whole of its own callback.
             toggle->onClick = [this, name, raw = toggle.get()] {
                 const bool state = raw->getToggleState();
-
-                // The SafePointer is built here and captured by copy, rather
-                // than constructed in the inner lambda's init-capture. Inside a
-                // nested lambda MSVC resolves `this` to the enclosing closure
-                // object instead of the panel, so the init-capture form
-                // compiled on Clang and GCC and failed on Windows.
                 juce::Component::SafePointer<AdvancedPanel> safe (this);
-
                 juce::MessageManager::callAsync ([safe, name, state] {
                     if (safe != nullptr && safe->onMicEnabledChanged)
                         safe->onMicEnabledChanged (name, state);
@@ -370,15 +370,47 @@ void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
             };
             addAndMakeVisible (*toggle);
             micToggles.push_back (std::move (toggle));
+            micToggleIsInput.push_back (false);
+
+            for (const auto& in : m.inputs)
+            {
+                auto inputToggle = std::make_unique<juce::ToggleButton> (in.label);
+                const int input = in.index;
+
+                inputToggle->onClick = [this, name, input, raw = inputToggle.get()] {
+                    const bool state = raw->getToggleState();
+                    juce::Component::SafePointer<AdvancedPanel> safe (this);
+                    juce::MessageManager::callAsync ([safe, name, input, state] {
+                        if (safe != nullptr && safe->onInputEnabledChanged)
+                            safe->onInputEnabledChanged (name, input, state);
+                    });
+                };
+                addAndMakeVisible (*inputToggle);
+                micToggles.push_back (std::move (inputToggle));
+                micToggleIsInput.push_back (true);
+            }
         }
 
         resized();
     }
 
     // State is refreshed every tick regardless, so a change made elsewhere --
-    // the 8-mic cap, a device leaving -- shows up here.
-    for (size_t i = 0; i < micToggles.size() && i < mics.size(); ++i)
-        micToggles[i]->setToggleState (mics[i].enabled, juce::dontSendNotification);
+    // the 8-mic cap, a device leaving -- shows up here. A socket row is greyed
+    // while its box is switched off: the box's tick governs the lot.
+    size_t row = 0;
+    for (const auto& m : mics)
+    {
+        if (row >= micToggles.size()) break;
+        micToggles[row++]->setToggleState (m.enabled, juce::dontSendNotification);
+
+        for (const auto& in : m.inputs)
+        {
+            if (row >= micToggles.size()) break;
+            micToggles[row]->setToggleState (in.enabled, juce::dontSendNotification);
+            micToggles[row]->setEnabled (m.enabled);
+            ++row;
+        }
+    }
 }
 
 void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
@@ -588,9 +620,14 @@ void AdvancedPanel::resized()
 
     section (micSection);
     micSelectionLabel.setBounds (area.removeFromTop (22));
-    for (auto& toggle : micToggles)
+    for (size_t i = 0; i < micToggles.size(); ++i)
     {
-        toggle->setBounds (area.removeFromTop (24).reduced (8, 0));
+        // A socket row sits indented under its box, so the list reads as a
+        // box with people on it rather than a flat run of identical ticks.
+        const bool isInput = i < micToggleIsInput.size() && micToggleIsInput[i];
+        auto rowArea = area.removeFromTop (24).reduced (8, 0);
+        if (isInput) rowArea.removeFromLeft (28);
+        micToggles[i]->setBounds (rowArea);
         area.removeFromTop (2);
     }
     area.removeFromTop (10);

@@ -169,3 +169,25 @@ TEST_CASE (AppSettings_FormatOverridesDefaultToAutomatic)
     REQUIRE (s.bitDepthOverride == 0);
     REQUIRE (s.bufferSizeOverride == 0);
 }
+
+TEST_CASE (AppSettings_PerInputSettingsRoundTrip)
+{
+    // Which sockets of an interface are switched off, and what each is called,
+    // are port memory: they follow the box across a replug and a relaunch. A
+    // choice that vanished on restart would read as the control doing nothing.
+    AppSettings s;
+    PersistedPort port;
+    port.key = "usb-3|SN123";
+    port.settings.disabledInputs = { 1, 3 };
+    port.settings.inputNames[0] = "Alex";
+    port.settings.inputNames[2] = "Sam";
+    s.ports.push_back (port);
+
+    const auto back = AppSettings::fromJsonString (s.toJsonString());
+
+    REQUIRE (back.ports.size() == 1);
+    REQUIRE (back.ports[0].settings.disabledInputs == std::vector<int> ({ 1, 3 }));
+    REQUIRE (back.ports[0].settings.inputNames.size() == 2);
+    REQUIRE (back.ports[0].settings.inputNames.at (0) == "Alex");
+    REQUIRE (back.ports[0].settings.inputNames.at (2) == "Sam");
+}
