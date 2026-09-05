@@ -279,6 +279,8 @@ std::vector<ChannelPlanDevice> Application::planDevices() const
         if (persisted.has_value())
         {
             p.assignedName = persisted->assignedName;
+            p.disabledInputs = persisted->disabledInputs;
+            p.inputNames = persisted->inputNames;
 
             // §2.4 remembers §2.1's verdict per port. Only a decision that was
             // actually made collapses a two-input device; the default of "no
@@ -813,6 +815,12 @@ juce::String Application::nameForChannel (const std::string& identityKey, int de
 
         if (persisted.has_value())
         {
+            // A name given to this particular input is who is on it, and
+            // needs no socket number after it.
+            const auto named = persisted->inputNames.find (deviceChannel);
+            if (named != persisted->inputNames.end() && ! named->second.empty())
+                return juce::String (named->second);
+
             if (! persisted->assignedName.empty())
                 base = persisted->assignedName;
 
@@ -909,17 +917,52 @@ juce::String Application::getMicDisplayName (int index) const
 
 void Application::setMicAssignedName (int index, const juce::String& name)
 {
-    int seen = 0;
+    // `index` is a strip, and a strip is one INPUT of a device -- resolved in
+    // channel space, like every other strip accessor, rather than by walking
+    // devices. Walking devices named the wrong port on any interface, and
+    // could not name one input of it at all.
+    std::string deviceKey;
+    int deviceChannel = 0;
+
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+        if (index < 0 || index >= static_cast<int> (channels.size()))
+            return;
+        deviceKey = channels[static_cast<size_t> (index)].deviceId;
+        deviceChannel = channels[static_cast<size_t> (index)].deviceChannel;
+    }
+    else
+    {
+        const auto plan = planChannels (planDevices());
+        if (index < 0 || index >= static_cast<int> (plan.size()))
+            return;
+        deviceKey = plan[static_cast<size_t> (index)].deviceKey;
+        deviceChannel = plan[static_cast<size_t> (index)].deviceChannel;
+    }
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (! d.included)
-            continue;
-
-        if (seen++ != index)
+        if (d.identity.key() != deviceKey)
             continue;
 
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
-        settings.assignedName = SessionFolderNaming::sanitizeName (name.toStdString());
+        const auto clean = SessionFolderNaming::sanitizeName (name.toStdString());
+
+        // One microphone is one box, so the box takes the name. On an interface
+        // each socket is a person, so the socket does -- and the box's own name
+        // is left alone for the other inputs.
+        const bool knownDuplicateStereo = settings.hasChannelLayoutDecision && settings.channelLayoutIsMono;
+        if (takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) > 1)
+        {
+            if (clean.empty()) settings.inputNames.erase (deviceChannel);
+            else               settings.inputNames[deviceChannel] = clean;
+        }
+        else
+        {
+            settings.assignedName = clean;
+        }
+
         portIdentityStore.put (d.identity, settings);
 
         saveSettings();
@@ -1723,13 +1766,64 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
                                        && persisted->hasChannelLayoutDecision
                                        && persisted->channelLayoutIsMono;
 
-        out.push_back ({ juce::String (d.displayName),
-                         d.userEnabled,
-                         d.isBuiltIn,
-                         takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) });
+        MicSelection m;
+        m.displayName = juce::String (d.displayName);
+        m.enabled = d.userEnabled;
+        m.isBuiltIn = d.isBuiltIn;
+        m.channelCount = takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo);
+
+        // One row per socket on an interface, each switchable and each showing
+        // the name its person has been given, so the list reads as who is
+        // being recorded rather than which boxes are plugged in.
+        if (m.channelCount > 1)
+        {
+            for (int input = 0; input < m.channelCount; ++input)
+            {
+                MicSelection::Input in;
+                in.index = input;
+                in.label = nameForChannel (d.identity.key(), input);
+                in.enabled = ! persisted.has_value()
+                          || std::find (persisted->disabledInputs.begin(),
+                                        persisted->disabledInputs.end(), input)
+                             == persisted->disabledInputs.end();
+                m.inputs.push_back (std::move (in));
+            }
+        }
+
+        out.push_back (std::move (m));
     }
 
     return out;
+}
+
+void Application::setInputEnabled (const juce::String& displayName, int input, bool enabled)
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (juce::String (d.displayName) != displayName)
+            continue;
+
+        auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
+        auto& off = settings.disabledInputs;
+        const auto it = std::find (off.begin(), off.end(), input);
+        const bool currentlyOff = it != off.end();
+
+        if (enabled == ! currentlyOff)
+            return;
+
+        if (enabled) off.erase (it);
+        else         off.push_back (input);
+
+        portIdentityStore.put (d.identity, settings);
+        saveSettings();
+
+        // The channel set changed, so the streams are reopened -- never
+        // mid-take, where §6.5 fixes the channel list for the recording.
+        if (capture != nullptr && ! capture->isRecording())
+            restartCapture();
+
+        return;
+    }
 }
 
 void Application::setMicEnabledByName (const juce::String& displayName, bool enabled)

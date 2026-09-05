@@ -2,6 +2,7 @@
 #include <string>
 #include <optional>
 #include <map>
+#include <vector>
 
 namespace mma {
 
@@ -30,6 +31,17 @@ struct PersistedDeviceSettings
     float trimDb = 0.0f;
     bool channelLayoutIsMono = true;
     bool hasChannelLayoutDecision = false;
+
+    /// Inputs of an interface that are switched off. An eight-input box with
+    /// two microphones on it recorded six files of silence and reported room
+    /// for a fraction of the take it could have held; the unused sockets are
+    /// simply not recorded now. Indices are physical inputs, 0-based.
+    std::vector<int> disabledInputs;
+
+    /// A name per input of an interface, keyed by physical input. The port's
+    /// assignedName names the whole box; on an interface each socket is a
+    /// person, and "Scarlett 2i2 2" is not who they are.
+    std::map<int, std::string> inputNames;
 };
 
 /// In-memory persistence map keyed by PortIdentity::key(). Actual disk
