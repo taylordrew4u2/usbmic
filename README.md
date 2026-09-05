@@ -120,8 +120,9 @@ the app tries it, and if the hardware refuses the main screen says so by name.
 Automatic is the default for rate and buffer, and it stays on whatever rate the
 interface is already running rather than forcing one the hardware may refuse.
 Then where the take is being delivered (which sets the loudness target), and
-which microphones to record and which one carries the clock — each explained
-where it is set, rather than assumed. An interface with several inputs is one
+which microphones to record — each explained where it is set, rather than
+assumed. Every microphone is locked to this computer's clock, so there is no
+clock master to choose. An interface with several inputs is one
 row that says how many microphones it carries. Opening it grows the window to
 fit the panel, so nothing arrives already scrolled.
 

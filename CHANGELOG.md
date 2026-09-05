@@ -2,14 +2,18 @@
 
 ## v1.5.1 -- 2026-09-05
 
-### Fixed -- the Clock master picker showed nothing selected
+### Changed -- the clock master is this computer, always; the picker is gone
 
-Since v1.2.1 the microphone strips have been named per input ("Scarlett 2i2
-1", "Scarlett 2i2 2"), and the Clock master picker was filled from those
-names. Its selection is a device name ("Scarlett 2i2"), because §3.1's clock
-master is a device -- one box carries the clock. The two never matched, so the
-box sat blank, though the app was still choosing a master correctly
-underneath. The picker now lists devices.
+Every microphone was already corrected onto the output clock -- the machine's
+own. Naming one microphone as "master" changed nothing about that path; it
+only moved which crystal the drift figures were quoted against, and handed the
+user a picker for a choice with no audible consequence. (The picker had also
+been showing nothing selected since v1.2.1, because it was filled with
+per-input strip names while its selection was a device name.)
+
+Drift is now measured against this computer, so every microphone's figure
+means the same thing, no master can be unplugged mid-take, and Settings shows
+"This computer" where the picker was.
 
 ### Documentation
 

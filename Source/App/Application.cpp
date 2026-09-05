@@ -397,11 +397,10 @@ void Application::publishAggregateDevice()
         if (d.included)
             uids.push_back (d.identity.locationId); // the CoreAudio device UID on macOS
 
-    // §3.1: same clock master as the in-app capture path, so the aggregate and
-    // the app agree about whose crystal is the truth.
-    std::string master;
-    if (const auto* m = deviceManager.selectDefaultMaster())
-        master = m->identity.locationId;
+    // The clock master is this computer, so the aggregate is left on the
+    // system's own clock rather than pinned to one microphone's crystal --
+    // the same reference the in-app capture path corrects onto.
+    const std::string master;
 
     const auto name = aggregateName.toStdString();
 
@@ -434,58 +433,16 @@ void Application::applyClockMaster()
     if (capture == nullptr)
         return;
 
-    // §3.1 / §3.3: DeviceManager owns *which microphone* should be the timebase
-    // -- lowest measured drift, the user's override, or the next best after the
-    // master leaves. What it cannot own is which channel that is, because it
-    // tracks the devices the OS reports right now and a take's channel list is
-    // frozen (§6.5).
+    // The clock master is this computer, always.
     //
-    // This used to count included devices to find the index, which is the same
-    // number only until a microphone is unplugged mid-take. After that the
-    // device list is short one entry and every index past the gap is off by
-    // one, so setMasterChannel() named the wrong channel -- and the channel it
-    // named could be the unplugged one, writing silence, with every other
-    // microphone resampled onto it.
-    std::vector<std::string> rankedIds;
-    for (const auto* d : deviceManager.rankMasterCandidates())
-        rankedIds.push_back (d->identity.key());
-
-    // capture's own channel list, since that is exactly what setMasterChannel
-    // indexes into. Outside a take it tracks the device list; during one it is
-    // the frozen list, which is the point.
-    const bool recording = capture->isRecording();
-    std::vector<std::string> channelIds;
-    std::vector<bool> channelLive;
-
-    for (const auto& ch : capture->getChannels())
-    {
-        channelIds.push_back (ch.deviceId);
-        channelLive.push_back (! recording || ! recordingEngine.isWritingSilence (ch.deviceId));
-    }
-
-    const auto resolved = resolveMasterChannel (channelIds, channelLive, rankedIds);
-    capture->setMasterChannel (resolved.channelIndex);
-
-    // §3.3: "Log the switchover timestamp in session.json." Only a change is
-    // worth a line -- this runs on every status poll, and re-confirming the
-    // same master is not an event.
-    if (recording && resolved.deviceId != appliedMasterDeviceId)
-    {
-        if (! appliedMasterDeviceId.empty())
-            midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), resolved.deviceId,
-                                         resolved.deviceId.empty()
-                                             ? std::string ("Clock master lost: no live microphone is left to "
-                                                            "measure drift against. The channels stay corrected "
-                                                            "and the recording is unaffected.")
-                                             : std::string ("Clock master switched to this microphone after "
-                                                            "the previous one stopped delivering audio.") });
-
-        appliedMasterDeviceId = resolved.deviceId;
-    }
-    else if (! recording)
-    {
-        appliedMasterDeviceId = resolved.deviceId;
-    }
+    // §3.2 already corrects every microphone onto the output clock -- the
+    // timebase the headphones run on, which is the machine's own. Naming one
+    // microphone as "master" changed nothing about that path; it only moved
+    // which crystal the drift figures were quoted against, and handed the user
+    // a picker for a choice with no audible consequence. Measured against the
+    // computer instead, every microphone's figure means the same thing, no
+    // master can be unplugged mid-take, and there is nothing to choose.
+    capture->setMasterChannel (-1);
 }
 
 MonitorBus* Application::getMonitorBus()
@@ -1711,25 +1668,6 @@ const std::vector<std::string>& Application::getOutputDeviceNames() const
     return outputDeviceNames;
 }
 
-juce::StringArray Application::getClockMasterChoices() const
-{
-    juce::StringArray names;
-
-    for (const auto& d : deviceManager.getDevices())
-        if (d.included)
-            names.add (juce::String (d.displayName));
-
-    return names;
-}
-
-juce::String Application::getClockMasterName() const
-{
-    if (const auto* master = deviceManager.selectDefaultMaster())
-        return juce::String (master->displayName);
-
-    return {};
-}
-
 juce::String Application::getDriftReport() const
 {
     juce::StringArray lines;
@@ -1808,19 +1746,6 @@ void Application::setMicEnabledByName (const juce::String& displayName, bool ena
             restartCapture(); // the channel set changed, so the streams must be reopened
 
         saveSettings();
-        return;
-    }
-}
-
-void Application::setClockMasterByName (const juce::String& displayName)
-{
-    for (const auto& d : deviceManager.getDevices())
-    {
-        if (! d.included || juce::String (d.displayName) != displayName)
-            continue;
-
-        deviceManager.setPreferredMaster (d.identity.key());
-        applyClockMaster();
         return;
     }
 }
