@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.7.0 -- 2026-09-05
+
+### Added -- a Help screen
+
+A third door beside Settings, and a Help button on the Settings screen too.
+It answers "why is it silent?" in the app, in the order the causes actually
+turn up: the checklist for a mixer or interface (the box ticked in Settings,
+microphone permission, the channel unmuted and its faders up, the USB send --
+LOOPBACK on a PUPGSIS T12S -- switched on, the gain up), whether the mic is
+dynamic or a condenser needing 48 V the mixer may not have, what the amber
+line under the strips means and what to do about each cause it names, what
+to choose for sample rate, bit depth and buffer size and why, how an
+interface with several sockets is shown and named, where the files are, and
+what to send when none of that applied. Open Settings and Export diagnostics
+are buttons under the last topic.
+
+The words live in Core rather than in the UI, so a test holds them to
+account: the mixer checklist stays first and keeps naming the causes this
+app has actually shipped fixes for.
+
 ## v1.6.0 -- 2026-09-05
 
 ### Added -- choose which sockets of an interface to record

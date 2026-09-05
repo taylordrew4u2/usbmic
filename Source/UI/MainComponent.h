@@ -3,6 +3,7 @@
 #include "MainScreen.h"
 #include "AdvancedPanel.h"
 #include "CameraPanel.h"
+#include "HelpPanel.h"
 #include "SaveLocationPrompt.h"
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
@@ -50,6 +51,18 @@ private:
     juce::Viewport cameraViewport;
     bool advancedVisible = false;
     bool cameraVisible = false;
+
+    // The third door, beside Settings: the answers to "why is it silent?",
+    // in the app rather than in a README. Same viewport arrangement as the
+    // other two, and like them only one is open at a time.
+    juce::Viewport helpViewport;
+    bool helpVisible = false;
+    HelpPanel helpPanel;
+    void toggleHelp();
+
+    /// §11: logs, recent session.json files and the device inventory to a
+    /// zip on the desktop. Never audio. Reachable from Settings and Help.
+    void exportDiagnostics();
     int lastCameraHeight = 0;
 
     /// Grows the window so the main screen's camera row gets the size the user

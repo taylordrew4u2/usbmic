@@ -160,6 +160,9 @@ AdvancedPanel::AdvancedPanel()
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
 
+    helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
+    addAndMakeVisible (helpButton);
+
     // Four headings over what was a flat list. The reader can now find the
     // storage picker by scanning four words instead of reading fifteen rows.
     const std::pair<juce::Label*, const char*> sections[] = {
@@ -552,7 +555,12 @@ void AdvancedPanel::resized()
     // Top-left and first in the layout, where a back control is looked for,
     // and placed before anything else claims the space so it cannot be pushed
     // off the bottom by a long device list.
-    closeButton.setBounds (area.removeFromTop (30).removeFromLeft (110));
+    {
+        auto top = area.removeFromTop (30);
+        closeButton.setBounds (top.removeFromLeft (110));
+        top.removeFromLeft (8);
+        helpButton.setBounds (top.removeFromLeft (64));
+    }
     area.removeFromTop (14);
 
     // A heading, then the hairline paint() draws under it. The gap below the
