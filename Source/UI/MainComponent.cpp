@@ -128,6 +128,14 @@ MainComponent::MainComponent (Application& app)
         application.setSampleRateOverride (rate);
     };
 
+    advancedPanel.onBitDepthChanged = [this] (int bits) {
+        application.setBitDepthOverride (bits);
+    };
+
+    advancedPanel.onBufferSizeChanged = [this] (int samples) {
+        application.setBufferSizeOverride (samples);
+    };
+
     advancedPanel.onMirrorToggled = [this] (bool enabled) {
         application.setMirrorEnabled (enabled);
     };
@@ -708,8 +716,9 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setSampleRates (application.getAvailableSampleRates(),
                                   static_cast<uint32_t> (application.getSampleRate() + 0.5));
     advancedPanel.setSampleRateSelection (application.getSampleRateOverride());
-    advancedPanel.setBitDepth (application.getBitDepth());
-    advancedPanel.setBufferSize (application.getCurrentBufferSize());
+    advancedPanel.setBitDepthChoice (application.getBitDepth());
+    advancedPanel.setBufferSizeChoice (application.getCurrentBufferSize(),
+                                       application.getBufferSizeOverride());
     advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
     advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
     advancedPanel.setDriftReport (application.getDriftReport());

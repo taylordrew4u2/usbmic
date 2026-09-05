@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.0 -- 2026-09-05
+
+### Added -- sample rate, bit depth and buffer size are controls, like Audio MIDI Setup
+
+All three were read-only lines in Settings, and the app once told a user to
+change one of them there. They are pickers now:
+
+- **Sample rate** offers every rate any recorded microphone reports, plus the
+  rate each is running at. A pinned rate is honoured, full stop. The earlier
+  rule quietly dropped a pin the rig "could not reach" and fell back to
+  automatic, which from the user's side is a control that does nothing. If the
+  hardware refuses, the main screen names the device and both rates.
+- **Bit depth**: 16, 24 or 32. Applies to the next take; no stream is reopened.
+- **Buffer size**: Automatic (§5.4's ladder) or a fixed 64 to 1024 samples.
+
+All three persist across relaunch, verified by a round-trip test.
+
 ## v1.4.2 -- 2026-09-05
 
 ### Verified -- the backend actually reports the rate a device is running at
