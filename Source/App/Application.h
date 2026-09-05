@@ -217,13 +217,10 @@ public:
     /// Display names of every candidate monitor output, and of every mic that
     /// could serve as §3.1 clock master.
     const std::vector<std::string>& getOutputDeviceNames() const;
-    juce::String getClockMasterName() const;
     /// §3.2 per-device drift, one line per mic, or a plain line saying the
     /// 60-second measurement window has not elapsed yet (§3.1).
     juce::String getDriftReport() const;
     void setOutputDeviceByName (const juce::String& displayName);
-    /// §3.1: an explicit clock-master choice, by display name.
-    void setClockMasterByName (const juce::String& displayName);
 
     /// Every microphone the OS reports, in enumeration order, with whether the
     /// user currently has it selected. Includes deselected ones -- the point of

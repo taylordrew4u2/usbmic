@@ -112,9 +112,6 @@ MainComponent::MainComponent (Application& app)
         application.setChannelTrimDb (index, trimDb);
     };
 
-    advancedPanel.onClockMasterChanged = [this] (const juce::String& name) {
-        application.setClockMasterByName (name);
-    };
 
     advancedPanel.onAggregateNameChanged = [this] (const juce::String& name) {
         application.setAggregateDeviceName (name);
@@ -775,7 +772,6 @@ void MainComponent::refreshAdvanced()
         volumes.push_back ({ v.displayName, v.path, v.isCurrent });
     advancedPanel.setStorageVolumes (volumes);
 
-    advancedPanel.setClockMasters (micNames, application.getClockMasterName());
 
     // Rebuilt only when the mic set changes: doing it every tick would reset a
     // slider out from under the user mid-drag.
