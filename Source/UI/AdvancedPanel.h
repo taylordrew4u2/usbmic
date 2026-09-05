@@ -103,6 +103,10 @@ public:
     /// hides the main screen, and the button that opened it lives there, so
     /// without this the panel is a dead end with no way back.
     std::function<void()> onCloseClicked;
+
+    /// Beside Done: the Help screen explains the controls on this one, so
+    /// the way to it is here as well as on the main screen.
+    std::function<void()> onHelpClicked;
     std::function<void (bool)> onMirrorToggled;
 
     /// Whether a finished take also writes one video-with-sound file per
@@ -165,6 +169,7 @@ private:
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
     juce::TextButton closeButton { "< Done" };
+    juce::TextButton helpButton { "Help" };
 
     // Where the take is going, and how loud that place wants it. In its own
     // section because it is a decision about delivery rather than about the

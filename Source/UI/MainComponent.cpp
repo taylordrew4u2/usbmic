@@ -23,6 +23,15 @@ MainComponent::MainComponent (Application& app)
     cameraViewport.setVisible (false);
     addChildComponent (cameraViewport);
 
+    helpViewport.setViewedComponent (&helpPanel, false);
+    helpViewport.setScrollBarsShown (true, false);
+    helpViewport.setVisible (false);
+    addChildComponent (helpViewport);
+
+    helpPanel.onCloseClicked = [this] { toggleHelp(); };
+    helpPanel.onOpenSettingsClicked = [this] { toggleAdvanced(); };
+    helpPanel.onExportDiagnosticsClicked = [this] { exportDiagnostics(); };
+
     mainScreen.onRecordButtonClicked = [this] { beginRecording(); };
 
     mainScreen.onVolumeChanged = [this] (double volume0to100) {
@@ -62,6 +71,7 @@ MainComponent::MainComponent (Application& app)
 
     mainScreen.onAdvancedClicked = [this] { toggleAdvanced(); };
     mainScreen.onCamerasClicked = [this] { toggleCameras(); };
+    mainScreen.onHelpClicked = [this] { toggleHelp(); };
 
     // The live views come from the controller, which is the only thing holding
     // the open devices -- the panel never opens a camera itself.
@@ -165,17 +175,13 @@ MainComponent::MainComponent (Application& app)
     };
 
     advancedPanel.onCloseClicked = [this] { toggleAdvanced(); };
+    advancedPanel.onHelpClicked = [this] { toggleHelp(); };
 
     advancedPanel.onMicEnabledChanged = [this] (const juce::String& name, bool enabled) {
         application.setMicEnabledByName (name, enabled);
     };
 
-    advancedPanel.onDiagnosticsExportClicked = [this] {
-        // §11: logs, recent session.json files and the device inventory. Never audio.
-        const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
-                                     .getNonexistentChildFile ("SobStage-diagnostics", ".zip");
-        application.exportDiagnostics (destination);
-    };
+    advancedPanel.onDiagnosticsExportClicked = [this] { exportDiagnostics(); };
 
     // §10.1/§6.2: the question asked before the first take, and the answer
     // given after every one. Children of this component rather than
@@ -325,7 +331,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     // the thing on screen -- behind a panel they would resize something the
     // user cannot see. A focused slider or text field consumes its own arrows
     // before they reach here, so this cannot steal them from the volume.
-    if (! advancedVisible && ! cameraVisible
+    if (! advancedVisible && ! cameraVisible && ! helpVisible
         && (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey))
     {
         const int step = mainScreen.getCameraScale() + (key == juce::KeyPress::upKey ? 1 : -1);
@@ -639,7 +645,7 @@ void MainComponent::refreshStatus()
 
         if (cameraVisible)
             refreshCameras();
-        else if (! advancedVisible)
+        else if (! advancedVisible && ! helpVisible)
         {
             // The main screen carries the pictures now, so the cameras have to
             // actually be open for it to have anything to show.
@@ -804,6 +810,7 @@ void MainComponent::toggleCameras()
         // moment to actually open them -- and on macOS the moment to spend the
         // privacy prompt, with the reason on screen behind it.
         advancedVisible = false;
+        helpVisible = false;
 
         // Hand the viewers over before the panel makes its own. Whichever
         // screen is visible owns them, and a camera with two live viewers is a
@@ -825,7 +832,8 @@ void MainComponent::toggleCameras()
 
     cameraViewport.setVisible (cameraVisible);
     advancedViewport.setVisible (advancedVisible);
-    mainViewport.setVisible (! cameraVisible && ! advancedVisible);
+    helpViewport.setVisible (helpVisible);
+    mainViewport.setVisible (! cameraVisible && ! advancedVisible && ! helpVisible);
 
     if (cameraVisible)
     {
@@ -859,7 +867,7 @@ void MainComponent::refreshCameras()
     // The main screen shows only what is switched on: a tile per camera that is
     // actually going into the take. The off ones are a settings question, and
     // settings live behind the door.
-    if (! cameraVisible && ! advancedVisible)
+    if (! cameraVisible && ! advancedVisible && ! helpVisible)
     {
         std::vector<MainScreen::CameraTile> tiles;
 
@@ -951,6 +959,7 @@ void MainComponent::toggleAdvanced()
         // screen would leave whichever was underneath unreachable but alive,
         // still running its live views.
         cameraVisible = false;
+        helpVisible = false;
 
         // Settings is not showing pictures, so nothing should be running one.
         // The camera panel is closing here too, so both sets go.
@@ -966,7 +975,8 @@ void MainComponent::toggleAdvanced()
 
     advancedViewport.setVisible (advancedVisible);
     cameraViewport.setVisible (cameraVisible);
-    mainViewport.setVisible (! advancedVisible && ! cameraVisible);
+    helpViewport.setVisible (helpVisible);
+    mainViewport.setVisible (! advancedVisible && ! cameraVisible && ! helpVisible);
 
     // Back to the top on entry, so opening Settings never starts halfway down
     // wherever it was last left.
@@ -985,6 +995,52 @@ void MainComponent::toggleAdvanced()
     resized();
 }
 
+void MainComponent::toggleHelp()
+{
+    helpVisible = ! helpVisible;
+
+    if (helpVisible)
+    {
+        // One door at a time, like the other two. Help is text, so nothing
+        // here needs a camera running behind it either.
+        advancedVisible = false;
+        cameraVisible = false;
+        mainScreen.releaseCameraViews();
+        cameraPanel.setCameras ({});
+    }
+    else
+    {
+        refreshCameras();
+    }
+
+    helpViewport.setVisible (helpVisible);
+    advancedViewport.setVisible (advancedVisible);
+    cameraViewport.setVisible (cameraVisible);
+    mainViewport.setVisible (! helpVisible && ! advancedVisible && ! cameraVisible);
+
+    if (helpVisible)
+    {
+        helpViewport.setViewPosition (0, 0);
+
+        // The text wraps to the width, so the width has to be known before
+        // the height can be asked for. The viewport already has the window's
+        // width from the last resized(); hand it to the panel first.
+        helpPanel.setSize (juce::jmax (1, helpViewport.getWidth() - helpViewport.getScrollBarThickness()),
+                           juce::jmax (1, helpPanel.getHeight()));
+        growWindowToFit (helpPanel.getRequiredHeight());
+    }
+
+    resized();
+}
+
+void MainComponent::exportDiagnostics()
+{
+    // §11: logs, recent session.json files and the device inventory. Never audio.
+    const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+                                 .getNonexistentChildFile ("SobStage-diagnostics", ".zip");
+    application.exportDiagnostics (destination);
+}
+
 void MainComponent::resized()
 {
     auto bounds = getLocalBounds();
@@ -992,6 +1048,7 @@ void MainComponent::resized()
     mainViewport.setBounds (bounds);
     advancedViewport.setBounds (bounds);
     cameraViewport.setBounds (bounds);
+    helpViewport.setBounds (bounds);
 
     // The modal cards cover whichever screen is underneath, so they follow the
     // window rather than the viewport they happen to be over.
@@ -1022,6 +1079,12 @@ void MainComponent::resized()
     fit (mainViewport, mainScreen, mainScreen.getRequiredHeight());
     fit (advancedViewport, advancedPanel, advancedPanel.getRequiredHeight());
     fit (cameraViewport, cameraPanel, cameraPanel.getRequiredHeight());
+
+    // Width first, then height: the help text wraps, so what it needs
+    // depends on what it is given across.
+    helpPanel.setSize (juce::jmax (1, helpViewport.getWidth() - helpViewport.getScrollBarThickness()),
+                       juce::jmax (1, helpPanel.getHeight()));
+    fit (helpViewport, helpPanel, helpPanel.getRequiredHeight());
 }
 
 } // namespace mma

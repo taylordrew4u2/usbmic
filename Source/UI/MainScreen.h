@@ -167,6 +167,7 @@ public:
     std::function<void (double)> onVolumeChanged; // 0-100
     std::function<void()> onAdvancedClicked;
     std::function<void()> onCamerasClicked;
+    std::function<void()> onHelpClicked;
     std::function<void()> onMuteToggled;
     std::function<void (int)> onMicNameClicked; // skull index
 
@@ -278,6 +279,9 @@ private:
     // The second door, and the only other one. Named for what is behind it,
     // like Settings: a user looking for their webcam looks for "Cameras".
     juce::TextButton camerasButton { "Cameras" };
+    // The third door. Beside Settings in the masthead, because someone with a
+    // flat meter looks up there for a way out, not down in the level row.
+    juce::TextButton helpButton { "Help" };
 
     /// Layout differs between the two states, so it is remembered rather than
     /// re-derived from a label's text. setRecording() is called from the UI
