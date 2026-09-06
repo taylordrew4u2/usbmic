@@ -25,6 +25,7 @@
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/CapacityMonitor.h"
+#include "../Core/TakeWatchdog.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
@@ -95,6 +96,11 @@ public:
     double getMasterVolume() const;
 
     int getIncludedMicCount() const;
+
+    /// §0.1 / §6.5: everything the mid-take pop-up watches, in one reading:
+    /// which microphones are live, which cameras are still listed, whether
+    /// sound has been dropped, whether the drive is keeping up, room left.
+    TakeHealth snapshotTakeHealth() const;
 
     /// §6.5: false while this channel's microphone is unplugged mid-take. The
     /// channel stays in the file writing silence; this is what the UI dashes

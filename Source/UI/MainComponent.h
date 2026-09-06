@@ -7,6 +7,8 @@
 #include "SaveLocationPrompt.h"
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
+#include "TakeAlertCard.h"
+#include "../Core/TakeWatchdog.h"
 #include <functional>
 
 namespace mma {
@@ -112,6 +114,15 @@ private:
     SaveLocationPrompt saveLocationPrompt;
     SavedTakePanel savedTakePanel;
     RecoveredTakesPanel recoveredTakesPanel;
+
+    // §0.1 / §6.5: the mid-take pop-up and the watcher that raises it. The
+    // watcher is fed one reading per slow tick while a take runs and speaks
+    // only when something changes; the card collects what it says.
+    TakeAlertCard takeAlertCard;
+    TakeWatchdog takeWatchdog;
+    bool wasRecording = false;
+    int ticksUntilCameraRecheck = 0;
+    void watchTake (bool isRecording);
     // The folder the panel is currently showing, so "Open the folder" opens the
     // one on screen rather than whatever the app has moved on to since.
     juce::String savedTakeFolder;
