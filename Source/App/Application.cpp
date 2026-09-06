@@ -753,6 +753,36 @@ std::vector<SetupAdvice> Application::getSetupAdvice() const
     return setupAdvisor.getActiveAdvice (juce::Time::getMillisecondCounterHiRes() / 1000.0);
 }
 
+TakeHealth Application::snapshotTakeHealth() const
+{
+    TakeHealth health;
+
+    const int micCount = getIncludedMicCount();
+    for (int i = 0; i < micCount; ++i)
+        health.mics.push_back ({ getMicDisplayName (i).toStdString(), isMicLive (i) });
+
+    // Only the cameras switched on are in the take, and a camera the OS has
+    // stopped listing is simply absent from this list -- the watchdog treats
+    // a name that was here and now is not as gone.
+    const auto& cameras = cameraController.getSelection();
+    for (const auto& camera : cameras.getAvailableCameras())
+        if (cameras.isEnabled (camera.id))
+            health.cameras.push_back ({ cameras.getDisplayName (camera.id), true });
+
+    health.cameraProblem = cameraController.getProblem().toStdString();
+    health.monitorProblem = getMonitorProblem().toStdString();
+
+    if (capture != nullptr)
+    {
+        health.framesDropped = capture->getFramesDropped();
+        health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
+        health.mixOnly = capture->isMixOnly();
+    }
+
+    health.remainingSeconds = getRemainingRecordingSeconds();
+    return health;
+}
+
 bool Application::isMicLive (int index) const
 {
     // Outside a take every included mic is live by definition: §6.5's silence
