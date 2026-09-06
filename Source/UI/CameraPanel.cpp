@@ -217,7 +217,7 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
 int CameraPanel::getRequiredHeight() const
 {
     // The way back, the heading, and the paragraph under it.
-    int height = kMargin + 30 + 10 + 30 + 8 + 56 + 16;
+    int height = kMargin + 36 + 10 + 30 + 8 + 56 + 16;
 
     if (unavailableLabel.isVisible())
         return height + 40 + kMargin;
@@ -261,7 +261,7 @@ void CameraPanel::resized()
     // The way back goes first, in the same place and with the same wording as
     // the one in Settings. Two doors off the main screen that close in
     // different corners is two things to learn instead of one.
-    closeButton.setBounds (area.removeFromTop (30).removeFromLeft (110));
+    closeButton.setBounds (area.removeFromTop (36).removeFromLeft (110));
     area.removeFromTop (10);
 
     heading.setBounds (area.removeFromTop (30));

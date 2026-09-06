@@ -86,6 +86,29 @@ public:
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&,
                            bool shouldDrawButtonAsHighlighted,
                            bool shouldDrawButtonAsDown) override;
+
+    // Controls that read as controls. Buttons were filled in the same tone as
+    // the panel behind them with a hairline nobody could see, so a screen of
+    // buttons looked like a screen of labels -- and a button that does not
+    // look like one is hard to click before anyone has even aimed at it.
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
+    void drawComboBox (juce::Graphics&, int width, int height, bool isButtonDown,
+                       int buttonX, int buttonY, int buttonW, int buttonH,
+                       juce::ComboBox&) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
+    juce::Font getPopupMenuFont() override;
+    void getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator,
+                                    int standardMenuItemHeight, int& idealWidth,
+                                    int& idealHeight) override;
+
+    /// The pointer becomes a hand over anything that can be pressed, which is
+    /// the one cue every user already knows.
+    juce::MouseCursor getMouseCursorFor (juce::Component&) override;
+
+    /// The outline every control shares. Brighter than the hairline between
+    /// sections, because a control has to stand out from the panel it sits
+    /// on and a section rule has to stay out of the way.
+    static juce::Colour controlOutline();
 };
 
 } // namespace mma

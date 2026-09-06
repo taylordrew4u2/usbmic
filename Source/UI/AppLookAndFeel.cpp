@@ -26,16 +26,18 @@ AppLookAndFeel::AppLookAndFeel()
     setColour (juce::Label::textColourId,            bone);
     setColour (juce::Label::backgroundColourId,      juce::Colours::transparentBlack);
 
-    setColour (juce::TextButton::buttonColourId,     surface);
+    // One step lighter than any panel, so a button is visible before it is
+    // hovered. On `surface` it vanished into the Settings screen.
+    setColour (juce::TextButton::buttonColourId,     surfaceHigh);
     setColour (juce::TextButton::buttonOnColourId,   accent);
     setColour (juce::TextButton::textColourOffId,    bone);
     setColour (juce::TextButton::textColourOnId,     background);
 
-    setColour (juce::ComboBox::backgroundColourId,   surface);
+    setColour (juce::ComboBox::backgroundColourId,   surfaceHigh);
     setColour (juce::ComboBox::textColourId,         bone);
     setColour (juce::ComboBox::outlineColourId,      outline);
     setColour (juce::ComboBox::arrowColourId,        secondary);
-    setColour (juce::ComboBox::buttonColourId,       surface);
+    setColour (juce::ComboBox::buttonColourId,       surfaceHigh);
 
     setColour (juce::PopupMenu::backgroundColourId,           surface);
     setColour (juce::PopupMenu::textColourId,                 bone);
@@ -76,18 +78,97 @@ void AppLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& butt
 
     auto fill = backgroundColour;
 
+    // Hover and press are unmistakable rather than subtle: a button that
+    // brightens by a few percent under the pointer gives no sign that it has
+    // noticed, and people click twice.
     if (shouldDrawButtonAsDown)
-        fill = fill.brighter (0.18f);
+        fill = fill.brighter (0.35f);
     else if (shouldDrawButtonAsHighlighted)
-        fill = fill.brighter (0.08f);
+        fill = fill.brighter (0.18f);
+
+    if (! button.isEnabled())
+        fill = fill.withAlpha (0.5f);
 
     g.setColour (fill);
     g.fillRoundedRectangle (bounds, radius);
 
-    // One hairline instead of a bevel. It is what separates the control from the
-    // background at this contrast without drawing attention to itself.
-    g.setColour (outline);
+    // A visible edge. A bright fill (the record button) gets a darker edge of
+    // its own tone; a dark fill gets the shared control outline.
+    g.setColour (backgroundColour.getPerceivedBrightness() > 0.5f
+                     ? backgroundColour.darker (0.3f)
+                     : (shouldDrawButtonAsHighlighted ? secondary : controlOutline()));
     g.drawRoundedRectangle (bounds, radius, 1.0f);
+}
+
+juce::Colour AppLookAndFeel::controlOutline()
+{
+    return outline.brighter (0.9f);
+}
+
+juce::Font AppLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHeight)
+{
+    // Readable at every size the app uses; the default scaled with the button
+    // and came out at 11px on the smaller ones.
+    return juce::Font (juce::jlimit (14.0f, 17.0f, buttonHeight * 0.42f));
+}
+
+void AppLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool isButtonDown,
+                                   int, int, int, int, juce::ComboBox& box)
+{
+    auto bounds = juce::Rectangle<int> (0, 0, width, height).toFloat().reduced (0.5f);
+    const float radius = 6.0f;
+    const bool hovered = box.isMouseOver (true);
+
+    auto fill = box.findColour (juce::ComboBox::backgroundColourId);
+    if (isButtonDown)  fill = fill.brighter (0.35f);
+    else if (hovered)  fill = fill.brighter (0.18f);
+
+    g.setColour (fill);
+    g.fillRoundedRectangle (bounds, radius);
+
+    g.setColour (hovered ? secondary : controlOutline());
+    g.drawRoundedRectangle (bounds, radius, 1.0f);
+
+    // A chevron large enough to read as "this opens", rather than JUCE's
+    // small triangle in the outline tone.
+    const float cx = width - height * 0.5f;
+    const float cy = height * 0.5f;
+    const float half = juce::jmin (6.0f, height * 0.18f);
+
+    juce::Path chevron;
+    chevron.startNewSubPath (cx - half, cy - half * 0.5f);
+    chevron.lineTo (cx, cy + half * 0.5f);
+    chevron.lineTo (cx + half, cy - half * 0.5f);
+
+    g.setColour (box.isEnabled() ? bone : tertiary);
+    g.strokePath (chevron, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+}
+
+juce::Font AppLookAndFeel::getComboBoxFont (juce::ComboBox&) { return juce::Font (14.0f); }
+juce::Font AppLookAndFeel::getPopupMenuFont()                 { return juce::Font (14.0f); }
+
+void AppLookAndFeel::getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator,
+                                                int standardMenuItemHeight, int& idealWidth,
+                                                int& idealHeight)
+{
+    LookAndFeel_V4::getIdealPopupMenuItemSize (text, isSeparator, standardMenuItemHeight,
+                                               idealWidth, idealHeight);
+
+    // Menu rows tall enough to land on. The sample-rate and storage menus are
+    // the pickers people use most, and their rows were 22px apart.
+    if (! isSeparator)
+        idealHeight = juce::jmax (idealHeight, 32);
+}
+
+juce::MouseCursor AppLookAndFeel::getMouseCursorFor (juce::Component& component)
+{
+    if (component.isEnabled()
+        && (dynamic_cast<juce::Button*> (&component) != nullptr
+            || dynamic_cast<juce::ComboBox*> (&component) != nullptr))
+        return juce::MouseCursor::PointingHandCursor;
+
+    return LookAndFeel_V4::getMouseCursorFor (component);
 }
 
 void AppLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -145,17 +226,25 @@ void AppLookAndFeel::drawScrollbar (juce::Graphics& g, juce::ScrollBar&,
 void AppLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
                                        bool shouldDrawButtonAsHighlighted, bool)
 {
-    const float boxSize = 16.0f;
+    const float boxSize = 20.0f;
     auto bounds = button.getLocalBounds().toFloat();
 
-    juce::Rectangle<float> box (bounds.getX(), bounds.getCentreY() - boxSize * 0.5f,
+    // The whole row is the target, and the whole row says so under the
+    // pointer. The box alone was a 16px square that was easy to miss.
+    if (shouldDrawButtonAsHighlighted && button.isEnabled())
+    {
+        g.setColour (surfaceHigh.withAlpha (0.6f));
+        g.fillRoundedRectangle (bounds, 6.0f);
+    }
+
+    juce::Rectangle<float> box (bounds.getX() + 4.0f, bounds.getCentreY() - boxSize * 0.5f,
                                 boxSize, boxSize);
 
     g.setColour (button.getToggleState() ? accent : surface);
     g.fillRoundedRectangle (box, 3.0f);
 
     g.setColour (button.getToggleState() ? accent
-                                         : (shouldDrawButtonAsHighlighted ? secondary : outline));
+                                         : (shouldDrawButtonAsHighlighted ? bone : controlOutline()));
     g.drawRoundedRectangle (box, 3.0f, 1.0f);
 
     if (button.getToggleState())
@@ -174,7 +263,7 @@ void AppLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& bu
     g.setColour (button.isEnabled() ? bone : tertiary);
     g.setFont (14.0f);
     g.drawText (button.getButtonText(),
-                bounds.withTrimmedLeft (boxSize + 10.0f),
+                bounds.withTrimmedLeft (boxSize + 14.0f),
                 juce::Justification::centredLeft, true);
 }
 

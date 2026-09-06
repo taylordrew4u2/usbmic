@@ -327,6 +327,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    // Escape is the way back from any panel, so nobody has to find the Done
+    // button at the top of a screen they have scrolled down.
+    if (key == juce::KeyPress::escapeKey)
+    {
+        if (advancedVisible)     toggleAdvanced();
+        else if (cameraVisible)  toggleCameras();
+        else if (helpVisible)    toggleHelp();
+        else                     return false;
+
+        return true;
+    }
+
     // The arrows resize the camera pictures, and only while the main screen is
     // the thing on screen -- behind a panel they would resize something the
     // user cannot see. A focused slider or text field consumes its own arrows
