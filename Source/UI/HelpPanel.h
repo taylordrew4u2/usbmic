@@ -33,7 +33,7 @@ public:
     std::function<void()> onExportDiagnosticsClicked;
 
 private:
-    juce::TextButton closeButton { "< Done" };
+    juce::TextButton closeButton { "Close" };
     juce::TextButton settingsButton { "Open Settings" };
     juce::TextButton diagnosticsButton { "Export diagnostics" };
 
