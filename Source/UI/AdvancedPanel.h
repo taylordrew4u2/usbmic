@@ -168,7 +168,7 @@ private:
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
-    juce::TextButton closeButton { "< Done" };
+    juce::TextButton closeButton { "Close" };
     juce::TextButton helpButton { "Help" };
 
     // Where the take is going, and how loud that place wants it. In its own

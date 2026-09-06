@@ -1,7 +1,15 @@
 #include "MainComponent.h"
+#include "AppLookAndFeel.h"
 #include "../App/Application.h"
 
 namespace mma {
+
+namespace {
+// The least the main screen can have beside an open drawer and still show a
+// row of strips, the record button and the footer without wrapping into a
+// column.
+constexpr int kMainMinWidth = 720;
+} // namespace
 
 MainComponent::MainComponent (Application& app)
     : application (app)
@@ -343,7 +351,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     // the thing on screen -- behind a panel they would resize something the
     // user cannot see. A focused slider or text field consumes its own arrows
     // before they reach here, so this cannot steal them from the volume.
-    if (! advancedVisible && ! cameraVisible && ! helpVisible
+    if (! cameraVisible
         && (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey))
     {
         const int step = mainScreen.getCameraScale() + (key == juce::KeyPress::upKey ? 1 : -1);
@@ -657,7 +665,7 @@ void MainComponent::refreshStatus()
 
         if (cameraVisible)
             refreshCameras();
-        else if (! advancedVisible && ! helpVisible)
+        else
         {
             // The main screen carries the pictures now, so the cameras have to
             // actually be open for it to have anything to show.
@@ -842,10 +850,7 @@ void MainComponent::toggleCameras()
         refreshCameras();
     }
 
-    cameraViewport.setVisible (cameraVisible);
-    advancedViewport.setVisible (advancedVisible);
-    helpViewport.setVisible (helpVisible);
-    mainViewport.setVisible (! cameraVisible && ! advancedVisible && ! helpVisible);
+    applyPanelVisibility();
 
     if (cameraVisible)
     {
@@ -878,8 +883,9 @@ void MainComponent::refreshCameras()
 
     // The main screen shows only what is switched on: a tile per camera that is
     // actually going into the take. The off ones are a settings question, and
-    // settings live behind the door.
-    if (! cameraVisible && ! advancedVisible && ! helpVisible)
+    // settings live behind the door. The Settings and Help drawers sit beside
+    // the main screen rather than over it, so the tiles stay while they are up.
+    if (! cameraVisible)
     {
         std::vector<MainScreen::CameraTile> tiles;
 
@@ -967,41 +973,29 @@ void MainComponent::toggleAdvanced()
 
     if (advancedVisible)
     {
-        // §10.3 says one door at a time. Two panels stacked over the main
-        // screen would leave whichever was underneath unreachable but alive,
-        // still running its live views.
-        cameraVisible = false;
+        // One drawer at a time, and the camera panel closes if it was up:
+        // Settings sits beside the MAIN screen, whose pictures come back as
+        // the panel's go.
         helpVisible = false;
 
-        // Settings is not showing pictures, so nothing should be running one.
-        // The camera panel is closing here too, so both sets go.
-        mainScreen.releaseCameraViews();
-        cameraPanel.setCameras ({});
+        if (cameraVisible)
+        {
+            cameraVisible = false;
+            cameraPanel.setCameras ({});
+        }
 
         refreshAdvanced();
     }
-    else
-    {
-        refreshCameras(); // back to the main screen: the tiles come back with it
-    }
 
-    advancedViewport.setVisible (advancedVisible);
-    cameraViewport.setVisible (cameraVisible);
-    helpViewport.setVisible (helpVisible);
-    mainViewport.setVisible (! advancedVisible && ! cameraVisible && ! helpVisible);
+    applyPanelVisibility();
+    refreshCameras();
 
     // Back to the top on entry, so opening Settings never starts halfway down
-    // wherever it was last left.
+    // wherever it was last left. And wide enough for both halves.
     if (advancedVisible)
     {
         advancedViewport.setViewPosition (0, 0);
-
-        // And give it room. The main screen opens the window at the height an
-        // audio-only rig needs, which is shorter than Settings -- so without
-        // this, opening Settings showed its first four rows and put the rest
-        // behind a scrollbar. Every panel that can be opened over the main
-        // screen asks for its own height on the way in.
-        growWindowToFit (advancedPanel.getRequiredHeight());
+        growWindowToFitWidth (kMainMinWidth + drawerWidth());
     }
 
     resized();
@@ -1013,33 +1007,27 @@ void MainComponent::toggleHelp()
 
     if (helpVisible)
     {
-        // One door at a time, like the other two. Help is text, so nothing
-        // here needs a camera running behind it either.
         advancedVisible = false;
-        cameraVisible = false;
-        mainScreen.releaseCameraViews();
-        cameraPanel.setCameras ({});
-    }
-    else
-    {
-        refreshCameras();
+
+        if (cameraVisible)
+        {
+            cameraVisible = false;
+            cameraPanel.setCameras ({});
+        }
     }
 
-    helpViewport.setVisible (helpVisible);
-    advancedViewport.setVisible (advancedVisible);
-    cameraViewport.setVisible (cameraVisible);
-    mainViewport.setVisible (! helpVisible && ! advancedVisible && ! cameraVisible);
+    applyPanelVisibility();
+    refreshCameras();
 
     if (helpVisible)
     {
         helpViewport.setViewPosition (0, 0);
+        growWindowToFitWidth (kMainMinWidth + drawerWidth());
 
         // The text wraps to the width, so the width has to be known before
-        // the height can be asked for. The viewport already has the window's
-        // width from the last resized(); hand it to the panel first.
-        helpPanel.setSize (juce::jmax (1, helpViewport.getWidth() - helpViewport.getScrollBarThickness()),
+        // the height can be asked for.
+        helpPanel.setSize (juce::jmax (1, drawerWidth() - helpViewport.getScrollBarThickness()),
                            juce::jmax (1, helpPanel.getHeight()));
-        growWindowToFit (helpPanel.getRequiredHeight());
     }
 
     resized();
@@ -1053,14 +1041,89 @@ void MainComponent::exportDiagnostics()
     application.exportDiagnostics (destination);
 }
 
+int MainComponent::drawerWidth() const
+{
+    // Two fifths of the window, within limits: narrower than 380 the Settings
+    // rows squash their pickers, wider than 500 the main screen pays for room
+    // the drawer does not use.
+    return juce::jlimit (380, 500, getWidth() * 2 / 5);
+}
+
+void MainComponent::applyPanelVisibility()
+{
+    // The camera panel replaces the main screen, because it owns the live
+    // viewers while it is up. The two drawers sit beside it instead.
+    cameraViewport.setVisible (cameraVisible);
+    mainViewport.setVisible (! cameraVisible);
+    advancedViewport.setVisible (advancedVisible && ! cameraVisible);
+    helpViewport.setVisible (helpVisible && ! cameraVisible);
+
+    mainScreen.setDoorsOpen (advancedVisible && ! cameraVisible, helpVisible && ! cameraVisible);
+}
+
+void MainComponent::growWindowToFitWidth (int contentWidth)
+{
+    auto* window = getTopLevelComponent();
+
+    if (window == nullptr || window == this)
+        return;
+
+    const auto usable = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
+                        ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
+                        : juce::Rectangle<int> (0, 0, 1180, 900);
+
+    const int chrome = juce::jmax (0, window->getWidth() - getWidth());
+    const int wanted = contentWidth + chrome;
+
+    // Only ever grows, like the height. Shrinking would undo a width the user
+    // set by hand.
+    const int width = juce::jlimit (window->getWidth(),
+                                    juce::jmax (window->getWidth(), usable.getWidth()),
+                                    wanted);
+
+    if (width == window->getWidth())
+        return;
+
+    window->setSize (width, window->getHeight());
+
+    const int left = juce::jlimit (usable.getX(),
+                                   juce::jmax (usable.getX(), usable.getRight() - width),
+                                   window->getX());
+
+    window->setTopLeftPosition (left, window->getY());
+}
+
+void MainComponent::paint (juce::Graphics& g)
+{
+    // The drawer's edge: one hairline where the main screen ends and Settings
+    // begins, so the two read as a screen and a drawer rather than one wide
+    // screen with a seam in it.
+    if ((advancedVisible || helpVisible) && ! cameraVisible)
+    {
+        g.setColour (AppLookAndFeel::outline);
+        g.fillRect (mainViewport.getRight(), 0, 1, getHeight());
+    }
+}
+
 void MainComponent::resized()
 {
     auto bounds = getLocalBounds();
 
-    mainViewport.setBounds (bounds);
-    advancedViewport.setBounds (bounds);
     cameraViewport.setBounds (bounds);
-    helpViewport.setBounds (bounds);
+
+    // The drawer takes the right-hand side only while one is open; otherwise
+    // the main screen has the whole window, as before.
+    auto drawer = juce::Rectangle<int>();
+
+    if ((advancedVisible || helpVisible) && ! cameraVisible)
+    {
+        drawer = bounds.removeFromRight (drawerWidth());
+        drawer.removeFromLeft (1); // the hairline paint() draws
+    }
+
+    mainViewport.setBounds (bounds);
+    advancedViewport.setBounds (drawer);
+    helpViewport.setBounds (drawer);
 
     // The modal cards cover whichever screen is underneath, so they follow the
     // window rather than the viewport they happen to be over.

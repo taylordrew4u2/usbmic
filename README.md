@@ -109,11 +109,14 @@ one button worth pressing; everything else — how much room is left, where the
 files are going, the monitor level — sits quietly in the footer.
 
 <p align="center">
-  <img src="docs/images/settings.png" alt="Settings: sections for where recordings go, recording format, and microphones, with a storage picker, per-microphone checkboxes and the clock master control" width="660">
+  <img src="docs/images/settings.png" alt="The Settings drawer open down the right-hand side of the window, with the live main screen -- strips, mix bar, record button and footer -- still on the left" width="660">
 </p>
 
-Settings is one screen with a Done button at the top left, and Help beside
-it. Where recordings go
+Settings opens as a drawer down the right-hand side, with the main screen
+still live on the left: the meters keep moving, the camera tiles keep
+running, and recording can be started without closing it. The Settings
+button stays lit while it is open and closes it again; so do Close at the
+top of the drawer and Escape. Where recordings go
 comes first, because picking a card before a take is what most people open it
 for. Then the format — sample rate, bit depth and buffer size, each a real
 control rather than a readout, the way Audio MIDI Setup treats them: pick it,
@@ -128,15 +131,14 @@ records two files rather than eight; and clicking a strip's name on the main
 screen names that socket's person, not the whole box. Both are port memory:
 they follow the interface across a replug and a relaunch. Every microphone is
 locked to this computer's clock, so there is no clock master to choose.
-Opening it grows the window to fit the panel, so nothing arrives already
-scrolled.
+Opening it widens the window if it must, so both halves fit.
 
 <p align="center">
   <img src="docs/images/help.png" alt="Help: headings over plain paragraphs -- the recording is silent, dynamic or condenser microphone, the amber line under the strips, sample rate bit depth and buffer size, a mixer or interface with several sockets, where the files are, still stuck -- with Open Settings and Export diagnostics buttons at the bottom" width="660">
 </p>
 
-Help is the third door, beside Settings in the masthead and again beside Done
-on the Settings screen. It answers "why is it silent?" in the app, in the
+Help is the third door, beside Settings in the masthead and again beside
+Close on the Settings drawer, and opens as a drawer the same way. It answers "why is it silent?" in the app, in the
 order the causes actually turn up. First the checklist for a mixer or
 interface: the box ticked in Settings, microphone permission, the channel
 unmuted with its faders up, the USB send (LOOPBACK on a PUPGSIS T12S)

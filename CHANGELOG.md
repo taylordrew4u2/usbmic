@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.8.0 -- 2026-09-06
+
+### Changed -- Settings and Help are a drawer beside the main screen
+
+Settings used to replace the whole window, so every trip to a picker was a
+trip away from the meters, the pictures and the record button. It now opens
+as a drawer down the right-hand side, scrolling on its own, with the main
+screen still live on the left: the skulls keep filling, the camera tiles
+keep running, and recording can be started without closing anything. Help
+opens the same way. The Settings or Help button stays lit while its drawer
+is open and closes it again; so does Close at the top of the drawer, and
+Escape. The window widens (never narrows) so both halves fit, and the
+footer keeps to one line at the narrower width. The camera panel still
+takes the whole window, because it owns the live viewers while it is up.
+
 ## v1.7.1 -- 2026-09-06
 
 ### Changed -- controls that look like controls, and are easier to hit

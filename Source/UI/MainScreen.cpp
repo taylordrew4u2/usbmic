@@ -161,6 +161,14 @@ MainScreen::MainScreen()
     helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
     addAndMakeVisible (helpButton);
 
+    // While a drawer is open its button stays lit, in a lifted grey rather
+    // than the accent, which is reserved for the one button that records.
+    for (auto* b : { &advancedButton, &helpButton })
+    {
+        b->setColour (juce::TextButton::buttonOnColourId, AppLookAndFeel::surfaceHigh.brighter (0.7f));
+        b->setColour (juce::TextButton::textColourOnId, AppLookAndFeel::bone);
+    }
+
     // The masthead. Letter-spaced by hand, because a wordmark is the one piece
     // of type on this screen that is a picture of a word rather than a word.
     brandLabel.setText ("S O B S T A G E", juce::dontSendNotification);
@@ -658,6 +666,12 @@ void MainScreen::paint (juce::Graphics& g)
     }
 }
 
+void MainScreen::setDoorsOpen (bool settingsOpen, bool helpOpen)
+{
+    advancedButton.setToggleState (settingsOpen, juce::dontSendNotification);
+    helpButton.setToggleState (helpOpen, juce::dontSendNotification);
+}
+
 void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
@@ -930,17 +944,22 @@ void MainScreen::resized()
     // the destination rather than from the capacity figure: during a take, how
     // long it has been going matters more than where it is going, which has
     // not changed since it started.
+    // One line each, centred in the row. Given the row's full height a label
+    // wraps onto two lines the moment the window narrows -- beside an open
+    // Settings drawer, for one -- and the footer turns into a stack.
+    auto textRow = bottomRow.withSizeKeepingCentre (bottomRow.getWidth(), 20);
+
     if (recording)
     {
-        elapsedLabel.setBounds (bottomRow.removeFromLeft (150));
-        remainingLabel.setBounds (bottomRow.removeFromLeft (190));
-        saveLocationLabel.setBounds (bottomRow);
+        elapsedLabel.setBounds (textRow.removeFromLeft (150));
+        remainingLabel.setBounds (textRow.removeFromLeft (190));
+        saveLocationLabel.setBounds (textRow);
     }
     else
     {
         elapsedLabel.setBounds ({});
-        remainingLabel.setBounds (bottomRow.removeFromLeft (juce::jmin (200, bottomRow.getWidth() / 2)));
-        saveLocationLabel.setBounds (bottomRow);
+        remainingLabel.setBounds (textRow.removeFromLeft (juce::jmin (200, textRow.getWidth() / 2)));
+        saveLocationLabel.setBounds (textRow);
     }
 }
 

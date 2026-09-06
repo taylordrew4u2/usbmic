@@ -26,6 +26,7 @@ public:
     ~MainComponent() override;
 
     void resized() override;
+    void paint (juce::Graphics&) override;
 
 private:
     /// §8.2: the UI polls, the audio thread never pushes. Dropping a frame here
@@ -74,6 +75,17 @@ private:
     /// screen ask for their own on the way in, so none of them opens showing
     /// its first few rows with the rest behind a scrollbar.
     void growWindowToFit (int contentHeight);
+
+    /// Settings and Help open as a drawer down the right-hand side, with the
+    /// main screen -- meters, pictures, record button -- still live on the
+    /// left. A full-screen panel meant every trip into Settings was a trip
+    /// away from the thing being recorded.
+    int drawerWidth() const;
+    /// Widens the window (never narrows it) so the drawer and a usable main
+    /// screen fit side by side.
+    void growWindowToFitWidth (int contentWidth);
+    /// One place that decides which viewports show, from the three flags.
+    void applyPanelVisibility();
     int lastMicCount = -1;
     int lastAdvancedMicCount = -1;
     int framesUntilStatusRefresh = 1;
