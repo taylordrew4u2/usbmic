@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-413%20passing-brightgreen" alt="413 tests passing">
+  <img src="https://img.shields.io/badge/tests-425%20passing-brightgreen" alt="425 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This found five user-facing defects that were otherwise unreachable from any available machine. |
 
-413 unit tests, two long-running capture harnesses and two platform simulators
+425 unit tests, two long-running capture harnesses and two platform simulators
 run on macOS, Windows and Linux on every commit.
 
 ### Honest limits
@@ -159,6 +159,18 @@ never be left with. The folder name updates as the recording is named, the list
 underneath is what will actually be written, and the backup copy's location is
 stated rather than left to be discovered. Answering it once is the whole cost —
 every press of record after this starts immediately.
+
+<p align="center">
+  <img src="docs/images/mid-take-alert.png" alt="A card over a running take headed 'Something changed mid-take.', listing that a microphone stopped sending sound, a camera went away, and a microphone came back, each with how far into the take it happened, with Stop recording and Keep recording buttons" width="660">
+</p>
+
+If something goes wrong while a take is running -- a microphone unplugged, a
+camera switched off, sound dropped, the drive falling behind or nearly full
+-- this card comes up the moment it happens and says so, with how far into
+the take it was. The take carries on behind it; Keep recording dismisses
+the card, Stop recording is the same press as the record button. Each
+change is said once, and good news (a mic coming back) joins the card
+quietly rather than raising it.
 
 <p align="center">
   <img src="docs/images/recording.png" alt="A take in progress: the record button is red and reads 'Recording. Tap to stop.', a green line says '5 files -- 670 bytes so far', and the footer reads 'Recording for 0m 06s' beside the session folder being written into" width="660">

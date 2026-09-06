@@ -242,6 +242,18 @@ MainComponent::MainComponent (Application& app)
     };
     addChildComponent (savedTakePanel);
 
+    // The mid-take pop-up. Keep = dismiss; the take never stopped. Stop =
+    // the same press as the record button, so the saved-take card follows.
+    takeAlertCard.onKeepRecording = [this] {
+        takeAlertCard.setVisible (false);
+        grabKeyboardFocus();
+    };
+    takeAlertCard.onStopRecording = [this] {
+        takeAlertCard.setVisible (false);
+        startRecordingNow();
+    };
+    addChildComponent (takeAlertCard);
+
     recoveredTakesPanel.onOpenFolder = [this] {
         juce::File (recoveredTakesPanel.getFolderToOpen()).revealToUser();
     };
@@ -321,7 +333,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     // A card is up and owns the keyboard. Muting the room from behind one would
     // be a change the user cannot see the cause of.
     if (saveLocationPrompt.isVisible() || savedTakePanel.isVisible()
-        || recoveredTakesPanel.isVisible())
+        || recoveredTakesPanel.isVisible() || takeAlertCard.isVisible())
         return false;
 
     // §5.1: spacebar mutes and unmutes the monitor instantly. A focused text
@@ -465,6 +477,67 @@ void MainComponent::showRecoveredTakes()
     recoveredTakesPanel.setVisible (true);
     recoveredTakesPanel.toFront (true);
     recoveredTakesPanel.prepareToShow();
+}
+
+void MainComponent::watchTake (bool isRecording)
+{
+    // Runs on the slow tick. The first tick of a take is the baseline --
+    // whatever was already wrong was on screen before record was pressed --
+    // and every tick after it is compared against the one before.
+    if (isRecording && ! wasRecording)
+    {
+        takeAlertCard.clear();
+        takeAlertCard.setVisible (false);
+        takeWatchdog.beginTake (application.snapshotTakeHealth());
+        ticksUntilCameraRecheck = 0;
+    }
+    else if (! isRecording && wasRecording)
+    {
+        takeWatchdog.endTake();
+        takeAlertCard.setVisible (false);
+    }
+
+    wasRecording = isRecording;
+
+    if (! isRecording)
+        return;
+
+    // The OS does not announce a camera going away; it just stops listing
+    // it. Re-list every couple of seconds during a take, which is cheap, and
+    // only during a take, which is when it matters.
+    if (--ticksUntilCameraRecheck <= 0)
+    {
+        ticksUntilCameraRecheck = kStatusRefreshHz * 2;
+        application.getCameraController().refreshCameras();
+    }
+
+    const auto alerts = takeWatchdog.observe (application.snapshotTakeHealth());
+
+    if (alerts.empty())
+        return;
+
+    const auto when = Application::formatDuration (application.getElapsedRecordingSeconds()) + " in";
+
+    for (const auto& alert : alerts)
+        takeAlertCard.addAlert (when, juce::String (alert.message), alert.recovery);
+
+    // Good news alone does not interrupt anyone; it joins the card if the
+    // card is already up. Bad news brings the card up, unless another card
+    // -- the save prompt, say -- is already asking something.
+    bool anyBad = false;
+    for (const auto& alert : alerts)
+        anyBad = anyBad || ! alert.recovery;
+
+    if (anyBad && ! takeAlertCard.isVisible()
+        && ! saveLocationPrompt.isVisible() && ! savedTakePanel.isVisible()
+        && ! recoveredTakesPanel.isVisible())
+    {
+        growWindowToFit (takeAlertCard.getRequiredHeight() + 32);
+        takeAlertCard.setBounds (getLocalBounds());
+        takeAlertCard.setVisible (true);
+        takeAlertCard.toFront (true);
+        takeAlertCard.prepareToShow();
+    }
 }
 
 void MainComponent::showSavedTake()
@@ -625,6 +698,8 @@ void MainComponent::refreshStatus()
             lastSavingLine = savingLine;
             mainScreen.setFilesBeingSavedText (savingLine);
         }
+
+        watchTake (isRecording);
 
         // A take can also end without the record button: §6.5 stops one when
         // the card fills or is pulled. The notice belongs to the stop, not to
@@ -1130,6 +1205,7 @@ void MainComponent::resized()
     saveLocationPrompt.setBounds (bounds);
     savedTakePanel.setBounds (bounds);
     recoveredTakesPanel.setBounds (bounds);
+    takeAlertCard.setBounds (bounds);
 
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one

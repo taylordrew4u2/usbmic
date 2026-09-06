@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SobStage VERSION 1.8.0 LANGUAGES CXX)
+project(SobStage VERSION 1.9.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,6 +49,7 @@ add_library(mma_core STATIC
     Source/Core/TapToNameDetector.cpp
     Source/Core/PermissionGuidance.cpp
     Source/Core/HelpTopics.cpp
+    Source/Core/TakeWatchdog.cpp
     Source/Core/CaptureCoordinator.cpp
     Source/Core/DeviceInputStream.cpp
     Source/Core/CombinedTakePlan.cpp
@@ -145,6 +146,7 @@ if (MMA_BUILD_APP)
         Source/UI/SaveLocationPrompt.cpp
         Source/UI/SavedTakePanel.cpp
         Source/UI/RecoveredTakesPanel.cpp
+        Source/UI/TakeAlertCard.cpp
         Source/UI/MainComponent.cpp
         Source/UI/Main.cpp
         Source/App/Application.cpp

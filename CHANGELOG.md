@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.9.0 -- 2026-09-06
+
+### Added -- a pop-up the moment something goes wrong mid-take
+
+If a microphone stops sending sound, a camera goes away, sound is dropped,
+the drive falls behind or drops to mix-only, the monitor path breaks, or
+the drive is down to ten or two minutes of room, a card comes up over the
+main screen the moment it happens and says so in plain words, with how far
+into the take it was. The take carries on behind it: Keep recording (or
+Escape) dismisses the card, Stop recording is the same press as the record
+button. Good news -- a mic or camera coming back -- joins the card without
+raising it. Each change is said once; a mic that was already dead when
+record was pressed was on screen already and is not an alert. Cameras are
+re-listed every two seconds during a take, because the system does not
+announce one being unplugged, it just stops listing it.
+
+The rules live in Core (TakeWatchdog) under twelve tests; the card is one
+more ModalCard beside the save prompt and the saved-take card.
+
 ## v1.8.0 -- 2026-09-06
 
 ### Changed -- Settings and Help are a drawer beside the main screen
