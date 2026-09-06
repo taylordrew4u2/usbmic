@@ -517,7 +517,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kRow           = 32 + 4;
     constexpr int kMicListLabel  = 22;
     constexpr int kMicToggle     = 28 + 2;
-    constexpr int kClockHelp     = 64 + 8;
+    constexpr int kClockHelp     = 84 + 8;
     constexpr int kDrift         = 60 + 4;
     constexpr int kTrimViewport  = 100 + 16;
     constexpr int kAggregate     = 20 + 16;
@@ -539,7 +539,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kCombine     = 28 + 32;
 
     // "Where it's going": the explanation and the line of advice under it.
-    constexpr int kDelivery    = 56 + 4 + 36;
+    constexpr int kDelivery    = 84 + 4 + 36;
 
     return kMargins + kCloseButton + (kSection * 5) + (kRow * kRowCount)
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
@@ -623,7 +623,7 @@ void AdvancedPanel::resized()
 
     section (deliverySection);
     row (deliveryLabel, deliveryCombo);
-    deliveryNote.setBounds (area.removeFromTop (56));
+    deliveryNote.setBounds (area.removeFromTop (84));
     area.removeFromTop (4);
     loudnessAdviceLabel.setBounds (area.removeFromTop (36));
     area.removeFromTop (12);
@@ -643,7 +643,7 @@ void AdvancedPanel::resized()
     area.removeFromTop (10);
 
     row (clockMasterLabel, clockMasterValue);
-    clockMasterHelpLabel.setBounds (area.removeFromTop (64));
+    clockMasterHelpLabel.setBounds (area.removeFromTop (84));
     area.removeFromTop (8);
 
     driftLabel.setBounds (area.removeFromTop (60));

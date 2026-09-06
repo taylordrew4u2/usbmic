@@ -168,6 +168,10 @@ public:
     std::function<void()> onAdvancedClicked;
     std::function<void()> onCamerasClicked;
     std::function<void()> onHelpClicked;
+
+    /// Which drawer is open, so its button reads as pressed: the same button
+    /// closes it again, and it should look like it will.
+    void setDoorsOpen (bool settingsOpen, bool helpOpen);
     std::function<void()> onMuteToggled;
     std::function<void (int)> onMicNameClicked; // skull index
 
