@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.7.1 -- 2026-09-06
+
+### Changed -- controls that look like controls, and are easier to hit
+
+Buttons were filled in the same tone as the panel behind them with a hairline
+nobody could see, so a screen of buttons read as a screen of labels, and the
+smallest of them were 24 px tall. Every button, picker and tick box is now
+one step lighter than its panel with a visible edge, brightens plainly under
+the pointer, and the pointer becomes a hand over anything that can be
+pressed, including a strip's name. Sizes went up across the app: header
+buttons 36 px, Settings rows 32 px, tick boxes 20 px with the whole row as
+the target, menu rows 32 px, card buttons 38 px, and the footer 40 px.
+Button and menu text is 14 px everywhere instead of scaling down with the
+control. Escape closes Settings, Cameras or Help.
+
 ## v1.7.0 -- 2026-09-05
 
 ### Added -- a Help screen
