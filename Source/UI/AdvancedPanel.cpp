@@ -512,17 +512,17 @@ int AdvancedPanel::getRequiredHeight() const
     // from a trial layout, because resized() consumes the bounds it is given
     // and cannot report what it would have wanted from a taller one.
     constexpr int kMargins       = 12 * 2;
-    constexpr int kCloseButton   = 30 + 14;
+    constexpr int kCloseButton   = 36 + 14;
     constexpr int kSection       = 14 + 3 + 1 + 9;  // heading, gap, rule, gap
-    constexpr int kRow           = 26 + 4;
+    constexpr int kRow           = 32 + 4;
     constexpr int kMicListLabel  = 22;
-    constexpr int kMicToggle     = 24 + 2;
+    constexpr int kMicToggle     = 28 + 2;
     constexpr int kClockHelp     = 64 + 8;
     constexpr int kDrift         = 60 + 4;
     constexpr int kTrimViewport  = 100 + 16;
     constexpr int kAggregate     = 20 + 16;
-    constexpr int kMirror        = 26 + 16;
-    constexpr int kDiagnostics   = 30;
+    constexpr int kMirror        = 28 + 16;
+    constexpr int kDiagnostics   = 36;
 
     // save-to volume, destination folder, sample rate, bit depth, buffer size,
     // latency, delivery target, clock master, output device, backend,
@@ -536,7 +536,7 @@ int AdvancedPanel::getRequiredHeight() const
 
     // The backup copy's note, the combined-video toggle and its note.
     constexpr int kMirrorNote  = 20;
-    constexpr int kCombine     = 26 + 32;
+    constexpr int kCombine     = 28 + 32;
 
     // "Where it's going": the explanation and the line of advice under it.
     constexpr int kDelivery    = 56 + 4 + 36;
@@ -556,7 +556,7 @@ void AdvancedPanel::resized()
     // and placed before anything else claims the space so it cannot be pushed
     // off the bottom by a long device list.
     {
-        auto top = area.removeFromTop (30);
+        auto top = area.removeFromTop (36);
         closeButton.setBounds (top.removeFromLeft (110));
         top.removeFromLeft (8);
         helpButton.setBounds (top.removeFromLeft (64));
@@ -578,8 +578,10 @@ void AdvancedPanel::resized()
     // of mostly empty well, and short labels sat a long way from their values.
     constexpr int kValueWidth = 300;
 
+    // 32px rows: a combo or button that can be hit without aiming, and the
+    // same height as the rest of the app's controls.
     auto row = [&] (juce::Label& label, juce::Component& value) {
-        auto r = area.removeFromTop (26);
+        auto r = area.removeFromTop (32);
         value.setBounds (r.removeFromRight (juce::jmin (kValueWidth, r.getWidth() * 3 / 5)));
         r.removeFromRight (12);
         label.setBounds (r);
@@ -597,12 +599,12 @@ void AdvancedPanel::resized()
     // The backup copy is a storage decision, so it belongs with the other two
     // rather than orphaned at the bottom between the aggregate device and the
     // diagnostics button.
-    mirrorToggle.setBounds (area.removeFromTop (26));
+    mirrorToggle.setBounds (area.removeFromTop (28));
     mirrorNote.setBounds (area.removeFromTop (20).reduced (20, 0));
 
     // With the backup copy, because both are answers to "what else ends up on
     // my disk when I stop".
-    combineVideoToggle.setBounds (area.removeFromTop (26));
+    combineVideoToggle.setBounds (area.removeFromTop (28));
 
     // Only takes room when it has something to say, so the panel does not
     // carry an empty line for everyone whose machine is set up correctly.
@@ -633,7 +635,7 @@ void AdvancedPanel::resized()
         // A socket row sits indented under its box, so the list reads as a
         // box with people on it rather than a flat run of identical ticks.
         const bool isInput = i < micToggleIsInput.size() && micToggleIsInput[i];
-        auto rowArea = area.removeFromTop (24).reduced (8, 0);
+        auto rowArea = area.removeFromTop (28).reduced (8, 0);
         if (isInput) rowArea.removeFromLeft (28);
         micToggles[i]->setBounds (rowArea);
         area.removeFromTop (2);
@@ -658,7 +660,7 @@ void AdvancedPanel::resized()
     aggregateStatusLabel.setBounds (area.removeFromTop (20));
     area.removeFromTop (16);
 
-    diagnosticsExportButton.setBounds (area.removeFromTop (30).removeFromLeft (180));
+    diagnosticsExportButton.setBounds (area.removeFromTop (36).removeFromLeft (180));
 }
 
 

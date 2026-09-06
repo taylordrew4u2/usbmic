@@ -63,7 +63,7 @@ protected:
     static constexpr int kCardWidth   = 480;
     static constexpr int kCardPadding = 22;
     static constexpr int kRowHeight   = 22;
-    static constexpr int kButtonHeight = 34;
+    static constexpr int kButtonHeight = 38;
 
     juce::Rectangle<int> getCardBounds() const;
 

@@ -5,14 +5,14 @@ namespace mma {
 
 namespace {
 constexpr int kMargin       = 12;
-constexpr int kCloseRow     = 30;
+constexpr int kCloseRow     = 36;
 constexpr int kAfterClose   = 14;
 constexpr int kIntroGap     = 18;
 constexpr int kHeadingH     = 16;
 constexpr int kHeadingGap   = 3;
 constexpr int kRuleGap      = 9;
 constexpr int kAfterTopic   = 20;
-constexpr int kButtonRow    = 30;
+constexpr int kButtonRow    = 36;
 constexpr int kMaxTextWidth = 640;  // a paragraph wider than this is hard to read
 } // namespace
 
