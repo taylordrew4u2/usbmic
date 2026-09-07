@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.10.0 -- 2026-09-08
+
+### Fixed -- the audit's silent-loss findings, proven end to end
+
+- **Recording no longer depends on the headphone output.** The rig was
+  pulled onto the output device's callback, so with no output selected
+  nothing recorded and nothing said so, and an output unplugged mid-take
+  froze the take silently. A software clock now pulls whenever the output
+  is absent or stops calling back; the mid-take card says "The headphone
+  output has stopped" and the take carries on. Reproduced for real: a
+  headless take on this rig used to leave seven 0-byte files, and now
+  leaves seven files of audio.
+- **32-bit takes are written correctly.** The header said 32-bit over
+  24-bit samples; every file was unreadable. The packer now writes 32-bit
+  integer PCM, and a depth it cannot pack is refused.
+- **Dropped audio is always counted.** A full input ring discarded samples
+  without counting them; they now reach the mid-take card, said once and
+  then at most once a minute with the running total.
+- **Unplugging an interface silences every socket it carries**, not only
+  the first, and every socket comes back together.
+- **The first take of every launch gets its backup copy.** The mirror
+  decision was read before it was made. It is now made at arm, before the
+  folders exist, and a mirror folder never overwrites an earlier one with
+  the same name.
+- **Changes refused mid-take are applied when the take ends** (a mic
+  plugged in, an unplug, a rename, a rate change), so the next take's plan
+  and its streams agree.
+- **Trim sliders act on the right device** on an interface with several
+  sockets; unticking a mic in Settings mid-take no longer reads as an
+  unplug; a mic switched off stays off across an unplug.
+- **"The drive is full. Recording has stopped" now stops**, and unknown
+  free space is no longer reported as a full drive.
+- **Recovered takes are offered once.** After the Recovered card, each take
+  is marked finished, so it does not come back at every launch.
+- A lock-free hand-off now uses sequentially consistent ordering (a
+  nanosecond crash window on Intel and Windows); a 24-bit decode no longer
+  left-shifts a negative value; a Windows notification class is final.
+
+### Added -- an end-to-end gate
+
+`Tools/e2e_app_take.sh` starts the real app headless, records a real take
+through the real ALSA backend against the virtual microphones, stops it,
+and `Tools/verify_take.py` checks every file: bit depth and block align as
+configured, length, signal, the right tone on the right stem, a stop
+timestamp, and the mirror copy's sizes when the mirror ran. No release
+ships without it passing.
+
 ## v1.9.0 -- 2026-09-06
 
 ### Added -- a pop-up the moment something goes wrong mid-take

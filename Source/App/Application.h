@@ -423,7 +423,10 @@ public:
     /// screen. Empty when the last run ended cleanly, which is the usual case.
     const std::vector<RecoveredSession>& getRecoveredSessions() const { return recoveredSessions; }
     /// Called once the user has been shown them.
-    void clearRecoveredSessions() { recoveredSessions.clear(); }
+    /// Called once the user has been shown them. Also marks each one as
+    /// finished on disk, so it is offered once rather than at every launch
+    /// until twenty newer takes push it out of the scan.
+    void clearRecoveredSessions();
 
     /// §11: diagnostics export -- logs, last 5 session.json files, device
     /// inventory. Never audio.
@@ -564,6 +567,13 @@ private:
     /// makes monitoring live from launch, and a hot-plug changes the channel
     /// set, so this runs at startup and on every device-list change.
     void restartCapture();
+
+    /// restartCapture() unless a take is running, in which case the restart
+    /// is owed and happens when the take stops. Every change refused mid-take
+    /// (a mic plugged in, an unplug, a rename, a rate) used to stay unapplied
+    /// forever: the next take planned N+1 files and wrote N.
+    void requestCaptureRestart();
+    bool captureRestartDeferred = false;
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
 
@@ -579,6 +589,11 @@ private:
     /// case mid-take, where the channel outlives the microphone unplugged from
     /// it, and the caller falls back to the name the channel opened with.
     juce::String nameForChannel (const std::string& identityKey, int deviceChannel) const;
+
+    /// The device a strip belongs to: the take's frozen channel list mid-take,
+    /// the plan otherwise. Never a walk over included devices, which is a
+    /// different space once an interface contributes more than one strip.
+    std::string deviceKeyForStrip (int index) const;
 
     /// The rig as the channel planner sees it: every included device, with
     /// §2.4's remembered name and §2.1 verdict already resolved.
