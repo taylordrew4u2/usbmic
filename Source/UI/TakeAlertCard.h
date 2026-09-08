@@ -20,6 +20,11 @@ public:
     /// Adds a line. `recovery` draws it in the calm tone (something came back).
     void addAlert (const juce::String& whenInTake, const juce::String& message, bool recovery);
     void clear();
+
+    /// Red heading, "Recording failed" wording: for a take that has stopped
+    /// itself or a drive that has stopped taking audio. Back to the calm
+    /// heading on clear().
+    void setSevere (bool severe, bool takeStopped);
     int getAlertCount() const { return static_cast<int> (rows.size()); }
 
     std::function<void()> onKeepRecording;

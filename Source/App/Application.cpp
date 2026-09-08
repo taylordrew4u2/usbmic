@@ -759,6 +759,24 @@ std::vector<SetupAdvice> Application::getSetupAdvice() const
     return setupAdvisor.getActiveAdvice (juce::Time::getMillisecondCounterHiRes() / 1000.0);
 }
 
+ProofReading Application::snapshotProof() const
+{
+    ProofReading reading;
+    reading.elapsedSeconds = getElapsedRecordingSeconds();
+
+    if (capture != nullptr)
+    {
+        reading.framesAccepted = capture->getFramesAccepted();
+        reading.peakArrived = capture->getPeakArrived();
+    }
+
+    if (currentSessionFolder.isNotEmpty())
+        for (const auto& file : listSessionFiles (currentSessionFolder))
+            reading.bytesOnDisk += static_cast<uint64_t> (std::max<int64_t> (0, file.sizeBytes));
+
+    return reading;
+}
+
 TakeHealth Application::snapshotTakeHealth() const
 {
     TakeHealth health;
@@ -1540,6 +1558,18 @@ juce::String Application::getRecordDisabledReason() const
 {
     if (getIncludedMicCount() == 0)
         return "Plug in a microphone first.";
+
+    // The microphones have to be OPEN, not merely plugged in. A rig whose
+    // streams failed to open -- the output refused low-latency mode, a mic
+    // held by another app -- used to leave this button live, and pressing it
+    // produced a take of empty files with the clock running. Now the button
+    // says why it is off, in the words the streams gave.
+    if (capture == nullptr || ! capture->isMonitoring())
+    {
+        const auto problem = capture != nullptr ? capture->getMonitorProblem() : std::string();
+        return problem.empty() ? juce::String ("The microphones aren't open yet.")
+                               : "The microphones aren't open: " + juce::String (problem);
+    }
 
     // §6.4: pre-flight blocks arming rather than degrading mid-take.
     if (preflightRunning.load())

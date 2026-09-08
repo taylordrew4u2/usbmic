@@ -34,6 +34,7 @@ add_executable(mma_core_tests
     test_PermissionGuidance.cpp
     test_HelpTopics.cpp
     test_TakeWatchdog.cpp
+    test_RecordingProof.cpp
     test_CaptureCoordinator.cpp
     test_DeviceInputStream.cpp
     test_ChannelPlan.cpp

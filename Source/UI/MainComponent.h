@@ -9,6 +9,7 @@
 #include "RecoveredTakesPanel.h"
 #include "TakeAlertCard.h"
 #include "../Core/TakeWatchdog.h"
+#include "../Core/RecordingProof.h"
 #include <functional>
 
 namespace mma {
@@ -120,6 +121,9 @@ private:
     // only when something changes; the card collects what it says.
     TakeAlertCard takeAlertCard;
     TakeWatchdog takeWatchdog;
+    RecordingProof recordingProof;
+    bool takeStoppedByProof = false;
+    void showTakeAlertCard();
     bool wasRecording = false;
     int ticksUntilCameraRecheck = 0;
     void watchTake (bool isRecording);
