@@ -490,6 +490,14 @@ private:
     // always tracked this and nothing ever told it anything.
     std::vector<DropoutEntry> midTakeDropouts;
 
+    // Whether the mirror was still writing when this take was stopped, sampled
+    // before stopRecording() tears the pipeline down. Read after, isMirroring()
+    // is always false, so every finished take claimed its backup never ran --
+    // and verify_take.py skips the mirror comparison when it reads that, which
+    // is exactly the check a mirror that died mid-take needs to fail. -1 means
+    // no take has stopped yet, so a mid-take write uses the live flag.
+    int mirrorActiveAtStop = -1;
+
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
     std::string appliedMasterDeviceId;
