@@ -640,6 +640,14 @@ private:
     /// own record reports its own losses rather than the session's.
     uint64_t backendDropsAtTakeStart = 0;
 
+    /// The monitor-glitch count already reported. Same shape as
+    /// reportedBackendDrops, including the reset when the streams are rebuilt.
+    uint64_t reportedOutputGlitches = 0;
+
+    /// The camera problem already journalled, so an open failure that persists
+    /// across takes is said once rather than at every take start.
+    juce::String reportedCameraProblem;
+
     /// True once the mirror-never-opened line has been said for this take, so
     /// it is said once rather than on every poll.
     bool mirrorMissingReported = false;

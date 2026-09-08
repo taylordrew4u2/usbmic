@@ -34,7 +34,11 @@ struct RecoveredSession
     std::string startedIso;
     std::vector<RecoveredFile> files;
 
-    /// Files with real audio in them -- what the user is actually being offered.
+    /// Files worth putting in front of the user: those with real audio, plus
+    /// those whose length could not be established because the file would not
+    /// open. The second kind is not known to hold audio -- that is the point --
+    /// and calling it empty sends someone away from a recording that may be
+    /// perfectly intact on a card that has gone read-only.
     int keptFileCount() const;
     /// Files that were there but held less than a second.
     int emptyFileCount() const;

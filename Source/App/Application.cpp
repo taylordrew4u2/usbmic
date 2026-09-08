@@ -283,8 +283,15 @@ void Application::openEnabledCameras()
     // recording" was written to a field nobody was looking at.
     const auto problem = cameraController.getProblem();
 
-    if (problem.isNotEmpty())
+    if (problem.isNotEmpty() && problem != reportedCameraProblem)
+    {
+        reportedCameraProblem = problem;
         noteActivity (ActivityLevel::Failed, "Cameras", problem);
+    }
+    else if (problem.isEmpty())
+    {
+        reportedCameraProblem.clear();
+    }
 }
 
 std::vector<ChannelPlanDevice> Application::planDevices() const
@@ -1352,8 +1359,16 @@ void Application::toggleRecording()
                 // Same field, the other moment it is set. A camera that failed
                 // to start recording is not in the take, and the take goes on
                 // regardless -- so if this is not said now it is never said.
-                if (const auto cameraProblem = cameraController.getProblem(); cameraProblem.isNotEmpty())
+                // Only when it has changed. getProblem() now carries the
+                // open-time failure as well, and that one persists across
+                // takes -- so re-reading it at every take start re-logged the
+                // same "Couldn't open X" for every take of the session.
+                if (const auto cameraProblem = cameraController.getProblem();
+                    cameraProblem.isNotEmpty() && cameraProblem != reportedCameraProblem)
+                {
+                    reportedCameraProblem = cameraProblem;
                     noteActivity (ActivityLevel::Failed, "Cameras", cameraProblem);
+                }
 
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
@@ -2291,10 +2306,17 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                                       "accepting writes. The copy is incomplete from "
                                                       "this point.") });
 
-    if (capture != nullptr && capture->getFramesDropped() > 0)
-        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                   "Dropped " + std::to_string (capture->getFramesDropped())
-                                       + " frames: the drive could not keep up." });
+    if (capture != nullptr)
+    {
+        // Loaded once, like the layout figure below. Read twice, the number
+        // reported can differ from the one that passed the test.
+        const auto dropped = capture->getFramesDropped();
+
+        if (dropped > 0)
+            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                       "Dropped " + std::to_string (dropped)
+                                           + " frames: the drive could not keep up." });
+    }
 
     // The other end of the same loss. The count above is what the writer could
     // not put on disk; this is what never reached it -- audio the device handed
@@ -2602,6 +2624,31 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                                             "USB port, and close other apps using audio.");
 
             noteActivity (ActivityLevel::Warning, "Sound hardware", line);
+            return line;
+        }
+    }
+
+    // The monitor path breaking up. Not lost recording -- §6.1 keeps the two
+    // apart, and the take is unaffected -- but a machine that cannot keep the
+    // headphones fed is one that will start losing the recording next, and the
+    // user hearing clicks deserves to know it is the machine rather than a
+    // microphone. Reported on a rising count, once per rise.
+    if (audioBackend != nullptr)
+    {
+        const auto glitchesNow = audioBackend->getOutputGlitchCount();
+
+        if (glitchesNow < reportedOutputGlitches)
+            reportedOutputGlitches = 0;
+
+        if (glitchesNow > reportedOutputGlitches)
+        {
+            reportedOutputGlitches = glitchesNow;
+
+            const auto line = juce::String ("The sound you're hearing is breaking up -- this "
+                                            "machine is struggling to keep up. The recording "
+                                            "itself is unaffected. Close other apps.");
+
+            noteActivity (ActivityLevel::Warning, "Monitoring", line);
             return line;
         }
     }

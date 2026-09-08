@@ -67,9 +67,18 @@ public:
     /// duplex mixer, so a rig where the microphones and the headphones are the
     /// same box routes audio through exactly the same code as one where they
     /// are not.
+    /// `fromInputStream` says whether this callback is a microphone delivering
+    /// audio, or the duplex output callback that also carries the input half.
+    ///
+    /// It decides what "no inputs at all" means, and the two answers are
+    /// opposite. On an input stream it is a device that delivered nothing --
+    /// every planned channel lost. On the output callback it is an ordinary
+    /// playback-only cycle, which loses nothing: counting those reported
+    /// millions of dropped frames on a take that recorded perfectly, and a
+    /// loud false alarm is worse than the silence it replaced.
     void fanOutDeviceInputs (const std::vector<std::pair<int, int>>& routing,
                              const float* const* inputs, int numInputs,
-                             int numSamples) noexcept;
+                             int numSamples, bool fromInputStream) noexcept;
 
     void stopMonitoring();
 

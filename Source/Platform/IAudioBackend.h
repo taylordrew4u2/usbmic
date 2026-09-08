@@ -170,6 +170,19 @@ public:
     /// Message thread only, for the same reason as takeStreamFailures().
     virtual uint64_t getFramesDroppedByBackend() const { return 0; }
 
+    /// Recovered breaks in the monitor output: heard as a click, not lost from
+    /// the recording. Counted as events, not frames -- what matters is that
+    /// they are happening at all and rising.
+    ///
+    /// Kept apart from getFramesDroppedByBackend() because the two need
+    /// opposite sentences: one says audio is being lost from the take, the
+    /// other says the machine is struggling to keep the headphones fed. Putting
+    /// monitor glitches on the recording counter wrote a permanent claim in a
+    /// take's own record that recorded audio had been lost, when none had.
+    ///
+    /// Message thread only.
+    virtual uint64_t getOutputGlitchCount() const { return 0; }
+
     virtual void closeAllStreams() = 0;
 };
 

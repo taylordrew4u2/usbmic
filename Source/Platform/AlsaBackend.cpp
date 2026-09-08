@@ -571,6 +571,17 @@ uint64_t AlsaBackend::getFramesDroppedByBackend() const
     return total;
 }
 
+uint64_t AlsaBackend::getOutputGlitchCount() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr)
+            total += stream->outputGlitches.load (std::memory_order_relaxed);
+
+    return total;
+}
+
 void AlsaBackend::closeAllStreams()
 {
     openStreams.clear(); // each AlsaStream stops and joins its worker in its destructor

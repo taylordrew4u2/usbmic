@@ -139,7 +139,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         // from the same callback that fills the headphones, because they are
         // the same device and there is only one stream open on it.
         if (! outputDeviceRouting.empty())
-            fanOutDeviceInputs (outputDeviceRouting, inputs, numInputs, numSamples);
+            fanOutDeviceInputs (outputDeviceRouting, inputs, numInputs, numSamples, false);
 
         // Never block here (§11). If the software clock is mid-pull -- only
         // possible in the moment the output comes back -- this cycle's
@@ -185,7 +185,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         auto inputCallback = [this, routing] (const float* const* inputs, int numInputs,
                                               float* const*, int, int numSamples)
         {
-            fanOutDeviceInputs (routing, inputs, numInputs, numSamples);
+            fanOutDeviceInputs (routing, inputs, numInputs, numSamples, true);
         };
 
         if (! backend.openInputStream (deviceId, sampleRate, bufferSize, inputCallback))
@@ -320,16 +320,17 @@ std::vector<std::pair<int, int>> CaptureCoordinator::routingFor (const std::vect
 
 void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, int>>& routing,
                                              const float* const* inputs, int numInputs,
-                                             int numSamples) noexcept
+                                             int numSamples, bool fromInputStream) noexcept
 {
     if (inputs == nullptr || numInputs <= 0)
     {
-        // A device that hands over a block with no inputs loses every planned
-        // channel at once. This is the widest version of the mismatch the
-        // routing loop below counts, and it was the one path out of here that
-        // counted nothing.
-        if (numSamples > 0)
-            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+        // A microphone stream that hands over no inputs at all has lost every
+        // channel the take routed from it. The duplex output callback reaching
+        // here means only that this cycle had no input half, which is ordinary
+        // and loses nothing -- counting those turned a clean take on any duplex
+        // interface into a session.json claiming millions of dropped frames.
+        if (fromInputStream && numSamples > 0)
+            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples) * routing.size(),
                                             std::memory_order_relaxed);
         return;
     }
@@ -396,13 +397,6 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 {
     recordingProblem.clear();
 
-    // Zeroed with the take, not with the coordinator. Left running it reported
-    // take one's losses in take three's record -- and counted everything that
-    // happened while merely monitoring, so a channel mismatch twenty minutes
-    // before anyone pressed record landed in the first take's dropouts. That is
-    // the same cross-take contamination the backend counter was just fixed for.
-    framesMissedByLayout.store (0, std::memory_order_relaxed);
-
     if (channels.empty())
     {
         recordingProblem = "There are no microphones to record. Plug one in and try again.";
@@ -434,6 +428,16 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     // half-built pipeline. The release store pairs with the acquire load in
     // mixAndPublish: a callback that sees the pointer also sees every write
     // start() made to the object behind it.
+    // Zeroed here, not at the top of this function: above the guards it also
+    // zeroed a RUNNING take's counter whenever startRecording was called again
+    // and refused -- mid-take contamination in the other direction. This is the
+    // point at which a take genuinely begins.
+    //
+    // Zeroed at all because the counter used to run for the life of the
+    // coordinator, so take three's record carried take one's losses plus
+    // everything that happened while merely monitoring.
+    framesMissedByLayout.store (0, std::memory_order_relaxed);
+
     pipeline = std::move (p);
     activePipeline.store (pipeline.get(), std::memory_order_release);
     return true;
@@ -534,8 +538,12 @@ void CaptureCoordinator::pushDeviceBlock (int deviceIndex, const float* samples,
 void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const float* const* inputs,
                                                       int numInputs, int numSamples) noexcept
 {
+    // inputs and numInputs are guaranteed by the only caller, which checks both
+    // before routing here; the index and sample count are the ones worth
+    // testing. Kept as a guard rather than an assertion because this runs on
+    // the audio thread, where being wrong must not be fatal.
     if (deviceIndex < 0 || deviceIndex >= static_cast<int> (channelLayouts.size())
-        || inputs == nullptr || numInputs < 2 || numSamples <= 0)
+        || numSamples <= 0)
     {
         if (numSamples > 0)
             framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),

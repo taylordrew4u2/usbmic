@@ -1,7 +1,9 @@
 #include "SessionRecovery.h"
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 
 namespace mma {
 
@@ -100,9 +102,14 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
         // writing is a recording of unknown length on a card that has gone
         // read-only -- calling that one empty sends the user away from audio
         // that may be perfectly intact.
-        std::ifstream exists (path, std::ios::binary);
+        // std::filesystem::exists, not an ifstream open. Opening was a proxy
+        // for "is there something here", and it answers differently for a
+        // directory on Windows than on Linux -- so the question is asked
+        // directly. An error_code overload because a path that cannot even be
+        // interrogated is, for our purposes, a path with nothing at it.
+        std::error_code ec;
 
-        if (! exists.is_open())
+        if (! std::filesystem::exists (path, ec) || ec)
             return result;
 
         // A file this app cannot even open is not a file that holds under a
