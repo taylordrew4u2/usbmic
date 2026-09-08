@@ -46,12 +46,15 @@ public:
 
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    std::string getHotplugProblem() const override { return hotplugProblem; }
+
     std::vector<StreamFailure> takeStreamFailures() override { return streamFailures.take(); }
 
     uint64_t getFramesDroppedByBackend() const override;
 
 private:
     std::string lastOpenError;
+    std::string hotplugProblem;
 
     /// §0.1: where the worker threads leave a stream that stopped on its own.
     StreamFailureSink streamFailures;
