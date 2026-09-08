@@ -1244,8 +1244,13 @@ void Application::setDestinationByPath (const juce::String& path)
     {
         setDestinationFolder (target);
 
-        noteActivity (ActivityLevel::Started, "Save location",
-                      "Takes will be saved to " + target.getFullPathName() + ".");
+        // Only when it actually took effect. Mid-take the change is deferred
+        // and setDestinationFolder says so itself; announcing "Takes will be
+        // saved to X" on top of that would contradict it in the same breath.
+        if (recordingEngine.getState() != RecordingState::Recording)
+            noteActivity (ActivityLevel::Started, "Save location",
+                          "Takes will be saved to " + target.getFullPathName() + ".");
+
         return;
     }
 
@@ -1510,6 +1515,17 @@ void Application::toggleRecording()
         // this one's.
         stopReason.clear();
 
+        // A destination the user chose mid-take, applied now that applying it
+        // cannot move a running take's files out from under it. Owed, like a
+        // deferred capture restart -- a change refused and then never applied
+        // is its own kind of silence.
+        if (pendingDestinationFolder.isNotEmpty())
+        {
+            const juce::File chosen (pendingDestinationFolder);
+            pendingDestinationFolder.clear();
+            setDestinationFolder (chosen);
+        }
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
@@ -1734,7 +1750,17 @@ double Application::getRemainingRecordingSeconds() const
     if (bytesPerSecond <= 0.0)
         return -1.0;
 
-    const juce::File destination (destinationFolder);
+    // While a take is running, the figure describes the folder the take is
+    // WRITING to, not the one the setting currently points at. Those are the
+    // same thing until someone opens Advanced mid-take and picks another
+    // volume -- and this number now stops takes and disables the button, so
+    // measuring the wrong drive would stop a healthy recording with "The drive
+    // is full" about a drive it was never touching, and would leave the drive
+    // it IS filling unwatched.
+    const juce::File destination (recordingEngine.getState() == RecordingState::Recording
+                                          && currentSessionFolder.isNotEmpty()
+                                      ? currentSessionFolder
+                                      : juce::String (destinationFolder));
 
     // No walk up to the parent. It was there so a destination folder that did
     // not exist yet still produced a figure, but it answers with whatever
@@ -2252,6 +2278,26 @@ void Application::setDestinationFolder (const juce::File& folder)
 {
     if (! folder.isDirectory())
         return;
+
+    // §6.5 fixes where a take is going for its duration, and nothing in the UI
+    // stopped this being changed in the middle of one. The take kept writing to
+    // the folder it opened with, so the setting and the recording disagreed --
+    // and the change also cleared the agreed save location and kicked off a
+    // 200 MB benchmark write while a take was running, neither of which was
+    // announced.
+    //
+    // Deferred rather than refused, the same way a mic change mid-take is
+    // (requestCaptureRestart): the user asked for it, so it happens, at the
+    // first moment it can happen without touching a take.
+    if (recordingEngine.getState() == RecordingState::Recording)
+    {
+        pendingDestinationFolder = folder.getFullPathName();
+
+        noteActivity (ActivityLevel::Warning, "Save location",
+                      "This take is still being written to where it started. Takes will be saved "
+                      "to " + folder.getFullPathName() + " from the next one.");
+        return;
+    }
 
     destinationFolder = folder.getFullPathName().toStdString();
 

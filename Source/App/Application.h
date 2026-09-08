@@ -685,6 +685,11 @@ private:
     /// forever: the next take planned N+1 files and wrote N.
     void requestCaptureRestart();
     bool captureRestartDeferred = false;
+
+    /// A destination chosen while a take was running. §6.5 fixes where a take
+    /// goes for its duration, so the change waits for the take to end rather
+    /// than being dropped -- the same bargain requestCaptureRestart strikes.
+    juce::String pendingDestinationFolder;
     void applyClockMaster();
 
 
