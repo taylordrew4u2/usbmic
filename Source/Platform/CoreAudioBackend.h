@@ -44,6 +44,8 @@ public:
 
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    uint64_t getFramesDroppedByBackend() const override;
+
 private:
     DeviceChangeCallback deviceChangeCallback;
 

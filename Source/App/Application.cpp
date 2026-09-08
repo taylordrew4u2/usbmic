@@ -61,6 +61,13 @@ void Application::initialise()
     // with masterVolume a few lines down, and the destination is chosen below.
     loadSettings();
 
+    // Said after loadSettings(), because that is what triggers the migration
+    // and what would have come back empty if it failed.
+    if (supportFolderMigrationFailed)
+        noteActivity (ActivityLevel::Warning, "Settings",
+                      "Couldn't move your saved settings over from the app's old name, so your "
+                      "microphone names and destination may have been forgotten.");
+
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
     systemAggregate = createSystemAggregateDevice();
@@ -475,7 +482,22 @@ void Application::publishAggregateDevice()
     if (uids == publishedUids && master == publishedMaster && name == publishedNameStd)
         return;
 
-    systemAggregate->publish (name, uids, master);
+    // The result is read, and the cache is only updated on success.
+    //
+    // publish() has always returned bool and the return was discarded, so a
+    // failed creation cached itself as published: the guard above then matched
+    // on every later call and no retry ever happened. getStatus() went on
+    // saying "no microphones connected, so other apps see nothing yet", which
+    // is a wrong explanation for a device that failed to be created -- the
+    // user hunts for a cable while the app has already given up.
+    if (! systemAggregate->publish (name, uids, master))
+    {
+        noteActivity (ActivityLevel::Failed, "Combined device",
+                      "Couldn't make the combined device other apps record from, so they won't see "
+                      "your microphones. Everything is still being recorded here.");
+        return;
+    }
+
     publishedUids = std::move (uids);
     publishedMaster = std::move (master);
     publishedNameStd = name;
@@ -1778,12 +1800,22 @@ void Application::runPreflight (const std::string& destination, int channelCount
     std::vector<double> rollingWindows;
     const int bytesPerSample = currentBitDepth / 8;
 
+    // A card that will not take the test file at all is not a slow card, and
+    // must not be reported as one. With no windows measured the gate below
+    // reads 0 MB/s and says "this card is too slow", which sends someone
+    // shopping for a faster card when the card is read-only, full, or gone.
+    bool couldNotWrite = false;
+
     {
         // §6.4: 200 MB, written the way a take writes -- steadily, measuring the
         // sustained floor rather than a burst into the OS cache.
         juce::FileOutputStream out (testFile);
 
-        if (out.openedOk())
+        if (! out.openedOk())
+        {
+            couldNotWrite = true;
+        }
+        else
         {
             constexpr size_t kChunkBytes = 1024 * 1024;
             const std::vector<char> chunk (kChunkBytes, 0);
@@ -1799,7 +1831,13 @@ void Application::runPreflight (const std::string& destination, int channelCount
                     break;
 
                 if (! out.write (chunk.data(), kChunkBytes))
+                {
+                    // Stopped taking writes part way. Whatever windows were
+                    // measured before that describe a card that is no longer
+                    // accepting audio, so they are not a verdict either.
+                    couldNotWrite = true;
                     break;
+                }
 
                 written += kChunkBytes;
                 writtenThisWindow += kChunkBytes;
@@ -1815,7 +1853,8 @@ void Application::runPreflight (const std::string& destination, int channelCount
                 }
             }
 
-            out.flush();
+            if (! out.flush())
+                couldNotWrite = true;
 
             // A card fast enough to finish inside one window still needs a
             // sample, or the gate would see no data and fail a good drive.
@@ -1842,6 +1881,19 @@ void Application::runPreflight (const std::string& destination, int channelCount
         // the rig as it is when someone actually reaches for record.
         result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
                                                     currentSampleRate, bytesPerSample);
+
+        // Overridden rather than measured: this is not a speed verdict, and
+        // saying so is the difference between someone checking the lock switch
+        // and someone buying a card they did not need.
+        if (couldNotWrite)
+        {
+            result.passed = false;
+            result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
+                             "is plugged in, has room, and isn't locked.";
+
+            noteActivity (ActivityLevel::Failed, "Save location",
+                          juce::String (result.reason));
+        }
 
         std::lock_guard<std::mutex> lock (preflightMutex);
         preflightResults[destination] = result;
@@ -2236,6 +2288,16 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                    "Dropped " + std::to_string (capture->getFramesDropped())
                                        + " frames: the drive could not keep up." });
 
+    // The other end of the same loss. The count above is what the writer could
+    // not put on disk; this is what never reached it -- audio the device handed
+    // over and the backend could not carry. A take missing both kinds used to
+    // report only one, so the record understated what was lost.
+    if (audioBackend != nullptr && audioBackend->getFramesDroppedByBackend() > 0)
+        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                   "Dropped " + std::to_string (audioBackend->getFramesDroppedByBackend())
+                                       + " frames before recording: the sound hardware delivered "
+                                         "more audio than it could hand over." });
+
     // Written to the card copy and the mirror alike, so either one stands alone.
     const auto json = meta.toJsonString();
 
@@ -2247,8 +2309,15 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the details file for this take. The audio itself is saved.");
 
-    if (currentMirrorFolder.isNotEmpty())
-        juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
+    // The mirror's copy is checked too. §6.3 makes each copy stand alone, and a
+    // backup whose record failed to write is a folder of audio with no account
+    // of how the take went -- which is the half of the pair the user reaches
+    // for precisely when the card's copy is the one that went wrong.
+    if (currentMirrorFolder.isNotEmpty()
+        && ! juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json)))
+        noteActivity (ActivityLevel::Warning, "Local backup",
+                      "Couldn't write the details file into the backup copy. The backed-up audio "
+                      "itself is there.");
 
     writeActivityLog (juce::File (currentSessionFolder));
 
@@ -2447,6 +2516,26 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         if (firstFailure.isNotEmpty())
             return firstFailure;
+    }
+
+    // §0.1: audio lost between the device and the app. Counted by the backends
+    // and, until now, reported by nobody -- the take's own dropped-frame figure
+    // only ever covered what the writer could not put on disk.
+    if (audioBackend != nullptr)
+    {
+        const auto droppedNow = audioBackend->getFramesDroppedByBackend();
+
+        if (droppedNow > reportedBackendDrops)
+        {
+            reportedBackendDrops = droppedNow;
+
+            const auto line = juce::String ("Your sound hardware is delivering more audio than it "
+                                            "can hand over, and some has been lost. Try a different "
+                                            "USB port, and close other apps using audio.");
+
+            noteActivity (ActivityLevel::Warning, "Sound hardware", line);
+            return line;
+        }
     }
 
     // A take that could not start. Reported here rather than only at the click,
@@ -2777,7 +2866,13 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     summary->setProperty ("devices", juce::var (deviceArray));
 
     juce::TemporaryFile tempInventory;
-    tempInventory.getFile().replaceWithText (juce::JSON::toString (juce::var (summary), true));
+    // §11: a bundle missing the device inventory is the bundle that cannot
+    // answer "what was plugged in", which is the first question anyone reading
+    // it asks. Silently shipping one without it wastes a round trip.
+    if (! tempInventory.getFile().replaceWithText (juce::JSON::toString (juce::var (summary), true)))
+        noteActivity (ActivityLevel::Warning, "Diagnostics",
+                      "Couldn't list the connected devices, so the diagnostics file won't include "
+                      "them.");
     builder.addFile (tempInventory.getFile(), 9, "device_inventory.json");
 
     // §11: the last five sessions. Newest first, because the one being asked
@@ -2826,6 +2921,15 @@ void Application::loadSettings()
     // §10.1 says the app launches to a working state, and a preferences file
     // truncated by a power cut is not a reason to refuse to start.
     rememberedSettings = AppSettings::fromJsonString (file.loadFileAsString().toStdString());
+
+    // Defaults instead of a failure is right; defaults instead of a failure
+    // AND without a word is not. Everything §2.4 remembers about the rig has
+    // just been replaced, and the user is about to meet an app that looks like
+    // it forgot them.
+    if (rememberedSettings.wasUnreadable)
+        noteActivity (ActivityLevel::Warning, "Settings",
+                      "Your saved settings couldn't be read, so everything is back to its "
+                      "defaults -- check your microphone names and where takes are being saved.");
 
     applyingRememberedSettings = true;
 
@@ -3029,6 +3133,8 @@ juce::File Application::getLogFile()
     return getSupportFolder().getChildFile ("log.txt");
 }
 
+bool Application::supportFolderMigrationFailed = false;
+
 juce::File Application::getSupportFolder()
 {
     const auto appData = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
@@ -3049,8 +3155,12 @@ juce::File Application::getSupportFolder()
     {
         const auto previous = appData.getChildFile ("MultiMicAggregator");
 
-        if (previous.isDirectory())
-            previous.moveFileTo (current);
+        // The result is kept. A failed move presents as every remembered
+        // microphone name, trim, disabled mic and destination folder being
+        // forgotten at once -- the exact §10.1 failure this migration exists to
+        // prevent -- and it used to happen without a word.
+        if (previous.isDirectory() && ! previous.moveFileTo (current))
+            supportFolderMigrationFailed = true;
     }
 
     return current;

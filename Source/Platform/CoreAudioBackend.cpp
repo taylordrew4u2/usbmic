@@ -1,3 +1,4 @@
+#include <atomic>
 #include "CoreAudioBackend.h"
 
 #if JUCE_MAC
@@ -32,6 +33,11 @@ struct CoreAudioStream
     // Sized at open time because §11 forbids allocating in the IOProc.
     std::vector<float> deinterleaveScratch;
     int maxFramesPerCallback = 0;
+
+    /// §0.1: frames that reached the IOProc and were never handed to the
+    /// callback, because the scratch was sized for less. Dropping is the right
+    /// answer; dropping without counting was not.
+    std::atomic<uint64_t> framesDropped { 0 };
 
     // The mirror of the above for playback. An interface that presents its
     // output as one interleaved buffer needs the callback's per-channel writes
@@ -319,7 +325,16 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
             // with no error anywhere.
             if (framesHere > stream->maxFramesPerCallback
                 || numInputChannels + channelsHere > CoreAudioStream::kMaxChannels)
-                continue; // scratch was sized for less; dropping beats overrunning it
+            {
+                // Dropping still beats overrunning the scratch, which was sized
+                // at open time and cannot grow on this thread (§11). What was
+                // missing is the count: §0.1 makes unreported loss the one
+                // unacceptable failure, and this discarded a whole device's
+                // block with nothing anywhere recording that it had.
+                stream->framesDropped.fetch_add (static_cast<uint64_t> (framesHere),
+                                                 std::memory_order_relaxed);
+                continue;
+            }
 
             const auto* source = static_cast<const float*> (buffer.mData);
 
@@ -603,6 +618,17 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
 
     openStreams.push_back (std::move (stream));
     return true;
+}
+
+uint64_t CoreAudioBackend::getFramesDroppedByBackend() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr)
+            total += stream->framesDropped.load (std::memory_order_relaxed);
+
+    return total;
 }
 
 bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDeviceId, double sampleRate,

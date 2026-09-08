@@ -4,6 +4,7 @@
 
 #include <alsa/asoundlib.h>
 #include <sys/inotify.h>
+#include <cerrno>    // EBUSY, to tell "in use" from "not there"
 #include <climits>   // NAME_MAX, for the inotify read buffer
 #include <unistd.h>
 #include <pthread.h>
@@ -316,8 +317,25 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
 
     const auto direction = isInput ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
 
-    if (snd_pcm_open (&stream->pcm, deviceId.c_str(), direction, 0) < 0)
+    lastOpenError.clear();
+
+    if (const int err = snd_pcm_open (&stream->pcm, deviceId.c_str(), direction, 0); err < 0)
+    {
+        // The two causes worth telling apart, because they have different
+        // answers: something else is holding the device, or the device is not
+        // there any more. snd_strerror is not shown to the user -- it is a
+        // developer string -- so the message says what to do instead.
+        lastOpenError = err == -EBUSY
+            ? (isInput ? "Another app is using this microphone. Close anything else recording or "
+                         "streaming from it, then try again."
+                       : "Another app has taken these headphones. Close anything else playing "
+                         "sound, or pick a different output in Advanced.")
+            : (isInput ? "This microphone is no longer connected. Unplug it and plug it back in, "
+                         "then try again."
+                       : "This sound output isn't there any more. Pick a different one in "
+                         "Advanced.");
         return false;
+    }
 
     // Float first because it needs no conversion; the integer formats are the
     // fallbacks real hardware actually offers.
@@ -346,7 +364,15 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
     }
 
     if (! configured)
+    {
+        // Every format the device could plausibly want was offered and refused.
+        lastOpenError = isInput
+            ? "This microphone won't record in any format this app can use. Try a different USB "
+              "port, or a different microphone."
+            : "These headphones won't accept audio in any format this app can use. Pick a "
+              "different output in Advanced.";
         return false;
+    }
 
     stream->periodFrames = static_cast<snd_pcm_uframes_t> (std::max (1, bufferSizeSamples));
 

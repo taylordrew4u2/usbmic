@@ -35,7 +35,12 @@ public:
     /// Call periodically (e.g. from a timer, not the audio thread) with elapsed
     /// wall-clock seconds; rewrites the RIFF/data-chunk-size header fields every
     /// kHeaderRewriteIntervalSeconds so a crash mid-take leaves a playable file.
-    void tick (double dtSeconds);
+    /// Returns false when the periodic header rewrite failed, which is what a
+    /// card pulled mid-take looks like from here. §6.6 rewrites the header
+    /// every 5 seconds so an interrupted file stays playable; the result was
+    /// discarded, so the write that keeps a four-hour take recoverable could
+    /// start failing and nothing would notice until the stop.
+    bool tick (double dtSeconds);
 
     /// Finalizes the current file (writes a final correct header) and closes it.
     ///

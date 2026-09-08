@@ -485,6 +485,12 @@ public:
     /// the rename moves that folder across rather than starting empty.
     static juce::File getSupportFolder();
 
+    /// True when the one-time move of the old settings folder onto the current
+    /// name failed. Static because getSupportFolder() is, and it has to be: the
+    /// settings file is located before any Application exists to tell. Read
+    /// once at startup and turned into a sentence there.
+    static bool supportFolderMigrationFailed;
+
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
     std::unique_ptr<CaptureCoordinator> capture;
@@ -625,6 +631,10 @@ private:
     /// journal in "2 microphones are live" -- only an actual change is news.
     int journalledMonitorCount = -1;
     bool journalledMonitorOk = false;
+
+    /// The backend drop count already reported, so a loss that is still growing
+    /// is said again and one that has stopped is not repeated forever.
+    uint64_t reportedBackendDrops = 0;
 
     /// True once the mirror-never-opened line has been said for this take, so
     /// it is said once rather than on every poll.

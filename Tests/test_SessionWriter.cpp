@@ -158,3 +158,25 @@ TEST_CASE (SessionWriter_RefusesADepthItCannotPack)
     SessionWriter writer;
     REQUIRE (! writer.open (tempBasePath ("w20"), 48000.0, 1, 20, "2026-09-07T00:00:00Z"));
 }
+
+TEST_CASE (SessionWriter_TheFiveSecondHeaderRewriteReportsWhetherItLanded)
+{
+    // §6.6 rewrites the header every 5 seconds so an interrupted file stays
+    // playable. tick() returned void, so the write that keeps a four-hour take
+    // recoverable could start failing on a dying card and nothing would notice
+    // until the stop -- by which point the header being wrong is the whole loss.
+    SessionWriter w;
+
+    // Nothing has been opened, so there is no header to rewrite and the
+    // interval falls due immediately.
+    REQUIRE_FALSE (w.tick (600.0));
+
+    REQUIRE (w.open (tempBasePath ("tick-report"), 48000.0, 1, 16, "2026-09-08T00:00:00Z"));
+
+    // Inside the interval there is nothing to do, and nothing to report.
+    REQUIRE (w.tick (0.1));
+
+    // Past it, the rewrite runs and says it landed.
+    REQUIRE (w.tick (600.0));
+    REQUIRE (w.close());
+}

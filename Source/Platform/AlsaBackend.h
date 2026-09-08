@@ -54,7 +54,14 @@ public:
 
     std::vector<StreamFailure> takeStreamFailures() override { return streamFailures.take(); }
 
+    /// §5.4 asks for the cause to be named when a stream will not open. This
+    /// backend never overrode it, so every ALSA refusal reached the user as the
+    /// generic "couldn't open your headphones" with nothing to act on.
+    std::string getLastOpenError() const override { return lastOpenError; }
+
 private:
+    std::string lastOpenError;
+
     /// §0.1: where the worker threads leave a stream that stopped on its own.
     StreamFailureSink streamFailures;
 

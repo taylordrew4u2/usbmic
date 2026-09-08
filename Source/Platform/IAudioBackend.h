@@ -149,6 +149,16 @@ public:
     /// deviceId means the monitor output rather than an input.
     virtual std::vector<StreamFailure> takeStreamFailures() { return {}; }
 
+    /// §0.1: frames that reached the backend from a device and were never
+    /// handed to the audio callback, cumulative since the streams opened.
+    ///
+    /// WritePipeline already counts what it drops on the way to disk, and that
+    /// count is reported. Everything lost BEFORE the callback was invisible to
+    /// it -- a packet the device refused to hand over, or one wider than the
+    /// scratch the stream allocated -- so audio could be lost between the
+    /// microphone and the meter with nothing anywhere saying so.
+    virtual uint64_t getFramesDroppedByBackend() const { return 0; }
+
     virtual void closeAllStreams() = 0;
 };
 

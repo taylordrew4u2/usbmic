@@ -215,14 +215,15 @@ bool SessionWriter::rewriteHeaderSizes()
     return file.good();
 }
 
-void SessionWriter::tick (double dtSeconds)
+bool SessionWriter::tick (double dtSeconds)
 {
     secondsSinceLastHeaderRewrite += dtSeconds;
-    if (secondsSinceLastHeaderRewrite >= kHeaderRewriteIntervalSeconds)
-    {
-        rewriteHeaderSizes();
-        secondsSinceLastHeaderRewrite = 0.0;
-    }
+
+    if (secondsSinceLastHeaderRewrite < kHeaderRewriteIntervalSeconds)
+        return true;
+
+    secondsSinceLastHeaderRewrite = 0.0;
+    return rewriteHeaderSizes();
 }
 
 bool SessionWriter::close()

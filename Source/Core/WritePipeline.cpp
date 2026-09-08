@@ -409,18 +409,28 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         const double elapsed = static_cast<double> (frames) / sampleRate;
 
+        // §6.6 rewrites each header every 5 seconds so an interrupted file stays
+        // playable. Its result was thrown away, so the write that keeps a
+        // four-hour take recoverable could start failing on a dying card and
+        // nothing would notice until the stop -- by which point the header
+        // being wrong is the whole loss. Judged the same way the audio writes
+        // above are, and kept on the same side of the card/mirror line.
         if (writeStems)
             for (auto& w : stemWriters)
-                w->tick (elapsed);
-        mixWriter->tick (elapsed);
+                if (! w->tick (elapsed))
+                    cardWriteFailed.store (true, std::memory_order_release);
+
+        if (! mixWriter->tick (elapsed))
+            cardWriteFailed.store (true, std::memory_order_release);
 
         if (mirrorActiveForThisPass)
         {
             for (auto& w : mirrorStemWriters)
-                w->tick (elapsed);
+                if (! w->tick (elapsed))
+                    mirrorWriteFailed.store (true, std::memory_order_release);
 
-            if (mirrorMixWriter != nullptr)
-                mirrorMixWriter->tick (elapsed);
+            if (mirrorMixWriter != nullptr && ! mirrorMixWriter->tick (elapsed))
+                mirrorWriteFailed.store (true, std::memory_order_release);
         }
 
         // §6.3: a mirror that has failed stops for the rest of the take, the
