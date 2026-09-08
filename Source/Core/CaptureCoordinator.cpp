@@ -153,7 +153,15 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
                                          const std::string& originTimestamp,
                                          const std::string& mirrorFolder)
 {
-    if (channels.empty() || isRecording())
+    recordingProblem.clear();
+
+    if (channels.empty())
+    {
+        recordingProblem = "There are no microphones to record. Plug one in and try again.";
+        return false;
+    }
+
+    if (isRecording())
         return false;
 
     std::vector<WriteChannelSpec> specs;
@@ -165,7 +173,14 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     auto p = std::make_unique<WritePipeline>();
 
     if (! p->start (sessionFolder, specs, sampleRate, bitDepth, originTimestamp, mirrorFolder))
+    {
+        // Carried up rather than collapsed back into a bool. The pipeline knows
+        // which file it could not open and where; by the time a bare false
+        // reaches the UI that is gone, and the user gets a record button that
+        // does nothing for no stated reason.
+        recordingProblem = p->getStartProblem();
         return false;
+    }
 
     // Published only once fully started, so the audio thread never sees a
     // half-built pipeline. The release store pairs with the acquire load in

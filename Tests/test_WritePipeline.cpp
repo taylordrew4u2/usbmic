@@ -630,3 +630,103 @@ TEST_CASE (WritePipeline_AMismatchedBlockIsCountedAsLostNotSilentlyDiscarded)
     std::remove ((dir + "/mismatch-b.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 }
+
+// ---------------------------------------------------------------------------
+// Nothing is silent: a take that cannot start, and a backup that never existed.
+// ---------------------------------------------------------------------------
+
+TEST_CASE (WritePipeline_AFailedStartSaysWhichFileAndWhere)
+{
+    // The record button used to refuse to latch and say nothing at all -- a
+    // full card, a locked card and a card pulled between arming and pressing
+    // record were indistinguishable, and none of them produced a sentence.
+    WritePipeline p;
+    const std::string missing = tempDir() + "/mma-a-folder-that-is-not-there-9f3c";
+
+    REQUIRE_FALSE (p.start (missing, twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    const auto& problem = p.getStartProblem();
+    REQUIRE_FALSE (problem.empty());
+
+    // Names the folder the user has to go and look at, and the file that
+    // could not be made.
+    REQUIRE (problem.find (missing) != std::string::npos);
+    REQUIRE (problem.find (twoChannels()[0].fileName) != std::string::npos);
+
+    // §10.6: what to do, not just what happened.
+    REQUIRE (problem.find ("card") != std::string::npos);
+}
+
+TEST_CASE (WritePipeline_ASuccessfulStartLeavesNoProblemBehind)
+{
+    WritePipeline p;
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
+    REQUIRE (p.getStartProblem().empty());
+    REQUIRE_FALSE (p.hasMirrorFailedToOpen());
+    p.stop();
+}
+
+TEST_CASE (WritePipeline_AStartProblemIsClearedByTheNextTake)
+{
+    // A previous take's failure must never make this one look doomed.
+    WritePipeline p;
+    REQUIRE_FALSE (p.start (tempDir() + "/mma-not-there-1a2b", twoChannels(), 48000.0, 16, "t"));
+    REQUIRE_FALSE (p.getStartProblem().empty());
+
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
+    REQUIRE (p.getStartProblem().empty());
+    p.stop();
+}
+
+TEST_CASE (WritePipeline_AMirrorThatNeverOpenedIsReportedRatherThanAssumed)
+{
+    // §6.3 will not fail a take over the safety net, and that is right. What
+    // was wrong was that it failed in silence: the take ran card-only while
+    // every caller that asked was told a mirror was active, so the user kept a
+    // backup that had never existed.
+    WritePipeline p;
+    const std::string noSuchMirror = tempDir() + "/mma-mirror-that-is-not-there-77d1";
+
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z", noSuchMirror));
+
+    // The take started, exactly as §6.3 requires.
+    REQUIRE (p.isRunning());
+
+    // And the missing copy is on the record rather than assumed into existence.
+    REQUIRE (p.hasMirrorFailedToOpen());
+    REQUIRE_FALSE (p.isMirroring());
+
+    // A mirror that never opened is not a mirror that broke mid-take: the two
+    // need different sentences, so they stay different flags.
+    REQUIRE_FALSE (p.hasMirrorWriteFailed());
+
+    p.stop();
+}
+
+TEST_CASE (WritePipeline_NoMirrorAskedForIsNotAMirrorFailure)
+{
+    // Card-only is a choice, not a fault. Reporting one here would tell the
+    // user a backup broke when they never asked for one.
+    WritePipeline p;
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
+    REQUIRE_FALSE (p.hasMirrorFailedToOpen());
+    REQUIRE_FALSE (p.hasMirrorWriteFailed());
+    p.stop();
+}
+
+TEST_CASE (WritePipeline_AnOrdinaryStopFinalizesWithoutClaimingAFailure)
+{
+    // stop() now judges every close(), so the ordinary path has to stay clean:
+    // a finalize check that cries wolf would stop a good take with an alert.
+    WritePipeline p;
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> a (128, 0.25f), b (128, -0.25f);
+    const float* chans[2] = { a.data(), b.data() };
+    REQUIRE (p.pushBlock (chans, 2, 128));
+
+    p.stop();
+
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+    REQUIRE_FALSE (p.hasMirrorWriteFailed());
+}

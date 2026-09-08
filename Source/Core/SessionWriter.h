@@ -38,7 +38,14 @@ public:
     void tick (double dtSeconds);
 
     /// Finalizes the current file (writes a final correct header) and closes it.
-    void close();
+    ///
+    /// Returns false when that final header rewrite or the flush behind it
+    /// failed -- which is exactly what pulling the card during a stop looks
+    /// like. This used to return void, so the one write that decides whether a
+    /// finished take is playable was the one write nobody checked: the app
+    /// reported the take saved, and the file on the card carried a header
+    /// claiming zero audio.
+    bool close();
 
     uint64_t getTotalFramesWritten() const { return totalFramesWritten; }
     int getSplitFileCount() const { return splitIndex; }
@@ -66,7 +73,8 @@ private:
     std::string makePathForSplit (int index) const;
     bool openNewFile (int index);
     void writeHeaderPlaceholder();
-    void rewriteHeaderSizes();
+    /// False when the seek/write/flush behind the header patch failed.
+    bool rewriteHeaderSizes();
     int bytesPerSample() const { return bitDepth / 8; }
 };
 

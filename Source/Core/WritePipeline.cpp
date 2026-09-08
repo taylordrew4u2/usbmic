@@ -46,6 +46,8 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
     stemWriters.clear();
     trimGains.clear();
+    startProblem.clear();
+    mirrorFailedToOpen.store (false, std::memory_order_release);
 
     for (const auto& spec : channels)
     {
@@ -60,6 +62,13 @@ bool WritePipeline::start (const std::string& sessionFolder,
                 opened->close();
 
             stemWriters.clear();
+
+            // §10.6: what happened, then what to do. The file is named because
+            // "recording could not start" is not something a user can act on,
+            // and the folder is what they need to look at.
+            startProblem = "Couldn't start writing to " + sessionFolder + ". The file "
+                         + spec.fileName + " couldn't be created -- check the card is "
+                           "still plugged in and has room, and isn't locked.";
             return false;
         }
 
@@ -76,6 +85,10 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
         stemWriters.clear();
         mixWriter.reset();
+
+        startProblem = "Couldn't start writing to " + sessionFolder + ". The mixed file "
+                       "couldn't be created -- check the card is still plugged in and has "
+                       "room, and isn't locked.";
         return false;
     }
 
@@ -85,8 +98,21 @@ bool WritePipeline::start (const std::string& sessionFolder,
     mirrorMixWriter.reset();
     mirroring.store (false, std::memory_order_release);
 
-    if (! mirrorFolder.empty() && openMirrorWriters (mirrorFolder, channels, rate, bitDepth, originTimestamp))
-        mirroring.store (true, std::memory_order_release);
+    if (! mirrorFolder.empty())
+    {
+        if (openMirrorWriters (mirrorFolder, channels, rate, bitDepth, originTimestamp))
+        {
+            mirroring.store (true, std::memory_order_release);
+        }
+        else
+        {
+            // Still not an error -- §6.3 will not fail a take over the safety
+            // net -- but no longer a secret. Nothing raised anything here, so
+            // the take ran card-only while every caller that asked went on
+            // being told a mirror was active.
+            mirrorFailedToOpen.store (true, std::memory_order_release);
+        }
+    }
 
     // std::atomic is not copyable, so the vector is built in place.
     std::vector<std::atomic<bool>> live (static_cast<size_t> (numChannels));
@@ -438,27 +464,54 @@ void WritePipeline::stop()
     // lost, including the last block before stop.
     drainOnce (true);
 
+    // Every close() is judged, and the card's and the mirror's are judged
+    // separately -- §6.3 keeps the two apart everywhere else and the finalize
+    // is no exception. A stop is the last chance to notice that the card went
+    // away, and closing was the one write that had never been checked: a card
+    // pulled during the stop left files whose headers say they hold no audio,
+    // under a take the app had already reported as saved.
+    bool cardFinalizeFailed = false;
+
     for (auto& w : stemWriters)
-        w->close();
+        if (! w->close())
+            cardFinalizeFailed = true;
+
     stemWriters.clear();
 
     if (mixWriter != nullptr)
     {
-        mixWriter->close();
+        if (! mixWriter->close())
+            cardFinalizeFailed = true;
+
         mixWriter.reset();
     }
 
+    if (cardFinalizeFailed)
+        cardWriteFailed.store (true, std::memory_order_release);
+
     // §6.3: the mirror is closed last and the same way, so a take that ended
     // normally leaves two complete, independently valid copies.
+    bool mirrorFinalizeFailed = false;
+
     for (auto& w : mirrorStemWriters)
-        w->close();
+        if (! w->close())
+            mirrorFinalizeFailed = true;
+
     mirrorStemWriters.clear();
 
     if (mirrorMixWriter != nullptr)
     {
-        mirrorMixWriter->close();
+        if (! mirrorMixWriter->close())
+            mirrorFinalizeFailed = true;
+
         mirrorMixWriter.reset();
     }
+
+    // Only counted when a mirror was actually running: closing writers that
+    // were never opened is not a mirror failure, and reporting one would tell
+    // the user a backup broke when they never asked for one.
+    if (mirrorFinalizeFailed && mirroring.load (std::memory_order_acquire))
+        mirrorWriteFailed.store (true, std::memory_order_release);
 
     mirroring.store (false, std::memory_order_release);
 }
