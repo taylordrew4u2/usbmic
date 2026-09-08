@@ -1224,6 +1224,7 @@ void Application::toggleRecording()
 
             // Each take gets its own warnings; a previous one must not leave the
             // ten-minute warning already spent.
+            mirrorActiveAtStop = -1;
             midTakeDropouts.clear();
             midTakeNotice.clear();
             midTakeNoticeSeconds = 0.0;
@@ -1240,6 +1241,7 @@ void Application::toggleRecording()
         // it still exists.
         const float takePeak = capture != nullptr ? capture->getPeakWritten() : -1.0f;
         const float arrivedPeak = capture != nullptr ? capture->getPeakArrived() : -1.0f;
+        mirrorActiveAtStop = (capture != nullptr && capture->isMirroring()) ? 1 : 0;
 
         // §6.1: stop the writer first so every buffered frame reaches the files
         // before the engine reports the take finished.
@@ -2046,7 +2048,9 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     }
 
     meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
-    meta.mirrorActive = capture != nullptr && capture->isMirroring();
+    meta.mirrorActive = sessionHasStopped && mirrorActiveAtStop >= 0
+                            ? mirrorActiveAtStop == 1
+                            : (capture != nullptr && capture->isMirroring());
     meta.mirrorPath = currentMirrorFolder.toStdString();
 
     // §6.5's mid-recording row: every unplug and reconnection during this take.
