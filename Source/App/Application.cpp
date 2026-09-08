@@ -53,6 +53,10 @@ std::unique_ptr<VirtualDeviceBackend> Application::createDefaultVirtualDeviceBac
 
 void Application::initialise()
 {
+    // Before anything that could be worth recording, so every entry this
+    // session shares one origin.
+    appStartMs = juce::Time::getMillisecondCounterHiRes();
+
     // First, before anything reads a setting: the capture coordinator is built
     // with masterVolume a few lines down, and the destination is chosen below.
     loadSettings();
@@ -86,6 +90,15 @@ void Application::initialise()
             });
         });
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
+    }
+    else
+    {
+        // A build with no platform backend has no monitoring and can record
+        // nothing. It used to present as an ordinary launch with an enabled
+        // record button, which is the most complete silence in the app.
+        noteActivity (ActivityLevel::Failed, "Sound",
+                      "This build has no way to reach your sound hardware, so nothing can be "
+                      "heard or recorded.");
     }
 
     // §10.1's default, but only when there is nothing remembered to override
@@ -256,6 +269,15 @@ juce::String Application::getLoudnessAdvice() const
 void Application::openEnabledCameras()
 {
     cameraController.applySelection();
+
+    // CameraController has always set this string, and it was only ever
+    // rendered by the camera panel -- which is a panel, so it is usually shut.
+    // Starting a take with it shut meant "two of your cameras couldn't start
+    // recording" was written to a field nobody was looking at.
+    const auto problem = cameraController.getProblem();
+
+    if (problem.isNotEmpty())
+        noteActivity (ActivityLevel::Failed, "Cameras", problem);
 }
 
 std::vector<ChannelPlanDevice> Application::planDevices() const
@@ -369,7 +391,18 @@ void Application::restartCapture()
 
     if (channels.empty())
     {
+        const bool wasMonitoring = capture->isMonitoring();
+
         capture->stopMonitoring();
+
+        if (wasMonitoring)
+        {
+            noteActivity (ActivityLevel::Stopped, "Monitoring",
+                          "Listening stopped -- there are no microphones switched on.");
+
+            journalledMonitorCount = 0;
+            journalledMonitorOk = false;
+        }
 
         if (onCaptureRebuilt)
             onCaptureRebuilt();
@@ -379,10 +412,37 @@ void Application::restartCapture()
 
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
 
+    const int micCount = static_cast<int> (channels.size());
+
+    // Only a change is news. This runs on every rename, hot-plug and output
+    // change, and an entry per call would bury everything else under a repeated
+    // "2 microphones are live".
+    const bool worthSaying = started != journalledMonitorOk || micCount != journalledMonitorCount;
+
+    journalledMonitorOk = started;
+    journalledMonitorCount = micCount;
+
     if (started)
     {
         applyClockMaster();
         driftMeasuredSeconds = 0.0;
+
+        if (worthSaying)
+            noteActivity (ActivityLevel::Started, "Monitoring",
+                          juce::String (micCount)
+                          + (micCount == 1 ? " microphone is live." : " microphones are live."));
+    }
+    else if (worthSaying)
+    {
+        // The sticky problem string already existed and is already shown. It is
+        // recorded here as well because it is a thing that happened at a
+        // moment, and the sticky string only ever says what is true now -- so a
+        // monitor that failed and was then fixed left nothing behind.
+        const auto why = juce::String (capture->getMonitorProblem());
+
+        noteActivity (ActivityLevel::Failed, "Monitoring",
+                      why.isNotEmpty() ? why
+                                       : juce::String ("Couldn't start listening to your microphones."));
     }
 
     // Fired on success AND failure: either way the old meters are gone, and a
@@ -651,12 +711,19 @@ void Application::onDeviceListChanged()
                 recordingEngine.onMicUnplugged (ch.deviceId);
                 midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                              "Microphone unplugged: writing silence to its channel." });
+
+                noteActivity (ActivityLevel::Failed, juce::String (ch.displayName),
+                              "Unplugged mid-take. Its track keeps its place and is being written "
+                              "as silence.");
             }
             else if (live && recordingEngine.isWritingSilence (ch.deviceId))
             {
                 recordingEngine.onMicReconnected (ch.deviceId);
                 midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                              "Microphone reconnected: its channel is live again." });
+
+                noteActivity (ActivityLevel::Recovered, juce::String (ch.displayName),
+                              "Plugged back in. Its track is live again.");
             }
         }
 
@@ -671,6 +738,12 @@ void Application::onDeviceListChanged()
 
             midTakeNotice = juce::String (recordingEngine.onNewMicPluggedMidTake (d.identity.key(), true));
             midTakeNoticeSeconds = 12.0;
+
+            // The line lasts twelve seconds. Someone who looked away for
+            // fifteen used to have no way of learning that the mic they just
+            // plugged in is not in the take.
+            noteActivity (ActivityLevel::Warning, juce::String (d.displayName),
+                          "Added to monitoring only. It'll be recorded starting with your next take.");
             break;
         }
 
@@ -1131,7 +1204,22 @@ void Application::setDestinationByPath (const juce::String& path)
         target.createDirectory();
 
     if (target.isDirectory() && target.hasWriteAccess())
+    {
         setDestinationFolder (target);
+
+        noteActivity (ActivityLevel::Started, "Save location",
+                      "Takes will be saved to " + target.getFullPathName() + ".");
+        return;
+    }
+
+    // The click used to do nothing and say nothing: the old destination stayed,
+    // the setting looked unchanged, and a card that is read-only or was pulled
+    // between listing and choosing was indistinguishable from a misclick. The
+    // user then recorded to somewhere they believed they had changed.
+    noteActivity (ActivityLevel::Failed, "Save location",
+                  "Couldn't save to " + target.getFullPathName()
+                  + ", so takes are still going to " + juce::String (destinationFolder)
+                  + ". Check the card is plugged in and isn't locked.");
 }
 
 void Application::chooseInitialDestination()
@@ -1197,8 +1285,29 @@ void Application::toggleRecording()
                     // Nothing was written, so the engine must not claim a take.
                     recordingEngine.stop();
                     recordingStartMs = 0.0;
+
+                    // And the user is told. This path used to return here in
+                    // silence: the button un-latched, no message appeared
+                    // anywhere, and the only difference between "the card is
+                    // full" and "the app is broken" was that neither was said.
+                    recordStartProblem = folder.isEmpty()
+                        ? juce::String ("Couldn't make a folder for this take. Check the card is "
+                                        "plugged in, has room, and isn't locked.")
+                        : juce::String (capture->getRecordingProblem());
+
+                    if (recordStartProblem.isEmpty())
+                        recordStartProblem = "Couldn't start recording. Check the card is plugged "
+                                             "in, has room, and isn't locked.";
+
+                    noteActivity (ActivityLevel::Failed, "Recording", recordStartProblem);
                     return;
                 }
+
+                // Cleared only once a take is genuinely under way, so the
+                // reason for the last failure stays on screen until it is
+                // replaced by a success rather than by the next click.
+                recordStartProblem.clear();
+                mirrorMissingReported = false;
 
                 currentSessionFolder = folder;
                 currentMirrorFolder = mirror;
@@ -1216,10 +1325,20 @@ void Application::toggleRecording()
                 // timestamp tying it to the session.
                 cameraController.startRecording (juce::File (folder), recordingStartMs);
 
+                // Same field, the other moment it is set. A camera that failed
+                // to start recording is not in the take, and the take goes on
+                // regardless -- so if this is not said now it is never said.
+                if (const auto cameraProblem = cameraController.getProblem(); cameraProblem.isNotEmpty())
+                    noteActivity (ActivityLevel::Failed, "Cameras", cameraProblem);
+
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
                 // stop to add the stop time and everything logged since.
                 writeSessionMetadata (false);
+
+                noteActivity (ActivityLevel::Started, "Recording",
+                              "Recording started into " + juce::File (folder).getFileName()
+                              + (mirror.isNotEmpty() ? ", with a backup copy." : "."));
             }
 
             // Each take gets its own warnings; a previous one must not leave the
@@ -1309,6 +1428,20 @@ void Application::toggleRecording()
         // preflight never got one, and "saved" would be a lie.
         savedTakePending = currentSessionFolder.isNotEmpty();
 
+        // The stop goes in the record with its outcome attached. A take that
+        // ended is a thing that happened, and whether it holds audio is the one
+        // fact the user most needs carried past the ten seconds the notice
+        // lasts -- particularly the empty ones, which look identical on disk to
+        // a folder nobody has opened yet.
+        noteActivity (lastTakeHeldNoAudio ? ActivityLevel::Failed : ActivityLevel::Stopped,
+                      "Recording",
+                      lastTakeHeldNoAudio
+                          ? juce::String ("Recording stopped, but there is no audio in "
+                                          + juce::File (lastSessionFolder).getFileName()
+                                          + ". Check your microphones aren't muted.")
+                          : juce::String ("Recording stopped. Saved to "
+                                          + juce::File (lastSessionFolder).getFileName() + "."));
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
@@ -1354,7 +1487,12 @@ juce::String Application::createSessionFolder (juce::Time now) const
     const auto folder = root.getChildFile (resolveSessionFolderName (now, sessionName));
 
     if (! folder.createDirectory().wasOk())
+    {
+        noteActivity (ActivityLevel::Failed, "Recording",
+                      "Couldn't make a folder at " + folder.getFullPathName()
+                      + ". Check the card is plugged in, has room, and isn't locked.");
         return {};
+    }
 
     return folder.getFullPathName();
 }
@@ -1975,7 +2113,7 @@ void Application::setDestinationFolder (const juce::File& folder)
     saveSettings();
 }
 
-juce::String Application::createMirrorFolder (const juce::String& sessionFolderName)
+juce::String Application::createMirrorFolder (const juce::String& sessionFolderName) const
 {
     // §6.3: the mirror lives on the internal drive, which is the whole point --
     // a card failure must not take both copies with it.
@@ -1991,7 +2129,16 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
         root = mirrorRoot.getChildFile (sessionFolderName + "_" + juce::String (attempt));
 
     if (root.exists() || ! root.createDirectory().wasOk())
+    {
+        // The caller degrades to card-only, which is right (§6.3). What it
+        // could not do was tell anyone, because an empty string is not a
+        // reason. pollStatusAdvice catches the resulting state and says so;
+        // this puts the cause in the record.
+        noteActivity (ActivityLevel::Failed, "Local backup",
+                      "Couldn't make the backup folder at " + root.getFullPathName()
+                      + ". This take is going to the card only.");
         return {};
+    }
 
     return root.getFullPathName();
 }
@@ -2076,8 +2223,13 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // one -- the file is simply shorter, and nothing says why.
     if (mirrorPolicy.wasStoppedForWriteFailure())
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                   "Local backup copy stopped: that drive stopped accepting writes. "
-                                   "The copy is incomplete from this point." });
+                                   mirrorMissingReported
+                                       ? std::string ("Local backup copy was never made: its folder or "
+                                                      "files could not be opened. There is no second "
+                                                      "copy of this take.")
+                                       : std::string ("Local backup copy stopped: that drive stopped "
+                                                      "accepting writes. The copy is incomplete from "
+                                                      "this point.") });
 
     if (capture != nullptr && capture->getFramesDropped() > 0)
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
@@ -2086,10 +2238,84 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
 
     // Written to the card copy and the mirror alike, so either one stands alone.
     const auto json = meta.toJsonString();
-    juce::File (currentSessionFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
+
+    // The result is checked. session.json is the durable record of everything
+    // above -- every dropout, every buffer change, why the backup stopped --
+    // and it was written with the return value discarded, so the one file that
+    // explains a difficult take could fail to appear and nothing would say so.
+    if (! juce::File (currentSessionFolder).getChildFile ("session.json").replaceWithText (juce::String (json)))
+        noteActivity (ActivityLevel::Warning, "Recording",
+                      "Couldn't write the details file for this take. The audio itself is saved.");
 
     if (currentMirrorFolder.isNotEmpty())
         juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json));
+
+    writeActivityLog (juce::File (currentSessionFolder));
+
+    if (currentMirrorFolder.isNotEmpty())
+        writeActivityLog (juce::File (currentMirrorFolder));
+}
+
+void Application::writeActivityLog (const juce::File& folder)
+{
+    // Plain text beside the take, because this one is for the person and not
+    // for a parser: it is what they show someone else when a take went wrong.
+    // A take that carries its own history can be explained months later; one
+    // that does not is a folder of audio and a memory of something going amber.
+    juce::String text;
+    text << "SobStage -- what happened during this session" << juce::newLine << juce::newLine;
+
+    // Oldest first: a log is read forwards.
+    auto lines = getRecentActivityLines (static_cast<int> (ActivityJournal::kMaxEntries));
+
+    for (int i = lines.size(); --i >= 0;)
+        text << lines[i] << juce::newLine;
+
+    // Checked like everything else here. A log that failed to write is exactly
+    // the sort of thing this file exists to stop happening quietly.
+    if (! folder.getChildFile ("activity.log").replaceWithText (text))
+        noteActivity (ActivityLevel::Warning, "Recording",
+                      "Couldn't write the activity log into " + folder.getFileName()
+                      + ". The audio itself is saved.");
+}
+
+double Application::activityClockSeconds() const
+{
+    if (appStartMs <= 0.0)
+        return 0.0;
+
+    return (juce::Time::getMillisecondCounterHiRes() - appStartMs) / 1000.0;
+}
+
+void Application::noteActivity (ActivityLevel level, const juce::String& subject,
+                                const juce::String& message) const
+{
+    activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString());
+}
+
+juce::StringArray Application::getRecentActivityLines (int limit) const
+{
+    juce::StringArray lines;
+
+    for (const auto& e : activity.getEntries())
+    {
+        if (lines.size() >= limit)
+            break;
+
+        // Minutes and seconds on the app's clock. A user comparing this against
+        // a take needs an ordering and a rough distance, not a wall clock.
+        const int totalSeconds = static_cast<int> (e.atSeconds);
+        auto stamp = juce::String::formatted ("%d:%02d", totalSeconds / 60, totalSeconds % 60);
+
+        auto line = stamp + "  " + juce::String (e.subject) + " -- " + juce::String (e.message);
+
+        if (e.repeats > 1)
+            line += " (x" + juce::String (e.repeats) + ")";
+
+        lines.add (line);
+    }
+
+    return lines;
 }
 
 juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
@@ -2156,8 +2382,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             if (! capture->hasSustainedExcessDrift (i))
                 continue;
 
-            return juce::String (getMicDisplayName (i))
-                   + " can't keep steady time with the others. Try a different USB port.";
+            auto line = juce::String (getMicDisplayName (i))
+                        + " can't keep steady time with the others. Try a different USB port.";
+
+            noteActivity (ActivityLevel::Warning, getMicDisplayName (i), line);
+            return line;
         }
     }
 
@@ -2179,7 +2408,73 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // notice, which is what shows the user whatever did survive.
         toggleRecording();
 
+        noteActivity (ActivityLevel::Failed, "Card", juce::String (cardRemovalNotice.message));
         return juce::String (cardRemovalNotice.message);
+    }
+
+    // §0.1: a stream that opened and has since stopped. Taken here, on the
+    // message thread, from wherever the backend's worker thread left it.
+    //
+    // Every backend has a loop that gives up on a dead device and exits, and
+    // none of them used to tell anyone: monitoring went quiet, or a
+    // microphone's track went on being written as silence for the rest of the
+    // take, and the only evidence was in the file afterwards.
+    if (audioBackend != nullptr)
+    {
+        juce::String firstFailure;
+
+        for (const auto& failure : audioBackend->takeStreamFailures())
+        {
+            // The backend knows an id; the user knows a name.
+            auto subject = juce::String ("Your headphones");
+
+            if (! failure.deviceId.empty())
+            {
+                subject = juce::String (failure.deviceId);
+
+                for (const auto& d : deviceManager.getDevices())
+                    if (d.identity.key() == failure.deviceId)
+                        subject = juce::String (d.displayName);
+            }
+
+            const auto line = subject + " " + juce::String (failure.reason);
+
+            noteActivity (ActivityLevel::Failed, subject, line);
+
+            if (firstFailure.isEmpty())
+                firstFailure = line;
+        }
+
+        if (firstFailure.isNotEmpty())
+            return firstFailure;
+    }
+
+    // A take that could not start. Reported here rather than only at the click,
+    // because the click's own moment passes and this line is where the user
+    // looks. Held until the next take starts, not until the next poll.
+    if (recordStartProblem.isNotEmpty() && recordingEngine.getState() == RecordingState::Idle)
+        return recordStartProblem;
+
+    // §6.3: a mirror was asked for and this take does not have one -- either
+    // its folder could not be made, or its files could not be opened. Both used
+    // to leave the policy saying "Active" over a backup that did not exist, so
+    // both are caught here, by comparing what was asked for against what is
+    // actually being written. Said once per take.
+    if (capture != nullptr && capture->isRecording() && ! mirrorMissingReported
+        && mirrorPolicy.isMirroring() && ! capture->isMirroring())
+    {
+        mirrorMissingReported = true;
+
+        // The policy is caught up too, so isMirroring() and session.json stop
+        // claiming a second copy that does not exist.
+        mirrorPolicy.noteWriteFailure();
+
+        const auto line = juce::String ("There is no backup copy of this take -- that folder "
+                                        "couldn't be opened. The recording itself is fine and is "
+                                        "going to the card.");
+
+        noteActivity (ActivityLevel::Failed, "Local backup", line);
+        return line;
     }
 
     // §6.3: the mirror's destination failed -- unplugged, read-only, or dead.
@@ -2207,8 +2502,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (capture != nullptr && capture->hasMirrorWriteFailed()
         && mirrorPolicy.noteWriteFailure())
     {
-        return "The local backup copy stopped -- that drive stopped accepting writes. "
-               "The recording itself is unaffected and is still going to the card.";
+        const auto line = juce::String ("The local backup copy stopped -- that drive stopped "
+                                        "accepting writes. The recording itself is unaffected and "
+                                        "is still going to the card.");
+
+        noteActivity (ActivityLevel::Failed, "Local backup", line);
+        return line;
     }
 
     // §6.3: the mirror is re-judged during the take, and once it stops it never
@@ -2221,8 +2520,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             == MirrorState::StoppedLowSpace)
         {
             capture->stopMirroring();
-            return "The local backup copy stopped -- this drive is low on space. "
-                   "The recording itself is unaffected.";
+
+            const auto line = juce::String ("The local backup copy stopped -- this drive is low on "
+                                            "space. The recording itself is unaffected.");
+
+            noteActivity (ActivityLevel::Warning, "Local backup", line);
+            return line;
         }
     }
 
@@ -2253,12 +2556,25 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                     capacityMonitor.noteDegradationAt (static_cast<long long> (capture->getFramesAccepted()));
                 }
 
-                return "The drive can't keep up. Still recording everyone into the mixed file, but the "
-                       "separate microphone tracks have stopped. Close other apps using the disk.";
+                {
+                    const auto line = juce::String ("The drive can't keep up. Still recording "
+                                                    "everyone into the mixed file, but the separate "
+                                                    "microphone tracks have stopped. Close other "
+                                                    "apps using the disk.");
+
+                    noteActivity (ActivityLevel::Failed, "Drive", line);
+                    return line;
+                }
 
             case WritePipelineState::FillWarning:
-                return "The drive is falling behind. Nothing has been lost yet -- close any other apps "
-                       "using the disk.";
+                {
+                    const auto line = juce::String ("The drive is falling behind. Nothing has been "
+                                                    "lost yet -- close any other apps using the "
+                                                    "disk.");
+
+                    noteActivity (ActivityLevel::Warning, "Drive", line);
+                    return line;
+                }
 
             case WritePipelineState::Healthy:
                 break;
@@ -2363,11 +2679,66 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         return "Saved to " + lastSessionFolder;
     }
 
-    // §10.5 last: hardware guidance, most serious first.
+    // The post-take combine, which nothing had ever asked about. TakeCombiner
+    // has always set a problem string and Application has always had a getter
+    // for it, and no code anywhere in the app called that getter -- so a
+    // combine that failed after the take reported nothing, and the user was
+    // left looking for a file that was never written.
+    {
+        const auto combine = takeCombiner.getStatus();
+        const auto problem = juce::String (combine.problem);
+
+        if (! combine.running && problem.isNotEmpty() && problem != reportedCombineProblem)
+        {
+            reportedCombineProblem = problem;
+
+            noteActivity (ActivityLevel::Warning, "Combined video", problem);
+            return problem;
+        }
+
+        if (problem.isEmpty())
+            reportedCombineProblem.clear();
+    }
+
+    // §10.5: hardware guidance, most serious first.
     const auto advice = getSetupAdvice();
 
     if (! advice.empty())
         return juce::String (advice.front().message);
+
+    // Last, and only when nothing above had anything to say: the most serious
+    // thing in the journal the user has not been shown.
+    //
+    // This is what closes the gap the journal was written for. Every branch
+    // above holds the line for as long as its condition is true, so anything
+    // that happened underneath one of them -- a mic that dropped and came back
+    // during a disk warning, a backup that never opened while the drive was
+    // busy -- reached the record and never reached the screen. Here it does,
+    // once the loud thing has finished being loud.
+    if (activityLineSeconds > 0.0)
+    {
+        activityLineSeconds -= sinceLastCallSeconds;
+        return activityLine;
+    }
+
+    if (ActivityEntry unseen; activity.getMostSeriousUnseen (unseen))
+    {
+        // That one entry, not all of them. The line can only show one sentence,
+        // so marking the rest seen because this one was shown would lose every
+        // other piece of unread news -- which is the silence this whole thing
+        // is here to remove.
+        activity.markSeen (unseen.id);
+
+        // Ordinary starts and stops are not worth interrupting a quiet screen
+        // for -- they are in the panel and in the take's own log. The line is
+        // for the things that need acting on.
+        if (unseen.level == ActivityLevel::Warning || unseen.level == ActivityLevel::Failed)
+        {
+            activityLine = juce::String (unseen.message);
+            activityLineSeconds = 8.0;
+            return activityLine;
+        }
+    }
 
     return {};
 }
@@ -2423,8 +2794,20 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 
     juce::FileOutputStream out (destinationZip);
 
-    if (out.openedOk())
-        builder.writeToStream (out, nullptr);
+    if (out.openedOk() && builder.writeToStream (out, nullptr))
+    {
+        noteActivity (ActivityLevel::Stopped, "Diagnostics",
+                      "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".");
+    }
+    else
+    {
+        // The user asked for a file and was shown nothing either way, so a
+        // failed export looked exactly like a successful one -- right up until
+        // they went to attach it to an email.
+        noteActivity (ActivityLevel::Failed, "Diagnostics",
+                      "Couldn't write the diagnostics file to "
+                      + destinationZip.getFullPathName() + ". Try somewhere else.");
+    }
 }
 
 juce::File Application::getSettingsFile()
@@ -2630,7 +3013,13 @@ void Application::saveSettings()
 
     const auto file = getSettingsFile();
     file.getParentDirectory().createDirectory();
-    file.replaceWithText (juce::String (settings.toJsonString()));
+
+    // Checked, because silently failing here presents next launch as an app
+    // that forgot the user's microphone names, trims and destination -- and
+    // there is no moment at which that is explained.
+    if (! file.replaceWithText (juce::String (settings.toJsonString())))
+        noteActivity (ActivityLevel::Warning, "Settings",
+                      "Couldn't save your settings, so they may not be remembered next time.");
 
     rememberedSettings = settings;
 }

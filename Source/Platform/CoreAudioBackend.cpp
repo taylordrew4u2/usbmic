@@ -527,6 +527,10 @@ ExclusiveModeCapability CoreAudioBackend::checkExclusiveModeCapability (const st
 bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                                    AudioCallback callback, bool isOutput)
 {
+    // Cleared here so a message from a previous failed open cannot be read back
+    // as the reason this one failed -- or, worse, be shown beside a success.
+    lastOpenError.clear();
+
     const AudioObjectID device = findDeviceByUID (deviceId);
 
     if (device == kAudioObjectUnknown || ! callback)
@@ -607,7 +611,10 @@ bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDevic
     const AudioObjectID device = findDeviceByUID (outputDeviceId);
 
     if (device == kAudioObjectUnknown)
+    {
+        lastOpenError = "That sound output isn't there any more. Choose another one.";
         return false;
+    }
 
     // Hog mode is the exclusive-equivalent on macOS: it stops the HAL mixing
     // other processes into this device. §5.4 requires the monitor path be

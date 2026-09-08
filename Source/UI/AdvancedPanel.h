@@ -121,6 +121,16 @@ public:
     void setDeliveryTargets (const juce::StringArray& names, const juce::String& chosen);
     void setLoudnessAdvice (const juce::String& text);
 
+    /// §0.1 / §10.6: everything the app has done and everything that has gone
+    /// wrong this session, newest first.
+    ///
+    /// The advice line above the record button holds one sentence at a time,
+    /// so anything that happened while something more serious was on screen was
+    /// never shown at all. This is where those go, and where a user answers
+    /// "what was that amber thing I looked away from" without having to have
+    /// been watching.
+    void setActivityLines (const juce::StringArray& lines);
+
     /// Sets that toggle and the sentence under it. `unavailableReason` is empty
     /// when the machine can actually do this, and otherwise says what is
     /// missing -- named here, before a take, rather than in an alert after one.
@@ -193,7 +203,8 @@ private:
     // every unrelated row on the way past it. resized() records where the
     // rules go; paint() draws them, since a rule is a line rather than a
     // component.
-    juce::Label storageSection, formatSection, micSection, outputSection;
+    juce::Label storageSection, formatSection, micSection, outputSection, activitySection;
+    juce::Label activityLabel; // multi-line, newest first, populated externally
     std::vector<int> ruleYs;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;
     /// Parallel to micToggles: true for a socket row, which is indented under

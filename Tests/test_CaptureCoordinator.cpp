@@ -1187,6 +1187,38 @@ TEST_CASE (CaptureCoordinator_PolarVerdictDoesNotOutliveItsMeasurement)
 }
 
 // ---------------------------------------------------------------------------
+// A take that cannot start says why.
+// ---------------------------------------------------------------------------
+
+TEST_CASE (CaptureCoordinator_AFailedRecordStartCarriesTheReasonUp)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 256);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // A folder that is not there stands in for the card that was pulled,
+    // filled, or locked between arming and pressing record.
+    REQUIRE_FALSE (c.startRecording ("/mma-no-such-folder-4b21/take", 24, "2026-08-27T00:00:00Z"));
+
+    const auto& problem = c.getRecordingProblem();
+    REQUIRE_FALSE (problem.empty());
+    REQUIRE (problem.find ("/mma-no-such-folder-4b21/take") != std::string::npos);
+
+    // And the take genuinely did not start, so nothing claims one.
+    REQUIRE_FALSE (c.isRecording());
+}
+
+TEST_CASE (CaptureCoordinator_RecordingWithNoMicrophonesSaysSoRatherThanNothing)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 256);
+
+    REQUIRE_FALSE (c.startRecording ("/tmp", 24, "2026-08-27T00:00:00Z"));
+    REQUIRE_FALSE (c.getRecordingProblem().empty());
+}
+
+// ---------------------------------------------------------------------------
 // The software clock: a take never depends on the headphone output.
 // ---------------------------------------------------------------------------
 

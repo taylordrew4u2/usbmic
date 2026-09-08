@@ -116,6 +116,27 @@ public:
     /// space does, and the card write continues untouched.
     bool hasMirrorWriteFailed() const noexcept { return mirrorWriteFailed.load (std::memory_order_acquire); }
 
+    /// §6.3: the mirror was asked for and could not be opened at all, so this
+    /// take has no second copy from its very first sample.
+    ///
+    /// Kept apart from hasMirrorWriteFailed() because the two need different
+    /// sentences and one of them used to have none. A mirror that stops
+    /// mid-take leaves a partial copy; a mirror that never opened leaves
+    /// nothing, and start() deliberately does not fail the take over it. That
+    /// left the user with a backup that had never existed while the app went on
+    /// reporting one -- exactly the silent loss §6.3 exists to prevent.
+    bool hasMirrorFailedToOpen() const noexcept { return mirrorFailedToOpen.load (std::memory_order_acquire); }
+
+    /// Why start() returned false, in the user's words: which file could not be
+    /// opened, and where. Empty when start() succeeded.
+    ///
+    /// The bool alone was the whole report, so a take that could not open its
+    /// files failed with no reason attached and the record button simply
+    /// refused to latch. A full card, a read-only card and a card pulled
+    /// between arming and pressing record were indistinguishable, and none of
+    /// them said anything.
+    const std::string& getStartProblem() const noexcept { return startProblem; }
+
 private:
     // Constructed small and resized by start(), which is the only place the
     // real channel count and rate are known. RingBuffer::reset reallocates, so
@@ -123,6 +144,8 @@ private:
     std::atomic<bool> mixOnly { false };
     std::atomic<bool> cardWriteFailed { false };
     std::atomic<bool> mirrorWriteFailed { false };
+    std::atomic<bool> mirrorFailedToOpen { false };
+    std::string startProblem;
 
     RingBuffer ring { 1 };
     std::vector<std::unique_ptr<SessionWriter>> stemWriters;

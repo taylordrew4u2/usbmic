@@ -872,6 +872,12 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
                                       application.getDeliveryTarget());
     advancedPanel.setLoudnessAdvice (application.getLoudnessAdvice());
+    advancedPanel.setActivityLines (application.getRecentActivityLines());
+
+    // They are on screen, so they have been shown. Without this the advice line
+    // above the record button would go on announcing entries the user is
+    // already looking at.
+    application.markActivitySeen();
 
     juce::StringArray outputs;
     for (const auto& name : application.getOutputDeviceNames())
