@@ -2599,7 +2599,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         writeActivityLog (juce::File (currentMirrorFolder));
 }
 
-void Application::writeActivityLog (const juce::File& folder)
+void Application::writeActivityLog (const juce::File& folder) const
 {
     // Plain text beside the take, because this one is for the person and not
     // for a parser: it is what they show someone else when a take went wrong.
@@ -2641,6 +2641,30 @@ void Application::noteActivity (ActivityLevel level, const juce::String& subject
                                 const juce::String& message) const
 {
     activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString());
+
+    // Straight to disk while a take is running. The journal lives in memory,
+    // and the only writes were at the start of the take -- before the "started"
+    // note even existed -- and at the stop. So a take that ended in a crash or
+    // a power cut, the take this log exists for, was recovered next to a log
+    // that said nothing had happened: not that recording started, not the
+    // drive-space warning that came ten minutes before the end.
+    flushActivityLogToTake();
+}
+
+void Application::flushActivityLogToTake() const
+{
+    // writeActivityLog reports its own failure through noteActivity, which
+    // lands back here. Once is a report; twice is a loop.
+    if (writingActivityLog || currentSessionFolder.isEmpty())
+        return;
+
+    writingActivityLog = true;
+    writeActivityLog (juce::File (currentSessionFolder));
+
+    if (currentMirrorFolder.isNotEmpty())
+        writeActivityLog (juce::File (currentMirrorFolder));
+
+    writingActivityLog = false;
 }
 
 juce::StringArray Application::getRecentActivityLines (int limit) const
@@ -3670,6 +3694,22 @@ void Application::scanForInterruptedSessions()
         for (int i = 0; i < examine; ++i)
         {
             const auto folder = folders[i];
+
+            // One take, one entry. The card and the mirror hold the SAME take
+            // under the same folder name, so scanning both listed it twice --
+            // the Recovered card said two takes were interrupted when one was,
+            // with two identical labels and no way to tell them apart. The card
+            // copy wins because it is the one the user's paths point at; a take
+            // that exists only in the mirror -- the case this scan of the
+            // mirror exists for -- still gets its entry.
+            if (std::any_of (recoveredSessions.begin(), recoveredSessions.end(),
+                             [&folder] (const RecoveredSession& existing)
+                             {
+                                 return juce::File (juce::String (existing.folder)).getFileName()
+                                        == folder.getFileName();
+                             }))
+                continue;
+
             const auto metadataFile = folder.getChildFile ("session.json");
 
             if (! metadataFile.existsAsFile())
