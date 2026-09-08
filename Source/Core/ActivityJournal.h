@@ -39,6 +39,13 @@ struct ActivityEntry
     /// §10.6: what happened, then what to do, in one sentence. No codes.
     std::string message;
 
+    /// News that has to reach the screen even though it is not a warning.
+    /// The advice line otherwise shows only warnings and failures -- right for
+    /// ordinary starts and stops, wrong for a microphone arriving or leaving,
+    /// which is a fact about the rig the user is holding in their hands and
+    /// wants confirmed at the moment it happens.
+    bool onTheLine = false;
+
     /// How many times this same thing has happened in a row. 1 for a first
     /// occurrence; a repeat collapses into the existing entry and increments
     /// this rather than pushing a duplicate line the user has to scroll past.
@@ -90,7 +97,8 @@ public:
     /// only -- a log file -- uses this to write the line once rather than once
     /// per repetition: a rig failing twice a second otherwise fills that file
     /// with the same sentence and buries everything else in it.
-    bool note (double nowSeconds, ActivityLevel level, std::string subject, std::string message);
+    bool note (double nowSeconds, ActivityLevel level, std::string subject, std::string message,
+               bool onTheLine = false);
 
     /// Newest first. A copy, so a UI can walk it without holding the lock.
     std::vector<ActivityEntry> getEntries() const;

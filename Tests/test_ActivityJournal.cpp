@@ -344,3 +344,29 @@ TEST_CASE (ActivityJournal_NoteSaysWhetherItWasNewsOrARepeat)
     REQUIRE (journal.note (ActivityJournal::kRepeatWindowSeconds + 2.0, ActivityLevel::Failed,
                            "Card", "It stopped accepting writes."));
 }
+
+TEST_CASE (ActivityJournal_AnEntryCanAskToReachTheScreen)
+{
+    // The advice line shows warnings and failures. A microphone being plugged
+    // in is neither, and the user still wants it confirmed the moment it
+    // lands -- so an entry can say it belongs on the screen regardless of
+    // level, and a repeat of it says so again.
+    ActivityJournal journal;
+
+    journal.note (0.0, ActivityLevel::Started, "Kitchen", "Kitchen is connected.", true);
+    journal.note (1.0, ActivityLevel::Started, "Monitoring", "2 microphones are live.");
+
+    const auto entries = journal.getEntries();
+    REQUIRE (entries.size() == 2u);
+
+    for (const auto& e : entries)
+        REQUIRE (e.onTheLine == (e.subject == std::string ("Kitchen")));
+
+    // A repeat is news again, and still belongs on the screen.
+    journal.markAllSeen();
+    REQUIRE (! journal.note (2.0, ActivityLevel::Started, "Kitchen", "Kitchen is connected.", true));
+
+    ActivityEntry unseen;
+    REQUIRE (journal.getMostSeriousUnseen (unseen));
+    REQUIRE (unseen.onTheLine);
+}

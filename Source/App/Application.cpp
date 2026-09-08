@@ -659,6 +659,10 @@ void Application::onDeviceListChanged()
     // once at launch.
     applyRememberedDeviceSettings();
 
+    // Which microphone arrived, and which one left. Run after the remembered
+    // settings so each is called by the name the user gave it.
+    announceDeviceChanges (seen);
+
     // §2.2: only the microphones actually being recorded get a vote. A device
     // the take does not use cannot be made to resample, cannot go out of sync,
     // and cannot be harmed by the choice -- so letting it constrain the rate
@@ -890,6 +894,21 @@ void Application::reselectOutputDevice()
     }
 
     haveEnumeratedOutputsOnce = true;
+
+    // Headphones arriving or leaving is a change to the rig and was said only
+    // when it left the user with nothing to listen on at all. A microphone's
+    // own playback endpoint is skipped: it is the same physical thing the
+    // microphone list already announced, and saying it twice under two names
+    // is noise rather than news.
+    {
+        std::map<std::string, std::string> outputs;
+
+        for (const auto& c : candidates)
+            if (! c.isMicrophonePlaybackEndpoint)
+                outputs[c.id] = c.displayName;
+
+        announceOutputChanges (outputs);
+    }
 
     const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
@@ -2681,14 +2700,69 @@ double Application::activityClockSeconds() const
     return (juce::Time::getMillisecondCounterHiRes() - appStartMs) / 1000.0;
 }
 
+void Application::announceArrivalsAndDepartures (const std::map<std::string, std::string>& current,
+                                                 std::map<std::string, std::string>& known,
+                                                 bool& seeded,
+                                                 const std::set<std::string>& saidElsewhere) const
+{
+    // The first enumeration is the rig as the user set it up, not a series of
+    // arrivals. "N microphones are live" covers the launch.
+    if (! seeded)
+    {
+        seeded = true;
+        known = current;
+        return;
+    }
+
+    for (const auto& [key, name] : current)
+        if (known.find (key) == known.end())
+            noteActivity (ActivityLevel::Started, juce::String (name),
+                          juce::String (name) + " is connected.", true);
+
+    for (const auto& [key, name] : known)
+        if (current.find (key) == current.end() && saidElsewhere.count (key) == 0)
+            noteActivity (ActivityLevel::Warning, juce::String (name),
+                          juce::String (name) + " was unplugged.", true);
+
+    known = current;
+}
+
+void Application::announceDeviceChanges (const std::vector<MicDeviceState>& seen) const
+{
+    std::map<std::string, std::string> current;
+
+    for (const auto& d : seen)
+        current[d.identity.key()] = d.displayName;
+
+    // Whether a take is running decides only ONE thing here: a microphone that
+    // is part of the take gets §6.5's own sentence when it goes, which says
+    // what happens to its track, so saying "unplugged" beside it would be the
+    // same news twice. Everything else is announced either way -- a
+    // microphone arriving or leaving between takes is exactly as much a fact
+    // about the rig as one arriving or leaving during one.
+    std::set<std::string> takeChannels;
+
+    if (capture != nullptr && capture->isRecording())
+        for (const auto& ch : capture->getChannels())
+            takeChannels.insert (ch.deviceId);
+
+    announceArrivalsAndDepartures (current, knownDeviceNames, haveEnumeratedDevicesOnce, takeChannels);
+}
+
+void Application::announceOutputChanges (const std::map<std::string, std::string>& current) const
+{
+    announceArrivalsAndDepartures (current, knownOutputNames, haveAnnouncedOutputsOnce, {});
+}
+
 void Application::noteActivity (ActivityLevel level, const juce::String& subject,
-                                const juce::String& message) const
+                                const juce::String& message, bool onTheLine) const
 {
     // A repeat that only bumps a count is not news for the two append-only
     // places below. Without this, one failure repeating twice a second wrote
     // its sentence to log.txt every time -- 207 identical lines in 40 seconds
     // when a destination went away -- and rewrote the take's log just as often.
-    if (! activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString()))
+    if (! activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString(),
+                         onTheLine))
         return;
 
     // Into the app's own log as well, which until now held one line per launch
@@ -3349,8 +3423,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         // Ordinary starts and stops are not worth interrupting a quiet screen
         // for -- they are in the panel and in the take's own log. The line is
-        // for the things that need acting on.
-        if (unseen.level == ActivityLevel::Warning || unseen.level == ActivityLevel::Failed)
+        // for the things that need acting on, plus the few things the journal
+        // marks as belonging on the screen: a microphone arriving is not a
+        // warning, and the user still wants it confirmed the moment it lands.
+        if (unseen.onTheLine || unseen.level == ActivityLevel::Warning
+            || unseen.level == ActivityLevel::Failed)
         {
             activityLine = juce::String (unseen.message);
             activityLineSeconds = 8.0;
