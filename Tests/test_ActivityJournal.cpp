@@ -308,3 +308,22 @@ TEST_CASE (ActivityJournal_ATruncatedLogSaysHowMuchItLost)
     journal.clear();
     REQUIRE (journal.getDroppedCount() == 0u);
 }
+
+TEST_CASE (ActivityJournal_RepeatsCollapseEvenWhenSeveralThingsFailAtOnce)
+{
+    // The real shape of a rig coming apart: every microphone reports the same
+    // trouble, in rotation, so no two consecutive entries are identical.
+    // Comparing only against the newest entry collapsed none of them and the
+    // flood evicted everything else in the journal.
+    ActivityJournal journal;
+
+    for (int i = 0; i < 30; ++i)
+        for (const char* mic : { "mic1", "mic2", "mic3" })
+            journal.note (static_cast<double> (i) * 0.1, ActivityLevel::Warning, mic,
+                          "It can't keep steady time with the others.");
+
+    REQUIRE (journal.size() == 3u);
+
+    for (const auto& e : journal.getEntries())
+        REQUIRE (e.repeats == 30u);
+}
