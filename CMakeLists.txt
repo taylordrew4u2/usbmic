@@ -215,18 +215,26 @@ if (MMA_BUILD_APP)
     target_link_libraries(layout_probe PRIVATE mma_core juce::juce_gui_basics)
 
     if (NOT APPLE AND NOT WIN32)
-        add_library(sim_camera OBJECT
+        # Runnable, not merely compiled. The stand-in camera layer takes a
+        # settable device list, so the enumeration path -- a camera arriving, a
+        # camera going away, two of the same model staying apart -- is driven
+        # for real on a machine that has no camera at all. Opening a device is
+        # still out of reach: a viewer component needs a message manager.
+        add_executable(sim_camera
+            Tools/sim_camera.cpp
             Source/App/CameraController.cpp
             Simulation/Camera/FakeCameraDevice.cpp)
         target_compile_definitions(sim_camera PRIVATE
             JUCE_USE_CAMERA=1
             JUCE_WEB_BROWSER=0
-            JUCE_USE_CURL=0)
+            JUCE_USE_CURL=0
+            JUCE_STANDALONE_APPLICATION=1)
         # Ahead of everything, so juce_video/juce_video.h resolves to the stub.
         target_include_directories(sim_camera BEFORE PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/Simulation/Camera
             ${CMAKE_CURRENT_SOURCE_DIR}/Source)
         target_link_libraries(sim_camera PRIVATE mma_core juce::juce_gui_basics)
+        add_test(NAME sim_camera COMMAND sim_camera)
     endif()
 
     if (WIN32)
