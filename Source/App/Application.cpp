@@ -22,6 +22,24 @@
 
 namespace mma {
 
+namespace {
+
+// The version CMake stamped in. JUCE_APP_VERSION is only defined for builds
+// that go through JuceHeader.h, so stringifying it here wrote the literal
+// token "JUCE_APP_VERSION" into every take's session.json and every
+// diagnostics bundle -- the two places support would look to find out which
+// build produced a recording.
+juce::String appVersionString()
+{
+   #if defined (SOBSTAGE_VERSION_STRING)
+    return SOBSTAGE_VERSION_STRING;
+   #else
+    return "dev";
+   #endif
+}
+
+} // namespace
+
 Application::Application()
     // §9.3, asked once. The setting does not change between meter repaints, and
     // the alternative -- querying the OS per strip at 60Hz -- would be absurd.
@@ -1526,6 +1544,17 @@ void Application::toggleRecording()
         // this one's.
         stopReason.clear();
 
+        // Written AGAIN, now that the stop itself is in the journal. The first
+        // write happens inside writeSessionMetadata above, before this note
+        // exists -- so the log filed beside every take ended mid-recording and
+        // never said the take stopped, let alone why. A take the app killed
+        // because the drive filled or the card left is exactly the one whose
+        // log has to carry the reason, and that was the one it dropped.
+        writeActivityLog (juce::File (currentSessionFolder));
+
+        if (currentMirrorFolder.isNotEmpty())
+            writeActivityLog (juce::File (currentMirrorFolder));
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
@@ -2387,7 +2416,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         return;
 
     SessionMetadata meta;
-    meta.appVersion = JUCE_STRINGIFY (JUCE_APP_VERSION);
+    meta.appVersion = appVersionString().toStdString();
     meta.startTimestampIso = sessionStartIso.toStdString();
     meta.stopTimestampIso = sessionHasStopped
                                 ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
@@ -3230,7 +3259,7 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     }
 
     auto* summary = new juce::DynamicObject();
-    summary->setProperty ("appVersion", JUCE_STRINGIFY (JUCE_APP_VERSION));
+    summary->setProperty ("appVersion", appVersionString());
     summary->setProperty ("sampleRate", currentSampleRate);
     summary->setProperty ("bitDepth", currentBitDepth);
     summary->setProperty ("bufferSize", bufferLadder.getCurrentSize());
