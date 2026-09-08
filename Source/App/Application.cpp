@@ -894,6 +894,23 @@ void Application::reselectOutputDevice()
     const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
     outputSelectionProblem = selection.explanation;
+
+    // Into the record, not just onto the screen. Having nothing to listen on
+    // is a fact about the session -- someone singing to a rig that cannot play
+    // them back is the thing they will ask about afterwards -- and it was shown
+    // in the panel and written down nowhere. Only on a change, so a session
+    // with no headphones does not repeat itself.
+    if (outputSelectionProblem != reportedOutputProblem)
+    {
+        reportedOutputProblem = outputSelectionProblem;
+
+        if (! outputSelectionProblem.empty())
+            noteActivity (ActivityLevel::Warning, "Monitoring",
+                          juce::String (outputSelectionProblem));
+        else if (haveEnumeratedOutputsOnce)
+            noteActivity (ActivityLevel::Recovered, "Monitoring",
+                          "You can hear yourself again.");
+    }
 }
 
 bool Application::noteCallbackOverrun()
