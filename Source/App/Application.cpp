@@ -134,6 +134,14 @@ void Application::initialise()
             });
         });
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
+
+        // Said once, at launch, if the backend cannot watch the rig at all.
+        // The watch is set up above and its two failure paths used to return in
+        // silence -- leaving an app that never notices a microphone arriving,
+        // and never reports one pulled out mid-take (§6.5), while looking
+        // exactly like one that has nothing to report.
+        if (const auto hotplug = audioBackend->getHotplugProblem(); ! hotplug.empty())
+            noteActivity (ActivityLevel::Warning, "Microphones", juce::String (hotplug));
     }
     else
     {
@@ -886,6 +894,23 @@ void Application::reselectOutputDevice()
     const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
     outputSelectionProblem = selection.explanation;
+
+    // Into the record, not just onto the screen. Having nothing to listen on
+    // is a fact about the session -- someone singing to a rig that cannot play
+    // them back is the thing they will ask about afterwards -- and it was shown
+    // in the panel and written down nowhere. Only on a change, so a session
+    // with no headphones does not repeat itself.
+    if (outputSelectionProblem != reportedOutputProblem)
+    {
+        reportedOutputProblem = outputSelectionProblem;
+
+        if (! outputSelectionProblem.empty())
+            noteActivity (ActivityLevel::Warning, "Monitoring",
+                          juce::String (outputSelectionProblem));
+        else if (haveEnumeratedOutputsOnce)
+            noteActivity (ActivityLevel::Recovered, "Monitoring",
+                          "You can hear yourself again.");
+    }
 }
 
 bool Application::noteCallbackOverrun()
@@ -2659,7 +2684,22 @@ double Application::activityClockSeconds() const
 void Application::noteActivity (ActivityLevel level, const juce::String& subject,
                                 const juce::String& message) const
 {
-    activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString());
+    // A repeat that only bumps a count is not news for the two append-only
+    // places below. Without this, one failure repeating twice a second wrote
+    // its sentence to log.txt every time -- 207 identical lines in 40 seconds
+    // when a destination went away -- and rewrote the take's log just as often.
+    if (! activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString()))
+        return;
+
+    // Into the app's own log as well, which until now held one line per launch
+    // -- "Starting up." -- and nothing else, for the whole life of the app. It
+    // is the file the diagnostics bundle ships to whoever is helping, and the
+    // only account that survives when the take folder does not: pull the card
+    // mid-take and the take's own log goes with it, leaving the one file that
+    // was still readable saying nothing at all.
+    juce::Logger::writeToLog (juce::Time::getCurrentTime().toString (true, true)
+                              + "  [" + juce::String (ActivityJournal::levelName (level)) + "] "
+                              + subject + ": " + message);
 
     // Straight to disk while a take is running. The journal lives in memory,
     // and the only writes were at the start of the take -- before the "started"
@@ -2672,6 +2712,24 @@ void Application::noteActivity (ActivityLevel level, const juce::String& subject
 
 void Application::flushActivityLogToTake() const
 {
+    // The message thread owns the take's folder paths, and noteActivity is not
+    // only called from it -- runPreflight files its findings from the preflight
+    // thread. Reading those juce::Strings there, and writing the same two files
+    // from two threads at once, is a race; the journal itself is locked, so the
+    // entry is already safely recorded and only the file write is deferred.
+    if (! juce::MessageManager::existsAndIsCurrentThread())
+    {
+        std::weak_ptr<int> alive = aliveToken;
+
+        juce::MessageManager::callAsync ([this, alive]
+        {
+            if (alive.lock() != nullptr)
+                flushActivityLogToTake();
+        });
+
+        return;
+    }
+
     // writeActivityLog reports its own failure through noteActivity, which
     // lands back here. Once is a report; twice is a loop.
     if (writingActivityLog || currentSessionFolder.isEmpty())
@@ -2777,9 +2835,21 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // warning kept recording into a dead handle for another poll. The
         // journal carries it, and the advice line picks it up once nothing
         // more urgent is holding the line.
+        const auto& driftChannels = capture->getChannels();
+
         for (int i = 0; i < micCount; ++i)
         {
             if (! capture->hasSustainedExcessDrift (i))
+                continue;
+
+            // Not about a microphone that has been unplugged. Its stream is
+            // gone, so whatever the drift figure still says is about a device
+            // that is not there -- and "try a different USB port" is advice
+            // for a microphone the user has already pulled out. Seen for real:
+            // a mic unplugged mid-take went on filing sync warnings under its
+            // own name for the rest of the take.
+            if (static_cast<size_t> (i) < driftChannels.size()
+                && recordingEngine.isWritingSilence (driftChannels[static_cast<size_t> (i)].deviceId))
                 continue;
 
             noteActivity (ActivityLevel::Warning, getMicDisplayName (i),

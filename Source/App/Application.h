@@ -591,6 +591,10 @@ private:
 
     std::string selectedOutputDeviceId;
     std::string outputSelectionProblem;
+
+    /// The last output problem written to the journal, so a session with no
+    /// headphones says so once rather than at every device notification.
+    std::string reportedOutputProblem;
     std::string rememberedOutputDeviceId;
     std::vector<std::string> outputDeviceNames; // §2: refreshed on device change only
     CapacityMonitor capacityMonitor;
