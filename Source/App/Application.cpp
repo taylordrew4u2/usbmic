@@ -134,6 +134,14 @@ void Application::initialise()
             });
         });
         onDeviceListChanged(); // initial enumeration, per §2 "at launch"
+
+        // Said once, at launch, if the backend cannot watch the rig at all.
+        // The watch is set up above and its two failure paths used to return in
+        // silence -- leaving an app that never notices a microphone arriving,
+        // and never reports one pulled out mid-take (§6.5), while looking
+        // exactly like one that has nothing to report.
+        if (const auto hotplug = audioBackend->getHotplugProblem(); ! hotplug.empty())
+            noteActivity (ActivityLevel::Warning, "Microphones", juce::String (hotplug));
     }
     else
     {

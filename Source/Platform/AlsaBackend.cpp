@@ -257,16 +257,32 @@ void AlsaBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
     if (! deviceChangeCallback)
         return;
 
+    hotplugProblem.clear();
+
+    // Both failures below used to return in silence, and what they cost is not
+    // small: with no watch, a microphone plugged in is never noticed, and a
+    // microphone pulled out MID-TAKE is never reported (§6.5) -- a take that
+    // lost a channel looks exactly like one where nothing went wrong. On a
+    // machine with no /dev/snd (a container, a system where ALSA devices live
+    // elsewhere) that is the permanent state of the app, unsaid.
+    static constexpr const char* kNoWatch =
+        "This computer won't tell the app when microphones are plugged in or unplugged, so "
+        "the list only updates when the app starts. Restart it after changing your rig.";
+
     auto watcher = std::make_unique<AlsaHotplugWatcher>();
     watcher->fd = inotify_init1 (IN_CLOEXEC);
 
     if (watcher->fd < 0)
-        return; // no inotify: enumeration still works, hotplug simply won't fire
+    {
+        hotplugProblem = kNoWatch;
+        return;
+    }
 
     if (inotify_add_watch (watcher->fd, "/dev/snd", IN_CREATE | IN_DELETE) < 0)
     {
         ::close (watcher->fd);
         watcher->fd = -1;
+        hotplugProblem = kNoWatch;
         return;
     }
 

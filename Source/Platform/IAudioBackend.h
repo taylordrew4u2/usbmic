@@ -183,6 +183,15 @@ public:
     /// Message thread only.
     virtual uint64_t getOutputGlitchCount() const { return 0; }
 
+    /// Empty unless this backend cannot watch for microphones being plugged in
+    /// or pulled out. Then it says so in the user's words: nothing about the
+    /// rig will be noticed until the app is restarted, and §6.5's mid-take
+    /// unplug reporting cannot fire at all -- which, unsaid, looks exactly like
+    /// a take where nothing went wrong.
+    ///
+    /// Message thread only, for the same reason as takeStreamFailures().
+    virtual std::string getHotplugProblem() const { return {}; }
+
     virtual void closeAllStreams() = 0;
 };
 
