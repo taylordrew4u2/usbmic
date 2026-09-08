@@ -329,8 +329,12 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
         // here means only that this cycle had no input half, which is ordinary
         // and loses nothing -- counting those turned a clean take on any duplex
         // interface into a session.json claiming millions of dropped frames.
+        // Wall-clock frames, not channel-frames. Multiplying by the channel
+        // count made the number in "Dropped N frames" four times the audio
+        // actually lost on a four-channel device -- a true event reported with
+        // a false magnitude, which is its own kind of wrong answer.
         if (fromInputStream && numSamples > 0)
-            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples) * routing.size(),
+            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
                                             std::memory_order_relaxed);
         return;
     }
@@ -352,6 +356,11 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
         return;
     }
 
+    // One block, one count. Adding per missing channel inflated the figure by
+    // however many channels the device came up short, which is not how long the
+    // audio was.
+    bool missedAChannel = false;
+
     for (const auto& [deviceInput, takeChannel] : routing)
     {
         if (deviceInput < numInputs && inputs[deviceInput] != nullptr)
@@ -360,6 +369,7 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
         }
         else
         {
+            missedAChannel = true;
             // The device delivered fewer inputs than this take was planned
             // around -- an interface renegotiating, a driver handing over two
             // of four. That channel gets nothing and writes silence, which is
@@ -367,10 +377,12 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
             // used to leave no trace at all: audio that should have been
             // recorded simply was not, and §0.1 does not allow that to be
             // invisible. Counted here, on the same counter the take reports.
-            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
-                                            std::memory_order_relaxed);
         }
     }
+
+    if (missedAChannel && numSamples > 0)
+        framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+                                        std::memory_order_relaxed);
 }
 
 void CaptureCoordinator::stopMonitoring()
@@ -437,6 +449,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     // coordinator, so take three's record carried take one's losses plus
     // everything that happened while merely monitoring.
     framesMissedByLayout.store (0, std::memory_order_relaxed);
+    overrunAtTakeStart = getOverrunSamples();
 
     pipeline = std::move (p);
     activePipeline.store (pipeline.get(), std::memory_order_release);

@@ -181,6 +181,14 @@ public:
     /// right, but a device handing over two inputs where four were planned then
     /// leaves two channels writing silence -- which used to happen with nothing
     /// counting it anywhere. Cumulative while this coordinator lives.
+    /// Overrun samples since the current take began. getOverrunSamples() is
+    /// the whole monitoring session's; this is the one a take may report.
+    uint64_t getOverrunSamplesThisTake() const noexcept
+    {
+        const auto total = getOverrunSamples();
+        return total >= overrunAtTakeStart ? total - overrunAtTakeStart : total;
+    }
+
     uint64_t getFramesMissedByLayout() const noexcept
     {
         return framesMissedByLayout.load (std::memory_order_relaxed);
@@ -360,6 +368,11 @@ private:
     std::string monitorProblem;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
+
+    /// The overrun total when the current take began. prepare() zeroes each
+    /// stream's counter, but streams are prepared when monitoring starts, not
+    /// when a take does -- so the take's own figure is measured from here.
+    uint64_t overrunAtTakeStart = 0;
 
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a

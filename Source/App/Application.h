@@ -537,7 +537,6 @@ private:
 
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
-    std::string appliedMasterDeviceId;
 
     // §9.3, read once at construction. See prefersReducedMotion().
     bool reducedMotionPreferred = false;
@@ -575,7 +574,6 @@ private:
     // mutable: getRecordDisabledReason() is const and must read the result.
     mutable std::mutex preflightMutex;
     std::thread preflightThread;
-    std::string preflightTargetPath;
     void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
     std::unique_ptr<SystemAggregateDevice> systemAggregate;
@@ -647,6 +645,14 @@ private:
     /// The camera problem already journalled, so an open failure that persists
     /// across takes is said once rather than at every take start.
     juce::String reportedCameraProblem;
+
+    /// Layout losses already reported live. Reset with each take, because the
+    /// counter behind it is.
+    uint64_t reportedLayoutMisses = 0;
+
+    /// Why the app stopped the current take, when the app is what stopped it.
+    /// Empty means the user did, which is the ordinary case.
+    juce::String stopReason;
 
     /// True once the mirror-never-opened line has been said for this take, so
     /// it is said once rather than on every poll.

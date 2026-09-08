@@ -30,6 +30,13 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     driftPpm.store (0.0, std::memory_order_relaxed);
     excessDrift.store (false, std::memory_order_relaxed);
     underruns.store (0, std::memory_order_relaxed);
+
+    // Reset with its siblings. It was the one counter here that was not, so it
+    // ran for the life of the stream while the sentence built from it -- "about
+    // N seconds lost so far" -- describes the current take. Everything overrun
+    // while merely monitoring, or during an earlier take, was added to this
+    // take's figure.
+    overrunSamples.store (0, std::memory_order_relaxed);
 }
 
 void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcept

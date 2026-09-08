@@ -901,7 +901,11 @@ TakeHealth Application::snapshotTakeHealth() const
     if (capture != nullptr)
     {
         health.framesDropped = capture->getFramesDropped();
-        health.samplesOverrun = capture->getOverrunSamples();
+        // The take's own overruns, not the monitoring session's. TakeWatchdog
+        // divides this by the sample rate and says "about N seconds lost so
+        // far" about the CURRENT take, so a session-lifetime number made that
+        // sentence describe audio lost before the take began.
+        health.samplesOverrun = capture->getOverrunSamplesThisTake();
         health.outputClockLost = capture->isOutputClockLost();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
@@ -1340,6 +1344,11 @@ void Application::toggleRecording()
                 backendDropsAtTakeStart = audioBackend != nullptr
                                               ? audioBackend->getFramesDroppedByBackend() : 0;
 
+                // The coordinator zeroes the counter itself when a take begins,
+                // so the watermark has to follow it down or the first take's
+                // losses would silence every later one.
+                reportedLayoutMisses = 0;
+
                 currentSessionFolder = folder;
                 currentMirrorFolder = mirror;
                 sessionStartIso = now.toISO8601 (true);
@@ -1472,14 +1481,30 @@ void Application::toggleRecording()
         // fact the user most needs carried past the ten seconds the notice
         // lasts -- particularly the empty ones, which look identical on disk to
         // a folder nobody has opened yet.
-        noteActivity (lastTakeHeldNoAudio ? ActivityLevel::Failed : ActivityLevel::Stopped,
+        // Whether the app ended this take, and why. A take stopped because the
+        // card went away or the drive filled up used to write the same
+        // "Recording stopped. Saved to X." a user-initiated stop writes -- so
+        // reading the log afterwards, a take the app killed was
+        // indistinguishable from one someone chose to end. The reason lived on
+        // the advice line for a few seconds and nowhere else.
+        const auto because = stopReason.isEmpty() ? juce::String (".")
+                                                  : " -- " + stopReason + ".";
+        const auto endedBy = stopReason.isEmpty() ? juce::String ("Recording stopped")
+                                                  : juce::String ("Recording was stopped");
+
+        noteActivity (stopReason.isNotEmpty() || lastTakeHeldNoAudio ? ActivityLevel::Failed
+                                                                    : ActivityLevel::Stopped,
                       "Recording",
                       lastTakeHeldNoAudio
-                          ? juce::String ("Recording stopped, but there is no audio in "
-                                          + juce::File (lastSessionFolder).getFileName()
-                                          + ". Check your microphones aren't muted.")
-                          : juce::String ("Recording stopped. Saved to "
-                                          + juce::File (lastSessionFolder).getFileName() + "."));
+                          ? endedBy + because + " There is no audio in "
+                                + juce::File (lastSessionFolder).getFileName()
+                                + ". Check your microphones aren't muted."
+                          : endedBy + because + " Saved to "
+                                + juce::File (lastSessionFolder).getFileName() + ".");
+
+        // One take, one reason. Cleared here so the next stop cannot inherit
+        // this one's.
+        stopReason.clear();
 
         recordingEngine.stop();
         recordingStartMs = 0.0;
@@ -2320,8 +2345,22 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
 
     // The other end of the same loss. The count above is what the writer could
     // not put on disk; this is what never reached it -- audio the device handed
-    // over and the backend could not carry. A take missing both kinds used to
-    // report only one, so the record understated what was lost.
+    // over and the backend could not carry.
+    // §0.1: audio this app received and threw away because the ring was full.
+    // The take's record carried the writer's drops, the layout's and the
+    // backend's, and not this one -- so the one loss the app inflicts on itself
+    // was the one the record did not mention.
+    if (capture != nullptr)
+    {
+        const auto overrun = capture->getOverrunSamplesThisTake();
+
+        if (overrun > 0)
+            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                       "Dropped " + std::to_string (overrun)
+                                           + " samples: audio arrived faster than it could be "
+                                             "taken away, so the buffer overflowed." });
+    }
+
     // §0.1: audio the device delivered that did not fit the take's layout, so
     // a channel wrote silence instead. Recorded beside the other two losses.
     if (capture != nullptr)
@@ -2546,6 +2585,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // The ordinary stop path: it finalizes every open file (§6.5 "finalize
         // every open file"), writes session.json and raises the saved-take
         // notice, which is what shows the user whatever did survive.
+        stopReason = "the card stopped accepting writes";
         toggleRecording();
 
         // The writer's own account when it has one -- a roll-over past 3.9 GB
@@ -2624,6 +2664,27 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                                             "USB port, and close other apps using audio.");
 
             noteActivity (ActivityLevel::Warning, "Sound hardware", line);
+            return line;
+        }
+    }
+
+    // §0.1: a microphone that changed its channel count mid-take. Reported
+    // live, like the drive-side and backend-side losses -- this one only ever
+    // reached session.json, so audio was being lost during a take with nothing
+    // on screen saying so, which is the silence this whole thing is about.
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto missed = capture->getFramesMissedByLayout();
+
+        if (missed > reportedLayoutMisses)
+        {
+            reportedLayoutMisses = missed;
+
+            const auto line = juce::String ("A microphone changed how many channels it sends, so "
+                                            "some of its audio isn't being recorded. Unplug it and "
+                                            "plug it back in after this take.");
+
+            noteActivity (ActivityLevel::Failed, "Recording", line);
             return line;
         }
     }
@@ -2800,7 +2861,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             // while the writer carried on into a full drive until a write
             // failed, which then arrived as the wrong notice.
             if (recordingEngine.getState() == RecordingState::Recording)
+            {
+                stopReason = "the drive ran out of room";
                 toggleRecording();
+            }
+
             return "The drive is full. Recording has stopped -- free some space or choose another drive.";
         case RemainingTimeWarning::TwoMinutes:
             return "About two minutes of room left. Wrap up or switch drives now.";
