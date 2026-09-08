@@ -1740,8 +1740,24 @@ double Application::getRemainingRecordingSeconds() const
         probe = probe.getParentDirectory();
 
     const auto freeBytes = probe.getBytesFreeOnVolume();
-    if (freeBytes <= 0)
+
+    // A full drive and an unreadable one both used to come back as -1.0, the
+    // "could not be determined" sentinel -- and every consumer treats that as
+    // "say nothing". So the one condition this figure exists to catch was the
+    // one it could not express: on a genuinely full card the take was never
+    // stopped, no warning was ever shown, and the first anyone heard of it was
+    // a write failing, which arrives as "the card stopped accepting writes" --
+    // the right stop under the wrong sentence, after the loss instead of
+    // before it.
+    //
+    // JUCE returns 0 for both cases, so they are told apart by whether the
+    // volume is there to be asked at all: a directory that exists and reports
+    // nothing free is full; anything else is genuinely unknown.
+    if (freeBytes < 0)
         return -1.0;
+
+    if (freeBytes == 0)
+        return probe.isDirectory() ? 0.0 : -1.0;
 
     return static_cast<double> (freeBytes) / bytesPerSecond;
 }
@@ -1778,6 +1794,14 @@ juce::String Application::getRecordDisabledReason() const
         return problem.empty() ? juce::String ("The microphones aren't open yet.")
                                : "The microphones aren't open: " + juce::String (problem);
     }
+
+    // §6.4 blocks arming on a drive that is too SLOW. A drive with no room at
+    // all was not checked here at all: the button stayed live, the take started
+    // and was stopped by the capacity check a moment later. Refusing before the
+    // take is the same principle, and it is the answer to "what tells the user
+    // when the drive is full and nothing is recording".
+    if (getRemainingRecordingSeconds() == 0.0)
+        return "This drive is full. Free some space, or choose another drive.";
 
     // §6.4: pre-flight blocks arming rather than degrading mid-take.
     if (preflightRunning.load())
@@ -2630,11 +2654,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         const auto remaining = getRemainingRecordingSeconds();
 
-        // Negative is "could not be determined", which is not the same as none
-        // left -- reading it as empty would stop a take over a drive whose free
-        // space the OS declined to report. Anything from zero down to that is
-        // out of room, which is the same test CapacityMonitor applies.
-        const bool roomRanOut = remaining >= 0.0 && remaining <= 0.0;
+        // Zero means the volume was asked and has nothing left. Negative means
+        // it could not be asked, which is not the same thing -- reading that as
+        // empty would stop a take over a drive whose free space the OS declined
+        // to report. Same test CapacityMonitor applies, on a figure that can
+        // now actually take the value.
+        const bool roomRanOut = remaining == 0.0;
 
         if (roomRanOut)
         {
@@ -2918,11 +2943,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     switch (pollCapacityWarning())
     {
         case RemainingTimeWarning::Exhausted:
-            // Unreachable, and kept only so the switch stays exhaustive:
-            // pollCapacityWarning returns None unless a take is running, and a
-            // running take that is out of room has already been stopped and
-            // returned from at the top of this function. A full drive with no
-            // take running is the record button's job, not this line's.
+            // Kept only so the switch stays exhaustive. A running take that is
+            // out of room is stopped and returned from at the top of this
+            // function, and pollCapacityWarning returns None when no take is
+            // running -- so nothing reaches here. A full drive with no take
+            // running is the record button's job, not this line's.
             break;
         case RemainingTimeWarning::TwoMinutes:
             return "About two minutes of room left. Wrap up or switch drives now.";
