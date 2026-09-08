@@ -366,6 +366,12 @@ public:
     /// enumeration -- everything present at launch is not news.
     void announceDeviceChanges (const std::vector<MicDeviceState>& seen) const;
 
+    /// The same for cameras, which the take also records. Called after each
+    /// re-listing rather than from a device notification, because neither
+    /// macOS nor Windows offers one for cameras -- the OS simply stops listing
+    /// a camera that has gone.
+    void announceCameraChanges() const;
+
     /// The same for the things the user listens on. Plugging headphones in is
     /// as much a change to the rig as plugging a microphone in, and it was
     /// mentioned only when it left them with nothing to listen on at all.
@@ -640,6 +646,9 @@ private:
 
     mutable std::map<std::string, std::string> knownOutputNames;
     mutable bool haveAnnouncedOutputsOnce = false;
+
+    mutable std::map<std::string, std::string> knownCameraNames;
+    mutable bool haveAnnouncedCamerasOnce = false;
 
     /// Seconds since the app started, for journal timestamps. One clock for
     /// every entry, so entries can be compared with each other and with the

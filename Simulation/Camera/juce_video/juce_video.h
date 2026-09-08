@@ -41,3 +41,11 @@ public:
 };
 
 } // namespace juce
+
+/// The fake's own controls, outside juce so nothing here shadows a real API.
+namespace fakecamera {
+
+/// What CameraDevice::getAvailableDevices() will report from now on.
+void setDevices (const juce::StringArray& names);
+
+} // namespace fakecamera

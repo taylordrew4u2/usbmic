@@ -2754,6 +2754,28 @@ void Application::announceOutputChanges (const std::map<std::string, std::string
     announceArrivalsAndDepartures (current, knownOutputNames, haveAnnouncedOutputsOnce, {});
 }
 
+void Application::announceCameraChanges() const
+{
+    std::map<std::string, std::string> current;
+
+    for (const auto& cam : cameraController.getSelection().getAvailableCameras())
+        current[cam.id] = cam.displayName;
+
+    // A camera that is IN a running take gets TakeWatchdog's own sentence when
+    // it goes -- that one says the sound carries on and the picture stops --
+    // so it is not also announced here. A camera nobody switched on, and every
+    // camera between takes, is announced like any other part of the rig.
+    std::set<std::string> saidByTheWatchdog;
+
+    if (recordingEngine.getState() == RecordingState::Recording)
+        for (const auto& cam : cameraController.getSelection().getAvailableCameras())
+            if (cameraController.getSelection().isEnabled (cam.id))
+                saidByTheWatchdog.insert (cam.id);
+
+    announceArrivalsAndDepartures (current, knownCameraNames, haveAnnouncedCamerasOnce,
+                                   saidByTheWatchdog);
+}
+
 void Application::noteActivity (ActivityLevel level, const juce::String& subject,
                                 const juce::String& message, bool onTheLine) const
 {

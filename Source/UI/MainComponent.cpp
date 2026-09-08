@@ -510,6 +510,19 @@ void MainComponent::watchTake (bool isRecording)
 
     wasRecording = isRecording;
 
+    // The OS does not announce a camera going away; it just stops listing it.
+    // Re-listed every couple of seconds, which is cheap -- and OUTSIDE a take
+    // as well as during one, which it was not: a camera plugged in or pulled
+    // out between takes was not even noticed, let alone said, so someone who
+    // connected a camera and pressed record found out it was missing from the
+    // take afterwards.
+    if (--ticksUntilCameraRecheck <= 0)
+    {
+        ticksUntilCameraRecheck = kStatusRefreshHz * 2;
+        application.getCameraController().refreshCameras();
+        application.announceCameraChanges();
+    }
+
     if (! isRecording)
         return;
 
@@ -537,15 +550,6 @@ void MainComponent::watchTake (bool isRecording)
 
         takeAlertCard.setSevere (true, false);
         showTakeAlertCard();
-    }
-
-    // The OS does not announce a camera going away; it just stops listing
-    // it. Re-list every couple of seconds during a take, which is cheap, and
-    // only during a take, which is when it matters.
-    if (--ticksUntilCameraRecheck <= 0)
-    {
-        ticksUntilCameraRecheck = kStatusRefreshHz * 2;
-        application.getCameraController().refreshCameras();
     }
 
     const auto alerts = takeWatchdog.observe (application.snapshotTakeHealth());
