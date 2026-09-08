@@ -19,7 +19,7 @@ const char* ActivityJournal::levelName (ActivityLevel level) noexcept
 }
 
 bool ActivityJournal::note (double nowSeconds, ActivityLevel level,
-                            std::string subject, std::string message)
+                            std::string subject, std::string message, bool onTheLine)
 {
     std::lock_guard<std::mutex> guard (lock);
 
@@ -46,6 +46,7 @@ bool ActivityJournal::note (double nowSeconds, ActivityLevel level,
         {
             it->atSeconds = nowSeconds;
             ++it->repeats;
+            it->onTheLine = onTheLine;
 
             // A repeat is news again: something the user was shown once and
             // dismissed is still going on, so it goes back to unseen.
@@ -63,6 +64,7 @@ bool ActivityJournal::note (double nowSeconds, ActivityLevel level,
     entry.level = level;
     entry.subject = std::move (subject);
     entry.message = std::move (message);
+    entry.onTheLine = onTheLine;
     entries.push_back (std::move (entry));
     return true;
 }

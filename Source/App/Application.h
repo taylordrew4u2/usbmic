@@ -358,7 +358,26 @@ public:
     /// would go, planning a save) are const themselves. A journal that only
     /// non-const code could write to would have been silent in exactly those
     /// places.
-    void noteActivity (ActivityLevel level, const juce::String& subject, const juce::String& message) const;
+    void noteActivity (ActivityLevel level, const juce::String& subject, const juce::String& message,
+                       bool onTheLine = false) const;
+
+    /// §6.5/§2: says which microphone arrived or left, every time it happens,
+    /// whether or not a take is running. Seeded silently on the first
+    /// enumeration -- everything present at launch is not news.
+    void announceDeviceChanges (const std::vector<MicDeviceState>& seen) const;
+
+    /// The same for the things the user listens on. Plugging headphones in is
+    /// as much a change to the rig as plugging a microphone in, and it was
+    /// mentioned only when it left them with nothing to listen on at all.
+    void announceOutputChanges (const std::map<std::string, std::string>& current) const;
+
+    /// Arrivals and departures between two enumerations, said by name.
+    /// `known` is updated to `current`, and `seeded` guards the first call:
+    /// what was already there at launch is the rig, not news.
+    void announceArrivalsAndDepartures (const std::map<std::string, std::string>& current,
+                                        std::map<std::string, std::string>& known,
+                                        bool& seeded,
+                                        const std::set<std::string>& saidElsewhere) const;
 
     /// §6.5: "New microphone plugged in mid-take -- do not add to the
     /// in-progress recording. State in one line." That line, for the few
@@ -612,6 +631,15 @@ private:
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
     mutable ActivityJournal activity;
+
+    /// What the last enumeration held, by identity key, with the name to call
+    /// each one by. The diff against this is what makes an arrival or a
+    /// departure sayable at all.
+    mutable std::map<std::string, std::string> knownDeviceNames;
+    mutable bool haveEnumeratedDevicesOnce = false;
+
+    mutable std::map<std::string, std::string> knownOutputNames;
+    mutable bool haveAnnouncedOutputsOnce = false;
 
     /// Seconds since the app started, for journal timestamps. One clock for
     /// every entry, so entries can be compared with each other and with the
