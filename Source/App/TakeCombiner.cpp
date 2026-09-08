@@ -122,6 +122,11 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
         if (! video.existsAsFile() || ! audio.existsAsFile())
         {
             ++failures;
+
+            if (firstFailureDetail.isEmpty())
+                firstFailureDetail = juce::String (job.videoFile)
+                                   + " or its sound wasn't on the card to combine.";
+
             continue;
         }
 
@@ -138,6 +143,9 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
 
         juce::ChildProcess process;
         bool ok = process.start (argv, juce::ChildProcess::wantStdErr);
+
+        if (! ok && firstFailureDetail.isEmpty())
+            firstFailureDetail = "ffmpeg wouldn't start.";
 
         if (ok)
         {
@@ -159,7 +167,14 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
                 {
                     if (lines[i].trim().isNotEmpty())
                     {
-                        firstFailureDetail = lines[i].trim();
+                        // Only if nothing has been kept yet. Assigning
+                        // unconditionally made this the LAST failure's reason
+                        // while the name and the comment both promised the
+                        // first -- and the first is the one that stopped the
+                        // run being clean.
+                        if (firstFailureDetail.isEmpty())
+                            firstFailureDetail = lines[i].trim();
+
                         break;
                     }
                 }

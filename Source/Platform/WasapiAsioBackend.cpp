@@ -301,10 +301,14 @@ void runStreamThread (WasapiStream* stream)
 
                 if (FAILED (stream->capture->GetBuffer (&data, &frames, &flags, nullptr, nullptr)))
                 {
-                    // The device had a packet and would not hand it over. Its
-                    // size is not known here, so one packet's worth of the
-                    // stream's own buffer is the honest estimate.
-                    stream->framesDropped.fetch_add (stream->bufferFrames, std::memory_order_relaxed);
+                    // Counted once per run of failures, not once per attempt.
+                    // GetNextPacketSize keeps reporting the same undelivered
+                    // packet, so charging a buffer's worth on every retry made
+                    // the reported loss 200x the real one -- and an inflated
+                    // number is its own kind of wrong answer.
+                    if (consecutiveCaptureFailures == 0)
+                        stream->framesDropped.fetch_add (stream->bufferFrames,
+                                                         std::memory_order_relaxed);
 
                     // A device that refuses every packet is not dropping audio,
                     // it is gone. Counting alone reported that as drift and

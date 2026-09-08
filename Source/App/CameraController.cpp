@@ -72,6 +72,10 @@ void CameraController::applySelection()
     // without camera support does not carry an unused local.
     juce::StringArray missingCameras;
 
+    // One pass, one verdict. Cleared here rather than inside openCamera(), so a
+    // later success in the same pass cannot erase an earlier failure.
+    problem.clear();
+
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
     std::vector<std::string> toClose;
@@ -101,17 +105,24 @@ void CameraController::applySelection()
             // the take -- and a camera you deliberately enabled and then do not
             // find in the folder is the kind of absence nobody thinks to check
             // for until the edit.
-            missingCameras.push_back (selection.getDisplayName (camera.id));
+            missingCameras.add (juce::String (selection.getDisplayName (camera.id)));
         }
     }
 
+    // Appended, never assigned over: openCamera() may already have recorded a
+    // camera that is connected and still would not open, and both facts matter.
     if (! missingCameras.isEmpty())
-        problem = (missingCameras.size() == 1
+    {
+        if (problem.isNotEmpty())
+            problem += " ";
+
+        problem += (missingCameras.size() == 1
                        ? missingCameras[0] + " isn't connected any more, so it isn't in this take."
                        : juce::String (missingCameras.size())
                              + " of your cameras aren't connected any more, so they aren't in this "
                                "take.")
-                + " The sound is recording either way.";
+                 + " The sound is recording either way.";
+    }
 #endif
 }
 
@@ -148,7 +159,11 @@ void CameraController::openCamera (const std::string& id, int osIndex)
     entry.osIndex = osIndex;
     open[id] = std::move (entry);
 
-    problem.clear();
+    // Deliberately does NOT clear `problem`. It used to, which meant one
+    // camera opening successfully erased the message about another that had
+    // just failed -- with three cameras and one bad one, whether you were told
+    // depended on enumeration order. The pass that starts a round of opens is
+    // what clears it; see applySelection().
 }
 
 void CameraController::closeCamera (const std::string& id)

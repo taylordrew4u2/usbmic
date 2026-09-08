@@ -343,8 +343,24 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
     }
 
     for (const auto& [deviceInput, takeChannel] : routing)
+    {
         if (deviceInput < numInputs && inputs[deviceInput] != nullptr)
+        {
             pushDeviceBlock (takeChannel, inputs[deviceInput], numSamples);
+        }
+        else
+        {
+            // The device delivered fewer inputs than this take was planned
+            // around -- an interface renegotiating, a driver handing over two
+            // of four. That channel gets nothing and writes silence, which is
+            // the right behaviour (§6.5 fixes the layout for the take), but it
+            // used to leave no trace at all: audio that should have been
+            // recorded simply was not, and §0.1 does not allow that to be
+            // invisible. Counted here, on the same counter the take reports.
+            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+                                            std::memory_order_relaxed);
+        }
+    }
 }
 
 void CaptureCoordinator::stopMonitoring()
@@ -486,7 +502,13 @@ Metering* CaptureCoordinator::getChannelMetering (int index) noexcept
 void CaptureCoordinator::pushDeviceBlock (int deviceIndex, const float* samples, int numSamples) noexcept
 {
     if (deviceIndex < 0 || deviceIndex >= static_cast<int> (deviceStreams.size()))
+    {
+        // Audio that arrived for a channel this coordinator does not have.
+        // Nowhere to put it, so it is lost -- and, until now, lost in silence.
+        framesMissedByLayout.fetch_add (static_cast<uint64_t> (std::max (0, numSamples)),
+                                        std::memory_order_relaxed);
         return;
+    }
 
     // §3.2: straight into this device's own ring. The output clock decides when
     // it is consumed, and at what rate.
@@ -498,7 +520,12 @@ void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const flo
 {
     if (deviceIndex < 0 || deviceIndex >= static_cast<int> (channelLayouts.size())
         || inputs == nullptr || numInputs < 2 || numSamples <= 0)
+    {
+        if (numSamples > 0)
+            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+                                            std::memory_order_relaxed);
         return;
+    }
 
     auto& layout = *channelLayouts[static_cast<size_t> (deviceIndex)];
 

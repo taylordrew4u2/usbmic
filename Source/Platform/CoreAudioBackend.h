@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "IAudioBackend.h"
 #include "PlatformMacros.h"
 
@@ -58,7 +59,11 @@ private:
 
     /// A device that would not take the requested buffer size. Not a failure --
     /// the stream opens and records -- but the extra latency was invisible.
-    bool bufferSizeWasRefused = false;
+    ///
+    /// Atomic because it is written while opening a stream and read by
+    /// takeStreamFailures(); both are message-thread today, and this makes the
+    /// flag correct without depending on that staying true.
+    std::atomic<bool> bufferSizeWasRefused { false };
     uint32_t openOutputDeviceId = 0;
     bool outputStreamIsHogModeExclusive = false;
 

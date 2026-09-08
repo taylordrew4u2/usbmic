@@ -92,7 +92,14 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
     std::fstream file (path, std::ios::in | std::ios::out | std::ios::binary);
 
     if (! file.is_open())
+    {
+        // A file this app cannot even open is not a file that holds under a
+        // second of audio, and reporting it as one -- which is what
+        // reportedEmpty alone said -- sends the user away from a recording that
+        // may be perfectly intact on a card that has gone read-only.
+        result.repairFailed = true;
         return result;
+    }
 
     file.seekg (0, std::ios::end);
     const auto fileSize = static_cast<uint64_t> (file.tellg());

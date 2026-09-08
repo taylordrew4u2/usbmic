@@ -1361,3 +1361,24 @@ TEST_CASE (CaptureCoordinator_UnpluggingAnInterfaceSilencesAllItsSockets)
     REQUIRE (c.isChannelLive (0));
     REQUIRE (c.isChannelLive (1));
 }
+
+TEST_CASE (CaptureCoordinator_ABlockThatDoesNotFitTheLayoutIsCountedNotJustDropped)
+{
+    // §0.1: a device handing over fewer inputs than the take was planned around
+    // leaves those channels writing silence. That is the right behaviour -- the
+    // layout is fixed for the take -- but it used to leave no trace anywhere,
+    // so audio that should have been recorded simply was not and nothing said
+    // so. Same rule the write pipeline already applies one layer up.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.getFramesMissedByLayout() == 0u);
+
+    // A channel index this coordinator does not have: the audio has nowhere to
+    // go, which is exactly the case that was silent.
+    std::vector<float> block (64, 0.5f);
+    c.pushDeviceBlock (99, block.data(), 64);
+
+    REQUIRE (c.getFramesMissedByLayout() == 64u);
+}

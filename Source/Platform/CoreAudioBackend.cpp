@@ -315,6 +315,11 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
         std::chrono::duration<double> (std::chrono::steady_clock::now().time_since_epoch()).count(),
         std::memory_order_relaxed);
 
+    // A device that was called dead and has started running again is alive, and
+    // the latch has to let go or the next genuine death is never reported.
+    if (stream->reportedDead.load (std::memory_order_relaxed))
+        stream->reportedDead.store (false, std::memory_order_relaxed);
+
     int numInputChannels = 0;
     int numSamples = 0;
 
@@ -603,7 +608,7 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     // not the place (the open succeeds), so it goes in the field the caller
     // reads for exactly this: something worth knowing that did not stop us.
     if (! setBufferFrameSize (device, bufferSizeSamples))
-        bufferSizeWasRefused = true;
+        bufferSizeWasRefused.store (true);
 
     auto stream = std::make_unique<CoreAudioStream>();
     stream->deviceId = device;
@@ -655,9 +660,8 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     // Reported once, and through the same channel as a dead stream, because it
     // is the same kind of news: something about the rig is not what the app
     // asked for and the user cannot see it anywhere else.
-    if (bufferSizeWasRefused)
+    if (bufferSizeWasRefused.exchange (false))
     {
-        bufferSizeWasRefused = false;
         failures.push_back ({ std::string(),
                               "is running at its own buffer size rather than the one asked for, so "
                               "there is a little more delay than usual.",

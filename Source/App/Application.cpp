@@ -1330,6 +1330,8 @@ void Application::toggleRecording()
                 // replaced by a success rather than by the next click.
                 recordStartProblem.clear();
                 mirrorMissingReported = false;
+                backendDropsAtTakeStart = audioBackend != nullptr
+                                              ? audioBackend->getFramesDroppedByBackend() : 0;
 
                 currentSessionFolder = folder;
                 currentMirrorFolder = mirror;
@@ -2298,11 +2300,33 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // not put on disk; this is what never reached it -- audio the device handed
     // over and the backend could not carry. A take missing both kinds used to
     // report only one, so the record understated what was lost.
-    if (audioBackend != nullptr && audioBackend->getFramesDroppedByBackend() > 0)
+    // §0.1: audio the device delivered that did not fit the take's layout, so
+    // a channel wrote silence instead. Recorded beside the other two losses.
+    if (capture != nullptr && capture->getFramesMissedByLayout() > 0)
         meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                   "Dropped " + std::to_string (audioBackend->getFramesDroppedByBackend())
-                                       + " frames before recording: the sound hardware delivered "
-                                         "more audio than it could hand over." });
+                                   "Dropped " + std::to_string (capture->getFramesMissedByLayout())
+                                       + " frames that didn't fit this take's channel layout: a "
+                                         "microphone delivered a different number of channels than "
+                                         "it was opened with." });
+
+    // Measured from the start of THIS take. The backend's counter runs for as
+    // long as its streams do, which is across takes, so writing it raw put
+    // take one's losses into take three's record -- beside a card-side figure
+    // on a completely different clock.
+    if (audioBackend != nullptr)
+    {
+        const auto total = audioBackend->getFramesDroppedByBackend();
+
+        // A total below the baseline means the streams were rebuilt mid-take
+        // and the count restarted; everything since is then this take's.
+        const auto thisTake = total >= backendDropsAtTakeStart ? total - backendDropsAtTakeStart : total;
+
+        if (thisTake > 0)
+            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                       "Dropped " + std::to_string (thisTake)
+                                           + " frames before recording: the sound hardware delivered "
+                                             "more audio than it could hand over." });
+    }
 
     // Written to the card copy and the mirror alike, so either one stands alone.
     const auto json = meta.toJsonString();
@@ -2552,6 +2576,15 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (audioBackend != nullptr)
     {
         const auto droppedNow = audioBackend->getFramesDroppedByBackend();
+
+        // The counters live in the stream objects, and every rename, hot-plug
+        // or output change tears those down and builds new ones -- so this
+        // total goes back to zero regularly. Compared against a high-water mark
+        // that never reset, one noisy USB port early in a session silently
+        // blinded the report for the rest of it: every later loss sat below the
+        // old mark and was never mentioned again.
+        if (droppedNow < reportedBackendDrops)
+            reportedBackendDrops = 0;
 
         if (droppedNow > reportedBackendDrops)
         {
@@ -3234,7 +3267,17 @@ void Application::clearRecoveredSessions()
             if (meta.stopTimestampIso.empty())
             {
                 meta.stopTimestampIso = now;
-                file.replaceWithText (juce::String (meta.toJsonString()));
+
+                // Checked. This is the write that stops a recovered take being
+                // offered again at every launch, so a card that refuses it --
+                // read-only, full, the very card whose failure caused the
+                // interruption -- produced the same list forever with nothing
+                // explaining why dismissing it did not stick.
+                if (! file.replaceWithText (juce::String (meta.toJsonString())))
+                    noteActivity (ActivityLevel::Warning, "Interrupted take",
+                                  file.getParentDirectory().getFileName()
+                                  + " can't be marked as dealt with -- this card won't accept the "
+                                    "change, so it will be offered again next time.");
             }
         }
         catch (...)
@@ -3300,17 +3343,22 @@ void Application::scanForInterruptedSessions()
                 metadataUnreadable = true;
             }
 
-            // A take whose record cannot be read is not thereby a take that
-            // did not happen. sessionWasInterrupted() sees an empty struct and
-            // says no, so the folder was dropped from the recovery list with no
-            // trace -- the same disappearance the empty-take branch below was
-            // written to stop, reached through a different door. Audio beside
-            // an unreadable session.json is still audio.
-            if (metadataUnreadable && ! SessionRecovery::sessionWasInterrupted (meta))
+            // A take whose record cannot be read is not thereby a take that did
+            // not happen, and the user should be told the record is corrupt
+            // rather than left with a recovery entry that has no start time and
+            // no explanation.
+            //
+            // Reported unconditionally. Guarding this on
+            // `! sessionWasInterrupted(meta)` was a branch that could never run:
+            // the catch leaves meta empty, an empty meta has no stop timestamp,
+            // and no stop timestamp is exactly what sessionWasInterrupted()
+            // calls interrupted -- so the condition was always false and this
+            // read as coverage while doing nothing.
+            if (metadataUnreadable)
                 noteActivity (ActivityLevel::Warning, "Interrupted take",
                               juce::String (folder.getFileName())
-                              + " has a details file this app can't read, so it can't tell whether "
-                                "that take finished. Its audio is still in that folder.");
+                              + " has a details file this app can't read, so what it says about "
+                                "that take is gone. Its audio is still in that folder.");
 
             if (! SessionRecovery::sessionWasInterrupted (meta))
                 continue;
@@ -3333,8 +3381,8 @@ void Application::scanForInterruptedSessions()
                 if (f.repairFailed)
                     noteActivity (ActivityLevel::Warning, "Interrupted take",
                                   juce::String (f.fileName)
-                                  + " couldn't be repaired -- this card wouldn't accept the fix. "
-                                    "Copy it somewhere else before playing it.");
+                                  + " couldn't be opened or repaired -- this card wouldn't accept "
+                                    "the fix. Copy it somewhere else before playing it.");
 
             // §6.6: a take where nothing survived is not presented at all --
             // better to say nothing than to hand someone an unplayable stub.

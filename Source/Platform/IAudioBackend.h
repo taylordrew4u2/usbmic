@@ -152,6 +152,10 @@ public:
     ///
     /// Taken rather than read, so each failure is reported once. Empty
     /// deviceId means the monitor output rather than an input.
+    /// Called from the message thread only, like every other method on this
+    /// interface except the audio callback itself. Implementations walk their
+    /// own stream list, which the open/close methods mutate, so calling this
+    /// from another thread would race them.
     virtual std::vector<StreamFailure> takeStreamFailures() { return {}; }
 
     /// §0.1: frames that reached the backend from a device and were never
@@ -162,6 +166,8 @@ public:
     /// it -- a packet the device refused to hand over, or one wider than the
     /// scratch the stream allocated -- so audio could be lost between the
     /// microphone and the meter with nothing anywhere saying so.
+    ///
+    /// Message thread only, for the same reason as takeStreamFailures().
     virtual uint64_t getFramesDroppedByBackend() const { return 0; }
 
     virtual void closeAllStreams() = 0;

@@ -636,6 +636,10 @@ private:
     /// is said again and one that has stopped is not repeated forever.
     uint64_t reportedBackendDrops = 0;
 
+    /// The backend's drop total when the current take started, so the take's
+    /// own record reports its own losses rather than the session's.
+    uint64_t backendDropsAtTakeStart = 0;
+
     /// True once the mirror-never-opened line has been said for this take, so
     /// it is said once rather than on every poll.
     bool mirrorMissingReported = false;

@@ -165,6 +165,18 @@ public:
     /// The take is over -- the owner stops and finalizes, and tells the user.
     bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
 
+    /// §0.1: audio that arrived from a device and had nowhere to go, because
+    /// the block did not match the layout this take was opened with.
+    ///
+    /// The take's channel list is fixed for its duration (§6.5) and that is
+    /// right, but a device handing over two inputs where four were planned then
+    /// leaves two channels writing silence -- which used to happen with nothing
+    /// counting it anywhere. Cumulative while this coordinator lives.
+    uint64_t getFramesMissedByLayout() const noexcept
+    {
+        return framesMissedByLayout.load (std::memory_order_relaxed);
+    }
+
     /// A more specific account of a card write failure than "it stopped
     /// accepting writes", when the writer has one. Empty otherwise.
     std::string getCardWriteProblem() const { return pipeline != nullptr ? pipeline->getCardWriteProblem() : std::string(); }
@@ -338,6 +350,7 @@ private:
     bool monitoring = false;
     std::string monitorProblem;
     std::string recordingProblem;
+    std::atomic<uint64_t> framesMissedByLayout { 0 };
 
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a

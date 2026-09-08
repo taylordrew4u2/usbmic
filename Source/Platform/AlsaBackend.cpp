@@ -508,10 +508,20 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
 
                 const auto put = snd_pcm_writei (raw->pcm, raw->buffers.interleaved.data(), frames);
 
-                if (put < 0 && snd_pcm_recover (raw->pcm, static_cast<int> (put), 1) < 0)
+                if (put < 0)
                 {
-                    died = true;
-                    break;
+                    if (snd_pcm_recover (raw->pcm, static_cast<int> (put), 1) < 0)
+                    {
+                        died = true;
+                        break;
+                    }
+
+                    // The capture side counts its recovered xruns; this one did
+                    // not, so a monitor path glitching under load left no trace
+                    // at all. It is not recorded audio, but it is the clearest
+                    // early sign of a machine that is about to start losing it.
+                    raw->framesDropped.fetch_add (static_cast<uint64_t> (frames),
+                                                  std::memory_order_relaxed);
                 }
             }
         }
