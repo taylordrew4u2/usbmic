@@ -2667,7 +2667,22 @@ double Application::activityClockSeconds() const
 void Application::noteActivity (ActivityLevel level, const juce::String& subject,
                                 const juce::String& message) const
 {
-    activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString());
+    // A repeat that only bumps a count is not news for the two append-only
+    // places below. Without this, one failure repeating twice a second wrote
+    // its sentence to log.txt every time -- 207 identical lines in 40 seconds
+    // when a destination went away -- and rewrote the take's log just as often.
+    if (! activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString()))
+        return;
+
+    // Into the app's own log as well, which until now held one line per launch
+    // -- "Starting up." -- and nothing else, for the whole life of the app. It
+    // is the file the diagnostics bundle ships to whoever is helping, and the
+    // only account that survives when the take folder does not: pull the card
+    // mid-take and the take's own log goes with it, leaving the one file that
+    // was still readable saying nothing at all.
+    juce::Logger::writeToLog (juce::Time::getCurrentTime().toString (true, true)
+                              + "  [" + juce::String (ActivityJournal::levelName (level)) + "] "
+                              + subject + ": " + message);
 
     // Straight to disk while a take is running. The journal lives in memory,
     // and the only writes were at the start of the take -- before the "started"

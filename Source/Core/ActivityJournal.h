@@ -85,7 +85,12 @@ public:
     /// not the audio callback (it allocates and takes a lock, so it is not
     /// safe from one, and nothing on the audio path should be calling it --
     /// the audio thread raises a flag and the poll turns it into an entry).
-    void note (double nowSeconds, ActivityLevel level, std::string subject, std::string message);
+    /// Returns true when this became a NEW entry, false when it collapsed into
+    /// an existing one. A caller that also writes the entry somewhere append-
+    /// only -- a log file -- uses this to write the line once rather than once
+    /// per repetition: a rig failing twice a second otherwise fills that file
+    /// with the same sentence and buries everything else in it.
+    bool note (double nowSeconds, ActivityLevel level, std::string subject, std::string message);
 
     /// Newest first. A copy, so a UI can walk it without holding the lock.
     std::vector<ActivityEntry> getEntries() const;

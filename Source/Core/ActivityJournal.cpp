@@ -18,7 +18,7 @@ const char* ActivityJournal::levelName (ActivityLevel level) noexcept
     return "started";
 }
 
-void ActivityJournal::note (double nowSeconds, ActivityLevel level,
+bool ActivityJournal::note (double nowSeconds, ActivityLevel level,
                             std::string subject, std::string message)
 {
     std::lock_guard<std::mutex> guard (lock);
@@ -50,7 +50,7 @@ void ActivityJournal::note (double nowSeconds, ActivityLevel level,
             // A repeat is news again: something the user was shown once and
             // dismissed is still going on, so it goes back to unseen.
             it->seen = false;
-            return;
+            return false;
         }
     }
 
@@ -64,6 +64,7 @@ void ActivityJournal::note (double nowSeconds, ActivityLevel level,
     entry.subject = std::move (subject);
     entry.message = std::move (message);
     entries.push_back (std::move (entry));
+    return true;
 }
 
 void ActivityJournal::dropOldestLocked()
