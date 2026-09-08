@@ -67,6 +67,15 @@ void CameraController::refreshCameras()
 void CameraController::applySelection()
 {
 #if JUCE_USE_CAMERA
+    // Names rather than a count, because "one of your cameras" helps nobody
+    // standing in front of three of them. Declared inside the guard so a build
+    // without camera support does not carry an unused local.
+    juce::StringArray missingCameras;
+
+    // One pass, one verdict. Cleared here rather than inside openCamera(), so a
+    // later success in the same pass cannot erase an earlier failure.
+    openProblem.clear();
+
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
     std::vector<std::string> toClose;
@@ -86,7 +95,33 @@ void CameraController::applySelection()
         const auto index = osIndexById.find (camera.id);
 
         if (index != osIndexById.end())
+        {
             openCamera (camera.id, index->second);
+        }
+        else
+        {
+            // A camera the user switched on that the OS is no longer offering.
+            // It was skipped with no else at all, so it was simply absent from
+            // the take -- and a camera you deliberately enabled and then do not
+            // find in the folder is the kind of absence nobody thinks to check
+            // for until the edit.
+            missingCameras.add (juce::String (selection.getDisplayName (camera.id)));
+        }
+    }
+
+    // Appended, never assigned over: openCamera() may already have recorded a
+    // camera that is connected and still would not open, and both facts matter.
+    if (! missingCameras.isEmpty())
+    {
+        if (openProblem.isNotEmpty())
+            openProblem += " ";
+
+        openProblem += (missingCameras.size() == 1
+                       ? missingCameras[0] + " isn't connected any more, so it isn't in this take."
+                       : juce::String (missingCameras.size())
+                             + " of your cameras aren't connected any more, so they aren't in this "
+                               "take.")
+                 + " The sound is recording either way.";
     }
 #endif
 }
@@ -113,7 +148,13 @@ void CameraController::openCamera (const std::string& id, int osIndex)
         // §10.6: what happened, then what to do. The overwhelmingly common
         // cause is the OS privacy prompt having been declined, or another app
         // holding the camera.
-        problem = "Couldn't open " + juce::String (selection.getDisplayName (id))
+        // Appended. Assigning meant two cameras failing in one pass reported
+        // only the last -- the same enumeration-order dependence the pass-level
+        // clear above was added to remove, still live one function away.
+        if (openProblem.isNotEmpty())
+            openProblem += " ";
+
+        openProblem += "Couldn't open " + juce::String (selection.getDisplayName (id))
                 + ". Close any other app using it, and check this app is allowed "
                   "to use the camera in your system privacy settings.";
         return;
@@ -124,7 +165,11 @@ void CameraController::openCamera (const std::string& id, int osIndex)
     entry.osIndex = osIndex;
     open[id] = std::move (entry);
 
-    problem.clear();
+    // Deliberately does NOT clear openProblem. It used to, which meant one
+    // camera opening successfully erased the message about another that had
+    // just failed -- with three cameras and one bad one, whether you were told
+    // depended on enumeration order. The pass that starts a round of opens is
+    // what clears it; see applySelection().
 }
 
 void CameraController::closeCamera (const std::string& id)
@@ -227,9 +272,14 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
 
     recording = started > 0;
 
+    // Its own field, and cleared each time this runs. Assigning the shared one
+    // overwrote "X isn't connected any more" with the vaguer count, and never
+    // clearing it left a previous take's failure standing over a clean one.
+    recordProblem.clear();
+
     if (wanted > 0 && started < wanted)
-        problem = juce::String (wanted - started) + " of your cameras couldn't start recording. "
-                  "The sound is recording either way.";
+        recordProblem = juce::String (wanted - started) + " of your cameras couldn't start "
+                        "recording. The sound is recording either way.";
 
     return recording;
 #else

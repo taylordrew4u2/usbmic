@@ -18,6 +18,13 @@ struct RecoveredFile
     bool headerWasStale = false;
     /// §6.6: under a second of audio is an unplayable stub, not a recording.
     bool reportedEmpty = false;
+    /// True when the header was stale AND the repair could not be written back.
+    ///
+    /// The repair result was never checked, so a file on a read-only or failing
+    /// card was reported as repaired and handed to the user with the same wrong
+    /// header it started with -- and they would only find out on opening it in
+    /// something else.
+    bool repairFailed = false;
 };
 
 /// An interrupted take: one whose session.json never got a stop timestamp.
@@ -27,7 +34,11 @@ struct RecoveredSession
     std::string startedIso;
     std::vector<RecoveredFile> files;
 
-    /// Files with real audio in them -- what the user is actually being offered.
+    /// Files worth putting in front of the user: those with real audio, plus
+    /// those whose length could not be established because the file would not
+    /// open. The second kind is not known to hold audio -- that is the point --
+    /// and calling it empty sends someone away from a recording that may be
+    /// perfectly intact on a card that has gone read-only.
     int keptFileCount() const;
     /// Files that were there but held less than a second.
     int emptyFileCount() const;

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "IAudioBackend.h"
 #include "PlatformMacros.h"
 
@@ -44,6 +45,9 @@ public:
 
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    std::vector<StreamFailure> takeStreamFailures() override;
+    uint64_t getFramesDroppedByBackend() const override;
+
 private:
     DeviceChangeCallback deviceChangeCallback;
 
@@ -52,6 +56,14 @@ private:
     std::vector<std::unique_ptr<CoreAudioStream>> openStreams;
 
     std::string lastOpenError;
+
+    /// A device that would not take the requested buffer size. Not a failure --
+    /// the stream opens and records -- but the extra latency was invisible.
+    ///
+    /// Atomic because it is written while opening a stream and read by
+    /// takeStreamFailures(); both are message-thread today, and this makes the
+    /// flag correct without depending on that staying true.
+    std::atomic<bool> bufferSizeWasRefused { false };
     uint32_t openOutputDeviceId = 0;
     bool outputStreamIsHogModeExclusive = false;
 

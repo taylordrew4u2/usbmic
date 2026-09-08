@@ -101,6 +101,11 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
 
     int failures = 0;
 
+    // Kept from the first failure only. Two cameras failing for the same reason
+    // say it once; two failing for different reasons are still one sentence,
+    // and the first is the one that stopped the run being clean.
+    juce::String firstFailureDetail;
+
     for (const auto& job : plan.jobs)
     {
         if (cancelling.load())
@@ -117,6 +122,11 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
         if (! video.existsAsFile() || ! audio.existsAsFile())
         {
             ++failures;
+
+            if (firstFailureDetail.isEmpty())
+                firstFailureDetail = juce::String (job.videoFile)
+                                   + " or its sound wasn't on the card to combine.";
+
             continue;
         }
 
@@ -134,6 +144,9 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
         juce::ChildProcess process;
         bool ok = process.start (argv, juce::ChildProcess::wantStdErr);
 
+        if (! ok && firstFailureDetail.isEmpty())
+            firstFailureDetail = "ffmpeg wouldn't start.";
+
         if (ok)
         {
             // Read the output as it comes rather than after: a pipe nobody
@@ -141,7 +154,31 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
             // presents as a combine that never finishes.
             juce::String errorText = process.readAllProcessOutput();
             ok = process.waitForProcessToFinish (-1) && process.getExitCode() == 0;
-            juce::ignoreUnused (errorText);
+
+            // ffmpeg says why it failed and this threw the answer away, so the
+            // user got a count and never a cause -- and a cause here is usually
+            // actionable ("no space left", "Invalid data found"). The last
+            // non-empty line is the one that carries it; the rest is banner.
+            if (! ok)
+            {
+                auto lines = juce::StringArray::fromLines (errorText.trim());
+
+                for (int i = lines.size(); --i >= 0;)
+                {
+                    if (lines[i].trim().isNotEmpty())
+                    {
+                        // Only if nothing has been kept yet. Assigning
+                        // unconditionally made this the LAST failure's reason
+                        // while the name and the comment both promised the
+                        // first -- and the first is the one that stopped the
+                        // run being clean.
+                        if (firstFailureDetail.isEmpty())
+                            firstFailureDetail = lines[i].trim();
+
+                        break;
+                    }
+                }
+            }
         }
 
         // A file left behind by a run that failed halfway is worse than no file
@@ -164,10 +201,15 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
         status.running = false;
 
         if (failures > 0)
+        {
             status.problem = juce::String (failures)
                            + (failures == 1 ? " camera couldn't be combined with the sound. "
                                             : " cameras couldn't be combined with the sound. ")
                            + "The separate picture and sound files are all still there.";
+
+            if (firstFailureDetail.isNotEmpty())
+                status.problem += " (" + firstFailureDetail + ")";
+        }
     }
 
     running.store (false);

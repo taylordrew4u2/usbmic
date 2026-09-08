@@ -40,9 +40,14 @@ struct StreamFailure
     /// The device the stream was opened for. Empty for the monitor output.
     std::string deviceId;
 
-    /// §10.6: what happened, in the user's words. The owner adds the device's
-    /// name -- the backend only knows its id.
+    /// §10.6: what happened, in the user's words. The owner puts the device's
+    /// name in front of it -- the backend only knows its id.
     std::string reason;
+
+    /// A complete subject to use instead of the device's name, for the reports
+    /// that are not about one device ("The sound card", "This interface").
+    /// Empty means the owner names the device, which is the usual case.
+    std::string subject;
 };
 
 /// Where a backend's worker threads leave a failure for the message thread to
@@ -55,7 +60,7 @@ struct StreamFailure
 class StreamFailureSink
 {
 public:
-    void note (std::string deviceId, std::string reason)
+    void note (std::string deviceId, std::string reason, std::string subject = {})
     {
         const std::lock_guard<std::mutex> guard (lock);
 
@@ -65,7 +70,7 @@ public:
             if (existing.deviceId == deviceId)
                 return;
 
-        failures.push_back ({ std::move (deviceId), std::move (reason) });
+        failures.push_back ({ std::move (deviceId), std::move (reason), std::move (subject) });
     }
 
     std::vector<StreamFailure> take()
@@ -147,7 +152,36 @@ public:
     ///
     /// Taken rather than read, so each failure is reported once. Empty
     /// deviceId means the monitor output rather than an input.
+    /// Called from the message thread only, like every other method on this
+    /// interface except the audio callback itself. Implementations walk their
+    /// own stream list, which the open/close methods mutate, so calling this
+    /// from another thread would race them.
     virtual std::vector<StreamFailure> takeStreamFailures() { return {}; }
+
+    /// §0.1: frames that reached the backend from a device and were never
+    /// handed to the audio callback, cumulative since the streams opened.
+    ///
+    /// WritePipeline already counts what it drops on the way to disk, and that
+    /// count is reported. Everything lost BEFORE the callback was invisible to
+    /// it -- a packet the device refused to hand over, or one wider than the
+    /// scratch the stream allocated -- so audio could be lost between the
+    /// microphone and the meter with nothing anywhere saying so.
+    ///
+    /// Message thread only, for the same reason as takeStreamFailures().
+    virtual uint64_t getFramesDroppedByBackend() const { return 0; }
+
+    /// Recovered breaks in the monitor output: heard as a click, not lost from
+    /// the recording. Counted as events, not frames -- what matters is that
+    /// they are happening at all and rising.
+    ///
+    /// Kept apart from getFramesDroppedByBackend() because the two need
+    /// opposite sentences: one says audio is being lost from the take, the
+    /// other says the machine is struggling to keep the headphones fed. Putting
+    /// monitor glitches on the recording counter wrote a permanent claim in a
+    /// take's own record that recorded audio had been lost, when none had.
+    ///
+    /// Message thread only.
+    virtual uint64_t getOutputGlitchCount() const { return 0; }
 
     virtual void closeAllStreams() = 0;
 };

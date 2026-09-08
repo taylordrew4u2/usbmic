@@ -84,7 +84,16 @@ public:
 
     /// §10.6: whatever is currently wrong with the cameras, in plain language.
     /// Empty when nothing is.
-    juce::String getProblem() const { return problem; }
+    juce::String getProblem() const
+    {
+        if (openProblem.isEmpty())
+            return recordProblem;
+
+        if (recordProblem.isEmpty())
+            return openProblem;
+
+        return openProblem + " " + recordProblem;
+    }
 
     void setPreviewQuality (PreviewQuality quality) { previewQuality = quality; }
     PreviewQuality getPreviewQuality() const { return previewQuality; }
@@ -92,7 +101,14 @@ public:
 private:
     CameraSelection selection;
     PreviewQuality previewQuality = PreviewQuality::Low;
-    juce::String problem;
+    /// Two fields, not one, because two independent operations report through
+    /// this and each used to assign over the other: opening the cameras
+    /// (applySelection/openCamera) and starting a take (startRecording). One
+    /// string meant whichever ran last won, so a camera that would not open was
+    /// erased by the take starting, and a second camera failing erased the
+    /// first. getProblem() joins whichever are set.
+    juce::String openProblem;
+    juce::String recordProblem;
     bool recording = false;
 
 #if JUCE_USE_CAMERA

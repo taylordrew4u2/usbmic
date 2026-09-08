@@ -137,6 +137,12 @@ public:
     /// them said anything.
     const std::string& getStartProblem() const noexcept { return startProblem; }
 
+    /// The card writer's own account of why it stopped, when it has one that
+    /// is more specific than "the card stopped accepting writes" -- a
+    /// roll-over past 3.9 GB that could not create the next file, say. Empty
+    /// otherwise, and the general message stands.
+    std::string getCardWriteProblem() const;
+
 private:
     // Constructed small and resized by start(), which is the only place the
     // real channel count and rate are known. RingBuffer::reset reallocates, so

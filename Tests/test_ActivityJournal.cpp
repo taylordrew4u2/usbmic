@@ -290,3 +290,21 @@ TEST_CASE (ActivityJournal_EveryEntryGetsItsOwnId)
     REQUIRE (entries[0].id != entries[1].id);
     REQUIRE (entries[0].id != 0u);
 }
+
+TEST_CASE (ActivityJournal_ATruncatedLogSaysHowMuchItLost)
+{
+    // A log that quietly starts part way through is the same failure this class
+    // exists to stop, one level up.
+    ActivityJournal journal;
+    REQUIRE (journal.getDroppedCount() == 0u);
+
+    for (size_t i = 0; i < ActivityJournal::kMaxEntries + 25; ++i)
+        journal.note (static_cast<double> (i) * 30.0, ActivityLevel::Started,
+                      "Camera", "Camera " + std::to_string (i) + " switched on.");
+
+    REQUIRE (journal.size() == ActivityJournal::kMaxEntries);
+    REQUIRE (journal.getDroppedCount() == 25u);
+
+    journal.clear();
+    REQUIRE (journal.getDroppedCount() == 0u);
+}

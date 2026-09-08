@@ -89,8 +89,12 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
 
         if (due)
         {
+            // Two losses of the same kind -- audio that should have been
+            // recorded and was not -- so they add. The rate is the take's own;
+            // a hardcoded 48000 made this line claim twice the loss at 96 kHz.
+            const auto rate = now.sampleRate > 0.0 ? now.sampleRate : 48000.0;
             const auto total = now.framesDropped + now.samplesOverrun;
-            const auto seconds = total / 48000.0; // a rough figure is all this line needs
+            const auto seconds = total / rate; // a rough figure is all this line needs
 
             alerts.push_back ({ TakeAlert::Kind::AudioDropped,
                                 droppedReported
@@ -119,7 +123,15 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
         alerts.push_back ({ TakeAlert::Kind::MonitorTrouble, now.monitorProblem, false });
 
     // Room on the drive: each threshold once per take, on the way down.
-    if (now.remainingSeconds >= 0.0)
+    //
+    // Strictly above zero. Zero used to be unreachable -- the app collapsed a
+    // full drive into the "unknown" sentinel, which this gate excluded -- and
+    // now that it is a real value it would fall into the two-minute arm and
+    // tell someone with NO room left that they have about two minutes and
+    // should wrap up. There is no room-exhausted alert kind here because the
+    // take is stopped in that case, and the stop announces itself; what this
+    // block must not do is contradict it a tick earlier.
+    if (now.remainingSeconds > 0.0)
     {
         if (! warnedTwoMinutes && now.remainingSeconds < kTwoMinutes)
         {

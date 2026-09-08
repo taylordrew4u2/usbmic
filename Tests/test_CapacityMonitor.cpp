@@ -103,3 +103,30 @@ TEST_CASE (CapacityMonitor_ResetClearsEverythingForTheNextTake)
     REQUIRE (m.getDegradationSamplePosition() == -1);
     REQUIRE (m.evaluateRemaining (500.0) == RemainingTimeWarning::TenMinutes);
 }
+
+TEST_CASE (CapacityMonitor_ZeroSecondsLeftIsExhaustedNotUnknown)
+{
+    // The app's remaining-time figure used to collapse "the drive is full" and
+    // "the drive could not be read" into the same negative sentinel, and every
+    // consumer treats negative as "say nothing" -- so a genuinely full card
+    // stopped nothing and warned nobody. Zero is now reachable, and this is
+    // what the monitor must make of it.
+    CapacityMonitor monitor;
+
+    REQUIRE (monitor.evaluateRemaining (0.0) == RemainingTimeWarning::Exhausted);
+
+    // Latched: the take is already being stopped, and a second announcement of
+    // a drive that is still full helps nobody.
+    REQUIRE (monitor.evaluateRemaining (0.0) == RemainingTimeWarning::None);
+}
+
+TEST_CASE (CapacityMonitor_AnExhaustedDriveDoesNotLaterEmitAStaleWarning)
+{
+    CapacityMonitor monitor;
+
+    REQUIRE (monitor.evaluateRemaining (0.0) == RemainingTimeWarning::Exhausted);
+
+    // Room appearing again must not produce a ten-minute warning about a drive
+    // the user has already been told is full.
+    REQUIRE (monitor.evaluateRemaining (500.0) == RemainingTimeWarning::None);
+}
