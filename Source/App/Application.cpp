@@ -1853,7 +1853,13 @@ void Application::runPreflight (const std::string& destination, int channelCount
                 }
             }
 
-            if (! out.flush())
+            out.flush();
+
+            // FileOutputStream::flush() returns void; the stream carries the
+            // outcome instead. A flush that failed means the bytes counted as
+            // written above never reached the card, so the windows measured
+            // from them describe nothing.
+            if (out.getStatus().failed())
                 couldNotWrite = true;
 
             // A card fast enough to finish inside one window still needs a
