@@ -89,7 +89,19 @@ void ActivityJournal::dropOldestLocked()
 std::vector<ActivityEntry> ActivityJournal::getEntries() const
 {
     std::lock_guard<std::mutex> guard (lock);
-    return { entries.rbegin(), entries.rend() };
+
+    std::vector<ActivityEntry> out { entries.rbegin(), entries.rend() };
+
+    // Newest first BY TIME, not by when the entry was first created. Collapsing
+    // a repeat moves that entry's timestamp forward without moving the entry,
+    // so insertion order stopped being chronological -- and the log filed
+    // beside a take listed a 0:21 entry above the 0:06 one that started the
+    // recording. Stable, so entries sharing a second keep their order.
+    std::stable_sort (out.begin(), out.end(),
+                      [] (const ActivityEntry& a, const ActivityEntry& b)
+                      { return a.atSeconds > b.atSeconds; });
+
+    return out;
 }
 
 bool ActivityJournal::getMostSeriousUnseen (ActivityEntry& out) const
