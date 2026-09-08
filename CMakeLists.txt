@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SobStage VERSION 1.10.0 LANGUAGES CXX)
+project(SobStage VERSION 1.11.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,7 @@ add_library(mma_core STATIC
     Source/Core/PermissionGuidance.cpp
     Source/Core/HelpTopics.cpp
     Source/Core/TakeWatchdog.cpp
+    Source/Core/RecordingProof.cpp
     Source/Core/CaptureCoordinator.cpp
     Source/Core/DeviceInputStream.cpp
     Source/Core/CombinedTakePlan.cpp

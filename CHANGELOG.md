@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.11.0 -- 2026-09-08
+
+### Added -- the take must prove itself on disk, or it stops
+
+A day-long recording was lost because the app kept the button red and the
+clock running over files that never grew. That cannot happen now:
+
+- Three seconds after record is pressed, the files on the drive must have
+  grown past their headers. If they have not, the take stops itself and a
+  red card says "Recording failed. Nothing was recorded."
+- If the files stop growing for six seconds mid-take, a red card says the
+  drive has stopped taking audio and what to do, while the take carries on.
+- If no sound above -60 dBFS reaches the app for twenty seconds, the card
+  says the files hold silence and names the mixer checks.
+- The record button is disabled, with the reason, whenever the microphones
+  are not actually open -- an output that refused low-latency mode, a
+  microphone held by another app.
+
+The rules live in Core (RecordingProof) under seven tests. A second
+end-to-end gate, `Tools/e2e_refusal.sh`, runs the real app with
+microphones that cannot open and requires that no take of empty files is
+left behind; it passes alongside `Tools/e2e_app_take.sh`.
+
 ## v1.10.0 -- 2026-09-08
 
 ### Fixed -- the audit's silent-loss findings, proven end to end
