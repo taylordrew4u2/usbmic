@@ -1734,12 +1734,23 @@ double Application::getRemainingRecordingSeconds() const
     if (bytesPerSecond <= 0.0)
         return -1.0;
 
-    juce::File destination (destinationFolder);
-    auto probe = destination;
-    while (! probe.exists() && probe.getParentDirectory() != probe)
-        probe = probe.getParentDirectory();
+    const juce::File destination (destinationFolder);
 
-    const auto freeBytes = probe.getBytesFreeOnVolume();
+    // No walk up to the parent. It was there so a destination folder that did
+    // not exist yet still produced a figure, but it answers with whatever
+    // volume it lands on -- so a card that has been ejected mid-take climbed to
+    // the root and reported the SYSTEM disk's free space under the
+    // destination's name. Harmless while that was only a readout; not harmless
+    // now that the same figure stops takes and disables the record button,
+    // where it would announce a full drive about a drive the user is not
+    // recording to, or promise room on one that is gone.
+    //
+    // A destination that is not there cannot be measured, and saying so is the
+    // honest answer.
+    if (! destination.isDirectory())
+        return -1.0;
+
+    const auto freeBytes = destination.getBytesFreeOnVolume();
 
     // A full drive and an unreadable one both used to come back as -1.0, the
     // "could not be determined" sentinel -- and every consumer treats that as
@@ -1753,11 +1764,12 @@ double Application::getRemainingRecordingSeconds() const
     // JUCE returns 0 for both cases, so they are told apart by whether the
     // volume is there to be asked at all: a directory that exists and reports
     // nothing free is full; anything else is genuinely unknown.
-    if (freeBytes < 0)
-        return -1.0;
-
+    // JUCE returns 0 both when the volume has nothing left and when it could not
+    // be read at all, and never a negative -- so zero is only trustworthy as
+    // "full" because the directory above is known to exist and resolve. That
+    // check is the whole discriminator; there is no negative case to test for.
     if (freeBytes == 0)
-        return probe.isDirectory() ? 0.0 : -1.0;
+        return 0.0;
 
     return static_cast<double> (freeBytes) / bytesPerSecond;
 }
@@ -1780,6 +1792,19 @@ juce::String Application::formatDuration (double seconds)
 
 juce::String Application::getRecordDisabledReason() const
 {
+    // Nothing disables the button while a take is running, because the button
+    // IS the stop control and it is the only thing in the app that can end a
+    // take.
+    //
+    // Every reason below is about whether it is sensible to START. Applied
+    // during a take they take the stop away: unplug every microphone mid-take
+    // and "Plug in a microphone first." disabled the one control that could
+    // have ended the recording, leaving the clock running with no way out but
+    // quitting the app. A user who cannot stop their own take has been failed
+    // more completely than by any silence.
+    if (recordingEngine.getState() == RecordingState::Recording)
+        return {};
+
     if (getIncludedMicCount() == 0)
         return "Plug in a microphone first.";
 

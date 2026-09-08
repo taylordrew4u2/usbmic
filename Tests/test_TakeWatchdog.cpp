@@ -268,3 +268,50 @@ TEST_CASE (TakeWatchdog_TheSecondsLostFigureUsesTheTakesOwnRate)
 
     (void) saidOneSecond;
 }
+
+TEST_CASE (TakeWatchdog_ADriveWithNoRoomIsNotToldItHasTwoMinutes)
+{
+    // Zero used to be unreachable here: the app collapsed a full drive into the
+    // "unknown" sentinel, which this block's gate excluded. Now that zero is a
+    // real value it would fall into the two-minute arm and tell someone with no
+    // room at all that they have about two minutes and should wrap up --
+    // contradicting, one tick earlier, the stop that is about to happen.
+    TakeWatchdog watchdog;
+
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    start.remainingSeconds = 3600.0;
+    watchdog.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 10.0;
+    now.remainingSeconds = 0.0;
+
+    for (const auto& a : watchdog.observe (now))
+    {
+        REQUIRE (a.message.find ("two minutes of room") == std::string::npos);
+        REQUIRE (a.message.find ("ten minutes of room") == std::string::npos);
+    }
+}
+
+TEST_CASE (TakeWatchdog_RealRoomWarningsStillFire)
+{
+    // The gate above must not have silenced the warnings it sits in front of.
+    TakeWatchdog watchdog;
+
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    start.remainingSeconds = 3600.0;
+    watchdog.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 10.0;
+    now.remainingSeconds = 100.0; // inside two minutes, and genuinely non-zero
+
+    bool warned = false;
+    for (const auto& a : watchdog.observe (now))
+        if (a.message.find ("two minutes of room") != std::string::npos)
+            warned = true;
+
+    REQUIRE (warned);
+}
