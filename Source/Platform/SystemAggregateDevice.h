@@ -30,6 +30,13 @@ public:
     /// Takes the combined device back out of the system.
     virtual void remove() = 0;
 
+    /// Whether this platform has a combined device at all. Windows and Linux
+    /// do not, so publish() there always answers false -- and a caller that
+    /// reads that as a failure raises an alarm about a feature that was never
+    /// coming, at every launch. False means "nothing to publish here", not
+    /// "publishing went wrong".
+    virtual bool isSupported() const { return true; }
+
     /// Plain language for the Advanced panel: what other apps currently see.
     virtual std::string getStatus() const = 0;
 };

@@ -20,6 +20,8 @@ public:
 
     void remove() override { count = 0; }
 
+    bool isSupported() const override { return false; }
+
     std::string getStatus() const override
     {
         return "On this platform other apps can't see a combined device yet -- "

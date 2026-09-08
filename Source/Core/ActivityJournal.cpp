@@ -27,19 +27,29 @@ void ActivityJournal::note (double nowSeconds, ActivityLevel level,
     // a mic on a bad cable can drop twice a second. Collapsing the repeat keeps
     // the journal readable without hiding anything: the count says it is still
     // happening, and the timestamp moves to the latest occurrence.
-    if (! entries.empty())
+    //
+    // Every entry still inside the window is considered, not just the last one.
+    // Comparing against the newest alone collapsed nothing the moment two
+    // things were failing at once: three microphones losing sync in rotation
+    // never produce two identical entries in a row, so a real rig coming apart
+    // -- the case this exists for -- filed one entry per device per second and
+    // pushed everything else out of a 256-entry journal within a minute.
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it)
     {
-        auto& newest = entries.back();
+        // Skipped, not stopped on: collapsing a repeat moves that entry's
+        // timestamp forward, so an entry sitting behind an old one can still be
+        // inside the window. The journal is bounded, so walking it is cheap.
+        if (nowSeconds - it->atSeconds > kRepeatWindowSeconds)
+            continue;
 
-        if (newest.level == level && newest.subject == subject && newest.message == message
-            && nowSeconds - newest.atSeconds <= kRepeatWindowSeconds)
+        if (it->level == level && it->subject == subject && it->message == message)
         {
-            newest.atSeconds = nowSeconds;
-            ++newest.repeats;
+            it->atSeconds = nowSeconds;
+            ++it->repeats;
 
             // A repeat is news again: something the user was shown once and
             // dismissed is still going on, so it goes back to unseen.
-            newest.seen = false;
+            it->seen = false;
             return;
         }
     }

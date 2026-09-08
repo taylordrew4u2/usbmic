@@ -22,6 +22,38 @@
 
 namespace mma {
 
+namespace {
+
+// The version CMake stamped in. JUCE_APP_VERSION is only defined for builds
+// that go through JuceHeader.h, so stringifying it here wrote the literal
+// token "JUCE_APP_VERSION" into every take's session.json and every
+// diagnostics bundle -- the two places support would look to find out which
+// build produced a recording.
+juce::String appVersionString()
+{
+   #if defined (SOBSTAGE_VERSION_STRING)
+    return SOBSTAGE_VERSION_STRING;
+   #else
+    return "dev";
+   #endif
+}
+
+// Writes text and then checks the file actually holds it. On a full drive
+// juce::File::replaceWithText can report success having left a truncated or
+// empty file behind -- seen for real: a take whose card filled up ended with a
+// zero-byte session.json and nothing said so. Everything durable this app
+// writes goes through here, so a write that did not survive is a write the
+// user hears about.
+bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
+{
+    if (! file.replaceWithText (text))
+        return false;
+
+    return file.getSize() == static_cast<juce::int64> (text.getNumBytesAsUTF8());
+}
+
+} // namespace
+
 Application::Application()
     // §9.3, asked once. The setting does not change between meter repaints, and
     // the alternative -- querying the OS per strip at 60Hz -- would be absurd.
@@ -470,6 +502,15 @@ void Application::restartCapture()
 void Application::publishAggregateDevice()
 {
     if (systemAggregate == nullptr)
+        return;
+
+    // A platform with no combined device is not a failure to report. publish()
+    // answers false there by definition, and once its result started being
+    // read, every Windows and Linux launch filed "Couldn't make the combined
+    // device" as a FAILURE -- about a feature that platform has never had.
+    // What other apps see is already explained accurately, in the Advanced
+    // panel, by getStatus().
+    if (! systemAggregate->isSupported())
         return;
 
     std::vector<std::string> uids;
@@ -1526,6 +1567,17 @@ void Application::toggleRecording()
         // this one's.
         stopReason.clear();
 
+        // Written AGAIN, now that the stop itself is in the journal. The first
+        // write happens inside writeSessionMetadata above, before this note
+        // exists -- so the log filed beside every take ended mid-recording and
+        // never said the take stopped, let alone why. A take the app killed
+        // because the drive filled or the card left is exactly the one whose
+        // log has to carry the reason, and that was the one it dropped.
+        writeActivityLog (juce::File (currentSessionFolder));
+
+        if (currentMirrorFolder.isNotEmpty())
+            writeActivityLog (juce::File (currentMirrorFolder));
+
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
@@ -2387,7 +2439,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         return;
 
     SessionMetadata meta;
-    meta.appVersion = JUCE_STRINGIFY (JUCE_APP_VERSION);
+    meta.appVersion = appVersionString().toStdString();
     meta.startTimestampIso = sessionStartIso.toStdString();
     meta.stopTimestampIso = sessionHasStopped
                                 ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
@@ -2541,7 +2593,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // above -- every dropout, every buffer change, why the backup stopped --
     // and it was written with the return value discarded, so the one file that
     // explains a difficult take could fail to appear and nothing would say so.
-    if (! juce::File (currentSessionFolder).getChildFile ("session.json").replaceWithText (juce::String (json)))
+    if (! replaceWithTextChecked (juce::File (currentSessionFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the details file for this take. The audio itself is saved.");
 
@@ -2550,7 +2602,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // of how the take went -- which is the half of the pair the user reaches
     // for precisely when the card's copy is the one that went wrong.
     if (currentMirrorFolder.isNotEmpty()
-        && ! juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json)))
+        && ! replaceWithTextChecked (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Local backup",
                       "Couldn't write the details file into the backup copy. The backed-up audio "
                       "itself is there.");
@@ -2561,7 +2613,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         writeActivityLog (juce::File (currentMirrorFolder));
 }
 
-void Application::writeActivityLog (const juce::File& folder)
+void Application::writeActivityLog (const juce::File& folder) const
 {
     // Plain text beside the take, because this one is for the person and not
     // for a parser: it is what they show someone else when a take went wrong.
@@ -2585,7 +2637,7 @@ void Application::writeActivityLog (const juce::File& folder)
 
     // Checked like everything else here. A log that failed to write is exactly
     // the sort of thing this file exists to stop happening quietly.
-    if (! folder.getChildFile ("activity.log").replaceWithText (text))
+    if (! replaceWithTextChecked (folder.getChildFile ("activity.log"), text))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the activity log into " + folder.getFileName()
                       + ". The audio itself is saved.");
@@ -2603,6 +2655,30 @@ void Application::noteActivity (ActivityLevel level, const juce::String& subject
                                 const juce::String& message) const
 {
     activity.note (activityClockSeconds(), level, subject.toStdString(), message.toStdString());
+
+    // Straight to disk while a take is running. The journal lives in memory,
+    // and the only writes were at the start of the take -- before the "started"
+    // note even existed -- and at the stop. So a take that ended in a crash or
+    // a power cut, the take this log exists for, was recovered next to a log
+    // that said nothing had happened: not that recording started, not the
+    // drive-space warning that came ten minutes before the end.
+    flushActivityLogToTake();
+}
+
+void Application::flushActivityLogToTake() const
+{
+    // writeActivityLog reports its own failure through noteActivity, which
+    // lands back here. Once is a report; twice is a loop.
+    if (writingActivityLog || currentSessionFolder.isEmpty())
+        return;
+
+    writingActivityLog = true;
+    writeActivityLog (juce::File (currentSessionFolder));
+
+    if (currentMirrorFolder.isNotEmpty())
+        writeActivityLog (juce::File (currentMirrorFolder));
+
+    writingActivityLog = false;
 }
 
 juce::StringArray Application::getRecentActivityLines (int limit) const
@@ -3230,7 +3306,7 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     }
 
     auto* summary = new juce::DynamicObject();
-    summary->setProperty ("appVersion", JUCE_STRINGIFY (JUCE_APP_VERSION));
+    summary->setProperty ("appVersion", appVersionString());
     summary->setProperty ("sampleRate", currentSampleRate);
     summary->setProperty ("bitDepth", currentBitDepth);
     summary->setProperty ("bufferSize", bufferLadder.getCurrentSize());
@@ -3247,7 +3323,7 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     // §11: a bundle missing the device inventory is the bundle that cannot
     // answer "what was plugged in", which is the first question anyone reading
     // it asks. Silently shipping one without it wastes a round trip.
-    if (! tempInventory.getFile().replaceWithText (juce::JSON::toString (juce::var (summary), true)))
+    if (! replaceWithTextChecked (tempInventory.getFile(), juce::JSON::toString (juce::var (summary), true)))
         noteActivity (ActivityLevel::Warning, "Diagnostics",
                       "Couldn't list the connected devices, so the diagnostics file won't include "
                       "them.");
@@ -3499,7 +3575,7 @@ void Application::saveSettings()
     // Checked, because silently failing here presents next launch as an app
     // that forgot the user's microphone names, trims and destination -- and
     // there is no moment at which that is explained.
-    if (! file.replaceWithText (juce::String (settings.toJsonString())))
+    if (! replaceWithTextChecked (file, juce::String (settings.toJsonString())))
         noteActivity (ActivityLevel::Warning, "Settings",
                       "Couldn't save your settings, so they may not be remembered next time.");
 
@@ -3584,7 +3660,7 @@ void Application::clearRecoveredSessions()
                 // read-only, full, the very card whose failure caused the
                 // interruption -- produced the same list forever with nothing
                 // explaining why dismissing it did not stick.
-                if (! file.replaceWithText (juce::String (meta.toJsonString())))
+                if (! replaceWithTextChecked (file, juce::String (meta.toJsonString())))
                     noteActivity (ActivityLevel::Warning, "Interrupted take",
                                   file.getParentDirectory().getFileName()
                                   + " can't be marked as dealt with -- this card won't accept the "
@@ -3632,6 +3708,22 @@ void Application::scanForInterruptedSessions()
         for (int i = 0; i < examine; ++i)
         {
             const auto folder = folders[i];
+
+            // One take, one entry. The card and the mirror hold the SAME take
+            // under the same folder name, so scanning both listed it twice --
+            // the Recovered card said two takes were interrupted when one was,
+            // with two identical labels and no way to tell them apart. The card
+            // copy wins because it is the one the user's paths point at; a take
+            // that exists only in the mirror -- the case this scan of the
+            // mirror exists for -- still gets its entry.
+            if (std::any_of (recoveredSessions.begin(), recoveredSessions.end(),
+                             [&folder] (const RecoveredSession& existing)
+                             {
+                                 return juce::File (juce::String (existing.folder)).getFileName()
+                                        == folder.getFileName();
+                             }))
+                continue;
+
             const auto metadataFile = folder.getChildFile ("session.json");
 
             if (! metadataFile.existsAsFile())

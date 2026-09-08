@@ -616,7 +616,14 @@ private:
     double activityClockSeconds() const;
 
     /// Writes activity.log beside a take, so the folder carries its own story.
-    void writeActivityLog (const juce::File& folder);
+    void writeActivityLog (const juce::File& folder) const;
+
+    /// Keeps the take's log on disk in step with the journal, so a take that
+    /// ends in a crash still explains itself. Does nothing outside a take.
+    void flushActivityLogToTake() const;
+
+    /// Stops writeActivityLog's own failure note from re-entering the flush.
+    mutable bool writingActivityLog = false;
 
     /// §10.6: why the last attempt to start recording failed. Shown until the
     /// next attempt, because a record button that does nothing and says nothing
