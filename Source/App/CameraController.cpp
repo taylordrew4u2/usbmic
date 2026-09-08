@@ -67,6 +67,11 @@ void CameraController::refreshCameras()
 void CameraController::applySelection()
 {
 #if JUCE_USE_CAMERA
+    // Names rather than a count, because "one of your cameras" helps nobody
+    // standing in front of three of them. Declared inside the guard so a build
+    // without camera support does not carry an unused local.
+    juce::StringArray missingCameras;
+
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
     std::vector<std::string> toClose;
@@ -86,8 +91,27 @@ void CameraController::applySelection()
         const auto index = osIndexById.find (camera.id);
 
         if (index != osIndexById.end())
+        {
             openCamera (camera.id, index->second);
+        }
+        else
+        {
+            // A camera the user switched on that the OS is no longer offering.
+            // It was skipped with no else at all, so it was simply absent from
+            // the take -- and a camera you deliberately enabled and then do not
+            // find in the folder is the kind of absence nobody thinks to check
+            // for until the edit.
+            missingCameras.push_back (selection.getDisplayName (camera.id));
+        }
     }
+
+    if (! missingCameras.isEmpty())
+        problem = (missingCameras.size() == 1
+                       ? missingCameras[0] + " isn't connected any more, so it isn't in this take."
+                       : juce::String (missingCameras.size())
+                             + " of your cameras aren't connected any more, so they aren't in this "
+                               "take.")
+                + " The sound is recording either way.";
 #endif
 }
 

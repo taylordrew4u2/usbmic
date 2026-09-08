@@ -320,16 +320,31 @@ void WritePipeline::drainOnce (bool finalFlush)
     {
         // §6.3: stopped for space, or stopped by the user. Close the partial
         // copy properly so its headers are valid rather than truncated.
+        //
+        // Judged, like every other close. This is the one place mirror files
+        // are finalized outside stop(), and its results were the two in this
+        // file still thrown away -- so a partial copy whose headers failed to
+        // land was left looking like a partial copy that closed cleanly, which
+        // is the difference between a short file that plays and one that does
+        // not open at all.
+        bool finalizeFailed = false;
+
         for (auto& w : mirrorStemWriters)
-            w->close();
+            if (! w->close())
+                finalizeFailed = true;
 
         mirrorStemWriters.clear();
 
         if (mirrorMixWriter != nullptr)
         {
-            mirrorMixWriter->close();
+            if (! mirrorMixWriter->close())
+                finalizeFailed = true;
+
             mirrorMixWriter.reset();
         }
+
+        if (finalizeFailed)
+            mirrorWriteFailed.store (true, std::memory_order_release);
     }
 
     for (;;)
@@ -344,7 +359,15 @@ void WritePipeline::drainOnce (bool finalFlush)
         const size_t samples = frames * static_cast<size_t> (numChannels);
 
         if (ring.read (drainBuffer.data(), samples) != samples)
+        {
+            // Unreachable while this is the ring's only consumer, which is
+            // exactly why it is counted rather than returned from in silence:
+            // if a second consumer ever appears, the loss shows up in the
+            // take's own dropped-frame figure instead of nowhere.
+            framesDropped.fetch_add (static_cast<uint64_t> (samples / std::max (1, numChannels)),
+                                     std::memory_order_relaxed);
             return;
+        }
 
         std::fill (mixScratch.begin(), mixScratch.begin() + static_cast<long> (frames), 0.0f);
 

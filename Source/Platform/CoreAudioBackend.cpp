@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include "CoreAudioBackend.h"
 
 #if JUCE_MAC
@@ -38,6 +39,18 @@ struct CoreAudioStream
     /// callback, because the scratch was sized for less. Dropping is the right
     /// answer; dropping without counting was not.
     std::atomic<uint64_t> framesDropped { 0 };
+
+    /// The device this stream was opened for, as the app names it, and when the
+    /// IOProc last ran.
+    ///
+    /// CoreAudio has no worker loop of its own to notice dying -- the HAL calls
+    /// the IOProc, and a device that stops simply stops being called. So the
+    /// only way this backend can tell is to remember when it was last called
+    /// and let the message thread ask. Without it macOS was the one platform
+    /// where a stream that stopped after opening produced nothing at all.
+    std::string uid;
+    std::atomic<double> lastCallbackSeconds { 0.0 };
+    std::atomic<bool> reportedDead { false };
 
     // The mirror of the above for playback. An interface that presents its
     // output as one interleaved buffer needs the callback's per-channel writes
@@ -294,6 +307,13 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
 
     if (stream == nullptr || ! stream->callback)
         return noErr;
+
+    // A timestamp, taken before any work, so the message thread can tell a
+    // stream that is running from one the HAL has stopped calling. §11 allows
+    // this: steady_clock::now() allocates nothing and takes no lock.
+    stream->lastCallbackSeconds.store (
+        std::chrono::duration<double> (std::chrono::steady_clock::now().time_since_epoch()).count(),
+        std::memory_order_relaxed);
 
     int numInputChannels = 0;
     int numSamples = 0;
@@ -576,10 +596,18 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     // it to what the device allows. Failing to set it is not fatal -- a larger
     // buffer costs latency, and the measured figure reported at startup will
     // show it rather than the estimate hiding it.
-    setBufferFrameSize (device, bufferSizeSamples);
+    // The result is read now. Failing to set it is still not fatal -- a larger
+    // buffer costs latency, not audio -- but it was discarded entirely, so a
+    // device that refused the requested size left the app quietly running at
+    // whatever the device preferred with nothing saying so. lastOpenError is
+    // not the place (the open succeeds), so it goes in the field the caller
+    // reads for exactly this: something worth knowing that did not stop us.
+    if (! setBufferFrameSize (device, bufferSizeSamples))
+        bufferSizeWasRefused = true;
 
     auto stream = std::make_unique<CoreAudioStream>();
     stream->deviceId = device;
+    stream->uid = deviceId;
     stream->callback = std::move (callback);
     stream->isOutput = isOutput;
 
@@ -618,6 +646,58 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
 
     openStreams.push_back (std::move (stream));
     return true;
+}
+
+std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
+{
+    std::vector<StreamFailure> failures;
+
+    // Reported once, and through the same channel as a dead stream, because it
+    // is the same kind of news: something about the rig is not what the app
+    // asked for and the user cannot see it anywhere else.
+    if (bufferSizeWasRefused)
+    {
+        bufferSizeWasRefused = false;
+        failures.push_back ({ std::string(),
+                              "is running at its own buffer size rather than the one asked for, so "
+                              "there is a little more delay than usual.",
+                              "Your sound hardware" });
+    }
+
+    // How long a started stream may go without its IOProc running before it is
+    // called dead. Generous: the HAL can legitimately pause briefly around a
+    // device or format change, and a false report here would send someone
+    // unplugging hardware that is fine.
+    constexpr double kSilentSecondsBeforeGivingUp = 5.0;
+
+    const double now = std::chrono::duration<double> (
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    for (const auto& stream : openStreams)
+    {
+        if (stream == nullptr || stream->ioProcId == nullptr)
+            continue;
+
+        const double last = stream->lastCallbackSeconds.load (std::memory_order_relaxed);
+
+        // Never called at all is not yet a failure: the stream may have been
+        // opened moments ago and the first callback not have landed.
+        if (last <= 0.0 || now - last < kSilentSecondsBeforeGivingUp)
+            continue;
+
+        // Once per stream. The condition stays true for as long as the device
+        // is dead, and repeating it every poll would bury everything else.
+        if (stream->reportedDead.exchange (true, std::memory_order_relaxed))
+            continue;
+
+        failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
+                              stream->isOutput
+                                  ? "stopped accepting audio, so you can't hear anything through "
+                                    "it. Try selecting it again."
+                                  : "stopped sending audio. Unplug it and plug it back in." });
+    }
+
+    return failures;
 }
 
 uint64_t CoreAudioBackend::getFramesDroppedByBackend() const

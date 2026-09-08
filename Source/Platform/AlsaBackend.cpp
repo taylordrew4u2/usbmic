@@ -127,6 +127,11 @@ struct AlsaStream
     std::thread worker;
     std::atomic<bool> running { false };
 
+    /// §0.1: frames the device dropped and this app never saw. An xrun is
+    /// recoverable and the stream carries on, which is exactly why it needs
+    /// counting: nothing else in the run leaves a trace of it.
+    std::atomic<uint64_t> framesDropped { 0 };
+
     ~AlsaStream()
     {
         running.store (false, std::memory_order_release);
@@ -431,6 +436,17 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                         break;
                     }
 
+                    // Recovered, but not without cost: an xrun IS lost audio.
+                    // The device kept running and the app carried on, so this
+                    // was the one loss on Linux that nothing counted and nothing
+                    // reported -- the same hole the Windows and macOS counters
+                    // were added to close, left open on the platform whose CI
+                    // job is the only one that opens a real device.
+                    //
+                    // A period's worth is the honest figure: that is what the
+                    // read was for, and what the device dropped on the floor.
+                    raw->framesDropped.fetch_add (static_cast<uint64_t> (frames),
+                                                  std::memory_order_relaxed);
                     continue;
                 }
 
@@ -523,6 +539,17 @@ bool AlsaBackend::openInputStream (const std::string& inputDeviceId, double samp
                                    int bufferSizeSamples, AudioCallback callback)
 {
     return openStream (inputDeviceId, sampleRate, bufferSizeSamples, true, std::move (callback));
+}
+
+uint64_t AlsaBackend::getFramesDroppedByBackend() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr)
+            total += stream->framesDropped.load (std::memory_order_relaxed);
+
+    return total;
 }
 
 void AlsaBackend::closeAllStreams()

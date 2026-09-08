@@ -59,6 +59,8 @@ public:
     /// generic "couldn't open your headphones" with nothing to act on.
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    uint64_t getFramesDroppedByBackend() const override;
+
 private:
     std::string lastOpenError;
 

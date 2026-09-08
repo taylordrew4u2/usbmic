@@ -40,9 +40,14 @@ struct StreamFailure
     /// The device the stream was opened for. Empty for the monitor output.
     std::string deviceId;
 
-    /// §10.6: what happened, in the user's words. The owner adds the device's
-    /// name -- the backend only knows its id.
+    /// §10.6: what happened, in the user's words. The owner puts the device's
+    /// name in front of it -- the backend only knows its id.
     std::string reason;
+
+    /// A complete subject to use instead of the device's name, for the reports
+    /// that are not about one device ("The sound card", "This interface").
+    /// Empty means the owner names the device, which is the usual case.
+    std::string subject;
 };
 
 /// Where a backend's worker threads leave a failure for the message thread to
@@ -55,7 +60,7 @@ struct StreamFailure
 class StreamFailureSink
 {
 public:
-    void note (std::string deviceId, std::string reason)
+    void note (std::string deviceId, std::string reason, std::string subject = {})
     {
         const std::lock_guard<std::mutex> guard (lock);
 
@@ -65,7 +70,7 @@ public:
             if (existing.deviceId == deviceId)
                 return;
 
-        failures.push_back ({ std::move (deviceId), std::move (reason) });
+        failures.push_back ({ std::move (deviceId), std::move (reason), std::move (subject) });
     }
 
     std::vector<StreamFailure> take()

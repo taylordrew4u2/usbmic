@@ -18,6 +18,13 @@ struct RecoveredFile
     bool headerWasStale = false;
     /// §6.6: under a second of audio is an unplayable stub, not a recording.
     bool reportedEmpty = false;
+    /// True when the header was stale AND the repair could not be written back.
+    ///
+    /// The repair result was never checked, so a file on a read-only or failing
+    /// card was reported as repaired and handed to the user with the same wrong
+    /// header it started with -- and they would only find out on opening it in
+    /// something else.
+    bool repairFailed = false;
 };
 
 /// An interrupted take: one whose session.json never got a stop timestamp.

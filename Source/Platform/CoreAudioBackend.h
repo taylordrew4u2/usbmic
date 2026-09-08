@@ -44,6 +44,7 @@ public:
 
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    std::vector<StreamFailure> takeStreamFailures() override;
     uint64_t getFramesDroppedByBackend() const override;
 
 private:
@@ -54,6 +55,10 @@ private:
     std::vector<std::unique_ptr<CoreAudioStream>> openStreams;
 
     std::string lastOpenError;
+
+    /// A device that would not take the requested buffer size. Not a failure --
+    /// the stream opens and records -- but the extra latency was invisible.
+    bool bufferSizeWasRefused = false;
     uint32_t openOutputDeviceId = 0;
     bool outputStreamIsHogModeExclusive = false;
 

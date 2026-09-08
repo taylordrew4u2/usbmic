@@ -202,6 +202,19 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
     return format;
 }
 
+/// Called when the capture side has failed often enough to be called dead.
+void reportCaptureDeath (WasapiStream* stream)
+{
+    if (stream->failures != nullptr)
+        stream->failures->note (stream->deviceId,
+                                "stopped sending audio. Unplug it and plug it back in.");
+
+    stream->running.store (false, std::memory_order_release);
+
+    if (stream->client)
+        stream->client->Stop();
+}
+
 /// Called when the render side has failed often enough to be called dead. Stops
 /// the stream rather than leaving it spinning on a device the message below is
 /// asking the user to reconnect.
@@ -236,6 +249,10 @@ void runStreamThread (WasapiStream* stream)
     constexpr int kTimeoutsBeforeGivingUp = 3;
     int consecutiveTimeouts = 0;
     int consecutiveRenderFailures = 0;
+    int consecutiveCaptureFailures = 0;
+
+    /// A run this long means the device is refusing everything, not glitching.
+    constexpr int kCaptureFailuresBeforeGivingUp = 200;
 
     while (stream->running.load (std::memory_order_acquire))
     {
@@ -288,8 +305,21 @@ void runStreamThread (WasapiStream* stream)
                     // size is not known here, so one packet's worth of the
                     // stream's own buffer is the honest estimate.
                     stream->framesDropped.fetch_add (stream->bufferFrames, std::memory_order_relaxed);
+
+                    // A device that refuses every packet is not dropping audio,
+                    // it is gone. Counting alone reported that as drift and
+                    // never as a dead stream, so the mic went on being written
+                    // as silence with only a rising number to show for it.
+                    if (++consecutiveCaptureFailures >= kCaptureFailuresBeforeGivingUp)
+                    {
+                        reportCaptureDeath (stream);
+                        return;
+                    }
+
                     break;
                 }
+
+                consecutiveCaptureFailures = 0;
 
                 if (frames > stream->bufferFrames)
                 {

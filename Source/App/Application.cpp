@@ -2340,6 +2340,13 @@ void Application::writeActivityLog (const juce::File& folder)
     juce::String text;
     text << "SobStage -- what happened during this session" << juce::newLine << juce::newLine;
 
+    // Said, rather than left as a log that mysteriously starts part way through.
+    if (const auto dropped = activity.getDroppedCount(); dropped > 0)
+        text << "(" << juce::String (static_cast<int> (dropped))
+             << " earlier entries are not listed -- this log keeps the most recent "
+             << juce::String (static_cast<int> (ActivityJournal::kMaxEntries)) << ".)"
+             << juce::newLine << juce::newLine;
+
     // Oldest first: a log is read forwards.
     auto lines = getRecentActivityLines (static_cast<int> (ActivityJournal::kMaxEntries));
 
@@ -2452,16 +2459,21 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         applyClockMaster();
 
         // §3.3: a device this far out is not drifting, it is failing.
+        //
+        // Recorded rather than returned. This used to return, which put it
+        // ahead of the card-removal check below -- the branch that actually
+        // stops the take -- so a card failing at the same moment as a drift
+        // warning kept recording into a dead handle for another poll. The
+        // journal carries it, and the advice line picks it up once nothing
+        // more urgent is holding the line.
         for (int i = 0; i < micCount; ++i)
         {
             if (! capture->hasSustainedExcessDrift (i))
                 continue;
 
-            auto line = juce::String (getMicDisplayName (i))
-                        + " can't keep steady time with the others. Try a different USB port.";
-
-            noteActivity (ActivityLevel::Warning, getMicDisplayName (i), line);
-            return line;
+            noteActivity (ActivityLevel::Warning, getMicDisplayName (i),
+                          juce::String (getMicDisplayName (i))
+                          + " can't keep steady time with the others. Try a different USB port.");
         }
     }
 
@@ -2507,10 +2519,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
         for (const auto& failure : audioBackend->takeStreamFailures())
         {
-            // The backend knows an id; the user knows a name.
-            auto subject = juce::String ("Your headphones");
+            // The backend knows an id; the user knows a name. A backend that
+            // has a better subject than either -- a report that is not about
+            // one device -- supplies it.
+            auto subject = failure.subject.empty() ? juce::String ("Your headphones")
+                                                   : juce::String (failure.subject);
 
-            if (! failure.deviceId.empty())
+            if (failure.subject.empty() && ! failure.deviceId.empty())
             {
                 subject = juce::String (failure.deviceId);
 
@@ -2562,8 +2577,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // to leave the policy saying "Active" over a backup that did not exist, so
     // both are caught here, by comparing what was asked for against what is
     // actually being written. Said once per take.
+    // Asks the pipeline directly as well as inferring it from the policy. The
+    // inference alone was the whole test, which made the pipeline's own flag
+    // dead code and left the report resting on a proxy: it only fires while a
+    // take is running AND the policy still says Active, so a mirror that failed
+    // to open in a take the policy had already given up on said nothing.
     if (capture != nullptr && capture->isRecording() && ! mirrorMissingReported
-        && mirrorPolicy.isMirroring() && ! capture->isMirroring())
+        && (capture->hasMirrorFailedToOpen()
+            || (mirrorPolicy.isMirroring() && ! capture->isMirroring())))
     {
         mirrorMissingReported = true;
 
@@ -3267,6 +3288,8 @@ void Application::scanForInterruptedSessions()
             // A session.json truncated by the same power cut that interrupted
             // the take is not a reason to fail: the audio beside it is still
             // worth recovering, so an unreadable one is treated as interrupted.
+            bool metadataUnreadable = false;
+
             try
             {
                 meta = SessionMetadata::fromJsonString (metadataFile.loadFileAsString().toStdString());
@@ -3274,7 +3297,20 @@ void Application::scanForInterruptedSessions()
             catch (...)
             {
                 meta = {};
+                metadataUnreadable = true;
             }
+
+            // A take whose record cannot be read is not thereby a take that
+            // did not happen. sessionWasInterrupted() sees an empty struct and
+            // says no, so the folder was dropped from the recovery list with no
+            // trace -- the same disappearance the empty-take branch below was
+            // written to stop, reached through a different door. Audio beside
+            // an unreadable session.json is still audio.
+            if (metadataUnreadable && ! SessionRecovery::sessionWasInterrupted (meta))
+                noteActivity (ActivityLevel::Warning, "Interrupted take",
+                              juce::String (folder.getFileName())
+                              + " has a details file this app can't read, so it can't tell whether "
+                                "that take finished. Its audio is still in that folder.");
 
             if (! SessionRecovery::sessionWasInterrupted (meta))
                 continue;
@@ -3289,6 +3325,16 @@ void Application::scanForInterruptedSessions()
 
             std::sort (session.files.begin(), session.files.end(),
                        [] (const RecoveredFile& a, const RecoveredFile& b) { return a.fileName < b.fileName; });
+
+            // A repair the card would not accept. The file is still listed --
+            // it is the user's audio and may well play -- but "recovered" would
+            // be a promise this could not keep.
+            for (const auto& f : session.files)
+                if (f.repairFailed)
+                    noteActivity (ActivityLevel::Warning, "Interrupted take",
+                                  juce::String (f.fileName)
+                                  + " couldn't be repaired -- this card wouldn't accept the fix. "
+                                    "Copy it somewhere else before playing it.");
 
             // §6.6: a take where nothing survived is not presented at all --
             // better to say nothing than to hand someone an unplayable stub.

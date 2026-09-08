@@ -181,6 +181,12 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
         // RIFF size counts everything after the size field itself.
         writeU32LE (file, riffSizeFieldPos, static_cast<uint32_t> (dataStart + wholeFrameBytes - 8));
         file.flush();
+
+        // Checked. A card that is read-only, full or failing takes the repair
+        // and drops it, and this used to report the file as repaired anyway --
+        // the user then meets the same broken header in whatever they open it
+        // with, having been told it was fixed.
+        result.repairFailed = ! file.good();
     }
 
     // §6.6: under a second is a stub. Reported as empty rather than offered --
