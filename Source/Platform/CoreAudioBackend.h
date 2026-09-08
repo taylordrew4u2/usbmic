@@ -45,6 +45,8 @@ public:
 
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    std::string getHotplugProblem() const override { return hotplugProblem; }
+
     std::vector<StreamFailure> takeStreamFailures() override;
     uint64_t getFramesDroppedByBackend() const override;
 
@@ -56,6 +58,8 @@ private:
     std::vector<std::unique_ptr<CoreAudioStream>> openStreams;
 
     std::string lastOpenError;
+
+    std::string hotplugProblem;
 
     /// A device that would not take the requested buffer size. Not a failure --
     /// the stream opens and records -- but the extra latency was invisible.

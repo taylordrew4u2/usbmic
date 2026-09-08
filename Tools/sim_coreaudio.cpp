@@ -412,6 +412,36 @@ void hotplugArrivesThroughTheOsListener()
     check (notifications > before, "unplugging notifies too");
 }
 
+/// A Mac that refuses the device-list listener leaves the app deaf to the rig:
+/// a microphone plugged in is never noticed, and one pulled out MID-TAKE is
+/// never reported, so a take that lost a channel looks like a clean one. The
+/// result of installing the listener used to be discarded entirely.
+void aMacThatWillNotWatchTheRigSaysSo()
+{
+    std::printf ("\nA Mac that refuses the device-list listener\n");
+    fakeca::reset();
+
+    {
+        mma::CoreAudioBackend backend;
+        backend.setDeviceChangeCallback ([] {});
+
+        check (backend.getHotplugProblem().empty(),
+               "a Mac that CAN watch the rig reports no problem");
+    }
+
+    fakeca::setPropertyListenersAllowed (false);
+
+    {
+        mma::CoreAudioBackend backend;
+        backend.setDeviceChangeCallback ([] {});
+
+        check (! backend.getHotplugProblem().empty(),
+               "a Mac that cannot watch the rig says so rather than going quiet");
+    }
+
+    fakeca::setPropertyListenersAllowed (true);
+}
+
 /// The HAL is allowed to hand the IOProc a larger slice than the nominal buffer.
 /// The scratch is sized at open time (§11 forbids allocating in the callback),
 /// so this checks the headroom is real rather than nominal.
@@ -504,6 +534,7 @@ int main()
     hogModeIsTakenAndReleased();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
     hotplugArrivesThroughTheOsListener();
+    aMacThatWillNotWatchTheRigSaysSo();
     aLargerThanRequestedCallbackIsStillDelivered();
     eightMicrophonesEachKeepTheirOwnAudio();
 

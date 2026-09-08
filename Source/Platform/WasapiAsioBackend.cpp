@@ -529,10 +529,23 @@ void WasapiAsioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
     if (! deviceChangeCallback)
         return;
 
+    hotplugProblem.clear();
+
+    // Both failures below left the app deaf to the rig for the rest of the
+    // session without a word -- the same silence the ALSA backend had: a
+    // microphone plugged in is never noticed, and one pulled out MID-TAKE is
+    // never reported, so a take that lost a channel looks like a clean one.
+    static constexpr const char* kNoWatch =
+        "Windows won't tell this app when microphones are plugged in or unplugged, so the list "
+        "only updates when the app starts. Restart it after changing your rig.";
+
     ComPtr<IMMDeviceEnumerator> enumerator;
     if (FAILED (CoCreateInstance (__uuidof (MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                                   IID_PPV_ARGS (&enumerator))))
+    {
+        hotplugProblem = kNoWatch;
         return;
+    }
 
     auto* client = new DeviceNotificationClient (&deviceChangeCallback);
 
@@ -543,6 +556,7 @@ void WasapiAsioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
     else
     {
         client->Release();
+        hotplugProblem = kNoWatch;
     }
 }
 

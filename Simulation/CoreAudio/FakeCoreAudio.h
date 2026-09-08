@@ -57,6 +57,10 @@ struct DeviceSpec
 /// Clears every device, listener and IOProc. Call between scenarios.
 void reset();
 
+/// false makes AudioObjectAddPropertyListener fail, which models a Mac that
+/// will not tell the app about devices coming and going.
+void setPropertyListenersAllowed (bool allowed);
+
 AudioObjectID addDevice (const DeviceSpec& spec);
 
 /// Removes a device and fires the system device-list listener, which is what an

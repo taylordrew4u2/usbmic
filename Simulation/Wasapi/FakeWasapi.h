@@ -54,6 +54,10 @@ struct EndpointSpec
 
 void reset();
 
+/// false makes RegisterEndpointNotificationCallback fail, which models a
+/// Windows session that will not tell the app about devices coming and going.
+void setNotificationRegistrationAllowed (bool allowed);
+
 void addEndpoint (const EndpointSpec& spec);
 
 /// Removes an endpoint and fires the registered IMMNotificationClient, which is
