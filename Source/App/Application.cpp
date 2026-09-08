@@ -46,7 +46,12 @@ juce::String appVersionString()
 // user hears about.
 bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
 {
-    if (! file.replaceWithText (text))
+    // nullptr line endings: write the text verbatim. juce::File::replaceWithText
+    // defaults to turning every "\n" into "\r\n", which makes the file bigger
+    // than the string it came from -- so the size check below called every
+    // healthy multi-line write a failure. A false alarm on every take is the
+    // same disservice as the silence this check exists to end.
+    if (! file.replaceWithText (text, false, false, nullptr))
         return false;
 
     return file.getSize() == static_cast<juce::int64> (text.getNumBytesAsUTF8());
