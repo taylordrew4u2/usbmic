@@ -2712,6 +2712,24 @@ void Application::noteActivity (ActivityLevel level, const juce::String& subject
 
 void Application::flushActivityLogToTake() const
 {
+    // The message thread owns the take's folder paths, and noteActivity is not
+    // only called from it -- runPreflight files its findings from the preflight
+    // thread. Reading those juce::Strings there, and writing the same two files
+    // from two threads at once, is a race; the journal itself is locked, so the
+    // entry is already safely recorded and only the file write is deferred.
+    if (! juce::MessageManager::existsAndIsCurrentThread())
+    {
+        std::weak_ptr<int> alive = aliveToken;
+
+        juce::MessageManager::callAsync ([this, alive]
+        {
+            if (alive.lock() != nullptr)
+                flushActivityLogToTake();
+        });
+
+        return;
+    }
+
     // writeActivityLog reports its own failure through noteActivity, which
     // lands back here. Once is a report; twice is a loop.
     if (writingActivityLog || currentSessionFolder.isEmpty())
