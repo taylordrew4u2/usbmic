@@ -93,10 +93,30 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
 
     if (! file.is_open())
     {
+        // Two different things arrive here and they need different answers.
+        //
+        // A path with nothing at it is nothing: no audio was lost, and calling
+        // it empty is exactly right. A file that IS there and will not open for
+        // writing is a recording of unknown length on a card that has gone
+        // read-only -- calling that one empty sends the user away from audio
+        // that may be perfectly intact.
+        std::ifstream exists (path, std::ios::binary);
+
+        if (! exists.is_open())
+            return result;
+
         // A file this app cannot even open is not a file that holds under a
         // second of audio, and reporting it as one -- which is what
         // reportedEmpty alone said -- sends the user away from a recording that
         // may be perfectly intact on a card that has gone read-only.
+        //
+        // reportedEmpty is cleared as well as repairFailed set, or the panel
+        // goes on counting it under "empty file left alone" and a folder of
+        // nothing but unopenable files still fails isWorthPresenting() and is
+        // announced as one where nothing survived. Nobody knows whether
+        // anything survived -- that is the whole point -- so it is listed, and
+        // the per-file warning says it could not be read.
+        result.reportedEmpty = false;
         result.repairFailed = true;
         return result;
     }

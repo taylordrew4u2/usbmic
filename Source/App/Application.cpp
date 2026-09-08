@@ -2302,12 +2302,19 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // report only one, so the record understated what was lost.
     // §0.1: audio the device delivered that did not fit the take's layout, so
     // a channel wrote silence instead. Recorded beside the other two losses.
-    if (capture != nullptr && capture->getFramesMissedByLayout() > 0)
-        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                   "Dropped " + std::to_string (capture->getFramesMissedByLayout())
-                                       + " frames that didn't fit this take's channel layout: a "
-                                         "microphone delivered a different number of channels than "
-                                         "it was opened with." });
+    if (capture != nullptr)
+    {
+        // Loaded once. Read twice, the number reported could differ from the
+        // one that passed the test above it.
+        const auto missed = capture->getFramesMissedByLayout();
+
+        if (missed > 0)
+            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                       "Dropped " + std::to_string (missed)
+                                           + " frames that didn't fit this take's channel layout: a "
+                                             "microphone delivered a different number of channels "
+                                             "than it was opened with." });
+    }
 
     // Measured from the start of THIS take. The backend's counter runs for as
     // long as its streams do, which is across takes, so writing it raw put

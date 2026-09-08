@@ -130,7 +130,14 @@ struct AlsaStream
     /// §0.1: frames the device dropped and this app never saw. An xrun is
     /// recoverable and the stream carries on, which is exactly why it needs
     /// counting: nothing else in the run leaves a trace of it.
+    ///
+    /// Capture only. The monitor path's own xruns are audible but are not lost
+    /// recording, and mixing the two makes the take's record say something
+    /// untrue about the audio on the card.
     std::atomic<uint64_t> framesDropped { 0 };
+
+    /// Recovered xruns on the monitor output: heard, not recorded.
+    std::atomic<uint64_t> outputGlitches { 0 };
 
     ~AlsaStream()
     {
@@ -516,12 +523,14 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                         break;
                     }
 
-                    // The capture side counts its recovered xruns; this one did
-                    // not, so a monitor path glitching under load left no trace
-                    // at all. It is not recorded audio, but it is the clearest
-                    // early sign of a machine that is about to start losing it.
-                    raw->framesDropped.fetch_add (static_cast<uint64_t> (frames),
-                                                  std::memory_order_relaxed);
+                    // Counted apart from the capture side, and deliberately.
+                    // The previous attempt put these on framesDropped, which
+                    // feeds a sentence about audio lost BEFORE RECORDING and a
+                    // permanent line in the take's own record -- so a monitor
+                    // glitch on a take that recorded perfectly wrote a lasting
+                    // claim that recorded audio had been lost. The comment even
+                    // said "it is not recorded audio" while doing exactly that.
+                    raw->outputGlitches.fetch_add (1, std::memory_order_relaxed);
                 }
             }
         }

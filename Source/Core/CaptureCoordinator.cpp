@@ -323,7 +323,16 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
                                              int numSamples) noexcept
 {
     if (inputs == nullptr || numInputs <= 0)
+    {
+        // A device that hands over a block with no inputs loses every planned
+        // channel at once. This is the widest version of the mismatch the
+        // routing loop below counts, and it was the one path out of here that
+        // counted nothing.
+        if (numSamples > 0)
+            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+                                            std::memory_order_relaxed);
         return;
+    }
 
     // §2.1's stereo collapse applies to a device the take takes ONE channel
     // from: a USB mic presenting the same voice on both sides, or with one side
@@ -386,6 +395,13 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
                                          const std::string& mirrorFolder)
 {
     recordingProblem.clear();
+
+    // Zeroed with the take, not with the coordinator. Left running it reported
+    // take one's losses in take three's record -- and counted everything that
+    // happened while merely monitoring, so a channel mismatch twenty minutes
+    // before anyone pressed record landed in the first take's dropouts. That is
+    // the same cross-take contamination the backend counter was just fixed for.
+    framesMissedByLayout.store (0, std::memory_order_relaxed);
 
     if (channels.empty())
     {
@@ -533,7 +549,21 @@ void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const flo
     const float* right = inputs[1];
 
     if (left == nullptr || right == nullptr)
-        return pushDeviceBlock (deviceIndex, inputs[0], numSamples);
+    {
+        // Falling back to the first pointer is right when it is the right one
+        // that is missing. When the FIRST is null there is nothing to fall back
+        // to: pushBlock discards a null block, so this path lost a block
+        // without counting it while every neighbouring path counted.
+        if (left == nullptr)
+        {
+            if (numSamples > 0)
+                framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+                                                std::memory_order_relaxed);
+            return;
+        }
+
+        return pushDeviceBlock (deviceIndex, left, numSamples);
+    }
 
     // §11: two passes over the block, no allocation, no locking. §2.1 wants a
     // peak per channel, their correlation, and the difference in their RMS.
