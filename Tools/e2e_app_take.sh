@@ -60,6 +60,14 @@ newest() { ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1; }
 TAKE=""
 for attempt in 1 2 3; do
   click 1023 617
+  # The first record press on a machine that has never recorded raises the
+  # "Where does this recording go?" card instead of starting, and that card
+  # swallows every click behind it -- so without this the gate fails on any
+  # fresh profile. Its Start recording button sits at (783,979) on this
+  # display; with no card up the point is below the window and the click
+  # lands on the root window, which does nothing.
+  sleep 1
+  click 783 979
   for i in $(seq 1 10); do
     sleep 1
     CUR=$(newest)
@@ -68,7 +76,13 @@ for attempt in 1 2 3; do
   [ -n "$TAKE" ] && break
   echo "record press $attempt did not start a take; trying again"
 done
-[ -n "$TAKE" ] || { echo "FAIL: no take folder appeared in $RECORDINGS"; exit 1; }
+[ -n "$TAKE" ] || {
+  # What the screen looked like when it would not start, so the next person
+  # does not have to relaunch the app by hand to find out.
+  DISPLAY="$DISPLAY_NUM" import -window root /tmp/mma-e2e-no-start.png 2>/dev/null || true
+  echo "FAIL: no take folder appeared in $RECORDINGS (screen: /tmp/mma-e2e-no-start.png)"
+  exit 1
+}
 echo "take started: $TAKE"
 
 sleep "$SECONDS_TO_RECORD"
