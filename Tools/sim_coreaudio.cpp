@@ -7,9 +7,11 @@
 #include "../Simulation/CoreAudio/FakeCoreAudio.h"
 #include "../Source/Platform/CoreAudioBackend.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -412,6 +414,55 @@ void hotplugArrivesThroughTheOsListener()
     check (notifications > before, "unplugging notifies too");
 }
 
+/// A microphone that stops sending audio after it was opened -- the HAL keeps
+/// the stream, the IOProc simply never runs again. Nothing about that is
+/// visible from anywhere else in the app, so if the watchdog does not report
+/// it, a take goes on recording silence for that channel and says nothing.
+void aMicrophoneThatGoesQuietAfterOpeningIsReported()
+{
+    std::printf ("\nA mic whose IOProc stops running after it opened\n");
+    fakeca::reset();
+
+    const auto id = fakeca::addDevice (microphone ("Quiet Mic", "uid-quiet", 1,
+                                                   fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("uid-quiet", 48000.0, 256, capture.callback()),
+           "the mic opens");
+
+    // One callback, so the stream is known to have been alive; then nothing.
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+
+    check (backend.takeStreamFailures().empty(), "a mic that just delivered audio is not accused");
+
+    // The watchdog waits 5 s before calling a stream dead, because the HAL may
+    // legitimately pause around a device or format change.
+    std::this_thread::sleep_for (std::chrono::milliseconds (5400));
+
+    const auto failures = backend.takeStreamFailures();
+    check (failures.size() == 1, "the silent stream is reported once");
+
+    if (! failures.empty())
+    {
+        std::printf ("  reason: %s\n", failures.front().reason.c_str());
+        check (failures.front().deviceId == "uid-quiet", "and names the microphone it happened to");
+        check (failures.front().reason.find ("stopped sending audio") != std::string::npos,
+               "and says what the user can do about it");
+    }
+
+    check (backend.takeStreamFailures().empty(),
+           "and is not repeated on every poll for as long as it stays dead");
+
+    // Audio arriving again clears the latch, so a device that recovers and
+    // dies a second time is reported a second time.
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    std::this_thread::sleep_for (std::chrono::milliseconds (5400));
+
+    check (backend.takeStreamFailures().size() == 1, "a second death is reported again");
+}
+
 /// A Mac that refuses the device-list listener leaves the app deaf to the rig:
 /// a microphone plugged in is never noticed, and one pulled out MID-TAKE is
 /// never reported, so a take that lost a channel looks like a clean one. The
@@ -535,6 +586,7 @@ int main()
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
     hotplugArrivesThroughTheOsListener();
     aMacThatWillNotWatchTheRigSaysSo();
+    aMicrophoneThatGoesQuietAfterOpeningIsReported();
     aLargerThanRequestedCallbackIsStillDelivered();
     eightMicrophonesEachKeepTheirOwnAudio();
 
