@@ -129,13 +129,31 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                                                        float* const* outputs, int numOutputs,
                                                        int numSamples)
     {
+        // The software clock watches this stamp: a callback that stops
+        // arriving hands the rig over to it within a few buffer periods.
+        lastOutputCallbackNs.store (std::chrono::duration_cast<std::chrono::nanoseconds> (
+                                        std::chrono::steady_clock::now().time_since_epoch()).count(),
+                                    std::memory_order_relaxed);
+
         // Both halves of one cycle on a duplex mixer. The microphones are read
         // from the same callback that fills the headphones, because they are
         // the same device and there is only one stream open on it.
         if (! outputDeviceRouting.empty())
             fanOutDeviceInputs (outputDeviceRouting, inputs, numInputs, numSamples);
 
+        // Never block here (§11). If the software clock is mid-pull -- only
+        // possible in the moment the output comes back -- this cycle's
+        // headphone buffer is silence and the rings are pulled on the next.
+        if (pulling.exchange (true, std::memory_order_acq_rel))
+        {
+            for (int ch = 0; ch < numOutputs; ++ch)
+                if (outputs != nullptr && outputs[ch] != nullptr)
+                    std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+            return;
+        }
+
         processOutputBlock (outputs, numOutputs, numSamples);
+        pulling.store (false, std::memory_order_release);
     };
 
     if (! outputDeviceId.empty()
@@ -188,8 +206,105 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         }
     }
 
+    // The software clock runs for the life of the rig. With an output stream
+    // it only steps in when that stream goes quiet; without one it is the
+    // clock from the first block.
+    outputStreamOpen = ! outputDeviceId.empty();
+    outputClockLost.store (false, std::memory_order_relaxed);
+    lastOutputCallbackNs.store (std::chrono::duration_cast<std::chrono::nanoseconds> (
+                                    std::chrono::steady_clock::now().time_since_epoch()).count(),
+                                std::memory_order_relaxed);
+    if (softwareClockEnabled)
+    {
+        clockRunning.store (true, std::memory_order_release);
+        softwareClock = std::thread ([this] { runSoftwareClock(); });
+    }
+
     monitoring = true;
     return true;
+}
+
+void CaptureCoordinator::runSoftwareClock()
+{
+    using clock = std::chrono::steady_clock;
+
+    const auto period = std::chrono::nanoseconds (
+        static_cast<int64_t> (1.0e9 * static_cast<double> (std::max (1, bufferSize)) / std::max (1.0, sampleRate)));
+
+    // "Gone quiet" is several periods, with a floor so a tiny buffer does not
+    // declare a healthy output dead on scheduler jitter. A real output that
+    // has not called back for a tenth of a second has stopped.
+    const auto lostAfter = std::max (period * 8, std::chrono::nanoseconds (100'000'000));
+
+    auto next = clock::now() + period;
+
+    while (clockRunning.load (std::memory_order_acquire))
+    {
+        const auto now = clock::now();
+        bool takeOver = ! outputStreamOpen;
+
+        if (! takeOver)
+        {
+            const auto last = std::chrono::nanoseconds (lastOutputCallbackNs.load (std::memory_order_relaxed));
+            const auto sinceLast = std::chrono::duration_cast<std::chrono::nanoseconds> (now.time_since_epoch()) - last;
+            takeOver = sinceLast > lostAfter;
+        }
+
+        outputClockLost.store (outputStreamOpen && takeOver, std::memory_order_relaxed);
+
+        if (! takeOver)
+        {
+            // The output is doing its job. Look again well before it could
+            // have been declared lost, and reset the tick origin so the first
+            // pull after a loss is not a burst of catch-up ticks.
+            std::this_thread::sleep_for (lostAfter / 4);
+            next = clock::now() + period;
+            continue;
+        }
+
+        // Absolute deadlines: a late wake does not shorten the next period,
+        // and a run of late wakes does not pile up.
+        std::this_thread::sleep_until (next);
+        next += period;
+        if (next < clock::now())
+            next = clock::now() + period;
+
+        if (pulling.exchange (true, std::memory_order_acq_rel))
+            continue;
+
+        // No headphone buffer to fill: pull the rings, meter, record.
+        processOutputBlock (nullptr, 0, bufferSize);
+        pulling.store (false, std::memory_order_release);
+    }
+}
+
+void CaptureCoordinator::stopSoftwareClock()
+{
+    clockRunning.store (false, std::memory_order_release);
+
+    if (softwareClock.joinable())
+        softwareClock.join();
+
+    outputClockLost.store (false, std::memory_order_relaxed);
+    outputStreamOpen = false;
+}
+
+uint64_t CaptureCoordinator::getOverrunSamples() const noexcept
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : deviceStreams)
+        total += stream->getOverrunSamples();
+
+    return total;
+}
+
+bool CaptureCoordinator::isChannelLive (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return false;
+
+    return deviceStreams[static_cast<size_t> (index)]->isLive();
 }
 
 std::vector<std::pair<int, int>> CaptureCoordinator::routingFor (const std::vector<size_t>& channelIndices) const
@@ -237,6 +352,9 @@ void CaptureCoordinator::stopMonitoring()
     if (! monitoring)
         return;
 
+    // The clock first: it pulls the rings that the streams below feed, and it
+    // must not be mid-pull while the streams are torn down.
+    stopSoftwareClock();
     backend.closeAllStreams();
     monitoring = false;
 }
@@ -284,9 +402,14 @@ void CaptureCoordinator::stopRecording()
     // pushBlock while stop() joined the writer thread and freed the ring out
     // from under it -- a use-after-free that would present as an intermittent
     // crash on stopping a take, which is the worst possible moment for one.
-    activePipeline.store (nullptr, std::memory_order_release);
+    // Sequentially consistent, deliberately: this is a store on one thread
+    // followed by a load, against a load-after-increment on the other. With
+    // release/acquire alone x86 may reorder the store past the load and both
+    // threads can conclude they are alone -- a use-after-free window that is
+    // nanoseconds wide and only on Intel and Windows. seq_cst closes it.
+    activePipeline.store (nullptr, std::memory_order_seq_cst);
 
-    while (pipelineUsers.load (std::memory_order_acquire) != 0)
+    while (pipelineUsers.load (std::memory_order_seq_cst) != 0)
         std::this_thread::yield();
 
     auto p = std::move (pipeline);
@@ -306,7 +429,10 @@ void CaptureCoordinator::setChannelLive (const std::string& deviceId, bool live)
         if (i < deviceStreams.size())
             deviceStreams[i]->setLive (live);
 
-        return;
+        // No early return: an interface contributes several channels under
+        // one deviceId, and stopping at the first left the rest writing a
+        // held sample for the whole take and replaying stale audio on
+        // reconnect.
     }
 }
 
@@ -523,9 +649,9 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     //
     // The busy count is taken before the load and released after the call, so
     // stopRecording cannot free the pipeline between the two.
-    pipelineUsers.fetch_add (1, std::memory_order_acquire);
+    pipelineUsers.fetch_add (1, std::memory_order_seq_cst);
 
-    if (auto* activeWriter = activePipeline.load (std::memory_order_acquire))
+    if (auto* activeWriter = activePipeline.load (std::memory_order_seq_cst))
     {
         // Handed over even when the count does not match the take's channel
         // list. This used to be guarded by channelCount == channels.size(),

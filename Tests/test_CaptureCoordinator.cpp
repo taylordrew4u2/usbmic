@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 using namespace mma;
 
@@ -49,7 +51,8 @@ public:
     int inputStreamsOpened = 0;
     int outputStreamsOpened = 0;
     int closeAllCalls = 0;
-    AudioCallback captured;              // the output stream's callback (the clock)
+    AudioCallback captured;              // the LAST stream opened, output or input
+    AudioCallback outputCallback;        // the output stream's callback (the clock), only
     std::vector<AudioCallback> inputCallbacks; // one per device, in open order
 
     std::string getBackendName() const override { return "Fake"; }
@@ -70,6 +73,7 @@ public:
         if (failOutputOpen)
             return false;
         ++outputStreamsOpened;
+        outputCallback = cb;
         captured = std::move (cb);
         return true;
     }
@@ -101,6 +105,7 @@ TEST_CASE (CaptureCoordinator_OpensOneOutputAndOneInputPerMic)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.isMonitoring());
@@ -118,6 +123,8 @@ TEST_CASE (CaptureCoordinator_RefusesWhenExclusiveModeIsUnavailable)
 
     CaptureCoordinator c (backend, 48000.0, 64);
 
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
+
     // §5.4: never ship a 40 ms mix silently -- refuse and name the cause.
     REQUIRE_FALSE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE_FALSE (c.isMonitoring());
@@ -130,6 +137,8 @@ TEST_CASE (CaptureCoordinator_ClosesStreamsWhenAnInputFailsToOpen)
     backend.failInputOpen = true;
 
     CaptureCoordinator c (backend, 48000.0, 64);
+
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE_FALSE (c.startMonitoring (twoMics(), "out-device"));
 
     // A half-open set of streams would leave the device hogged.
@@ -147,6 +156,7 @@ TEST_CASE (CaptureCoordinator_OpensAMixerThatIsAlsoTheOutputExactlyOnce)
     // is plugged in and working.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     std::vector<CaptureChannel> mixerChannels {
         { "mixer", "PUP 1", "01_PUP-1", 0.0f },
@@ -168,6 +178,7 @@ TEST_CASE (CaptureCoordinator_AMixerThatIsAlsoTheOutputStillRecordsBothMics)
     // halves of the cycle, so both people still reach their own channel.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     std::vector<CaptureChannel> mixerChannels {
         { "mixer", "PUP 1", "01_PUP-1", 0.0f },
@@ -219,6 +230,7 @@ TEST_CASE (CaptureCoordinator_ASliceLargerThanTheNominalBufferIsStillRecorded)
     // §0.1 forbids.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     c.getMonitorBus().setMasterVolume (100.0);
 
@@ -264,6 +276,8 @@ TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
                              "this recording uses.";
 
     CaptureCoordinator c (backend, 48000.0, 64);
+
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE_FALSE (c.startMonitoring (twoMics(), "out-device"));
 
     const auto problem = c.getMonitorProblem();
@@ -279,6 +293,7 @@ TEST_CASE (CaptureCoordinator_ProducesTheMonitorMixFromEveryMic)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     c.getMonitorBus().setMasterVolume (100.0); // unity output stage, so this test sees the bus itself
 
@@ -298,6 +313,7 @@ TEST_CASE (CaptureCoordinator_EveryOutputChannelGetsTheSameMix)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> a (64, 0.15f), b (64, 0.15f);
@@ -315,6 +331,7 @@ TEST_CASE (CaptureCoordinator_MetersRunWithoutRecording)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> a (64, 0.5f), b (64, 0.0f);
@@ -345,6 +362,7 @@ TEST_CASE (CaptureCoordinator_RecordsAudioThroughToTheFiles)
     const auto dir = tempDir();
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.startRecording (dir, 16, "2026-08-27T00:00:00Z"));
@@ -380,6 +398,7 @@ TEST_CASE (CaptureCoordinator_MixFileIsWrittenAlongsideTheStems)
     const auto dir = tempDir();
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.startRecording (dir, 16, "2026-08-27T00:00:00Z"));
@@ -401,6 +420,7 @@ TEST_CASE (CaptureCoordinator_MonitoringSurvivesStoppingTheRecording)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.startRecording (tempDir(), 16, "2026-08-27T00:00:00Z"));
@@ -424,6 +444,7 @@ TEST_CASE (CaptureCoordinator_UnpluggedMicWritesSilenceIntoItsChannel)
     const auto dir = tempDir();
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.startRecording (dir, 16, "2026-08-27T00:00:00Z"));
@@ -456,6 +477,7 @@ TEST_CASE (CaptureCoordinator_NoOutputBuffersIsNotAFailure)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> a (64, 0.5f), b (64, 0.5f);
@@ -470,6 +492,7 @@ TEST_CASE (CaptureCoordinator_StoppingMonitoringClosesTheStreams)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     c.stopMonitoring();
@@ -482,6 +505,7 @@ TEST_CASE (CaptureCoordinator_RecordingRefusesWithNoChannels)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     REQUIRE (c.startMonitoring ({}, "out-device"));
     REQUIRE_FALSE (c.startRecording (tempDir(), 16, "2026-08-27T00:00:00Z"));
@@ -491,6 +515,7 @@ TEST_CASE (CaptureCoordinator_MasterVolumeChangesTheMonitorButNotTheStems)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> a (64, 0.10f), b (64, 0.10f);
@@ -519,6 +544,8 @@ TEST_CASE (CaptureCoordinator_TrimAffectsTheMonitorMix)
     quiet[1].trimDb = -20.0f; // §4 trim range floor
 
     CaptureCoordinator c (backend, 48000.0, 64);
+
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (quiet, "out-device"));
     c.getMonitorBus().setMasterVolume (100.0);
 
@@ -539,6 +566,7 @@ TEST_CASE (CaptureCoordinator_TrimCanBeChangedWhileRunning)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     c.getMonitorBus().setMasterVolume (100.0);
 
@@ -565,6 +593,7 @@ TEST_CASE (CaptureCoordinator_OutOfRangeTrimIndexIsIgnored)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     // Must not write past the end: the UI can outlive a channel that just
@@ -581,6 +610,7 @@ TEST_CASE (CaptureCoordinator_ReportsAudioCallbackLoad)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> a (64, 0.10f), b (64, 0.10f);
@@ -603,6 +633,7 @@ TEST_CASE (CaptureCoordinator_EachDeviceLandsInItsOwnChannel)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     REQUIRE (backend.inputCallbacks.size() == 2);
@@ -638,6 +669,7 @@ TEST_CASE (CaptureCoordinator_OutputClockPullsEveryDeviceIntoTheMix)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     c.getMonitorBus().setMasterVolume (100.0);
 
@@ -661,6 +693,7 @@ TEST_CASE (CaptureCoordinator_FirstMicIsTheClockMasterByDefault)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     // §3.1: a rig with no master would resample every device against nothing.
@@ -679,6 +712,7 @@ TEST_CASE (CaptureCoordinator_MasterReportsNoDriftAgainstItself)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     c.setMasterChannel (0);
 
@@ -701,6 +735,7 @@ TEST_CASE (CaptureCoordinator_UnpluggedDeviceStillYieldsItsChannel)
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> a (512, 0.5f), b (512, 0.5f);
@@ -739,6 +774,7 @@ TakeResult runTake (bool unplugMaster, int failoverTo, double seconds, double un
 {
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
     const std::vector<CaptureChannel> mics = {
         { "dev-a", "Kitchen", "01_Kitchen", 0.0f },
@@ -906,6 +942,7 @@ TEST_CASE (CaptureCoordinator_RecordsTheLiveSideOfARightWiredMicrophone)
     // empty, which is §0.1's failure with a working device attached.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     const std::vector<float> silent (512, 0.0f);
@@ -941,6 +978,7 @@ TEST_CASE (CaptureCoordinator_MonoDeviceIsUntouchedByChannelLayout)
     // answer.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> mono (512, 0.3f);
@@ -968,6 +1006,7 @@ TEST_CASE (CaptureCoordinator_ChannelSideNeverMovesOnceRecording)
     // recording -- a worse failure than the one the side-picking fixes.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     const std::vector<float> silent (512, 0.0f);
@@ -1025,6 +1064,7 @@ TEST_CASE (CaptureCoordinator_SpotsTwoMicrophonesHearingTheSameRoom)
     // and it had never been fed anything.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (threeMics(), "out-device"));
 
     std::vector<float> shared (64), silent (64, 0.0f);
@@ -1046,6 +1086,7 @@ TEST_CASE (CaptureCoordinator_DoesNotCallThreePeopleTalkingARoomProblem)
     // right, which is worse than staying quiet.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (threeMics(), "out-device"));
 
     std::vector<float> a (64), b (64), third (64);
@@ -1069,6 +1110,7 @@ TEST_CASE (CaptureCoordinator_PolarPatternNeedsAThirdMicrophone)
     // one, and two people at one table correlate perfectly well.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     std::vector<float> shared (64);
@@ -1092,6 +1134,8 @@ TEST_CASE (CaptureCoordinator_ANarrowerBlockDoesNotLeaveAnOldChannelInTheMix)
     FakeBackend backend;
 
     CaptureCoordinator c (backend, 48000.0, 64);
+
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (threeMics(), "out-device"));
     c.getMonitorBus().setMasterVolume (100.0);
 
@@ -1122,6 +1166,8 @@ TEST_CASE (CaptureCoordinator_PolarVerdictDoesNotOutliveItsMeasurement)
     FakeBackend backend;
 
     CaptureCoordinator c (backend, 48000.0, 64);
+
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
     REQUIRE (c.startMonitoring (threeMics(), "out-device"));
 
     // Two microphones hearing the same room, with a third hearing nothing:
@@ -1138,4 +1184,148 @@ TEST_CASE (CaptureCoordinator_PolarVerdictDoesNotOutliveItsMeasurement)
     c.processAudioBlock (withHole, 3, nullptr, 0, 64);
 
     REQUIRE (c.getPolarPairCorrelation() == 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// The software clock: a take never depends on the headphone output.
+// ---------------------------------------------------------------------------
+
+namespace {
+void pushInputsForAWhile (FakeBackend& backend, int blocks, int microsecondsPerBlock)
+{
+    std::vector<float> a (64, 0.5f), b (64, 0.5f);
+    const float* ins[] = { a.data() };
+    const float* insB[] = { b.data() };
+
+    for (int i = 0; i < blocks; ++i)
+    {
+        backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (insB, 1, nullptr, 0, 64);
+        std::this_thread::sleep_for (std::chrono::microseconds (microsecondsPerBlock));
+    }
+}
+} // namespace
+
+TEST_CASE (CaptureCoordinator_RecordsWithoutAnOutputDevice)
+{
+    // No headphones selected at all. This used to open the microphones and
+    // then nothing ever pulled them: flat meters, header-only files, and no
+    // error -- the record button was not even disabled.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), ""));
+    REQUIRE (backend.outputStreamsOpened == 0);
+    REQUIRE (! c.hasOutputStream());
+    REQUIRE (c.startRecording (dir, 16, "2026-09-07T00:00:00Z"));
+
+    pushInputsForAWhile (backend, 150, 1333); // ~200 ms of real time at 64/48k
+
+    const auto accepted = c.getFramesAccepted();
+    const auto peak = c.getPeakWritten();
+    c.stopRecording();
+
+    REQUIRE (accepted > 64 * 20);
+    REQUIRE (peak > 0.4f);
+    REQUIRE (! c.isOutputClockLost()); // nothing was lost: there never was one
+}
+
+TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
+{
+    // The headphones are unplugged mid-take. The output callback stops; the
+    // software clock notices within a few periods and pulls instead, and the
+    // rig says so. This used to freeze the take with every counter at zero.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.hasOutputStream());
+    REQUIRE (c.startRecording (dir, 16, "2026-09-07T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    // The output is alive: it pulls, and the software clock stays out of it.
+    for (int i = 0; i < 8; ++i)
+    {
+        backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+        backend.outputCallback (nullptr, 0, outs, 1, 64);
+    }
+
+    // At least the eight blocks the output pulled. Opening the take's files
+    // above can take longer than the loss threshold on a slow disk, in which
+    // case the software clock legitimately pulled a few blocks meanwhile;
+    // the output reclaims the pull as soon as it calls back.
+    const auto beforeLoss = c.getFramesAccepted();
+    REQUIRE (beforeLoss >= 64 * 8);
+
+    // Then it stops. Only inputs arrive for a quarter of a second.
+    pushInputsForAWhile (backend, 190, 1333);
+
+    REQUIRE (c.isOutputClockLost());
+    REQUIRE (c.getFramesAccepted() > beforeLoss + 64 * 20);
+
+    // And it comes back: the output callback resumes and reclaims the pull.
+    for (int i = 0; i < 100; ++i)
+    {
+        backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+        backend.outputCallback (nullptr, 0, outs, 1, 64);
+        std::this_thread::sleep_for (std::chrono::microseconds (1333));
+    }
+
+    REQUIRE (! c.isOutputClockLost());
+    c.stopRecording();
+}
+
+TEST_CASE (CaptureCoordinator_CountsRingOverruns)
+{
+    // §0.1: audio the rings had to throw away is counted, not swallowed.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.getOverrunSamples() == 0);
+
+    std::vector<float> a (64, 0.5f);
+    const float* ins[] = { a.data() };
+
+    // Far more than the ring holds, with nothing pulling in between.
+    for (int i = 0; i < 40; ++i)
+        backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+
+    REQUIRE (c.getOverrunSamples() > 0);
+    REQUIRE (c.getOverrunSamples() < 40 * 64);
+}
+
+TEST_CASE (CaptureCoordinator_UnpluggingAnInterfaceSilencesAllItsSockets)
+{
+    // Two people on one interface: the same deviceId, two device channels.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
+
+    CaptureChannel left, right;
+    left.deviceId = "iface";  left.displayName = "Alex"; left.fileName = "01_Alex"; left.deviceChannel = 0;
+    right.deviceId = "iface"; right.displayName = "Sam"; right.fileName = "02_Sam"; right.deviceChannel = 1;
+
+    REQUIRE (c.startMonitoring ({ left, right }, "out-device"));
+    REQUIRE (c.isChannelLive (0));
+    REQUIRE (c.isChannelLive (1));
+
+    c.setChannelLive ("iface", false);
+
+    // This used to stop at the first match: Alex went silent, Sam kept a
+    // held sample for the rest of the take.
+    REQUIRE (! c.isChannelLive (0));
+    REQUIRE (! c.isChannelLive (1));
+
+    c.setChannelLive ("iface", true);
+    REQUIRE (c.isChannelLive (0));
+    REQUIRE (c.isChannelLive (1));
 }

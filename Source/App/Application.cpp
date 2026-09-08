@@ -342,8 +342,12 @@ void Application::restartCapture()
     // §5.4 fixes the buffer size for the duration of a take, and reopening the
     // streams would tear down the writer mid-file. A device change during a
     // recording is handled by §6.5 instead: the channel stays and goes silent.
+    // The restart is owed, though, and the stop path pays it.
     if (capture->isRecording())
+    {
+        captureRestartDeferred = true;
         return;
+    }
 
     // §2.2 can settle on a different rate once the mics are enumerated, and
     // §5.4 can move the buffer up a rung. Both are fixed at construction, so a
@@ -622,10 +626,12 @@ void Application::onDeviceListChanged()
         // §6.5: mid-take, a mic that has gone away keeps its channel and writes
         // silence. Dropping or renumbering the channel would corrupt the take,
         // so the take's channel list is fixed and only its liveness moves.
+        // Present means enumerated -- not `included`, which the Settings tick
+        // box also clears. Unticking a mic mid-take used to read as an unplug
+        // on the next device notification and silence that person's channel.
         std::set<std::string> present;
         for (const auto& d : deviceManager.getDevices())
-            if (d.included)
-                present.insert (d.identity.key());
+            present.insert (d.identity.key());
 
         std::set<std::string> takeChannels;
         for (const auto& ch : capture->getChannels())
@@ -775,11 +781,14 @@ TakeHealth Application::snapshotTakeHealth() const
     if (capture != nullptr)
     {
         health.framesDropped = capture->getFramesDropped();
+        health.samplesOverrun = capture->getOverrunSamples();
+        health.outputClockLost = capture->isOutputClockLost();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
     }
 
     health.remainingSeconds = getRemainingRecordingSeconds();
+    health.elapsedSeconds = getElapsedRecordingSeconds();
     return health;
 }
 
@@ -814,7 +823,13 @@ RemainingTimeWarning Application::pollCapacityWarning()
     if (recordingEngine.getState() != RecordingState::Recording)
         return RemainingTimeWarning::None;
 
-    return capacityMonitor.evaluateRemaining (getRemainingRecordingSeconds());
+    // Negative is "could not be determined", which is not the same as none
+    // left -- it used to read as Exhausted and announce a full drive.
+    const auto remaining = getRemainingRecordingSeconds();
+    if (remaining < 0.0)
+        return RemainingTimeWarning::None;
+
+    return capacityMonitor.evaluateRemaining (remaining);
 }
 
 Metering* Application::getChannelMetering (int index)
@@ -1000,11 +1015,21 @@ void Application::setMicAssignedName (int index, const juce::String& name)
         // The capture channels carry the display name into the stem filenames
         // (§6.2), so they are rebuilt -- but never mid-take, where §6.5 fixes
         // the channel list for the duration of the recording.
-        if (capture != nullptr && ! capture->isRecording())
-            restartCapture();
+        requestCaptureRestart();
 
         return;
     }
+}
+
+void Application::requestCaptureRestart()
+{
+    if (capture != nullptr && capture->isRecording())
+    {
+        captureRestartDeferred = true;
+        return;
+    }
+
+    restartCapture();
 }
 
 std::vector<Application::StorageVolume> Application::getStorageVolumes() const
@@ -1122,6 +1147,18 @@ void Application::toggleRecording()
         {
             recordingStartMs = juce::Time::getMillisecondCounterHiRes();
 
+            // §6.3: the mirror decision is taken HERE, before the folders are
+            // made, against the free space now. It used to be evaluated after
+            // the mirror folder had already been decided from the previous
+            // take's state, so the first take of every launch had no backup
+            // and later takes inherited the verdict of the one before.
+            capacityMonitor.reset();
+            mirrorPolicy.reset();
+            {
+                const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+                mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
+            }
+
             // §6: this is what actually opens the stem files and starts the
             // writer thread. Without it the record button only changes state.
             if (capture != nullptr)
@@ -1172,14 +1209,6 @@ void Application::toggleRecording()
             midTakeDropouts.clear();
             midTakeNotice.clear();
             midTakeNoticeSeconds = 0.0;
-
-            capacityMonitor.reset();
-            mirrorPolicy.reset();
-
-            // §6.3: the mirror only starts when the internal drive has room for
-            // the whole projected session plus headroom.
-            const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-            mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
 
             // §5.4: buffer size is fixed for the duration of a take.
             bufferLadder.setRecording (true);
@@ -1266,6 +1295,15 @@ void Application::toggleRecording()
 
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
+
+        // Everything refused during the take -- a mic plugged in, an unplug,
+        // a rename, a rate change -- is applied now, so the next take's plan
+        // and its streams agree.
+        if (captureRestartDeferred)
+        {
+            captureRestartDeferred = false;
+            restartCapture();
+        }
     }
 }
 
@@ -1672,13 +1710,14 @@ void Application::setChannelTrimDb (int index, float trimDb)
     const auto step = static_cast<float> (MonitorBus::kTrimStepDb);
     const auto quantised = std::round (clamped / step) * step;
 
-    int seen = 0;
+    // `index` is a strip, resolved in channel space like every other strip
+    // accessor. Walking included devices put the trim on the wrong device on
+    // any interface with more than one socket, and the slider snapped back.
+    const auto deviceKey = deviceKeyForStrip (index);
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (! d.included)
-            continue;
-
-        if (seen++ != index)
+        if (d.identity.key() != deviceKey)
             continue;
 
         // §4 persists trim against the physical port, not the slot, so it
@@ -1701,13 +1740,11 @@ void Application::setChannelTrimDb (int index, float trimDb)
 
 float Application::getChannelTrimDb (int index) const
 {
-    int seen = 0;
+    const auto deviceKey = deviceKeyForStrip (index);
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (! d.included)
-            continue;
-
-        if (seen++ != index)
+        if (d.identity.key() != deviceKey)
             continue;
 
         if (const auto settings = portIdentityStore.get (d.identity))
@@ -1717,6 +1754,21 @@ float Application::getChannelTrimDb (int index) const
     }
 
     return 0.0f;
+}
+
+std::string Application::deviceKeyForStrip (int index) const
+{
+    // Mid-take the channel list is the take's frozen one; otherwise the plan.
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+        return index >= 0 && index < static_cast<int> (channels.size())
+             ? channels[static_cast<size_t> (index)].deviceId : std::string();
+    }
+
+    const auto plan = planChannels (planDevices());
+    return index >= 0 && index < static_cast<int> (plan.size())
+         ? plan[static_cast<size_t> (index)].deviceKey : std::string();
 }
 
 juce::String Application::getActiveBackendDescription() const
@@ -1849,8 +1901,7 @@ void Application::setInputEnabled (const juce::String& displayName, int input, b
 
         // The channel set changed, so the streams are reopened -- never
         // mid-take, where §6.5 fixes the channel list for the recording.
-        if (capture != nullptr && ! capture->isRecording())
-            restartCapture();
+        requestCaptureRestart();
 
         return;
     }
@@ -1896,11 +1947,18 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
 {
     // §6.3: the mirror lives on the internal drive, which is the whole point --
     // a card failure must not take both copies with it.
-    const auto root = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                          .getChildFile ("RECORDINGS-MIRROR")
-                          .getChildFile (sessionFolderName);
+    const auto mirrorRoot = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                .getChildFile ("RECORDINGS-MIRROR");
+    auto root = mirrorRoot.getChildFile (sessionFolderName);
 
-    if (! root.createDirectory().wasOk())
+    // §6.2 never overwrites, and that holds for the copy too. Collisions were
+    // resolved against the card only, so a take restarted on a new card with
+    // the same name -- the card-removal flow exactly -- reopened the mirror
+    // folder it had just promised was safe and truncated every file in it.
+    for (int attempt = 2; root.exists() && attempt < 1000; ++attempt)
+        root = mirrorRoot.getChildFile (sessionFolderName + "_" + juce::String (attempt));
+
+    if (root.exists() || ! root.createDirectory().wasOk())
         return {};
 
     return root.getFullPathName();
@@ -2178,6 +2236,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     switch (pollCapacityWarning())
     {
         case RemainingTimeWarning::Exhausted:
+            // Said AND done. This line used to claim the take had stopped
+            // while the writer carried on into a full drive until a write
+            // failed, which then arrived as the wrong notice.
+            if (recordingEngine.getState() == RecordingState::Recording)
+                toggleRecording();
             return "The drive is full. Recording has stopped -- free some space or choose another drive.";
         case RemainingTimeWarning::TwoMinutes:
             return "About two minutes of room left. Wrap up or switch drives now.";
@@ -2505,6 +2568,19 @@ void Application::saveSettings()
         if (! device.userEnabled)
             settings.disabledMicKeys.push_back (device.identity.key());
 
+    // And every mic the user switched off that is not plugged in right now,
+    // as the cameras below already do: §2.4 port memory, for the one setting
+    // that used to be forgotten the moment the mic was unplugged.
+    for (const auto& key : rememberedSettings.disabledMicKeys)
+    {
+        bool enumerated = false;
+        for (const auto& device : deviceManager.getDevices())
+            if (device.identity.key() == key) { enumerated = true; break; }
+
+        if (! enumerated)
+            settings.disabledMicKeys.push_back (key);
+    }
+
     // Every camera the user has an opinion about, not only the connected ones:
     // a camera unplugged today should come back tomorrow as it was left.
     const auto& selection = cameraController.getSelection();
@@ -2568,6 +2644,41 @@ struct NewestFirst
     }
 };
 } // namespace
+
+void Application::clearRecoveredSessions()
+{
+    // The rule for "interrupted" is an empty stop timestamp, and repairing
+    // the headers never wrote one -- so the same takes came back at every
+    // launch. Stamped with the moment they were recovered; the audio has
+    // already been repaired and is what it is.
+    const auto now = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+
+    for (const auto& session : recoveredSessions)
+    {
+        const auto file = juce::File (juce::String (session.folder)).getChildFile ("session.json");
+
+        if (! file.existsAsFile())
+            continue;
+
+        try
+        {
+            auto meta = SessionMetadata::fromJsonString (file.loadFileAsString().toStdString());
+
+            if (meta.stopTimestampIso.empty())
+            {
+                meta.stopTimestampIso = now;
+                file.replaceWithText (juce::String (meta.toJsonString()));
+            }
+        }
+        catch (...)
+        {
+            // Unreadable metadata stays as it is; the take will be offered
+            // again, which beats overwriting something we could not parse.
+        }
+    }
+
+    recoveredSessions.clear();
+}
 
 void Application::scanForInterruptedSessions()
 {

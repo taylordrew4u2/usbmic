@@ -26,7 +26,7 @@ namespace mma {
 /// Deliberately minimal: every notification funnels to the same callback, which
 /// re-runs enumeration. Distinguishing "added" from "state changed" here would
 /// duplicate logic DeviceManager already owns.
-class DeviceNotificationClient : public IMMNotificationClient
+class DeviceNotificationClient final : public IMMNotificationClient
 {
 public:
     explicit DeviceNotificationClient (DeviceChangeCallback* target) : callback (target) {}

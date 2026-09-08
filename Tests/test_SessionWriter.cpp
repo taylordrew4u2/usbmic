@@ -123,3 +123,38 @@ TEST_CASE (SessionWriter_HeaderRewriteTickUpdatesSizesPeriodically)
     writer.close();
     std::remove (writer.getCurrentFilePath().c_str());
 }
+
+TEST_CASE (SessionWriter_Writes32BitPcmThatMatchesItsHeader)
+{
+    // 32-bit was accepted, given a 32-bit header, and packed as 24-bit:
+    // every file unreadable. Now the packer writes what the header says.
+    const auto path = tempBasePath ("w32");
+    SessionWriter writer;
+    REQUIRE (writer.open (path, 48000.0, 1, 32, "2026-09-07T00:00:00Z"));
+
+    const float frames[4] = { 0.5f, -0.5f, 1.0f, 0.0f };
+    REQUIRE (writer.writeInterleaved (frames, 4));
+    writer.close();
+
+    std::ifstream f (path + ".wav", std::ios::binary);
+    REQUIRE (f.is_open());
+    constexpr std::streamoff kDataSize = 12 + (8 + 16) + (8 + 602) + 4;
+    REQUIRE (readU32LE (f, kDataSize) == 4 * 4);
+
+    // Bits per sample and block align in the fmt chunk: offsets 34 and 32.
+    f.seekg (34);
+    unsigned char bits[2];
+    f.read (reinterpret_cast<char*> (bits), 2);
+    REQUIRE ((bits[0] | (bits[1] << 8)) == 32);
+
+    // The first sample decodes back to +0.5 full scale.
+    const auto first = readU32LE (f, kDataSize + 4);
+    const auto value = static_cast<int32_t> (first);
+    REQUIRE (value > 1073741000 && value < 1073742000);
+}
+
+TEST_CASE (SessionWriter_RefusesADepthItCannotPack)
+{
+    SessionWriter writer;
+    REQUIRE (! writer.open (tempBasePath ("w20"), 48000.0, 1, 20, "2026-09-07T00:00:00Z"));
+}

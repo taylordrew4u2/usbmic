@@ -8,6 +8,8 @@ void TakeWatchdog::beginTake (const TakeHealth& baseline)
     last = baseline;
     warnedTenMinutes = false;
     warnedTwoMinutes = false;
+    droppedReported = false;
+    droppedReportedAt = 0.0;
 }
 
 void TakeWatchdog::endTake()
@@ -72,10 +74,35 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
     if (! now.cameraProblem.empty() && now.cameraProblem != last.cameraProblem)
         alerts.push_back ({ TakeAlert::Kind::CameraTrouble, now.cameraProblem, false });
 
-    if (now.framesDropped > last.framesDropped)
-        alerts.push_back ({ TakeAlert::Kind::AudioDropped,
-                            "Some sound was dropped: this computer could not keep up for a moment. "
-                            "Close other apps. The take carries on.", false });
+    if (now.outputClockLost && ! last.outputClockLost)
+        alerts.push_back ({ TakeAlert::Kind::OutputLost,
+                            "The headphone output has stopped -- unplugged, or taken by another "
+                            "app. The take carries on on this computer's clock; you will not hear "
+                            "the mix until it comes back.", false });
+    else if (! now.outputClockLost && last.outputClockLost)
+        alerts.push_back ({ TakeAlert::Kind::OutputBack, "The headphone output is back.", true });
+
+    if (now.framesDropped > last.framesDropped || now.samplesOverrun > last.samplesOverrun)
+    {
+        const bool due = ! droppedReported
+                      || now.elapsedSeconds - droppedReportedAt >= kDroppedRepeatSeconds;
+
+        if (due)
+        {
+            const auto total = now.framesDropped + now.samplesOverrun;
+            const auto seconds = total / 48000.0; // a rough figure is all this line needs
+
+            alerts.push_back ({ TakeAlert::Kind::AudioDropped,
+                                droppedReported
+                                    ? "Sound is still being dropped: about " + std::to_string (static_cast<int> (seconds + 0.5))
+                                          + " s lost so far. Close other apps."
+                                    : "Some sound was dropped: this computer could not keep up for a moment. "
+                                      "Close other apps. The take carries on.",
+                                false });
+            droppedReported = true;
+            droppedReportedAt = now.elapsedSeconds;
+        }
+    }
 
     if (now.writerBehind && ! last.writerBehind)
         alerts.push_back ({ TakeAlert::Kind::WriterBehind,

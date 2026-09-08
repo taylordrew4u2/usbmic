@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "../Platform/IAudioBackend.h"
@@ -89,8 +90,29 @@ public:
     void stopRecording();
     bool isRecording() const noexcept { return pipeline != nullptr && pipeline->isRunning(); }
 
-    /// §6.5: an unplugged mic keeps its channel and writes silence.
+    /// §6.5: an unplugged mic keeps its channel and writes silence. Applies
+    /// to EVERY channel the device contributes: an interface with four
+    /// people on it goes silent as four channels, not one.
     void setChannelLive (const std::string& deviceId, bool live);
+    bool isChannelLive (int index) const noexcept;
+
+    /// True while the output device that should be clocking the rig has
+    /// stopped calling back and the software clock is pulling instead. The
+    /// take carries on; the headphones are silent until the output returns.
+    bool isOutputClockLost() const noexcept { return outputClockLost.load (std::memory_order_relaxed); }
+
+    /// Whether the rig was opened with an output stream at all. Without one
+    /// the software clock drives everything from the start.
+    bool hasOutputStream() const noexcept { return outputStreamOpen; }
+
+    /// On by default. Off for harnesses that drive the output callback in
+    /// simulated time, where a real-time thread deciding the output has
+    /// gone quiet would pull the rings underneath the simulation.
+    void setSoftwareClockEnabled (bool enabled) noexcept { softwareClockEnabled = enabled; }
+
+    /// §0.1: samples the per-device rings threw away because nothing pulled
+    /// them in time, summed over every device. Zero on a healthy take.
+    uint64_t getOverrunSamples() const noexcept;
 
     /// §4: trim, live. Applies to the monitor mix and the mix file; the stems
     /// stay at unity either way. Safe to call while the callback is running --
@@ -244,6 +266,22 @@ private:
     MonitorBus monitorBus;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
+
+    // The software clock. The rig is pulled onto the output device's callback
+    // (§3.2), which meant a rig with no output, or one whose output stopped,
+    // recorded nothing and said nothing. This thread ticks at the buffer
+    // period and pulls whenever the output is absent or has gone quiet, so
+    // the take never depends on the headphones. `pulling` is the hand-off:
+    // whichever of the two clocks holds it does the pull; the other skips.
+    std::thread softwareClock;
+    std::atomic<bool> clockRunning { false };
+    std::atomic<bool> pulling { false };
+    std::atomic<bool> outputClockLost { false };
+    std::atomic<int64_t> lastOutputCallbackNs { 0 };
+    bool outputStreamOpen = false;
+    bool softwareClockEnabled = true;
+    void runSoftwareClock();
+    void stopSoftwareClock();
 
     /// Loudest sample seen arriving, across the whole take.
     std::atomic<float> peakArrived { 0.0f };

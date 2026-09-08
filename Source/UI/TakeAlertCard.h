@@ -39,8 +39,11 @@ private:
     juce::TextButton keepButton { "Keep recording" };
     juce::TextButton stopButton { "Stop recording" };
 
-    static constexpr int kMaxRows = 6;
-    static constexpr int kRowHeight = 52;
+    // Four rows of 46 px plus the heading and buttons fit the smallest
+    // window the app opens at. Six rows did not: the buttons fell off the
+    // bottom of the card and the take could not be stopped from it.
+    static constexpr int kMaxRows = 4;
+    static constexpr int kRowHeight = 46;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TakeAlertCard)
 };

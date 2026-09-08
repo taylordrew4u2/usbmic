@@ -42,6 +42,12 @@ std::string SessionWriter::makePathForSplit (int index) const
 bool SessionWriter::open (const std::string& basePath, double sampleRateIn, int numChannelsIn, int bitDepthIn,
                           const std::string& originTimestampIso)
 {
+    // Only the depths the packer below actually writes. 32 used to be
+    // accepted here, given a 32-bit header, and then packed as 24-bit --
+    // every file unreadable, no error anywhere.
+    if (bitDepthIn != 16 && bitDepthIn != 24 && bitDepthIn != 32)
+        return false;
+
     basePathNoExt = basePath;
     sampleRate = sampleRateIn;
     numChannels = numChannelsIn;
@@ -156,6 +162,16 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
                 int16_t v = static_cast<int16_t> (std::lround (s * 32767.0f));
                 char b[2] = { static_cast<char> (v & 0xFF), static_cast<char> ((v >> 8) & 0xFF) };
                 file.write (b, 2);
+            }
+            else if (bitDepth == 32)
+            {
+                // Integer PCM, full scale. Computed in double: float cannot
+                // hold 2^31 - 1 exactly and would round past it.
+                const int32_t v = static_cast<int32_t> (std::llround (static_cast<double> (s) * 2147483647.0));
+                const auto u = static_cast<uint32_t> (v);
+                char b[4] = { static_cast<char> (u & 0xFF), static_cast<char> ((u >> 8) & 0xFF),
+                              static_cast<char> ((u >> 16) & 0xFF), static_cast<char> ((u >> 24) & 0xFF) };
+                file.write (b, 4);
             }
             else // 24-bit
             {

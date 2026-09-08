@@ -123,18 +123,30 @@ TEST_CASE (TakeWatchdog_ACameraThatVanishesFromTheListIsGoneToo)
     REQUIRE (back[0].kind == TakeAlert::Kind::CameraBack);
 }
 
-TEST_CASE (TakeWatchdog_DroppedAudioIsReportedOnEveryIncrease)
+TEST_CASE (TakeWatchdog_DroppedAudioIsSaidOnceThenAtMostOnceAMinute)
 {
+    // A struggling machine drops a little on every tick. Said on every
+    // increase, the card grew a line twice a second and could not be read or
+    // dismissed -- seen for real in the headless take.
     TakeWatchdog w;
     w.beginTake (healthyRig());
 
     auto now = healthyRig();
     now.framesDropped = 10;
+    now.elapsedSeconds = 1.0;
     REQUIRE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
-    REQUIRE (w.observe (now).empty());          // no new drop, no new alert
 
-    now.framesDropped = 20;
-    REQUIRE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
+    now.framesDropped = 20; now.elapsedSeconds = 1.5;
+    REQUIRE (w.observe (now).empty());           // more loss, too soon to repeat
+    now.framesDropped = 30; now.elapsedSeconds = 30.0;
+    REQUIRE (w.observe (now).empty());
+
+    now.framesDropped = 48000 * 3; now.elapsedSeconds = 62.0;
+    const auto again = w.observe (now);
+    REQUIRE (again.size() == 1);
+    REQUIRE (again[0].kind == TakeAlert::Kind::AudioDropped);
+    REQUIRE (again[0].message.find ("still") != std::string::npos);
+    REQUIRE (again[0].message.find ("3 s") != std::string::npos);
 }
 
 TEST_CASE (TakeWatchdog_DriveTroubleIsSaidWhenItStarts)
@@ -192,4 +204,35 @@ TEST_CASE (TakeWatchdog_ANewTakeStartsClean)
     // belongs to the take, not to the drive.
     w.beginTake (healthyRig());
     REQUIRE (has (w.observe (low), TakeAlert::Kind::TwoMinutesLeft));
+}
+
+TEST_CASE (TakeWatchdog_OutputClockLostIsSaidOnceAndComesBack)
+{
+    TakeWatchdog w;
+    w.beginTake (healthyRig());
+
+    auto now = healthyRig();
+    now.outputClockLost = true;
+
+    const auto lost = w.observe (now);
+    REQUIRE (lost.size() == 1);
+    REQUIRE (lost[0].kind == TakeAlert::Kind::OutputLost);
+    REQUIRE (! lost[0].recovery);
+    REQUIRE (w.observe (now).empty());
+
+    const auto back = w.observe (healthyRig());
+    REQUIRE (back.size() == 1);
+    REQUIRE (back[0].kind == TakeAlert::Kind::OutputBack);
+    REQUIRE (back[0].recovery);
+}
+
+TEST_CASE (TakeWatchdog_RingOverrunsCountAsDroppedAudio)
+{
+    TakeWatchdog w;
+    w.beginTake (healthyRig());
+
+    auto now = healthyRig();
+    now.samplesOverrun = 256;
+    REQUIRE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
+    REQUIRE (w.observe (now).empty());
 }
