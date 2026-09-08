@@ -89,8 +89,12 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
 
         if (due)
         {
+            // Two losses of the same kind -- audio that should have been
+            // recorded and was not -- so they add. The rate is the take's own;
+            // a hardcoded 48000 made this line claim twice the loss at 96 kHz.
+            const auto rate = now.sampleRate > 0.0 ? now.sampleRate : 48000.0;
             const auto total = now.framesDropped + now.samplesOverrun;
-            const auto seconds = total / 48000.0; // a rough figure is all this line needs
+            const auto seconds = total / rate; // a rough figure is all this line needs
 
             alerts.push_back ({ TakeAlert::Kind::AudioDropped,
                                 droppedReported

@@ -909,6 +909,7 @@ TakeHealth Application::snapshotTakeHealth() const
         // "about N seconds lost so far", and four rings overflowing together
         // for a second lose a second of recording, not four.
         health.samplesOverrun = capture->getWorstChannelOverrunThisTake();
+        health.sampleRate = currentSampleRate;
         health.outputClockLost = capture->isOutputClockLost();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
@@ -2613,26 +2614,39 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // the "said AND done" fix was written to prevent. The card-removal stop was
     // already hoisted for the same reason; this one was left behind.
     //
-    // Only the stop is hoisted. The remaining-time warnings stay where they
-    // are, below the things that are actively going wrong now.
-    // Evaluated ONCE per poll and used in both places. CapacityMonitor latches:
-    // each threshold fires exactly once, so asking twice in one poll would let
-    // this branch consume the answer and leave the ten- and two-minute warnings
-    // below with None -- silencing the two warnings that exist to give the user
-    // time to act, in the name of a fix about not being silent.
-    const auto capacityWarning = pollCapacityWarning();
-
-    if (recordingEngine.getState() == RecordingState::Recording
-        && capacityWarning == RemainingTimeWarning::Exhausted)
+    // Only the stop is hoisted, and it is decided from the raw remaining figure
+    // rather than from CapacityMonitor -- because evaluateRemaining LATCHES.
+    // Evaluating it here and reusing the answer below swapped one bug for its
+    // mirror image: the latch would be spent on every poll, including the ones
+    // where a branch further down returns first, so a ring sitting at 50% fill
+    // -- which returns on every single poll -- would permanently swallow the
+    // ten- and two-minute warnings. Silencing the two warnings whose whole job
+    // is to give the user time to act, inside a change about not being silent.
+    //
+    // The stop does not need the latch: it needs to know whether the room ran
+    // out, which getRemainingRecordingSeconds answers as often as it is asked.
+    // The latching call stays at the bottom, where its answer is delivered.
+    if (recordingEngine.getState() == RecordingState::Recording)
     {
-        stopReason = "the drive ran out of room";
-        toggleRecording();
+        const auto remaining = getRemainingRecordingSeconds();
 
-        const auto line = juce::String ("The drive is full. Recording has stopped -- free some "
-                                        "space or choose another drive.");
+        // Negative is "could not be determined", which is not the same as none
+        // left -- reading it as empty would stop a take over a drive whose free
+        // space the OS declined to report. Anything from zero down to that is
+        // out of room, which is the same test CapacityMonitor applies.
+        const bool roomRanOut = remaining >= 0.0 && remaining <= 0.0;
 
-        noteActivity (ActivityLevel::Failed, "Drive", line);
-        return line;
+        if (roomRanOut)
+        {
+            stopReason = "the drive ran out of room";
+            toggleRecording();
+
+            const auto line = juce::String ("The drive is full. Recording has stopped -- free some "
+                                            "space or choose another drive.");
+
+            noteActivity (ActivityLevel::Failed, "Drive", line);
+            return line;
+        }
     }
 
     // §0.1: a stream that opened and has since stopped. Taken here, on the
@@ -2901,14 +2915,15 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
     // §6.5 next: running out of room stops the take, which outranks everything
     // else that is merely a warning.
-    switch (capacityWarning)
+    switch (pollCapacityWarning())
     {
         case RemainingTimeWarning::Exhausted:
-            // The stop itself happens at the top of this function, above every
-            // branch that could return before reaching here. This is what is
-            // left to say when a take was not running to be stopped.
-            return "The drive is full. There isn't room to record here -- free some space or "
-                   "choose another drive.";
+            // Unreachable, and kept only so the switch stays exhaustive:
+            // pollCapacityWarning returns None unless a take is running, and a
+            // running take that is out of room has already been stopped and
+            // returned from at the top of this function. A full drive with no
+            // take running is the record button's job, not this line's.
+            break;
         case RemainingTimeWarning::TwoMinutes:
             return "About two minutes of room left. Wrap up or switch drives now.";
         case RemainingTimeWarning::TenMinutes:

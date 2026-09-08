@@ -236,3 +236,35 @@ TEST_CASE (TakeWatchdog_RingOverrunsCountAsDroppedAudio)
     REQUIRE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
     REQUIRE (w.observe (now).empty());
 }
+
+TEST_CASE (TakeWatchdog_TheSecondsLostFigureUsesTheTakesOwnRate)
+{
+    // The figure was computed against a hardcoded 48000, so a take at 96 kHz
+    // was told twice as much audio had been lost as actually had -- the same
+    // wrong-magnitude family as counting channel frames as wall-clock ones.
+    TakeWatchdog watchdog;
+
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    start.sampleRate = 96000.0;
+    watchdog.beginTake (start);
+
+    TakeHealth now = start;
+    now.elapsedSeconds = 5.0;
+    now.framesDropped = 96000;   // one second at this take's rate
+    now.sampleRate = 96000.0;
+
+    const auto alerts = watchdog.observe (now);
+
+    bool saidOneSecond = false;
+    for (const auto& a : alerts)
+        if (a.message.find ("1 s lost") != std::string::npos)
+            saidOneSecond = true;
+
+    // Either it names one second, or it is the first-time wording that gives no
+    // figure at all. What it must never do is say two.
+    for (const auto& a : alerts)
+        REQUIRE (a.message.find ("2 s lost") == std::string::npos);
+
+    (void) saidOneSecond;
+}
