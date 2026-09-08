@@ -62,6 +62,11 @@ juce::Rectangle<int> ModalCard::getCardBounds() const
     return juce::Rectangle<int> (width, height).withCentre (getLocalBounds().getCentre());
 }
 
+void ModalCard::setHeadingColour (juce::Colour colour)
+{
+    headingLabel.setColour (juce::Label::textColourId, colour);
+}
+
 void ModalCard::resized()
 {
     auto card = getCardBounds().reduced (kCardPadding);

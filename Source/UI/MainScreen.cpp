@@ -158,6 +158,17 @@ MainScreen::MainScreen()
     camerasButton.onClick = [this] { if (onCamerasClicked) onCamerasClicked(); };
     addAndMakeVisible (camerasButton);
 
+    helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
+    addAndMakeVisible (helpButton);
+
+    // While a drawer is open its button stays lit, in a lifted grey rather
+    // than the accent, which is reserved for the one button that records.
+    for (auto* b : { &advancedButton, &helpButton })
+    {
+        b->setColour (juce::TextButton::buttonOnColourId, AppLookAndFeel::surfaceHigh.brighter (0.7f));
+        b->setColour (juce::TextButton::textColourOnId, AppLookAndFeel::bone);
+    }
+
     // The masthead. Letter-spaced by hand, because a wordmark is the one piece
     // of type on this screen that is a picture of a word rather than a word.
     brandLabel.setText ("S O B S T A G E", juce::dontSendNotification);
@@ -264,6 +275,9 @@ void MainScreen::setMicCount (int count)
     {
         auto* meter = new SkullMeterComponent();
         meter->onNameClicked = [this, i] { if (onMicNameClicked) onMicNameClicked (i); };
+        // A hand over the strip: the name is clickable, and nothing on the
+        // strip itself said so.
+        meter->setMouseCursor (juce::MouseCursor::PointingHandCursor);
         addAndMakeVisible (meter);
         skullMeters.add (meter);
     }
@@ -276,6 +290,29 @@ int MainScreen::getCameraScaleStepCount() noexcept
     return kCameraScaleSteps;
 }
 
+int MainScreen::monitorProblemHeight() const noexcept
+{
+    constexpr int kLineHeight = 17;
+    constexpr int kOneLine    = 20;
+
+    const auto text = monitorProblemLabel.getText();
+
+    if (text.isEmpty())
+        return kOneLine;
+
+    const int width = juce::jmax (1, getWidth() - 32);
+    const int textWidth = juce::roundToInt (monitorProblemLabel.getFont()
+                                                .getStringWidthFloat (text));
+
+    // The wrap JUCE will apply when it draws, worked out ahead of it so the
+    // band reserved is the band needed. Capped: a runaway message must not push
+    // the record button off the screen, which is the one control that cannot be
+    // allowed to go looking for.
+    const int lines = juce::jlimit (1, 4, (textWidth + width - 1) / width);
+
+    return juce::jmax (kOneLine, lines * kLineHeight + 3);
+}
+
 int MainScreen::nonCameraHeight() const noexcept
 {
     // Every band resized() lays out beneath the pictures. Kept here rather than
@@ -283,13 +320,16 @@ int MainScreen::nonCameraHeight() const noexcept
     // number: the picture is given the height that is left over, and "left
     // over" is only meaningful against this.
     constexpr int kMargins     = 32;   // 16 top and bottom
-    constexpr int kHeader      = 36 + 18;
+    constexpr int kHeader      = 40 + 18;
     constexpr int kMicHeading  = 16 + 6;
     constexpr int kStripHeight = 40;
     constexpr int kStripGap    = 12;
     constexpr int kActionRow   = 16 + 52;
-    constexpr int kStatusLines = 18 + 20 + 20;  // files, monitor problem, advice
-    constexpr int kFooter      = 34;
+    // files, monitor problem, advice. The monitor problem is measured rather
+    // than assumed: it grows to fit a reason, and a band reserved at one line
+    // while three are drawn is content spilling past the bottom of the window.
+    const int kStatusLines = 18 + monitorProblemHeight() + 20;
+    constexpr int kFooter      = 40;
 
     // MIX is laid out with the microphones, so it counts towards the wrap.
     const int cells = juce::jmax (1, skullMeters.size() + 1);
@@ -626,6 +666,12 @@ void MainScreen::paint (juce::Graphics& g)
     }
 }
 
+void MainScreen::setDoorsOpen (bool settingsOpen, bool helpOpen)
+{
+    advancedButton.setToggleState (settingsOpen, juce::dontSendNotification);
+    helpButton.setToggleState (helpOpen, juce::dontSendNotification);
+}
+
 void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
@@ -636,12 +682,16 @@ void MainScreen::resized()
     // destination rather than a control -- it belongs with the title, not in
     // the row where the levels are being set.
     {
-        auto header = area.removeFromTop (36);
+        auto header = area.removeFromTop (40);
 
         brandMarkBounds = header.removeFromLeft (28).withSizeKeepingCentre (26, 26);
         header.removeFromLeft (10);
 
-        advancedButton.setBounds (header.removeFromRight (96).reduced (0, 3));
+        // Full-height targets. Reduced to 30px they were the smallest buttons
+        // on the screen, and they are the two most people go looking for.
+        advancedButton.setBounds (header.removeFromRight (112).reduced (0, 2));
+        header.removeFromRight (8);
+        helpButton.setBounds (header.removeFromRight (80).reduced (0, 2));
         header.removeFromRight (8);
         versionLabel.setBounds (header.removeFromRight (56));
         header.removeFromRight (8);
@@ -853,16 +903,22 @@ void MainScreen::resized()
     // nothing is placed here -- the record button is followed straight by the
     // lines that qualify it.
     filesSavingLabel.setBounds (area.removeFromTop (18));
-    monitorProblemLabel.setBounds (area.removeFromTop (20));
+
+    // Sized to the message, not to one line. This label carries the reason a
+    // microphone would not open -- which rate the interface is running at, that
+    // macOS has not granted microphone access, that another app holds the
+    // device -- and a fixed 20px row clipped all of it to the first few words,
+    // leaving the same dead end the reason was written to end.
+    monitorProblemLabel.setBounds (area.removeFromTop (monitorProblemHeight()));
     adviceLabel.setBounds (area.removeFromTop (20));
 
     // The footer: what the disk knows on the left, what the ears want on the
     // right. Both are ambient -- neither is something anyone comes to this
     // screen to do -- so they share one quiet row at the bottom rather than
     // taking a band of the middle each.
-    auto bottomRow = area.removeFromBottom (34);
+    auto bottomRow = area.removeFromBottom (40);
 
-    muteButton.setBounds (bottomRow.removeFromRight (76));
+    muteButton.setBounds (bottomRow.removeFromRight (92));
     bottomRow.removeFromRight (8);
     volumeSlider.setBounds (bottomRow.removeFromRight (220));
     bottomRow.removeFromRight (16);
@@ -872,7 +928,7 @@ void MainScreen::resized()
     // twice on one screen.
     if (! haveCameras)
     {
-        camerasButton.setBounds (bottomRow.removeFromRight (110).reduced (0, 2));
+        camerasButton.setBounds (bottomRow.removeFromRight (124));
         bottomRow.removeFromRight (10);
     }
     else
@@ -888,17 +944,22 @@ void MainScreen::resized()
     // the destination rather than from the capacity figure: during a take, how
     // long it has been going matters more than where it is going, which has
     // not changed since it started.
+    // One line each, centred in the row. Given the row's full height a label
+    // wraps onto two lines the moment the window narrows -- beside an open
+    // Settings drawer, for one -- and the footer turns into a stack.
+    auto textRow = bottomRow.withSizeKeepingCentre (bottomRow.getWidth(), 20);
+
     if (recording)
     {
-        elapsedLabel.setBounds (bottomRow.removeFromLeft (150));
-        remainingLabel.setBounds (bottomRow.removeFromLeft (190));
-        saveLocationLabel.setBounds (bottomRow);
+        elapsedLabel.setBounds (textRow.removeFromLeft (150));
+        remainingLabel.setBounds (textRow.removeFromLeft (190));
+        saveLocationLabel.setBounds (textRow);
     }
     else
     {
         elapsedLabel.setBounds ({});
-        remainingLabel.setBounds (bottomRow.removeFromLeft (juce::jmin (200, bottomRow.getWidth() / 2)));
-        saveLocationLabel.setBounds (bottomRow);
+        remainingLabel.setBounds (textRow.removeFromLeft (juce::jmin (200, textRow.getWidth() / 2)));
+        saveLocationLabel.setBounds (textRow);
     }
 }
 

@@ -82,6 +82,10 @@ public:
 
     bool isLive() const noexcept { return channelLive.load (std::memory_order_relaxed); }
 
+    /// §0.1: samples this stream threw away because its ring was full -- the
+    /// consumer stopped pulling, or pulled too slowly. Counted, never silent.
+    uint64_t getOverrunSamples() const noexcept { return overrunSamples.load (std::memory_order_relaxed); }
+
     /// §3.3 reporting, as a correction against the stream that pulls this one --
     /// i.e. the output device, not the clock master. Positive means this device
     /// runs fast relative to that clock.
@@ -109,6 +113,8 @@ private:
     DriftCompensator compensator;
 
     std::atomic<bool> channelLive { true };
+
+    std::atomic<uint64_t> overrunSamples { 0 };
 
     // Set on the message thread when a channel comes back, consumed by the
     // audio thread in pull(). The reset itself has to happen there: it touches

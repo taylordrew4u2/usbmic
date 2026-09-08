@@ -32,7 +32,8 @@ enum class TakeAudioVerdict
     NotJudged,      ///< No audio files: nothing this rule was written for.
     Recorded,       ///< Signal reached the files.
     NothingWritten, ///< Headers only -- the stream never arrived.
-    OnlySilence     ///< Full-length files, every sample of them flat.
+    OnlySilence,    ///< Full-length files, every sample of them flat.
+    DroppedByApp    ///< Audio arrived and this app failed to write it.
 };
 
 /// The verdict on a take, from the files on disk AND the loudest sample that
@@ -54,5 +55,18 @@ enum class TakeAudioVerdict
 /// above that even in a quiet room, so a whisper still counts as a recording;
 /// only a genuinely dead stream falls under it.
 TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files, float peakAbs);
+
+/// The same judgement, told what ARRIVED as well as what was written.
+///
+/// The two can disagree, and when they do it is the most important thing the
+/// app knows: audio reaching the capture path and not reaching the files is a
+/// fault in this program, not in the user's rig. Without this the take is
+/// simply "silent", and someone spends an hour checking cables and mute
+/// switches that were never the problem.
+///
+/// `peakArrived` negative means nobody measured it, and the verdict falls back
+/// to what the files and the written peak alone can say.
+TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files,
+                                 float peakWritten, float peakArrived);
 
 } // namespace mma

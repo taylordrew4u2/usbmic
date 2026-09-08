@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-379%20passing-brightgreen" alt="379 tests passing">
+  <img src="https://img.shields.io/badge/tests-441%20passing-brightgreen" alt="441 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This found five user-facing defects that were otherwise unreachable from any available machine. |
 
-379 unit tests, two long-running capture harnesses and two platform simulators
+441 unit tests, an end-to-end take and an end-to-end refusal through the real app, two long-running capture harnesses and two platform simulators
 run on macOS, Windows and Linux on every commit.
 
 ### Honest limits
@@ -65,10 +65,40 @@ someone to discover.
 > build environment here has an audio device. That distinction is stated
 > precisely below rather than glossed.
 
+## How your rig becomes tracks
+
+<p align="center">
+  <img src="docs/images/rig-to-tracks.svg" alt="Three rows showing how devices become tracks. A one-input Blue Yeti becomes one take channel and one file. A four-input Scarlett 18i8 becomes four take channels and four files. A livestream mixer with two inputs that is also the headphone output becomes two take channels, with the monitor mix flowing back out over the same single stream." width="880">
+</p>
+
+The rule that matters, because getting it wrong is silent: **one device is not
+one microphone.** An interface with four people plugged into it is a single
+device presenting four inputs, and each of those is somebody who expects their
+own track. Taking one channel per device — which this did — discarded everyone
+but the first, and if the discarded input carried the microphone that mattered,
+the take came back silent from a rig that was working perfectly.
+
+A two-input device is the ambiguous case: it might be a stereo USB microphone
+putting the same voice on both sides, or two people on a small interface. §0.1
+settles which way to guess. Keeping both sides of a duplicated mono mic costs a
+redundant file; collapsing two microphones into one loses somebody entirely,
+with nothing said. Those are not comparable, so both sides are kept until §2.1's
+analyzer has actually listened and found them identical — a verdict §2.4
+remembers per port, so a stereo mic still collapses correctly from its second
+take onward.
+
+The third row is the case that is easy to get wrong twice. A small livestream
+mixer is *one* device in both directions: it carries the microphones in and the
+monitor mix back out. Opening it for output, claiming it exclusively, and then
+opening it again for input asks macOS for a second claim on a device this
+process has just taken — and the refusal arrives as "couldn't be opened for
+recording" against a microphone that is plugged in and working. So it is opened
+once, and that single stream carries both halves of the cycle.
+
 ## What it looks like
 
 <p align="center">
-  <img src="docs/images/main-screen.png" alt="The main screen: three channel strips side by side, a summed mix bar, a session name field, the record button, and a row with monitor volume, mute and Settings" width="660">
+  <img src="docs/images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help and Settings in the masthead" width="660">
 </p>
 
 One strip per microphone: a skull that fills with the level, the name, a
@@ -79,15 +109,46 @@ one button worth pressing; everything else — how much room is left, where the
 files are going, the monitor level — sits quietly in the footer.
 
 <p align="center">
-  <img src="docs/images/settings.png" alt="Settings: sections for where recordings go, recording format, and microphones, with a storage picker, per-microphone checkboxes and the clock master control" width="660">
+  <img src="docs/images/settings.png" alt="The Settings drawer open down the right-hand side of the window, with the live main screen -- strips, mix bar, record button and footer -- still on the left" width="660">
 </p>
 
-Settings is one screen with a Done button at the top left. Where recordings go
+Settings opens as a drawer down the right-hand side, with the main screen
+still live on the left: the meters keep moving, the camera tiles keep
+running, and recording can be started without closing it. The Settings
+button stays lit while it is open and closes it again; so do Close at the
+top of the drawer and Escape. Where recordings go
 comes first, because picking a card before a take is what most people open it
-for. Then the format, where the take is being delivered (which sets the loudness
-target), and which microphones to record and which one carries the clock — each
-explained where it is set, rather than assumed. Opening it grows the window to
-fit the panel, so nothing arrives already scrolled.
+for. Then the format — sample rate, bit depth and buffer size, each a real
+control rather than a readout, the way Audio MIDI Setup treats them: pick it,
+the app tries it, and if the hardware refuses the main screen says so by name.
+Automatic is the default for rate and buffer, and it stays on whatever rate the
+interface is already running rather than forcing one the hardware may refuse.
+Then where the take is being delivered (which sets the loudness target), and
+which microphones to record — each explained where it is set, rather than
+assumed. An interface with several inputs is one box with a tick box per
+socket underneath it, so an eight-input interface with two people on it
+records two files rather than eight; and clicking a strip's name on the main
+screen names that socket's person, not the whole box. Both are port memory:
+they follow the interface across a replug and a relaunch. Every microphone is
+locked to this computer's clock, so there is no clock master to choose.
+Opening it widens the window if it must, so both halves fit.
+
+<p align="center">
+  <img src="docs/images/help.png" alt="Help: headings over plain paragraphs -- the recording is silent, dynamic or condenser microphone, the amber line under the strips, sample rate bit depth and buffer size, a mixer or interface with several sockets, where the files are, still stuck -- with Open Settings and Export diagnostics buttons at the bottom" width="660">
+</p>
+
+Help is the third door, beside Settings in the masthead and again beside
+Close on the Settings drawer, and opens as a drawer the same way. It answers "why is it silent?" in the app, in the
+order the causes actually turn up. First the checklist for a mixer or
+interface: the box ticked in Settings, microphone permission, the channel
+unmuted with its faders up, the USB send (LOOPBACK on a PUPGSIS T12S)
+switched on, the gain up, and then speak and watch the skull. Then whether the
+microphone is dynamic or a condenser that needs 48 V the mixer may not have;
+what the amber line under the strips means and what to do about each cause it
+names; what to choose for sample rate, bit depth and buffer size and why; how
+an interface with several sockets is shown and named; where the files are;
+and what to send when none of that applied. The words live in `Source/Core`
+rather than in the UI, so a test holds them to account.
 
 <p align="center">
   <img src="docs/images/save-prompt.png" alt="A card over the main screen headed 'Where does this recording go?', with a name field, the destination folder, the folder name this take will create, the list of files it will contain, the backup copy's location, an 'ask me every time' checkbox, and buttons reading Not yet, Choose a different folder and Start recording" width="660">
@@ -98,6 +159,18 @@ never be left with. The folder name updates as the recording is named, the list
 underneath is what will actually be written, and the backup copy's location is
 stated rather than left to be discovered. Answering it once is the whole cost —
 every press of record after this starts immediately.
+
+<p align="center">
+  <img src="docs/images/mid-take-alert.png" alt="A card over a running take headed 'Something changed mid-take.', listing that a microphone stopped sending sound, a camera went away, and a microphone came back, each with how far into the take it happened, with Stop recording and Keep recording buttons" width="660">
+</p>
+
+If something goes wrong while a take is running -- a microphone unplugged, a
+camera switched off, sound dropped, the drive falling behind or nearly full
+-- this card comes up the moment it happens and says so, with how far into
+the take it was. The take carries on behind it; Keep recording dismisses
+the card, Stop recording is the same press as the record button. Each
+change is said once, and good news (a mic coming back) joins the card
+quietly rather than raising it.
 
 <p align="center">
   <img src="docs/images/recording.png" alt="A take in progress: the record button is red and reads 'Recording. Tap to stop.', a green line says '5 files -- 670 bytes so far', and the footer reads 'Recording for 0m 06s' beside the session folder being written into" width="660">
@@ -211,8 +284,8 @@ alternative JUCE's paid tiers would allow.
 
 ## What to expect on your platform
 
-This is **v1.0.1**, a patch on the first stable release. The recording
-engine is mature — it is covered by 379
+This is **v1.6.0**. The recording
+engine is mature — it is covered by 409
 automated tests plus three harnesses that run the real capture path and verify
 the resulting audio files, all on every commit. What differs by platform is how
 much of the *device* layer has been run against a live audio system.
@@ -335,6 +408,9 @@ has this same step.
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
 - **Spacebar** mutes and unmutes the headphones instantly. Recording is never
   affected by muting.
+- **Help** is in the masthead beside Settings. If a meter is flat or a take
+  came out silent, start there: it lists the causes in the order they actually
+  turn up, with what to do about each.
 - If the sound ever cuts out on its own, that is the feedback protection —
   the mute button becomes **Unmute (sound was cut)** and pressing it brings
   the sound back.

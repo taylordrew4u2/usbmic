@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <vector>
+#include <cstdint>
 #include <memory>
 #include <utility>
 
@@ -25,9 +26,26 @@ public:
     int getRequiredHeight() const;
     void paint (juce::Graphics& g) override;
 
-    void setSampleRate (double rate) { sampleRateValue.setText (juce::String (rate, 0) + " Hz", juce::dontSendNotification); }
-    void setBitDepth (int bits) { bitDepthValue.setText (juce::String (bits) + "-bit", juce::dontSendNotification); }
-    void setBufferSize (int samples) { bufferSizeValue.setText (juce::String (samples) + " samples", juce::dontSendNotification); }
+    /// Bit depth as a control. 16, 24 or 32; `current` is what the next take
+    /// will use.
+    void setBitDepthChoice (int current);
+    std::function<void (int)> onBitDepthChanged;
+
+    /// The rates this rig can actually record at, and the one in use.
+    ///
+    /// This was a read-only line, and the app told people to change it here --
+    /// so the one instruction on screen named a control that did not exist.
+    void setSampleRates (const std::vector<uint32_t>& rates, uint32_t current);
+
+    /// Reflects the stored choice without firing onSampleRateChanged.
+    void setSampleRateSelection (uint32_t chosen);
+
+    /// "Automatic" or a rate in Hz; 0 means automatic.
+    std::function<void (uint32_t)> onSampleRateChanged;
+    /// Buffer size as a control. `current` is the size in use; `pinned` is the
+    /// user's choice, 0 meaning automatic (§5.4's ladder).
+    void setBufferSizeChoice (int current, int pinned);
+    std::function<void (int)> onBufferSizeChanged;
     void setMeasuredLatency (double ms) { latencyValue.setText (juce::String (ms, 1) + " ms", juce::dontSendNotification); }
     void setActiveBackendDescription (const juce::String& text) { backendValue.setText (text, juce::dontSendNotification); }
     void setDriftReport (const juce::String& text) { driftLabel.setText (text, juce::dontSendNotification); }
@@ -45,15 +63,32 @@ public:
     /// Fills a combo without firing onChange -- otherwise refreshing the list
     /// would read back as the user having picked something.
     void setOutputDevices (const juce::StringArray& names, const juce::String& selected);
+    /// One row in the microphone list: what it reads as, and the device name
+    /// the app matches it back to.
+    ///
+    /// The two are not the same once the row says how many microphones the
+    /// device carries. Matching on the visible text would then fail to find the
+    /// device, and the tick box would silently do nothing.
+    struct MicChoice
+    {
+        juce::String label, deviceName;
+        bool enabled = false;
+
+        /// One per socket on an interface. Each is its own tick box, indented
+        /// under the box it belongs to, so an eight-input interface with two
+        /// people on it records two files rather than eight.
+        struct Input { int index = 0; juce::String label; bool enabled = true; };
+        std::vector<Input> inputs;
+    };
+
     /// The microphones the OS reports and whether each is currently selected.
-    void setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics);
+    void setMicSelections (const std::vector<MicChoice>& mics);
 
     /// Volumes to offer as save destinations: display name, path, and whether
     /// it is the one currently in use.
     struct VolumeChoice { juce::String label, path; bool current = false; };
     void setStorageVolumes (const std::vector<VolumeChoice>& volumes);
 
-    void setClockMasters (const juce::StringArray& names, const juce::String& selected);
 
     /// §4: one trim slider per microphone, rebuilt when the mic set changes.
     /// currentTrimDb supplies each row's starting value.
@@ -68,6 +103,10 @@ public:
     /// hides the main screen, and the button that opened it lives there, so
     /// without this the panel is a dead end with no way back.
     std::function<void()> onCloseClicked;
+
+    /// Beside Done: the Help screen explains the controls on this one, so
+    /// the way to it is here as well as on the main screen.
+    std::function<void()> onHelpClicked;
     std::function<void (bool)> onMirrorToggled;
 
     /// Whether a finished take also writes one video-with-sound file per
@@ -97,18 +136,19 @@ public:
     /// missing -- named here, before a take, rather than in an alert after one.
     void setCombineVideoState (bool on, const juce::String& unavailableReason);
     std::function<void()> onDestinationFolderClicked;
-    std::function<void (const juce::String&)> onClockMasterChanged;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
+    /// (device name, physical input, enabled)
+    std::function<void (const juce::String&, int, bool)> onInputEnabledChanged;
     std::function<void (const juce::String&)> onStorageVolumeChosen;
     std::function<void (const juce::String&)> onOutputDeviceChanged;
 
 private:
-    juce::Label sampleRateLabel, sampleRateValue;
-    juce::Label bitDepthLabel, bitDepthValue;
-    juce::Label bufferSizeLabel, bufferSizeValue;
+    juce::Label sampleRateLabel;
+    juce::Label bitDepthLabel, bufferSizeLabel;
+    juce::ComboBox bitDepthCombo, bufferSizeCombo;
+    juce::String lastBitDepthSignature, lastBufferSignature;
     juce::Label latencyLabel, latencyValue;
-    juce::Label clockMasterLabel;
-    juce::ComboBox clockMasterCombo;
+    juce::Label clockMasterLabel, clockMasterValue;
     juce::Label driftLabel; // per-device drift in PPM, populated externally as a multi-line label
     juce::Viewport trimViewport; // per-microphone trim sliders, one row per device
     juce::Component trimContainer;
@@ -117,6 +157,8 @@ private:
     void layOutTrimRows();
     juce::Label outputDeviceLabel;
     juce::ComboBox outputDeviceCombo;
+    juce::ComboBox sampleRateCombo;
+    juce::String lastSampleRateSignature;
     juce::Label backendLabel, backendValue;
     juce::Label aggregateNameLabel;
     juce::TextEditor aggregateNameEditor;
@@ -136,7 +178,8 @@ private:
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
-    juce::TextButton closeButton { "< Done" };
+    juce::TextButton closeButton { "Close" };
+    juce::TextButton helpButton { "Help" };
 
     // Where the take is going, and how loud that place wants it. In its own
     // section because it is a decision about delivery rather than about the
@@ -164,6 +207,9 @@ private:
     juce::Label activityLabel; // multi-line, newest first, populated externally
     std::vector<int> ruleYs;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;
+    /// Parallel to micToggles: true for a socket row, which is indented under
+    /// its box and enabled only while the box itself is.
+    std::vector<bool> micToggleIsInput;
     juce::StringArray lastMicNames;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AdvancedPanel)

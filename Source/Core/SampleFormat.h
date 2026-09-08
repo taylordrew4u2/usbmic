@@ -42,14 +42,13 @@ inline float read (const void* base, size_t index, int bytesPerSample, bool isFl
     if (bytesPerSample == 3)
     {
         // Packed 24-bit little-endian, sign-extended through the top byte.
-        // Assembled unsigned: shifting a negative int8_t left is undefined
-        // behaviour, and a sanitizer build catches it on every 24-bit sample
-        // whose top byte has the sign bit set.
-        const uint32_t bits = (static_cast<uint32_t> (p[2]) << 16)
-                            | (static_cast<uint32_t> (p[1]) << 8)
-                            | static_cast<uint32_t> (p[0]);
-        const int32_t value = (bits & 0x800000u) != 0 ? static_cast<int32_t> (bits | 0xff000000u)
-                                                      : static_cast<int32_t> (bits);
+        // Assembled unsigned and sign-extended by arithmetic, not by shifting
+        // a negative value left -- which is undefined before C++20 and what
+        // UBSan flagged here.
+        const uint32_t raw = (static_cast<uint32_t> (p[2]) << 16)
+                           | (static_cast<uint32_t> (p[1]) << 8)
+                           | static_cast<uint32_t> (p[0]);
+        const int32_t value = static_cast<int32_t> (raw << 8) / 256;
         return static_cast<float> (value) * (1.0f / 8388608.0f);
     }
 

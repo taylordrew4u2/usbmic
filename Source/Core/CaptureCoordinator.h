@@ -3,6 +3,8 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
@@ -19,6 +21,21 @@ struct CaptureChannel
     std::string displayName;
     std::string fileName; // §6.2 sanitized, e.g. "01_Yeti-Kitchen"
     float trimDb = 0.0f;
+
+    /// Which input of that device this channel takes.
+    ///
+    /// One device is not one microphone. An audio interface with four mics
+    /// plugged into it is a single device presenting four inputs, and the app
+    /// used to take exactly one channel from any device -- §2.1's stereo
+    /// collapse, applied to an interface, silently discarded every input but
+    /// one. Somebody recording two people through one interface got one of
+    /// them, and if their microphone happened to be on the discarded input,
+    /// they got silence.
+    ///
+    /// §2.1 already said so: collapse to mono when a side is silent or
+    /// duplicated, "otherwise record true stereo". The otherwise was never
+    /// implemented.
+    int deviceChannel = 0;
 };
 
 /// Opens the audio streams and routes their callbacks. This is the piece that
@@ -41,6 +58,19 @@ public:
     bool startMonitoring (const std::vector<CaptureChannel>& channels,
                           const std::string& outputDeviceId);
 
+    /// Which take channel each of a device's inputs belongs to.
+    std::vector<std::pair<int, int>> routingFor (const std::vector<size_t>& channelIndices) const;
+
+    /// Hands one device's inputs to the take channels that asked for them.
+    ///
+    /// Shared by the ordinary microphone streams and by the output stream on a
+    /// duplex mixer, so a rig where the microphones and the headphones are the
+    /// same box routes audio through exactly the same code as one where they
+    /// are not.
+    void fanOutDeviceInputs (const std::vector<std::pair<int, int>>& routing,
+                             const float* const* inputs, int numInputs,
+                             int numSamples) noexcept;
+
     void stopMonitoring();
 
     bool isMonitoring() const noexcept { return monitoring; }
@@ -60,8 +90,29 @@ public:
     void stopRecording();
     bool isRecording() const noexcept { return pipeline != nullptr && pipeline->isRunning(); }
 
-    /// §6.5: an unplugged mic keeps its channel and writes silence.
+    /// §6.5: an unplugged mic keeps its channel and writes silence. Applies
+    /// to EVERY channel the device contributes: an interface with four
+    /// people on it goes silent as four channels, not one.
     void setChannelLive (const std::string& deviceId, bool live);
+    bool isChannelLive (int index) const noexcept;
+
+    /// True while the output device that should be clocking the rig has
+    /// stopped calling back and the software clock is pulling instead. The
+    /// take carries on; the headphones are silent until the output returns.
+    bool isOutputClockLost() const noexcept { return outputClockLost.load (std::memory_order_relaxed); }
+
+    /// Whether the rig was opened with an output stream at all. Without one
+    /// the software clock drives everything from the start.
+    bool hasOutputStream() const noexcept { return outputStreamOpen; }
+
+    /// On by default. Off for harnesses that drive the output callback in
+    /// simulated time, where a real-time thread deciding the output has
+    /// gone quiet would pull the rings underneath the simulation.
+    void setSoftwareClockEnabled (bool enabled) noexcept { softwareClockEnabled = enabled; }
+
+    /// §0.1: samples the per-device rings threw away because nothing pulled
+    /// them in time, summed over every device. Zero on a healthy take.
+    uint64_t getOverrunSamples() const noexcept;
 
     /// §4: trim, live. Applies to the monitor mix and the mix file; the stems
     /// stay at unity either way. Safe to call while the callback is running --
@@ -89,6 +140,17 @@ public:
     /// pipeline to have measured one. Negative means "not measured" to
     /// judgeTakeAudio, which never reports silence on a reading nobody took.
     float getPeakWritten() const noexcept { return pipeline != nullptr ? pipeline->getPeakWritten() : -1.0f; }
+
+    /// The loudest sample that reached this coordinator, whether or not the
+    /// writer accepted it. Paired with getPeakWritten() it separates "no audio
+    /// arrived" from "audio arrived and this app dropped it".
+    float getPeakArrived() const noexcept { return peakArrived.load (std::memory_order_relaxed); }
+
+    /// Frames the writer could not take. Zero on a healthy take.
+    uint64_t getFramesAcceptedCount() const noexcept
+    { return pipeline != nullptr ? pipeline->getFramesAccepted() : 0; }
+
+    void resetArrivalPeak() noexcept { peakArrived.store (0.0f, std::memory_order_relaxed); }
 
     /// §6.5: shed the stems and keep the mix when the ring is nearly full and
     /// there is no mirror to fall back on.
@@ -213,6 +275,25 @@ private:
     MonitorBus monitorBus;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
+
+    // The software clock. The rig is pulled onto the output device's callback
+    // (§3.2), which meant a rig with no output, or one whose output stopped,
+    // recorded nothing and said nothing. This thread ticks at the buffer
+    // period and pulls whenever the output is absent or has gone quiet, so
+    // the take never depends on the headphones. `pulling` is the hand-off:
+    // whichever of the two clocks holds it does the pull; the other skips.
+    std::thread softwareClock;
+    std::atomic<bool> clockRunning { false };
+    std::atomic<bool> pulling { false };
+    std::atomic<bool> outputClockLost { false };
+    std::atomic<int64_t> lastOutputCallbackNs { 0 };
+    bool outputStreamOpen = false;
+    bool softwareClockEnabled = true;
+    void runSoftwareClock();
+    void stopSoftwareClock();
+
+    /// Loudest sample seen arriving, across the whole take.
+    std::atomic<float> peakArrived { 0.0f };
 
     /// §2.1 per device, for the ones that arrive with more than one channel.
     ///

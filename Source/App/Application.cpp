@@ -68,10 +68,10 @@ void Application::initialise()
     if (audioBackend != nullptr)
     {
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
-                                                        bufferLadder.getCurrentSize());
+                                                        desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
         captureRate = currentSampleRate;
-        captureBufferSize = bufferLadder.getCurrentSize();
+        captureBufferSize = desiredBufferSize();
 
         // OS device-change notifications arrive on the backend's own thread --
         // a CoreAudio listener thread on macOS, the COM notification thread on
@@ -280,33 +280,75 @@ void Application::openEnabledCameras()
         noteActivity (ActivityLevel::Failed, "Cameras", problem);
 }
 
-std::vector<CaptureChannel> Application::buildCaptureChannels() const
+std::vector<ChannelPlanDevice> Application::planDevices() const
 {
-    std::vector<CaptureChannel> channels;
-    int index = 0;
+    std::vector<ChannelPlanDevice> out;
 
     for (const auto& d : deviceManager.getDevices())
     {
         if (! d.included)
             continue;
 
-        ++index;
-
         // §4: trim and the assigned name are persisted against the physical
         // port, so they follow the mic across replug rather than across slot.
         const auto persisted = portIdentityStore.get (d.identity);
 
-        CaptureChannel c;
-        c.deviceId = d.identity.key();
-        c.displayName = (persisted.has_value() && ! persisted->assignedName.empty())
-                            ? persisted->assignedName : d.displayName;
+        ChannelPlanDevice p;
+        p.deviceKey = d.identity.key();
+        p.productName = d.displayName;
+        p.inputChannelCount = d.inputChannelCount;
 
-        // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name, so
-        // the stems sort in channel order in any file browser.
+        if (persisted.has_value())
+        {
+            p.assignedName = persisted->assignedName;
+            p.disabledInputs = persisted->disabledInputs;
+            p.inputNames = persisted->inputNames;
+
+            // §2.4 remembers §2.1's verdict per port. Only a decision that was
+            // actually made collapses a two-input device; the default of "no
+            // decision yet" keeps both sides.
+            p.knownDuplicateStereo = persisted->hasChannelLayoutDecision
+                                  && persisted->channelLayoutIsMono;
+        }
+
+        out.push_back (std::move (p));
+    }
+
+    return out;
+}
+
+std::vector<CaptureChannel> Application::buildCaptureChannels() const
+{
+    // One channel per input the device presents, decided in exactly one place.
+    //
+    // A device with one input is one microphone. A device with several is an
+    // interface with several microphones plugged into it, and each of them is a
+    // person who expects their own track. Taking one channel from any device --
+    // which is what this did -- silently discarded everybody but the first, and
+    // if their microphone was on one of the discarded inputs they got a silent
+    // recording with no explanation.
+    std::vector<CaptureChannel> channels;
+    int index = 0;
+
+    for (const auto& planned : planChannels (planDevices()))
+    {
+        ++index;
+
+        CaptureChannel c;
+        c.deviceId = planned.deviceKey;
+        c.deviceChannel = planned.deviceChannel;
+        c.displayName = planned.displayName;
+
+        // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name,
+        // so the stems sort in channel order in any file browser.
         char prefix[4] = {};
         std::snprintf (prefix, sizeof (prefix), "%02d", index);
         c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
-        c.trimDb = persisted.has_value() ? persisted->trimDb : 0.0f;
+
+        for (const auto& d : deviceManager.getDevices())
+            if (d.identity.key() == planned.deviceKey)
+                if (const auto persisted = portIdentityStore.get (d.identity))
+                    c.trimDb = persisted->trimDb;
 
         channels.push_back (std::move (c));
     }
@@ -322,23 +364,27 @@ void Application::restartCapture()
     // §5.4 fixes the buffer size for the duration of a take, and reopening the
     // streams would tear down the writer mid-file. A device change during a
     // recording is handled by §6.5 instead: the channel stays and goes silent.
+    // The restart is owed, though, and the stop path pays it.
     if (capture->isRecording())
+    {
+        captureRestartDeferred = true;
         return;
+    }
 
     // §2.2 can settle on a different rate once the mics are enumerated, and
     // §5.4 can move the buffer up a rung. Both are fixed at construction, so a
     // change means a new coordinator -- carrying the listening level across,
     // since the user did not ask for it to jump.
     if (audioBackend != nullptr
-        && (captureRate != currentSampleRate || captureBufferSize != bufferLadder.getCurrentSize()))
+        && (captureRate != currentSampleRate || captureBufferSize != desiredBufferSize()))
     {
         capture->stopMonitoring();
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
-                                                        bufferLadder.getCurrentSize());
+                                                        desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
 
         captureRate = currentSampleRate;
-        captureBufferSize = bufferLadder.getCurrentSize();
+        captureBufferSize = desiredBufferSize();
     }
 
     auto channels = buildCaptureChannels();
@@ -417,11 +463,10 @@ void Application::publishAggregateDevice()
         if (d.included)
             uids.push_back (d.identity.locationId); // the CoreAudio device UID on macOS
 
-    // §3.1: same clock master as the in-app capture path, so the aggregate and
-    // the app agree about whose crystal is the truth.
-    std::string master;
-    if (const auto* m = deviceManager.selectDefaultMaster())
-        master = m->identity.locationId;
+    // The clock master is this computer, so the aggregate is left on the
+    // system's own clock rather than pinned to one microphone's crystal --
+    // the same reference the in-app capture path corrects onto.
+    const std::string master;
 
     const auto name = aggregateName.toStdString();
 
@@ -454,69 +499,16 @@ void Application::applyClockMaster()
     if (capture == nullptr)
         return;
 
-    // §3.1 / §3.3: DeviceManager owns *which microphone* should be the timebase
-    // -- lowest measured drift, the user's override, or the next best after the
-    // master leaves. What it cannot own is which channel that is, because it
-    // tracks the devices the OS reports right now and a take's channel list is
-    // frozen (§6.5).
+    // The clock master is this computer, always.
     //
-    // This used to count included devices to find the index, which is the same
-    // number only until a microphone is unplugged mid-take. After that the
-    // device list is short one entry and every index past the gap is off by
-    // one, so setMasterChannel() named the wrong channel -- and the channel it
-    // named could be the unplugged one, writing silence, with every other
-    // microphone resampled onto it.
-    std::vector<std::string> rankedIds;
-    for (const auto* d : deviceManager.rankMasterCandidates())
-        rankedIds.push_back (d->identity.key());
-
-    // capture's own channel list, since that is exactly what setMasterChannel
-    // indexes into. Outside a take it tracks the device list; during one it is
-    // the frozen list, which is the point.
-    const bool recording = capture->isRecording();
-    std::vector<std::string> channelIds;
-    std::vector<bool> channelLive;
-
-    for (const auto& ch : capture->getChannels())
-    {
-        channelIds.push_back (ch.deviceId);
-        channelLive.push_back (! recording || ! recordingEngine.isWritingSilence (ch.deviceId));
-    }
-
-    const auto resolved = resolveMasterChannel (channelIds, channelLive, rankedIds);
-    capture->setMasterChannel (resolved.channelIndex);
-
-    // §3.3: "Log the switchover timestamp in session.json." Only a change is
-    // worth a line -- this runs on every status poll, and re-confirming the
-    // same master is not an event.
-    if (recording && resolved.deviceId != appliedMasterDeviceId)
-    {
-        if (! appliedMasterDeviceId.empty())
-            midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), resolved.deviceId,
-                                         resolved.deviceId.empty()
-                                             ? std::string ("Clock master lost: no live microphone is left to "
-                                                            "measure drift against. The channels stay corrected "
-                                                            "and the recording is unaffected.")
-                                             : std::string ("Clock master switched to this microphone after "
-                                                            "the previous one stopped delivering audio.") });
-
-        // §3.3's failover reached session.json and nowhere else, so the user
-        // was never told the rig had changed its timing reference mid-take.
-        if (! appliedMasterDeviceId.empty())
-            noteActivity (resolved.deviceId.empty() ? ActivityLevel::Warning : ActivityLevel::Recovered,
-                          "Timing",
-                          resolved.deviceId.empty()
-                              ? juce::String ("No live microphone is left to keep time against. The "
-                                              "recording is unaffected.")
-                              : juce::String ("Switched to another microphone to keep time. The "
-                                              "recording is unaffected."));
-
-        appliedMasterDeviceId = resolved.deviceId;
-    }
-    else if (! recording)
-    {
-        appliedMasterDeviceId = resolved.deviceId;
-    }
+    // §3.2 already corrects every microphone onto the output clock -- the
+    // timebase the headphones run on, which is the machine's own. Naming one
+    // microphone as "master" changed nothing about that path; it only moved
+    // which crystal the drift figures were quoted against, and handed the user
+    // a picker for a choice with no audible consequence. Measured against the
+    // computer instead, every microphone's figure means the same thing, no
+    // master can be unplugged mid-take, and there is nothing to choose.
+    capture->setMasterChannel (-1);
 }
 
 MonitorBus* Application::getMonitorBus()
@@ -542,24 +534,33 @@ void Application::onDeviceListChanged()
 
     auto inputDevices = audioBackend->enumerateInputDevices();
 
-    std::vector<DeviceRateCapability> rateCapabilities;
+    // Rates per device, kept by identity so the §2.2 vote can be taken AFTER
+    // inclusion is known. Taken here, over every device the OS lists, it
+    // included microphones nobody is recording -- and a MacBook's built-in mic
+    // sitting at 48 kHz outvoted the interface the take actually uses, which is
+    // exactly how a rig at 44.1 kHz was told to be 48.
+    std::vector<EnumeratedDeviceRates> enumeratedRates;
+    enumeratedRates.reserve (inputDevices.size());
+
     std::vector<MicDeviceState> seen;
     seen.reserve (inputDevices.size());
 
     int order = 0;
     for (const auto& d : inputDevices)
     {
-        DeviceRateCapability cap;
-        cap.deviceIndex = order;
-        cap.supportedRates = d.supportedSampleRates;
-        rateCapabilities.push_back (cap);
-
         MicDeviceState state;
         state.identity.locationId = d.usbLocationId;
         if (! d.serialNumber.empty())
             state.identity.serial = d.serialNumber;
         state.displayName = d.name;
         state.isBuiltIn = d.isBuiltIn;
+        state.inputChannelCount = std::max (1, d.maxInputChannels);
+
+        // §2.2 prefers a rate the hardware is already on. Advertising a rate is
+        // not the same as being willing to switch to it, and the switch is what
+        // fails.
+        enumeratedRates.push_back ({ state.identity.key(), d.supportedSampleRates, d.currentSampleRate });
+
         seen.push_back (std::move (state));
         ++order;
     }
@@ -575,9 +576,68 @@ void Application::onDeviceListChanged()
     // once at launch.
     applyRememberedDeviceSettings();
 
-    // §2.2: highest common rate, capped at 48kHz. Never rejects a device.
+    // §2.2: only the microphones actually being recorded get a vote. A device
+    // the take does not use cannot be made to resample, cannot go out of sync,
+    // and cannot be harmed by the choice -- so letting it constrain the rate
+    // only ever costs the microphones that ARE being recorded.
+    std::vector<std::string> includedKeys;
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            includedKeys.push_back (d.identity.key());
+
+    auto rateCapabilities = SampleRateNegotiator::votingDevices (includedKeys, enumeratedRates);
+
+    // Microphones are included but none of them matched what the OS listed.
+    // That is a key mismatch somewhere upstream, and the honest response is to
+    // let every enumerated device vote rather than let negotiate() see an empty
+    // list and hand back its 48 kHz default -- which would be the very "demand
+    // a rate the hardware refuses" failure this rule exists to end, arriving
+    // silently through a side door.
+    if (rateCapabilities.empty() && ! includedKeys.empty())
+    {
+        jassertfalse; // a device in the take that the OS did not list?
+        int index = 0;
+
+        for (const auto& e : enumeratedRates)
+        {
+            DeviceRateCapability cap;
+            cap.deviceIndex = index++;
+            cap.supportedRates = e.supportedRates;
+            cap.currentRate = e.currentRate;
+            rateCapabilities.push_back (std::move (cap));
+        }
+    }
+
+    // The rate the rig is already on where they agree, else highest common,
+    // capped at 48kHz. Never rejects a device.
     auto rateResult = SampleRateNegotiator::negotiate (rateCapabilities);
-    currentSampleRate = rateResult.chosenRate;
+
+    // What Settings can offer: every rate any recorded microphone reports,
+    // plus whatever each is running at now. Like Audio MIDI Setup, the whole
+    // list, not a pre-filtered one -- the user is choosing for their hardware,
+    // and a device that cannot follow is resampled by §3 or, if it refuses to
+    // open, says so on the main screen by name.
+    {
+        std::set<uint32_t> offered;
+
+        for (const auto& c : rateCapabilities)
+        {
+            for (auto rate : c.supportedRates)
+                offered.insert (rate);
+
+            if (c.currentRate != 0)
+                offered.insert (c.currentRate);
+        }
+
+        availableSampleRates.assign (offered.begin(), offered.end());
+    }
+
+    // A pinned rate is honoured, full stop. The earlier rule quietly dropped a
+    // pin the rig "could not reach" and fell back to automatic, which from the
+    // user's side is a control that does nothing. §0.1's spirit: if the choice
+    // cannot be met, say so -- the open path names the device and both rates.
+    currentSampleRate = sampleRateOverride != 0 ? sampleRateOverride : rateResult.chosenRate;
 
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
@@ -626,10 +686,12 @@ void Application::onDeviceListChanged()
         // §6.5: mid-take, a mic that has gone away keeps its channel and writes
         // silence. Dropping or renumbering the channel would corrupt the take,
         // so the take's channel list is fixed and only its liveness moves.
+        // Present means enumerated -- not `included`, which the Settings tick
+        // box also clears. Unticking a mic mid-take used to read as an unplug
+        // on the next device notification and silence that person's channel.
         std::set<std::string> present;
         for (const auto& d : deviceManager.getDevices())
-            if (d.included)
-                present.insert (d.identity.key());
+            present.insert (d.identity.key());
 
         std::set<std::string> takeChannels;
         for (const auto& ch : capture->getChannels())
@@ -770,6 +832,57 @@ std::vector<SetupAdvice> Application::getSetupAdvice() const
     return setupAdvisor.getActiveAdvice (juce::Time::getMillisecondCounterHiRes() / 1000.0);
 }
 
+ProofReading Application::snapshotProof() const
+{
+    ProofReading reading;
+    reading.elapsedSeconds = getElapsedRecordingSeconds();
+
+    if (capture != nullptr)
+    {
+        reading.framesAccepted = capture->getFramesAccepted();
+        reading.peakArrived = capture->getPeakArrived();
+    }
+
+    if (currentSessionFolder.isNotEmpty())
+        for (const auto& file : listSessionFiles (currentSessionFolder))
+            reading.bytesOnDisk += static_cast<uint64_t> (std::max<int64_t> (0, file.sizeBytes));
+
+    return reading;
+}
+
+TakeHealth Application::snapshotTakeHealth() const
+{
+    TakeHealth health;
+
+    const int micCount = getIncludedMicCount();
+    for (int i = 0; i < micCount; ++i)
+        health.mics.push_back ({ getMicDisplayName (i).toStdString(), isMicLive (i) });
+
+    // Only the cameras switched on are in the take, and a camera the OS has
+    // stopped listing is simply absent from this list -- the watchdog treats
+    // a name that was here and now is not as gone.
+    const auto& cameras = cameraController.getSelection();
+    for (const auto& camera : cameras.getAvailableCameras())
+        if (cameras.isEnabled (camera.id))
+            health.cameras.push_back ({ cameras.getDisplayName (camera.id), true });
+
+    health.cameraProblem = cameraController.getProblem().toStdString();
+    health.monitorProblem = getMonitorProblem().toStdString();
+
+    if (capture != nullptr)
+    {
+        health.framesDropped = capture->getFramesDropped();
+        health.samplesOverrun = capture->getOverrunSamples();
+        health.outputClockLost = capture->isOutputClockLost();
+        health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
+        health.mixOnly = capture->isMixOnly();
+    }
+
+    health.remainingSeconds = getRemainingRecordingSeconds();
+    health.elapsedSeconds = getElapsedRecordingSeconds();
+    return health;
+}
+
 bool Application::isMicLive (int index) const
 {
     // Outside a take every included mic is live by definition: §6.5's silence
@@ -801,7 +914,13 @@ RemainingTimeWarning Application::pollCapacityWarning()
     if (recordingEngine.getState() != RecordingState::Recording)
         return RemainingTimeWarning::None;
 
-    return capacityMonitor.evaluateRemaining (getRemainingRecordingSeconds());
+    // Negative is "could not be determined", which is not the same as none
+    // left -- it used to read as Exhausted and announce a full drive.
+    const auto remaining = getRemainingRecordingSeconds();
+    if (remaining < 0.0)
+        return RemainingTimeWarning::None;
+
+    return capacityMonitor.evaluateRemaining (remaining);
 }
 
 Metering* Application::getChannelMetering (int index)
@@ -816,37 +935,52 @@ Metering* Application::getMixMetering()
     return capture != nullptr ? &capture->getMixMetering() : nullptr;
 }
 
-juce::String Application::nameForDevice (const std::string& identityKey,
-                                         const juce::String& fallback) const
+juce::String Application::nameForChannel (const std::string& identityKey, int deviceChannel) const
 {
     for (const auto& d : deviceManager.getDevices())
     {
         if (d.identity.key() != identityKey)
             continue;
 
+        const auto persisted = portIdentityStore.get (d.identity);
+
         // The name the user gave this port wins over the product string --
         // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
-        if (const auto persisted = portIdentityStore.get (d.identity))
-            if (! persisted->assignedName.empty())
-                return juce::String (persisted->assignedName);
+        std::string base = d.displayName;
+        bool knownDuplicateStereo = false;
 
-        return juce::String (d.displayName);
+        if (persisted.has_value())
+        {
+            // A name given to this particular input is who is on it, and
+            // needs no socket number after it.
+            const auto named = persisted->inputNames.find (deviceChannel);
+            if (named != persisted->inputNames.end() && ! named->second.empty())
+                return juce::String (named->second);
+
+            if (! persisted->assignedName.empty())
+                base = persisted->assignedName;
+
+            knownDuplicateStereo = persisted->hasChannelLayoutDecision
+                                && persisted->channelLayoutIsMono;
+        }
+
+        const int inputs = takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo);
+
+        return juce::String (plannedChannelName (base, deviceChannel, inputs));
     }
 
-    return fallback;
+    return {};
 }
 
 juce::String Application::getMicProductName (int index) const
 {
     // §14.6: with four identical microphones on a desk, the name the user gave
     // a port is what identifies it -- but the hardware's own name is what tells
-    // them which *kind* of thing it is. The strip has always reserved a line
-    // for it under the bold name and always drawn it empty, because
-    // setDeviceName() had no callers anywhere.
+    // them which *kind* of thing it is.
     //
-    // Resolved in the take's channel space while one is running, for the same
-    // reason getMicDisplayName is: after a mid-take unplug the device list and
-    // the channel list are different lengths.
+    // Resolved in channel space, not device space, for the same reason
+    // getMicDisplayName is: an interface contributes several channels, and
+    // after a mid-take unplug the two lists are different lengths.
     std::string key;
     juce::String fallback;
 
@@ -862,24 +996,13 @@ juce::String Application::getMicProductName (int index) const
     }
     else
     {
-        int seen = 0;
-        for (const auto& d : deviceManager.getDevices())
-        {
-            if (! d.included)
-                continue;
+        const auto plan = planChannels (planDevices());
 
-            if (seen == index)
-            {
-                key = d.identity.key();
-                fallback = juce::String (d.displayName);
-                break;
-            }
-
-            ++seen;
-        }
-
-        if (key.empty())
+        if (index < 0 || index >= static_cast<int> (plan.size()))
             return {};
+
+        key = plan[static_cast<size_t> (index)].deviceKey;
+        fallback = juce::String (plan[static_cast<size_t> (index)].displayName);
     }
 
     juce::String product = fallback;
@@ -909,37 +1032,73 @@ juce::String Application::getMicDisplayName (int index) const
             return {};
 
         const auto& ch = channels[static_cast<size_t> (index)];
-        return nameForDevice (ch.deviceId, juce::String (ch.displayName));
+        const auto live = nameForChannel (ch.deviceId, ch.deviceChannel);
+
+        // Empty means the device is no longer enumerated -- it was unplugged
+        // mid-take. The name the channel opened with is the honest answer.
+        return live.isNotEmpty() ? live : juce::String (ch.displayName);
     }
 
-    int seen = 0;
-    for (const auto& d : deviceManager.getDevices())
-    {
-        if (! d.included)
-            continue;
+    // Outside a take, the same plan the take would use. Walking the device list
+    // instead is what made a two-input interface show one microphone until the
+    // moment recording began -- which reads as an app that cannot see the
+    // second microphone at all, and was reported as exactly that.
+    const auto plan = planChannels (planDevices());
 
-        if (seen == index)
-            return nameForDevice (d.identity.key(), juce::String (d.displayName));
+    if (index < 0 || index >= static_cast<int> (plan.size()))
+        return {};
 
-        ++seen;
-    }
-
-    return {};
+    return juce::String (plan[static_cast<size_t> (index)].displayName);
 }
 
 void Application::setMicAssignedName (int index, const juce::String& name)
 {
-    int seen = 0;
+    // `index` is a strip, and a strip is one INPUT of a device -- resolved in
+    // channel space, like every other strip accessor, rather than by walking
+    // devices. Walking devices named the wrong port on any interface, and
+    // could not name one input of it at all.
+    std::string deviceKey;
+    int deviceChannel = 0;
+
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+        if (index < 0 || index >= static_cast<int> (channels.size()))
+            return;
+        deviceKey = channels[static_cast<size_t> (index)].deviceId;
+        deviceChannel = channels[static_cast<size_t> (index)].deviceChannel;
+    }
+    else
+    {
+        const auto plan = planChannels (planDevices());
+        if (index < 0 || index >= static_cast<int> (plan.size()))
+            return;
+        deviceKey = plan[static_cast<size_t> (index)].deviceKey;
+        deviceChannel = plan[static_cast<size_t> (index)].deviceChannel;
+    }
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (! d.included)
-            continue;
-
-        if (seen++ != index)
+        if (d.identity.key() != deviceKey)
             continue;
 
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
-        settings.assignedName = SessionFolderNaming::sanitizeName (name.toStdString());
+        const auto clean = SessionFolderNaming::sanitizeName (name.toStdString());
+
+        // One microphone is one box, so the box takes the name. On an interface
+        // each socket is a person, so the socket does -- and the box's own name
+        // is left alone for the other inputs.
+        const bool knownDuplicateStereo = settings.hasChannelLayoutDecision && settings.channelLayoutIsMono;
+        if (takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) > 1)
+        {
+            if (clean.empty()) settings.inputNames.erase (deviceChannel);
+            else               settings.inputNames[deviceChannel] = clean;
+        }
+        else
+        {
+            settings.assignedName = clean;
+        }
+
         portIdentityStore.put (d.identity, settings);
 
         saveSettings();
@@ -947,11 +1106,21 @@ void Application::setMicAssignedName (int index, const juce::String& name)
         // The capture channels carry the display name into the stem filenames
         // (§6.2), so they are rebuilt -- but never mid-take, where §6.5 fixes
         // the channel list for the duration of the recording.
-        if (capture != nullptr && ! capture->isRecording())
-            restartCapture();
+        requestCaptureRestart();
 
         return;
     }
+}
+
+void Application::requestCaptureRestart()
+{
+    if (capture != nullptr && capture->isRecording())
+    {
+        captureRestartDeferred = true;
+        return;
+    }
+
+    restartCapture();
 }
 
 std::vector<Application::StorageVolume> Application::getStorageVolumes() const
@@ -1084,6 +1253,18 @@ void Application::toggleRecording()
         {
             recordingStartMs = juce::Time::getMillisecondCounterHiRes();
 
+            // §6.3: the mirror decision is taken HERE, before the folders are
+            // made, against the free space now. It used to be evaluated after
+            // the mirror folder had already been decided from the previous
+            // take's state, so the first take of every launch had no backup
+            // and later takes inherited the verdict of the one before.
+            capacityMonitor.reset();
+            mirrorPolicy.reset();
+            {
+                const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+                mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
+            }
+
             // §6: this is what actually opens the stem files and starts the
             // writer thread. Without it the record button only changes state.
             if (capture != nullptr)
@@ -1162,17 +1343,10 @@ void Application::toggleRecording()
 
             // Each take gets its own warnings; a previous one must not leave the
             // ten-minute warning already spent.
+            mirrorActiveAtStop = -1;
             midTakeDropouts.clear();
             midTakeNotice.clear();
             midTakeNoticeSeconds = 0.0;
-
-            capacityMonitor.reset();
-            mirrorPolicy.reset();
-
-            // §6.3: the mirror only starts when the internal drive has room for
-            // the whole projected session plus headroom.
-            const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-            mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
 
             // §5.4: buffer size is fixed for the duration of a take.
             bufferLadder.setRecording (true);
@@ -1185,6 +1359,8 @@ void Application::toggleRecording()
         // silent -- the measurement has to be taken while the thing that made
         // it still exists.
         const float takePeak = capture != nullptr ? capture->getPeakWritten() : -1.0f;
+        const float arrivedPeak = capture != nullptr ? capture->getPeakArrived() : -1.0f;
+        mirrorActiveAtStop = (capture != nullptr && capture->isMirroring()) ? 1 : 0;
 
         // §6.1: stop the writer first so every buffered frame reaches the files
         // before the engine reports the take finished.
@@ -1238,12 +1414,13 @@ void Application::toggleRecording()
             for (const auto& f : listSessionFiles (lastSessionFolder))
                 written.push_back ({ f.name.toStdString(), f.sizeBytes });
 
-            lastTakeVerdict = judgeTakeAudio (written, takePeak);
+            lastTakeVerdict = judgeTakeAudio (written, takePeak, arrivedPeak);
 
             // Both failures mean the same thing to anyone deciding whether to
             // record it again: there is no audio in that folder.
             lastTakeHeldNoAudio = lastTakeVerdict == TakeAudioVerdict::NothingWritten
-                               || lastTakeVerdict == TakeAudioVerdict::OnlySilence;
+                               || lastTakeVerdict == TakeAudioVerdict::OnlySilence
+                               || lastTakeVerdict == TakeAudioVerdict::DroppedByApp;
         }
 
         // §6.2: the take is on disk and the UI has not shown where yet. Only
@@ -1271,6 +1448,15 @@ void Application::toggleRecording()
 
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
+
+        // Everything refused during the take -- a mic plugged in, an unplug,
+        // a rename, a rate change -- is applied now, so the next take's plan
+        // and its streams agree.
+        if (captureRestartDeferred)
+        {
+            captureRestartDeferred = false;
+            restartCapture();
+        }
     }
 }
 
@@ -1434,10 +1620,15 @@ int Application::getIncludedMicCount() const
     if (capture != nullptr && capture->isRecording())
         return static_cast<int> (capture->getChannels().size());
 
+    // Outside a take, the count the take WOULD produce. Counting included
+    // devices instead under-counted every interface: a two-input interface
+    // showed one strip and reserved disk for one track, then recorded two.
+    // §6.4's remaining-time figure was wrong by the input multiplier -- double
+    // on a 2-input box, quadruple on a 4-input one -- which is a promise of
+    // recording time the disk cannot keep.
     int count = 0;
-    for (const auto& d : deviceManager.getDevices())
-        if (d.included)
-            ++count;
+    for (const auto& d : planDevices())
+        count += takeChannelsForDevice (d.inputChannelCount, d.knownDuplicateStereo);
 
     return count;
 }
@@ -1507,6 +1698,18 @@ juce::String Application::getRecordDisabledReason() const
 {
     if (getIncludedMicCount() == 0)
         return "Plug in a microphone first.";
+
+    // The microphones have to be OPEN, not merely plugged in. A rig whose
+    // streams failed to open -- the output refused low-latency mode, a mic
+    // held by another app -- used to leave this button live, and pressing it
+    // produced a take of empty files with the clock running. Now the button
+    // says why it is off, in the words the streams gave.
+    if (capture == nullptr || ! capture->isMonitoring())
+    {
+        const auto problem = capture != nullptr ? capture->getMonitorProblem() : std::string();
+        return problem.empty() ? juce::String ("The microphones aren't open yet.")
+                               : "The microphones aren't open: " + juce::String (problem);
+    }
 
     // §6.4: pre-flight blocks arming rather than degrading mid-take.
     if (preflightRunning.load())
@@ -1677,13 +1880,14 @@ void Application::setChannelTrimDb (int index, float trimDb)
     const auto step = static_cast<float> (MonitorBus::kTrimStepDb);
     const auto quantised = std::round (clamped / step) * step;
 
-    int seen = 0;
+    // `index` is a strip, resolved in channel space like every other strip
+    // accessor. Walking included devices put the trim on the wrong device on
+    // any interface with more than one socket, and the slider snapped back.
+    const auto deviceKey = deviceKeyForStrip (index);
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (! d.included)
-            continue;
-
-        if (seen++ != index)
+        if (d.identity.key() != deviceKey)
             continue;
 
         // §4 persists trim against the physical port, not the slot, so it
@@ -1706,13 +1910,11 @@ void Application::setChannelTrimDb (int index, float trimDb)
 
 float Application::getChannelTrimDb (int index) const
 {
-    int seen = 0;
+    const auto deviceKey = deviceKeyForStrip (index);
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (! d.included)
-            continue;
-
-        if (seen++ != index)
+        if (d.identity.key() != deviceKey)
             continue;
 
         if (const auto settings = portIdentityStore.get (d.identity))
@@ -1722,6 +1924,21 @@ float Application::getChannelTrimDb (int index) const
     }
 
     return 0.0f;
+}
+
+std::string Application::deviceKeyForStrip (int index) const
+{
+    // Mid-take the channel list is the take's frozen one; otherwise the plan.
+    if (capture != nullptr && capture->isRecording())
+    {
+        const auto& channels = capture->getChannels();
+        return index >= 0 && index < static_cast<int> (channels.size())
+             ? channels[static_cast<size_t> (index)].deviceId : std::string();
+    }
+
+    const auto plan = planChannels (planDevices());
+    return index >= 0 && index < static_cast<int> (plan.size())
+         ? plan[static_cast<size_t> (index)].deviceKey : std::string();
 }
 
 juce::String Application::getActiveBackendDescription() const
@@ -1744,14 +1961,6 @@ const std::vector<std::string>& Application::getOutputDeviceNames() const
     // timer. The Advanced panel repaints at 2 Hz and must read this cache
     // rather than go back to the driver each time.
     return outputDeviceNames;
-}
-
-juce::String Application::getClockMasterName() const
-{
-    if (const auto* master = deviceManager.selectDefaultMaster())
-        return juce::String (master->displayName);
-
-    return {};
 }
 
 juce::String Application::getDriftReport() const
@@ -1803,9 +2012,69 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
     std::vector<MicSelection> out;
 
     for (const auto& d : deviceManager.getDevices())
-        out.push_back ({ juce::String (d.displayName), d.userEnabled, d.isBuiltIn });
+    {
+        const auto persisted = portIdentityStore.get (d.identity);
+        const bool knownDuplicateStereo = persisted.has_value()
+                                       && persisted->hasChannelLayoutDecision
+                                       && persisted->channelLayoutIsMono;
+
+        MicSelection m;
+        m.displayName = juce::String (d.displayName);
+        m.enabled = d.userEnabled;
+        m.isBuiltIn = d.isBuiltIn;
+        m.channelCount = takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo);
+
+        // One row per socket on an interface, each switchable and each showing
+        // the name its person has been given, so the list reads as who is
+        // being recorded rather than which boxes are plugged in.
+        if (m.channelCount > 1)
+        {
+            for (int input = 0; input < m.channelCount; ++input)
+            {
+                MicSelection::Input in;
+                in.index = input;
+                in.label = nameForChannel (d.identity.key(), input);
+                in.enabled = ! persisted.has_value()
+                          || std::find (persisted->disabledInputs.begin(),
+                                        persisted->disabledInputs.end(), input)
+                             == persisted->disabledInputs.end();
+                m.inputs.push_back (std::move (in));
+            }
+        }
+
+        out.push_back (std::move (m));
+    }
 
     return out;
+}
+
+void Application::setInputEnabled (const juce::String& displayName, int input, bool enabled)
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (juce::String (d.displayName) != displayName)
+            continue;
+
+        auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
+        auto& off = settings.disabledInputs;
+        const auto it = std::find (off.begin(), off.end(), input);
+        const bool currentlyOff = it != off.end();
+
+        if (enabled == ! currentlyOff)
+            return;
+
+        if (enabled) off.erase (it);
+        else         off.push_back (input);
+
+        portIdentityStore.put (d.identity, settings);
+        saveSettings();
+
+        // The channel set changed, so the streams are reopened -- never
+        // mid-take, where §6.5 fixes the channel list for the recording.
+        requestCaptureRestart();
+
+        return;
+    }
 }
 
 void Application::setMicEnabledByName (const juce::String& displayName, bool enabled)
@@ -1822,19 +2091,6 @@ void Application::setMicEnabledByName (const juce::String& displayName, bool ena
             restartCapture(); // the channel set changed, so the streams must be reopened
 
         saveSettings();
-        return;
-    }
-}
-
-void Application::setClockMasterByName (const juce::String& displayName)
-{
-    for (const auto& d : deviceManager.getDevices())
-    {
-        if (! d.included || juce::String (d.displayName) != displayName)
-            continue;
-
-        deviceManager.setPreferredMaster (d.identity.key());
-        applyClockMaster();
         return;
     }
 }
@@ -1861,11 +2117,18 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
 {
     // §6.3: the mirror lives on the internal drive, which is the whole point --
     // a card failure must not take both copies with it.
-    const auto root = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                          .getChildFile ("RECORDINGS-MIRROR")
-                          .getChildFile (sessionFolderName);
+    const auto mirrorRoot = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                .getChildFile ("RECORDINGS-MIRROR");
+    auto root = mirrorRoot.getChildFile (sessionFolderName);
 
-    if (! root.createDirectory().wasOk())
+    // §6.2 never overwrites, and that holds for the copy too. Collisions were
+    // resolved against the card only, so a take restarted on a new card with
+    // the same name -- the card-removal flow exactly -- reopened the mirror
+    // folder it had just promised was safe and truncated every file in it.
+    for (int attempt = 2; root.exists() && attempt < 1000; ++attempt)
+        root = mirrorRoot.getChildFile (sessionFolderName + "_" + juce::String (attempt));
+
+    if (root.exists() || ! root.createDirectory().wasOk())
     {
         // The caller degrades to card-only, which is right (§6.3). What it
         // could not do was tell anyone, because an empty string is not a
@@ -1932,7 +2195,9 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     }
 
     meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
-    meta.mirrorActive = capture != nullptr && capture->isMirroring();
+    meta.mirrorActive = sessionHasStopped && mirrorActiveAtStop >= 0
+                            ? mirrorActiveAtStop == 1
+                            : (capture != nullptr && capture->isMirroring());
     meta.mirrorPath = currentMirrorFolder.toStdString();
 
     // §6.5's mid-recording row: every unplug and reconnection during this take.
@@ -2321,6 +2586,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     switch (pollCapacityWarning())
     {
         case RemainingTimeWarning::Exhausted:
+            // Said AND done. This line used to claim the take had stopped
+            // while the writer carried on into a full drive until a write
+            // failed, which then arrived as the wrong notice.
+            if (recordingEngine.getState() == RecordingState::Recording)
+                toggleRecording();
             return "The drive is full. Recording has stopped -- free some space or choose another drive.";
         case RemainingTimeWarning::TwoMinutes:
             return "About two minutes of room left. Wrap up or switch drives now.";
@@ -2391,6 +2661,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // different fault from one that never arrived, and sending someone to
         // check the drive when the problem is a muted microphone wastes the
         // one moment they are still standing next to the rig.
+        // Not the user's rig. Say so plainly rather than sending them to check
+        // hardware that was working the whole time.
+        if (lastTakeVerdict == TakeAudioVerdict::DroppedByApp)
+            return "Recording stopped, and the sound did not reach the files in "
+                   + lastSessionFolder
+                   + " -- your microphones were working. This is a fault in SobStage.";
+
         if (lastTakeVerdict == TakeAudioVerdict::OnlySilence)
             return "Recording stopped, but the files in " + lastSessionFolder
                    + " are silent -- the microphones were connected but sent no sound.";
@@ -2590,6 +2867,13 @@ void Application::loadSettings()
                                                              : rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
+    sampleRateOverride = rememberedSettings.sampleRateOverride;
+    bufferSizeOverride = rememberedSettings.bufferSizeOverride;
+
+    if (rememberedSettings.bitDepthOverride == 16
+        || rememberedSettings.bitDepthOverride == 24
+        || rememberedSettings.bitDepthOverride == 32)
+        currentBitDepth = rememberedSettings.bitDepthOverride;
 
     // §2.4: the names and trims go back into the store they were taken from, so
     // every path that already reads it -- stem filenames, the monitor mix, the
@@ -2628,6 +2912,50 @@ void Application::applyRememberedDeviceSettings()
     applyingRememberedSettings = false;
 }
 
+void Application::setSampleRateOverride (uint32_t rate)
+{
+    if (sampleRateOverride == rate)
+        return;
+
+    sampleRateOverride = rate;
+    saveSettings();
+
+    // The rate is fixed for the life of a stream (§5.4), so the streams are
+    // reopened rather than nudged. handleDeviceChange re-runs §2.2 and applies
+    // the new choice through exactly the path a hot-plug takes.
+    onDeviceListChanged();
+}
+
+void Application::setBitDepthOverride (int bits)
+{
+    if (bits != 16 && bits != 24 && bits != 32)
+        return;
+
+    if (currentBitDepth == bits)
+        return;
+
+    // Bit depth is a property of the files, chosen when a take starts, so this
+    // needs no stream reopened -- it simply applies to the next press of record.
+    currentBitDepth = bits;
+    saveSettings();
+}
+
+void Application::setBufferSizeOverride (int samples)
+{
+    if (samples < 0)
+        return;
+
+    if (bufferSizeOverride == samples)
+        return;
+
+    bufferSizeOverride = samples;
+    saveSettings();
+
+    // Fixed for the life of a stream (§5.4), so the streams are reopened
+    // through the same path a hot-plug takes.
+    onDeviceListChanged();
+}
+
 void Application::saveSettings()
 {
     // Guarded so applying a loaded file cannot write a half-applied rig back
@@ -2646,6 +2974,9 @@ void Application::saveSettings()
     settings.cameraTileScale = cameraTileScale;
     settings.combineVideoAndAudio = combineVideoAndAudio;
     settings.deliveryTarget = deliveryTarget.toStdString();
+    settings.sampleRateOverride = sampleRateOverride;
+    settings.bitDepthOverride = currentBitDepth == 24 ? 0 : currentBitDepth;
+    settings.bufferSizeOverride = bufferSizeOverride;
 
     for (const auto& entry : portIdentityStore.all())
         settings.ports.push_back ({ entry.first, entry.second });
@@ -2653,6 +2984,19 @@ void Application::saveSettings()
     for (const auto& device : deviceManager.getDevices())
         if (! device.userEnabled)
             settings.disabledMicKeys.push_back (device.identity.key());
+
+    // And every mic the user switched off that is not plugged in right now,
+    // as the cameras below already do: §2.4 port memory, for the one setting
+    // that used to be forgotten the moment the mic was unplugged.
+    for (const auto& key : rememberedSettings.disabledMicKeys)
+    {
+        bool enumerated = false;
+        for (const auto& device : deviceManager.getDevices())
+            if (device.identity.key() == key) { enumerated = true; break; }
+
+        if (! enumerated)
+            settings.disabledMicKeys.push_back (key);
+    }
 
     // Every camera the user has an opinion about, not only the connected ones:
     // a camera unplugged today should come back tomorrow as it was left.
@@ -2723,6 +3067,41 @@ struct NewestFirst
     }
 };
 } // namespace
+
+void Application::clearRecoveredSessions()
+{
+    // The rule for "interrupted" is an empty stop timestamp, and repairing
+    // the headers never wrote one -- so the same takes came back at every
+    // launch. Stamped with the moment they were recovered; the audio has
+    // already been repaired and is what it is.
+    const auto now = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+
+    for (const auto& session : recoveredSessions)
+    {
+        const auto file = juce::File (juce::String (session.folder)).getChildFile ("session.json");
+
+        if (! file.existsAsFile())
+            continue;
+
+        try
+        {
+            auto meta = SessionMetadata::fromJsonString (file.loadFileAsString().toStdString());
+
+            if (meta.stopTimestampIso.empty())
+            {
+                meta.stopTimestampIso = now;
+                file.replaceWithText (juce::String (meta.toJsonString()));
+            }
+        }
+        catch (...)
+        {
+            // Unreadable metadata stays as it is; the take will be offered
+            // again, which beats overwriting something we could not parse.
+        }
+    }
+
+    recoveredSessions.clear();
+}
 
 void Application::scanForInterruptedSessions()
 {

@@ -6,6 +6,36 @@
 
 namespace mma {
 
+/// How many take channels a device presenting `inputChannelCount` inputs
+/// contributes, and therefore how many strips and files it produces.
+///
+/// This lives in Core, and is a free function rather than a line inside the
+/// app's channel builder, because that builder needs JUCE and so cannot be
+/// reached by these tests at all. The rule went in untested once already and
+/// was defeated by a device whose input count was never refreshed -- the app
+/// believed a four-microphone interface had one microphone on it, and nothing
+/// anywhere could have caught it.
+///
+/// One input is one microphone. Every input above that is also a microphone,
+/// unless §2.1 has positively decided otherwise.
+///
+/// Two inputs used to collapse to one on the assumption that a two-channel
+/// device is a USB mic presenting the same voice on both sides. That is one
+/// kind of two-input device. The other is a two-input interface with two
+/// people plugged into it, which is the commonest small multi-mic rig there
+/// is, and for those the assumption threw a person away.
+///
+/// §0.1 settles which way to guess. Keeping both sides of a duplicated mono
+/// mic costs a redundant file, which is untidy. Collapsing two microphones
+/// into one loses somebody's audio entirely, with nothing said. Those are not
+/// comparable, so both are kept until §2.1's analyzer has actually looked at
+/// the audio and said they are the same source -- a decision §2.4 remembers
+/// per port, so the second take on a stereo USB mic collapses correctly.
+/// `knownDuplicateStereo` is §2.4's remembered §2.1 verdict for this port: true
+/// only when the analyzer has actually decided the two sides carry the same
+/// source. Absent a decision it is false, and both sides are kept.
+int takeChannelsForDevice (int inputChannelCount, bool knownDuplicateStereo = false) noexcept;
+
 struct MicDeviceState
 {
     PortIdentity identity;
@@ -27,6 +57,13 @@ struct MicDeviceState
     /// and drift exactly as the cap does, because `included` is the single flag
     /// every one of those paths already consults.
     bool userEnabled = true;
+
+    /// How many inputs this device presents.
+    ///
+    /// One device is not one microphone. An interface with four mics plugged
+    /// into it reports four, and each is a separate person who expects their
+    /// own track.
+    int inputChannelCount = 1;
 };
 
 /// §1 8-mic cap, §3.1 master selection, §3.3 master failover. Pure logic over

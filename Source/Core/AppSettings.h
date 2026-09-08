@@ -77,6 +77,21 @@ struct AppSettings
     /// Spotify is noise.
     std::string deliveryTarget;
 
+    /// A rate the user pinned in Settings, or 0 for automatic.
+    ///
+    /// Automatic is the right answer almost always -- §2.2 stays on whatever
+    /// the hardware is already running, which is what cannot fail. This exists
+    /// because the app once told someone to change a rate here and there was
+    /// nothing here to change.
+    uint32_t sampleRateOverride = 0;
+
+    /// Bit depth the user pinned in Settings, or 0 for the default (24-bit).
+    int bitDepthOverride = 0;
+
+    /// Buffer size the user pinned in Settings, or 0 for automatic -- §5.4's
+    /// ladder, which starts small and steps up only on overruns.
+    int bufferSizeOverride = 0;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,

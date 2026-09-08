@@ -39,8 +39,13 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
 
     // A full ring means the consumer is not keeping up. Dropping the newest
     // samples is the only lock-free option; the loop reacts by speeding this
-    // device's playout back up.
-    ring.write (samples, static_cast<size_t> (numSamples));
+    // device's playout back up. What is dropped is COUNTED: this used to
+    // discard the return value, and a stalled consumer lost audio with every
+    // counter on the screen still reading zero.
+    const auto written = ring.write (samples, static_cast<size_t> (numSamples));
+
+    if (written < static_cast<size_t> (numSamples))
+        overrunSamples.fetch_add (static_cast<uint64_t> (numSamples) - written, std::memory_order_relaxed);
 }
 
 bool DeviceInputStream::readOne (float& out) noexcept

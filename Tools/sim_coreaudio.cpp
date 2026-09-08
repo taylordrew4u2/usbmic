@@ -210,6 +210,15 @@ void continuousSampleRateRangeIsExpanded()
     check (has (44100) && has (48000) && has (88200) && has (96000),
            "every standard rate inside the range is reported");
     check (! has (192000), "a rate outside the range is not");
+
+    // §2.2 stays on the rate the hardware is already using, and it can only do
+    // that if the backend says what that rate is. Nothing checked this, so a
+    // field left at 0 would have silently reverted the whole rule to
+    // highest-common -- which is exactly how a fix for a 44.1 kHz interface
+    // shipped unable to fire on it.
+    std::printf ("  current rate reported: %u Hz\n", devices.front().currentSampleRate);
+    check (devices.front().currentSampleRate == 48000,
+           "and the rate the device is running at RIGHT NOW is reported, not left at 0");
 }
 
 /// Another process holding the device makes the rate write fail even when the
@@ -234,6 +243,31 @@ void aDeviceAlreadyAtTheRequestedRateStillOpens()
     backend.closeAllStreams();
 }
 
+/// The reported rig: an interface sitting at 44.1 kHz. The backend must say so,
+/// because §2.2's whole "stay put" rule is built on that one number.
+void aDeviceAt44100ReportsThatAsItsCurrentRate()
+{
+    std::printf ("\nAn interface running at 44.1 kHz\n");
+    fakeca::reset();
+
+    auto spec = microphone ("PUP Mixer", "uid-pup", 2, fakeca::BufferShape::interleaved);
+    spec.rateRanges = { { 44100.0, 48000.0 } };
+    spec.currentRate = 44100.0;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    const auto devices = backend.enumerateInputDevices();
+
+    check (devices.size() == 1, "the interface enumerates");
+
+    if (devices.empty())
+        return;
+
+    std::printf ("  current rate reported: %u Hz\n", devices.front().currentSampleRate);
+    check (devices.front().currentSampleRate == 44100,
+           "and reports 44.1 kHz, which is what lets the take stay there");
+}
+
 /// The converse: a device that cannot reach the requested rate must fail rather
 /// than run at the wrong one, which would be a silent, permanent drift source.
 void aDeviceThatCannotReachTheRateIsRefused()
@@ -253,31 +287,38 @@ void aDeviceThatCannotReachTheRateIsRefused()
     check (! backend.openInputStream ("uid-stuck", 48000.0, 256, capture.callback()),
            "the open is refused rather than silently running at the wrong rate");
 
-    // §5.4 asks for the cause to be named. The field existed and every refusal
-    // in here left it empty, so a refused open reached the user as a generic
-    // "couldn't open" with nothing to act on.
-    check (! backend.getLastOpenError().empty(), "and says why, rather than just refusing");
+    // §0.1: refusing is only half the job. "Couldn't be opened for recording"
+    // sends someone hunting through cables for a fault that is one number in a
+    // settings pane, and the app knew the number the whole time.
+    const auto reason = backend.getLastOpenError();
+    std::printf ("  reason: %s\n", reason.c_str());
+
+    check (! reason.empty(), "and says why, rather than leaving the user to guess");
+    check (reason.find ("44.1 kHz") != std::string::npos,
+           "naming the rate the interface is actually running at");
+    check (reason.find ("48 kHz") != std::string::npos,
+           "and the rate the recording wants");
 }
 
-/// A microphone that has been unplugged between the device list being drawn and
-/// the user clicking it. The open must fail, and it must say what happened --
-/// "couldn't open your microphone" sends someone looking at settings when the
-/// answer is that the thing is not plugged in.
-void anAbsentDeviceNamesItsCause()
+/// A microphone unplugged between being listed and being opened. The message
+/// has to say THAT, not offer a sample-rate lecture about a device that is no
+/// longer there.
+void aMicrophoneThatVanishedSaysSo()
 {
-    std::printf ("\nA mic that was unplugged before it could be opened\n");
+    std::printf ("\nA mic that was unplugged between being listed and being opened\n");
     fakeca::reset();
 
     mma::CoreAudioBackend backend;
     Capture capture;
 
-    check (! backend.openInputStream ("uid-not-here", 48000.0, 256, capture.callback()),
+    check (! backend.openInputStream ("uid-gone", 48000.0, 256, capture.callback()),
            "the open is refused");
 
-    const auto why = backend.getLastOpenError();
-    check (! why.empty(), "and names a cause");
-    check (why.find ("Plug it back in") != std::string::npos,
-           "with a next step the user can actually take");
+    const auto reason = backend.getLastOpenError();
+    std::printf ("  reason: %s\n", reason.c_str());
+
+    check (reason.find ("no longer connected") != std::string::npos,
+           "and says the microphone is gone, not that some rate is wrong");
 }
 
 /// §5.4: the monitor path is exclusive or it is nothing. Reporting success
@@ -457,7 +498,8 @@ int main()
     continuousSampleRateRangeIsExpanded();
     aDeviceAlreadyAtTheRequestedRateStillOpens();
     aDeviceThatCannotReachTheRateIsRefused();
-    anAbsentDeviceNamesItsCause();
+    aMicrophoneThatVanishedSaysSo();
+    aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();

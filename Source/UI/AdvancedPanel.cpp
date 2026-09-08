@@ -19,9 +19,9 @@ void configureRow (juce::Label& label, juce::Label& value, const juce::String& t
 
 AdvancedPanel::AdvancedPanel()
 {
-    configureRow (sampleRateLabel, sampleRateValue, "Sample rate");
-    configureRow (bitDepthLabel, bitDepthValue, "Bit depth");
-    configureRow (bufferSizeLabel, bufferSizeValue, "Buffer size");
+    sampleRateLabel.setText ("Sample rate", juce::dontSendNotification);
+    bitDepthLabel.setText ("Bit depth", juce::dontSendNotification);
+    bufferSizeLabel.setText ("Buffer size", juce::dontSendNotification);
     configureRow (latencyLabel, latencyValue, "Measured latency");
     clockMasterLabel.setText ("Clock master", juce::dontSendNotification);
     driftLabel.setText ("Per-device drift (PPM)", juce::dontSendNotification);
@@ -31,8 +31,8 @@ AdvancedPanel::AdvancedPanel()
     aggregateNameLabel.setText ("Combined device name", juce::dontSendNotification);
     destinationFolderLabel.setText ("Destination folder", juce::dontSendNotification);
 
-    for (auto* c : { &sampleRateLabel, &sampleRateValue, &bitDepthLabel, &bitDepthValue,
-                     &bufferSizeLabel, &bufferSizeValue, &latencyLabel, &latencyValue,
+    for (auto* c : { &sampleRateLabel, &bitDepthLabel,
+                     &bufferSizeLabel, &latencyLabel, &latencyValue,
                      &clockMasterLabel, &driftLabel, &outputDeviceLabel, &backendLabel,
                      &backendValue, &destinationFolderLabel })
         addAndMakeVisible (c);
@@ -45,8 +45,7 @@ AdvancedPanel::AdvancedPanel()
                      &micSelectionLabel })
         l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
 
-    for (auto* v : { &sampleRateValue, &bitDepthValue, &bufferSizeValue, &latencyValue,
-                     &backendValue })
+    for (auto* v : { &latencyValue, &backendValue })
         v->setColour (juce::Label::textColourId, AppLookAndFeel::bone);
 
     activityLabel.setJustificationType (juce::Justification::topLeft);
@@ -62,16 +61,48 @@ AdvancedPanel::AdvancedPanel()
         l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
     }
 
-    addAndMakeVisible (clockMasterCombo);
-    clockMasterCombo.onChange = [this] {
-        if (onClockMasterChanged)
-            onClockMasterChanged (clockMasterCombo.getText());
-    };
+    // Not a picker. The clock master is this computer, always: every
+    // microphone is corrected onto the machine's own clock, so there is
+    // nothing to choose and a choice would have had no audible consequence.
+    clockMasterValue.setText ("This computer", juce::dontSendNotification);
+    clockMasterValue.setColour (juce::Label::textColourId, AppLookAndFeel::bone);
+    addAndMakeVisible (clockMasterValue);
 
     addAndMakeVisible (outputDeviceCombo);
     outputDeviceCombo.onChange = [this] {
         if (onOutputDeviceChanged)
             onOutputDeviceChanged (outputDeviceCombo.getText());
+    };
+
+    // The three format controls. These were read-only lines, and the app once
+    // told a user to change one of them here -- so the instruction on screen
+    // named a control that did not exist. Like Audio MIDI Setup: pick it, the
+    // app tries it, and if the hardware refuses the main screen says so.
+    addAndMakeVisible (bitDepthCombo);
+    bitDepthCombo.onChange = [this] {
+        if (onBitDepthChanged && bitDepthCombo.getSelectedId() > 0)
+            onBitDepthChanged (bitDepthCombo.getSelectedId());
+    };
+
+    addAndMakeVisible (bufferSizeCombo);
+    bufferSizeCombo.onChange = [this] {
+        if (! onBufferSizeChanged)
+            return;
+
+        // Item 1 is Automatic; every other id is the size in samples.
+        const int id = bufferSizeCombo.getSelectedId();
+        onBufferSizeChanged (id <= 1 ? 0 : id);
+    };
+
+    addAndMakeVisible (sampleRateCombo);
+    sampleRateCombo.onChange = [this] {
+        if (! onSampleRateChanged)
+            return;
+
+        // Item 1 is Automatic. The ids above it are the rate in Hz, so the
+        // selection carries its own meaning and no parallel table can drift.
+        const int id = sampleRateCombo.getSelectedId();
+        onSampleRateChanged (id <= 1 ? 0u : static_cast<uint32_t> (id));
     };
 
     trimViewport.setViewedComponent (&trimContainer, false);
@@ -140,6 +171,9 @@ AdvancedPanel::AdvancedPanel()
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
 
+    helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
+    addAndMakeVisible (helpButton);
+
     // Four headings over what was a flat list. The reader can now find the
     // storage picker by scanning four words instead of reading fifteen rows.
     const std::pair<juce::Label*, const char*> sections[] = {
@@ -178,10 +212,9 @@ AdvancedPanel::AdvancedPanel()
     // know what a clock master is cannot tell whether they need to care.
     clockMasterHelpLabel.setText (
         "Every USB microphone runs on its own crystal, and no two tick at exactly "
-        "the same rate. One is chosen as the reference and the others are "
-        "continuously nudged to match it -- that keeps the tracks lined up over "
-        "a long take. Leave this alone unless one mic is being more dramatic "
-        "than the rest.",
+        "the same rate. All of them are continuously nudged to match this "
+        "computer's clock, so the tracks stay lined up over a long take. "
+        "There is nothing to set here.",
         juce::dontSendNotification);
     clockMasterHelpLabel.setJustificationType (juce::Justification::topLeft);
     clockMasterHelpLabel.setMinimumHorizontalScale (1.0f);
@@ -202,6 +235,16 @@ AdvancedPanel::AdvancedPanel()
 AdvancedPanel::~AdvancedPanel() = default;
 
 namespace {
+/// A rate as a person says it: "44.1 kHz", not "44100".
+juce::String rateText (uint32_t rate)
+{
+    const double khz = rate / 1000.0;
+
+    return std::abs (khz - std::floor (khz)) < 0.01
+         ? juce::String (static_cast<int> (khz)) + " kHz"
+         : juce::String (khz, 1) + " kHz";
+}
+
 void fillCombo (juce::ComboBox& combo, const juce::StringArray& names, const juce::String& selected)
 {
     combo.clear (juce::dontSendNotification);
@@ -223,40 +266,118 @@ void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce
     fillCombo (outputDeviceCombo, names, selected);
 }
 
-void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, bool>>& mics)
+void AdvancedPanel::setSampleRates (const std::vector<uint32_t>& rates, uint32_t current)
 {
-    // Rebuilt only when the set of names changes. The panel repaints at 2 Hz,
+    // Rebuilt only when the offered set or the selection changes: this runs on
+    // the panel's refresh tick, and repopulating under the user's cursor would
+    // fight a menu they have open.
+    juce::String signature;
+    for (auto r : rates)
+        signature += juce::String (static_cast<int> (r)) + ",";
+    signature += "@" + juce::String (static_cast<int> (current));
+
+    if (signature == lastSampleRateSignature)
+        return;
+
+    lastSampleRateSignature = signature;
+    sampleRateCombo.clear (juce::dontSendNotification);
+
+    // "Automatic" first and selected by default, because staying on whatever
+    // the hardware is already doing is what works; the explicit rates are the
+    // escape hatch, not the ordinary path.
+    sampleRateCombo.addItem ("Automatic (" + rateText (current) + ")", 1);
+
+    for (auto r : rates)
+        sampleRateCombo.addItem (rateText (r), static_cast<int> (r));
+
+    sampleRateCombo.setSelectedId (1, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setBitDepthChoice (int current)
+{
+    const juce::String signature (current);
+
+    if (signature == lastBitDepthSignature)
+        return;
+
+    lastBitDepthSignature = signature;
+    bitDepthCombo.clear (juce::dontSendNotification);
+
+    for (int bits : { 16, 24, 32 })
+        bitDepthCombo.addItem (juce::String (bits) + "-bit", bits);
+
+    bitDepthCombo.setSelectedId (current, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setBufferSizeChoice (int current, int pinned)
+{
+    const juce::String signature = juce::String (current) + "@" + juce::String (pinned);
+
+    if (signature == lastBufferSignature)
+        return;
+
+    lastBufferSignature = signature;
+    bufferSizeCombo.clear (juce::dontSendNotification);
+
+    // Automatic first: §5.4's ladder starts small and steps up only when the
+    // machine cannot keep up, which is what most people want without knowing
+    // they want it. The fixed sizes are for someone who does know.
+    bufferSizeCombo.addItem ("Automatic (" + juce::String (current) + " samples)", 1);
+
+    for (int size : { 64, 128, 256, 512, 1024 })
+        bufferSizeCombo.addItem (juce::String (size) + " samples", size);
+
+    bufferSizeCombo.setSelectedId (pinned > 0 ? pinned : 1, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setSampleRateSelection (uint32_t chosen)
+{
+    if (sampleRateCombo.getNumItems() == 0)
+        return;
+
+    const int id = chosen == 0 ? 1 : static_cast<int> (chosen);
+
+    if (sampleRateCombo.getSelectedId() != id)
+        sampleRateCombo.setSelectedId (id, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
+{
+    // Rebuilt only when the set of rows changes. The panel repaints at 2 Hz,
     // and recreating the toggles every tick would fight the user's click.
     juce::StringArray incoming;
     for (const auto& m : mics)
-        incoming.add (m.first);
+    {
+        incoming.add (m.label);
+        for (const auto& in : m.inputs)
+            incoming.add ("  " + in.label);
+    }
 
     if (incoming != lastMicNames)
     {
         micToggles.clear();
+        micToggleIsInput.clear();
         lastMicNames = incoming;
 
+        // Deferred rather than called straight through. Ticking a box rebuilds
+        // the audio streams, and a rebuild can reach back into this panel;
+        // destroying a button from inside its own click handler is a crash
+        // JUCE gives no warning about. Reading the state here and doing the
+        // work on the next message keeps the button alive for the whole of
+        // its own callback.
+        //
+        // The SafePointer is built outside the inner lambda and captured by
+        // copy rather than constructed in its init-capture: inside a nested
+        // lambda MSVC resolves `this` to the enclosing closure object, so the
+        // init-capture form compiled on Clang and GCC and failed on Windows.
         for (const auto& m : mics)
         {
-            auto toggle = std::make_unique<juce::ToggleButton> (m.first);
-            const auto name = m.first;
+            auto toggle = std::make_unique<juce::ToggleButton> (m.label);
+            const auto name = m.deviceName; // the DEVICE name, which the app looks up by
 
-            // Deferred rather than called straight through. Ticking a box
-            // rebuilds the audio streams, and a rebuild can reach back into
-            // this panel; destroying a button from inside its own click
-            // handler is a crash JUCE gives no warning about. Reading the
-            // state here and doing the work on the next message keeps the
-            // button alive for the whole of its own callback.
             toggle->onClick = [this, name, raw = toggle.get()] {
                 const bool state = raw->getToggleState();
-
-                // The SafePointer is built here and captured by copy, rather
-                // than constructed in the inner lambda's init-capture. Inside a
-                // nested lambda MSVC resolves `this` to the enclosing closure
-                // object instead of the panel, so the init-capture form
-                // compiled on Clang and GCC and failed on Windows.
                 juce::Component::SafePointer<AdvancedPanel> safe (this);
-
                 juce::MessageManager::callAsync ([safe, name, state] {
                     if (safe != nullptr && safe->onMicEnabledChanged)
                         safe->onMicEnabledChanged (name, state);
@@ -264,15 +385,47 @@ void AdvancedPanel::setMicSelections (const std::vector<std::pair<juce::String, 
             };
             addAndMakeVisible (*toggle);
             micToggles.push_back (std::move (toggle));
+            micToggleIsInput.push_back (false);
+
+            for (const auto& in : m.inputs)
+            {
+                auto inputToggle = std::make_unique<juce::ToggleButton> (in.label);
+                const int input = in.index;
+
+                inputToggle->onClick = [this, name, input, raw = inputToggle.get()] {
+                    const bool state = raw->getToggleState();
+                    juce::Component::SafePointer<AdvancedPanel> safe (this);
+                    juce::MessageManager::callAsync ([safe, name, input, state] {
+                        if (safe != nullptr && safe->onInputEnabledChanged)
+                            safe->onInputEnabledChanged (name, input, state);
+                    });
+                };
+                addAndMakeVisible (*inputToggle);
+                micToggles.push_back (std::move (inputToggle));
+                micToggleIsInput.push_back (true);
+            }
         }
 
         resized();
     }
 
     // State is refreshed every tick regardless, so a change made elsewhere --
-    // the 8-mic cap, a device leaving -- shows up here.
-    for (size_t i = 0; i < micToggles.size() && i < mics.size(); ++i)
-        micToggles[i]->setToggleState (mics[i].second, juce::dontSendNotification);
+    // the 8-mic cap, a device leaving -- shows up here. A socket row is greyed
+    // while its box is switched off: the box's tick governs the lot.
+    size_t row = 0;
+    for (const auto& m : mics)
+    {
+        if (row >= micToggles.size()) break;
+        micToggles[row++]->setToggleState (m.enabled, juce::dontSendNotification);
+
+        for (const auto& in : m.inputs)
+        {
+            if (row >= micToggles.size()) break;
+            micToggles[row]->setToggleState (in.enabled, juce::dontSendNotification);
+            micToggles[row]->setEnabled (m.enabled);
+            ++row;
+        }
+    }
 }
 
 void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
@@ -301,11 +454,6 @@ void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
     for (size_t i = 0; i < volumes.size(); ++i)
         if (volumes[i].current)
             storageCombo.setSelectedItemIndex (static_cast<int> (i), juce::dontSendNotification);
-}
-
-void AdvancedPanel::setClockMasters (const juce::StringArray& names, const juce::String& selected)
-{
-    fillCombo (clockMasterCombo, names, selected);
 }
 
 void AdvancedPanel::setTrimChannels (const juce::StringArray& micNames,
@@ -376,17 +524,17 @@ int AdvancedPanel::getRequiredHeight() const
     // from a trial layout, because resized() consumes the bounds it is given
     // and cannot report what it would have wanted from a taller one.
     constexpr int kMargins       = 12 * 2;
-    constexpr int kCloseButton   = 30 + 14;
+    constexpr int kCloseButton   = 36 + 14;
     constexpr int kSection       = 14 + 3 + 1 + 9;  // heading, gap, rule, gap
-    constexpr int kRow           = 26 + 4;
+    constexpr int kRow           = 32 + 4;
     constexpr int kMicListLabel  = 22;
-    constexpr int kMicToggle     = 24 + 2;
-    constexpr int kClockHelp     = 64 + 8;
+    constexpr int kMicToggle     = 28 + 2;
+    constexpr int kClockHelp     = 84 + 8;
     constexpr int kDrift         = 60 + 4;
     constexpr int kTrimViewport  = 100 + 16;
     constexpr int kAggregate     = 20 + 16;
-    constexpr int kMirror        = 26 + 16;
-    constexpr int kDiagnostics   = 30;
+    constexpr int kMirror        = 28 + 16;
+    constexpr int kDiagnostics   = 36;
     constexpr int kActivity      = 16 + kActivityHeight;
 
     // save-to volume, destination folder, sample rate, bit depth, buffer size,
@@ -401,10 +549,10 @@ int AdvancedPanel::getRequiredHeight() const
 
     // The backup copy's note, the combined-video toggle and its note.
     constexpr int kMirrorNote  = 20;
-    constexpr int kCombine     = 26 + 32;
+    constexpr int kCombine     = 28 + 32;
 
     // "Where it's going": the explanation and the line of advice under it.
-    constexpr int kDelivery    = 56 + 4 + 36;
+    constexpr int kDelivery    = 84 + 4 + 36;
 
     return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount)
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
@@ -420,7 +568,12 @@ void AdvancedPanel::resized()
     // Top-left and first in the layout, where a back control is looked for,
     // and placed before anything else claims the space so it cannot be pushed
     // off the bottom by a long device list.
-    closeButton.setBounds (area.removeFromTop (30).removeFromLeft (110));
+    {
+        auto top = area.removeFromTop (36);
+        closeButton.setBounds (top.removeFromLeft (110));
+        top.removeFromLeft (8);
+        helpButton.setBounds (top.removeFromLeft (64));
+    }
     area.removeFromTop (14);
 
     // A heading, then the hairline paint() draws under it. The gap below the
@@ -438,8 +591,10 @@ void AdvancedPanel::resized()
     // of mostly empty well, and short labels sat a long way from their values.
     constexpr int kValueWidth = 300;
 
+    // 32px rows: a combo or button that can be hit without aiming, and the
+    // same height as the rest of the app's controls.
     auto row = [&] (juce::Label& label, juce::Component& value) {
-        auto r = area.removeFromTop (26);
+        auto r = area.removeFromTop (32);
         value.setBounds (r.removeFromRight (juce::jmin (kValueWidth, r.getWidth() * 3 / 5)));
         r.removeFromRight (12);
         label.setBounds (r);
@@ -457,12 +612,12 @@ void AdvancedPanel::resized()
     // The backup copy is a storage decision, so it belongs with the other two
     // rather than orphaned at the bottom between the aggregate device and the
     // diagnostics button.
-    mirrorToggle.setBounds (area.removeFromTop (26));
+    mirrorToggle.setBounds (area.removeFromTop (28));
     mirrorNote.setBounds (area.removeFromTop (20).reduced (20, 0));
 
     // With the backup copy, because both are answers to "what else ends up on
     // my disk when I stop".
-    combineVideoToggle.setBounds (area.removeFromTop (26));
+    combineVideoToggle.setBounds (area.removeFromTop (28));
 
     // Only takes room when it has something to say, so the panel does not
     // carry an empty line for everyone whose machine is set up correctly.
@@ -473,30 +628,35 @@ void AdvancedPanel::resized()
     area.removeFromTop (16);
 
     section (formatSection);
-    row (sampleRateLabel, sampleRateValue);
-    row (bitDepthLabel, bitDepthValue);
-    row (bufferSizeLabel, bufferSizeValue);
+    row (sampleRateLabel, sampleRateCombo);
+    row (bitDepthLabel, bitDepthCombo);
+    row (bufferSizeLabel, bufferSizeCombo);
     row (latencyLabel, latencyValue);
     area.removeFromTop (12);
 
     section (deliverySection);
     row (deliveryLabel, deliveryCombo);
-    deliveryNote.setBounds (area.removeFromTop (56));
+    deliveryNote.setBounds (area.removeFromTop (84));
     area.removeFromTop (4);
     loudnessAdviceLabel.setBounds (area.removeFromTop (36));
     area.removeFromTop (12);
 
     section (micSection);
     micSelectionLabel.setBounds (area.removeFromTop (22));
-    for (auto& toggle : micToggles)
+    for (size_t i = 0; i < micToggles.size(); ++i)
     {
-        toggle->setBounds (area.removeFromTop (24).reduced (8, 0));
+        // A socket row sits indented under its box, so the list reads as a
+        // box with people on it rather than a flat run of identical ticks.
+        const bool isInput = i < micToggleIsInput.size() && micToggleIsInput[i];
+        auto rowArea = area.removeFromTop (28).reduced (8, 0);
+        if (isInput) rowArea.removeFromLeft (28);
+        micToggles[i]->setBounds (rowArea);
         area.removeFromTop (2);
     }
     area.removeFromTop (10);
 
-    row (clockMasterLabel, clockMasterCombo);
-    clockMasterHelpLabel.setBounds (area.removeFromTop (64));
+    row (clockMasterLabel, clockMasterValue);
+    clockMasterHelpLabel.setBounds (area.removeFromTop (84));
     area.removeFromTop (8);
 
     driftLabel.setBounds (area.removeFromTop (60));
@@ -513,7 +673,7 @@ void AdvancedPanel::resized()
     aggregateStatusLabel.setBounds (area.removeFromTop (20));
     area.removeFromTop (16);
 
-    diagnosticsExportButton.setBounds (area.removeFromTop (30).removeFromLeft (180));
+    diagnosticsExportButton.setBounds (area.removeFromTop (36).removeFromLeft (180));
     area.removeFromTop (16);
 
     // Last, and deliberately: it is the thing you come looking for rather than

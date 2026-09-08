@@ -1,7 +1,15 @@
 #include "MainComponent.h"
+#include "AppLookAndFeel.h"
 #include "../App/Application.h"
 
 namespace mma {
+
+namespace {
+// The least the main screen can have beside an open drawer and still show a
+// row of strips, the record button and the footer without wrapping into a
+// column.
+constexpr int kMainMinWidth = 720;
+} // namespace
 
 MainComponent::MainComponent (Application& app)
     : application (app)
@@ -22,6 +30,15 @@ MainComponent::MainComponent (Application& app)
     cameraViewport.setScrollBarsShown (true, false);
     cameraViewport.setVisible (false);
     addChildComponent (cameraViewport);
+
+    helpViewport.setViewedComponent (&helpPanel, false);
+    helpViewport.setScrollBarsShown (true, false);
+    helpViewport.setVisible (false);
+    addChildComponent (helpViewport);
+
+    helpPanel.onCloseClicked = [this] { toggleHelp(); };
+    helpPanel.onOpenSettingsClicked = [this] { toggleAdvanced(); };
+    helpPanel.onExportDiagnosticsClicked = [this] { exportDiagnostics(); };
 
     mainScreen.onRecordButtonClicked = [this] { beginRecording(); };
 
@@ -62,6 +79,7 @@ MainComponent::MainComponent (Application& app)
 
     mainScreen.onAdvancedClicked = [this] { toggleAdvanced(); };
     mainScreen.onCamerasClicked = [this] { toggleCameras(); };
+    mainScreen.onHelpClicked = [this] { toggleHelp(); };
 
     // The live views come from the controller, which is the only thing holding
     // the open devices -- the panel never opens a camera itself.
@@ -112,9 +130,6 @@ MainComponent::MainComponent (Application& app)
         application.setChannelTrimDb (index, trimDb);
     };
 
-    advancedPanel.onClockMasterChanged = [this] (const juce::String& name) {
-        application.setClockMasterByName (name);
-    };
 
     advancedPanel.onAggregateNameChanged = [this] (const juce::String& name) {
         application.setAggregateDeviceName (name);
@@ -122,6 +137,22 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onOutputDeviceChanged = [this] (const juce::String& name) {
         application.setOutputDeviceByName (name);
+    };
+
+    advancedPanel.onSampleRateChanged = [this] (uint32_t rate) {
+        application.setSampleRateOverride (rate);
+    };
+
+    advancedPanel.onInputEnabledChanged = [this] (const juce::String& device, int input, bool enabled) {
+        application.setInputEnabled (device, input, enabled);
+    };
+
+    advancedPanel.onBitDepthChanged = [this] (int bits) {
+        application.setBitDepthOverride (bits);
+    };
+
+    advancedPanel.onBufferSizeChanged = [this] (int samples) {
+        application.setBufferSizeOverride (samples);
     };
 
     advancedPanel.onMirrorToggled = [this] (bool enabled) {
@@ -152,17 +183,13 @@ MainComponent::MainComponent (Application& app)
     };
 
     advancedPanel.onCloseClicked = [this] { toggleAdvanced(); };
+    advancedPanel.onHelpClicked = [this] { toggleHelp(); };
 
     advancedPanel.onMicEnabledChanged = [this] (const juce::String& name, bool enabled) {
         application.setMicEnabledByName (name, enabled);
     };
 
-    advancedPanel.onDiagnosticsExportClicked = [this] {
-        // §11: logs, recent session.json files and the device inventory. Never audio.
-        const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
-                                     .getNonexistentChildFile ("SobStage-diagnostics", ".zip");
-        application.exportDiagnostics (destination);
-    };
+    advancedPanel.onDiagnosticsExportClicked = [this] { exportDiagnostics(); };
 
     // §10.1/§6.2: the question asked before the first take, and the answer
     // given after every one. Children of this component rather than
@@ -214,6 +241,23 @@ MainComponent::MainComponent (Application& app)
         grabKeyboardFocus();
     };
     addChildComponent (savedTakePanel);
+
+    // The mid-take pop-up. Keep = dismiss; the take never stopped. Stop =
+    // the same press as the record button, so the saved-take card follows.
+    takeAlertCard.onKeepRecording = [this] {
+        takeAlertCard.setVisible (false);
+        grabKeyboardFocus();
+    };
+    takeAlertCard.onStopRecording = [this] {
+        takeAlertCard.setVisible (false);
+
+        // "OK" on a take the proof already stopped; "Stop recording" otherwise.
+        if (application.getRecordingEngine().getState() == RecordingState::Recording)
+            startRecordingNow();
+        else
+            grabKeyboardFocus();
+    };
+    addChildComponent (takeAlertCard);
 
     recoveredTakesPanel.onOpenFolder = [this] {
         juce::File (recoveredTakesPanel.getFolderToOpen()).revealToUser();
@@ -294,7 +338,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     // A card is up and owns the keyboard. Muting the room from behind one would
     // be a change the user cannot see the cause of.
     if (saveLocationPrompt.isVisible() || savedTakePanel.isVisible()
-        || recoveredTakesPanel.isVisible())
+        || recoveredTakesPanel.isVisible() || takeAlertCard.isVisible())
         return false;
 
     // §5.1: spacebar mutes and unmutes the monitor instantly. A focused text
@@ -308,11 +352,23 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    // Escape is the way back from any panel, so nobody has to find the Done
+    // button at the top of a screen they have scrolled down.
+    if (key == juce::KeyPress::escapeKey)
+    {
+        if (advancedVisible)     toggleAdvanced();
+        else if (cameraVisible)  toggleCameras();
+        else if (helpVisible)    toggleHelp();
+        else                     return false;
+
+        return true;
+    }
+
     // The arrows resize the camera pictures, and only while the main screen is
     // the thing on screen -- behind a panel they would resize something the
     // user cannot see. A focused slider or text field consumes its own arrows
     // before they reach here, so this cannot steal them from the volume.
-    if (! advancedVisible && ! cameraVisible
+    if (! cameraVisible
         && (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey))
     {
         const int step = mainScreen.getCameraScale() + (key == juce::KeyPress::upKey ? 1 : -1);
@@ -426,6 +482,102 @@ void MainComponent::showRecoveredTakes()
     recoveredTakesPanel.setVisible (true);
     recoveredTakesPanel.toFront (true);
     recoveredTakesPanel.prepareToShow();
+}
+
+void MainComponent::watchTake (bool isRecording)
+{
+    // Runs on the slow tick. The first tick of a take is the baseline --
+    // whatever was already wrong was on screen before record was pressed --
+    // and every tick after it is compared against the one before.
+    if (isRecording && ! wasRecording)
+    {
+        takeAlertCard.clear();
+        takeAlertCard.setVisible (false);
+        takeStoppedByProof = false;
+        takeWatchdog.beginTake (application.snapshotTakeHealth());
+        recordingProof.begin (application.snapshotProof());
+        ticksUntilCameraRecheck = 0;
+    }
+    else if (! isRecording && wasRecording)
+    {
+        takeWatchdog.endTake();
+
+        // A take the proof stopped keeps its red card up: that card IS the
+        // news, and hiding it with the take would be the old silence again.
+        if (! takeStoppedByProof)
+            takeAlertCard.setVisible (false);
+    }
+
+    wasRecording = isRecording;
+
+    if (! isRecording)
+        return;
+
+    // §0.1: the disk has to agree that this is a take. Judged before the
+    // watchdog's softer news, because "nothing is being recorded" outranks
+    // everything else that could be said.
+    const auto verdict = recordingProof.observe (application.snapshotProof());
+
+    if (verdict == ProofVerdict::NothingWritten || verdict == ProofVerdict::Stalled
+        || verdict == ProofVerdict::NoSoundArriving)
+    {
+        const auto when = Application::formatDuration (application.getElapsedRecordingSeconds()) + " in";
+        takeAlertCard.addAlert (when, juce::String (RecordingProof::message (verdict)), false);
+
+        if (verdict == ProofVerdict::NothingWritten)
+        {
+            // Stop it NOW. The saved-take card that follows says the files
+            // are empty; this card says why the take ended.
+            takeStoppedByProof = true;
+            takeAlertCard.setSevere (true, true);
+            showTakeAlertCard();
+            startRecordingNow();
+            return;
+        }
+
+        takeAlertCard.setSevere (true, false);
+        showTakeAlertCard();
+    }
+
+    // The OS does not announce a camera going away; it just stops listing
+    // it. Re-list every couple of seconds during a take, which is cheap, and
+    // only during a take, which is when it matters.
+    if (--ticksUntilCameraRecheck <= 0)
+    {
+        ticksUntilCameraRecheck = kStatusRefreshHz * 2;
+        application.getCameraController().refreshCameras();
+    }
+
+    const auto alerts = takeWatchdog.observe (application.snapshotTakeHealth());
+
+    if (alerts.empty())
+        return;
+
+    const auto when = Application::formatDuration (application.getElapsedRecordingSeconds()) + " in";
+
+    for (const auto& alert : alerts)
+        takeAlertCard.addAlert (when, juce::String (alert.message), alert.recovery);
+
+    // Good news alone does not interrupt anyone; it joins the card if the
+    // card is already up. Bad news brings the card up, unless another card
+    // -- the save prompt, say -- is already asking something.
+    bool anyBad = false;
+    for (const auto& alert : alerts)
+        anyBad = anyBad || ! alert.recovery;
+
+    if (anyBad && ! takeAlertCard.isVisible()
+        && ! saveLocationPrompt.isVisible() && ! savedTakePanel.isVisible()
+        && ! recoveredTakesPanel.isVisible())
+        showTakeAlertCard();
+}
+
+void MainComponent::showTakeAlertCard()
+{
+    growWindowToFit (takeAlertCard.getRequiredHeight() + 32);
+    takeAlertCard.setBounds (getLocalBounds());
+    takeAlertCard.setVisible (true);
+    takeAlertCard.toFront (true);
+    takeAlertCard.prepareToShow();
 }
 
 void MainComponent::showSavedTake()
@@ -587,6 +739,8 @@ void MainComponent::refreshStatus()
             mainScreen.setFilesBeingSavedText (savingLine);
         }
 
+        watchTake (isRecording);
+
         // A take can also end without the record button: §6.5 stops one when
         // the card fills or is pulled. The notice belongs to the stop, not to
         // the press, so it is picked up here too.
@@ -626,7 +780,7 @@ void MainComponent::refreshStatus()
 
         if (cameraVisible)
             refreshCameras();
-        else if (! advancedVisible)
+        else
         {
             // The main screen carries the pictures now, so the cameras have to
             // actually be open for it to have anything to show.
@@ -701,9 +855,12 @@ void MainComponent::rebindMeters()
 
 void MainComponent::refreshAdvanced()
 {
-    advancedPanel.setSampleRate (application.getSampleRate());
-    advancedPanel.setBitDepth (application.getBitDepth());
-    advancedPanel.setBufferSize (application.getCurrentBufferSize());
+    advancedPanel.setSampleRates (application.getAvailableSampleRates(),
+                                  static_cast<uint32_t> (application.getSampleRate() + 0.5));
+    advancedPanel.setSampleRateSelection (application.getSampleRateOverride());
+    advancedPanel.setBitDepthChoice (application.getBitDepth());
+    advancedPanel.setBufferSizeChoice (application.getCurrentBufferSize(),
+                                       application.getBufferSizeOverride());
     advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
     advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
     advancedPanel.setDriftReport (application.getDriftReport());
@@ -733,9 +890,28 @@ void MainComponent::refreshAdvanced()
     for (int i = 0; i < micCount; ++i)
         micNames.add (application.getMicDisplayName (i));
 
-    std::vector<std::pair<juce::String, bool>> micSelections;
+    std::vector<AdvancedPanel::MicChoice> micSelections;
     for (const auto& m : application.getMicSelections())
-        micSelections.push_back ({ m.displayName, m.enabled });
+    {
+        // An interface is one row, because it is switched on and off as one
+        // thing -- but it is several microphones, and the row has to say so.
+        // A user with two people plugged into one interface saw a single line
+        // here and read it as the app refusing to take their second mic.
+        auto label = m.displayName;
+
+        if (m.channelCount > 1)
+            label += " (" + juce::String (m.channelCount) + " microphones)";
+
+        AdvancedPanel::MicChoice choice;
+        choice.label = label;
+        choice.deviceName = m.displayName;
+        choice.enabled = m.enabled;
+
+        for (const auto& in : m.inputs)
+            choice.inputs.push_back ({ in.index, in.label, in.enabled });
+
+        micSelections.push_back (std::move (choice));
+    }
     advancedPanel.setMicSelections (micSelections);
 
     // Adding or removing a microphone changes how tall the panel needs to be,
@@ -755,7 +931,6 @@ void MainComponent::refreshAdvanced()
         volumes.push_back ({ v.displayName, v.path, v.isCurrent });
     advancedPanel.setStorageVolumes (volumes);
 
-    advancedPanel.setClockMasters (micNames, application.getClockMasterName());
 
     // Rebuilt only when the mic set changes: doing it every tick would reset a
     // slider out from under the user mid-drag.
@@ -776,6 +951,7 @@ void MainComponent::toggleCameras()
         // moment to actually open them -- and on macOS the moment to spend the
         // privacy prompt, with the reason on screen behind it.
         advancedVisible = false;
+        helpVisible = false;
 
         // Hand the viewers over before the panel makes its own. Whichever
         // screen is visible owns them, and a camera with two live viewers is a
@@ -795,9 +971,7 @@ void MainComponent::toggleCameras()
         refreshCameras();
     }
 
-    cameraViewport.setVisible (cameraVisible);
-    advancedViewport.setVisible (advancedVisible);
-    mainViewport.setVisible (! cameraVisible && ! advancedVisible);
+    applyPanelVisibility();
 
     if (cameraVisible)
     {
@@ -830,8 +1004,9 @@ void MainComponent::refreshCameras()
 
     // The main screen shows only what is switched on: a tile per camera that is
     // actually going into the take. The off ones are a settings question, and
-    // settings live behind the door.
-    if (! cameraVisible && ! advancedVisible)
+    // settings live behind the door. The Settings and Help drawers sit beside
+    // the main screen rather than over it, so the tiles stay while they are up.
+    if (! cameraVisible)
     {
         std::vector<MainScreen::CameraTile> tiles;
 
@@ -919,57 +1094,164 @@ void MainComponent::toggleAdvanced()
 
     if (advancedVisible)
     {
-        // §10.3 says one door at a time. Two panels stacked over the main
-        // screen would leave whichever was underneath unreachable but alive,
-        // still running its live views.
-        cameraVisible = false;
+        // One drawer at a time, and the camera panel closes if it was up:
+        // Settings sits beside the MAIN screen, whose pictures come back as
+        // the panel's go.
+        helpVisible = false;
 
-        // Settings is not showing pictures, so nothing should be running one.
-        // The camera panel is closing here too, so both sets go.
-        mainScreen.releaseCameraViews();
-        cameraPanel.setCameras ({});
+        if (cameraVisible)
+        {
+            cameraVisible = false;
+            cameraPanel.setCameras ({});
+        }
 
         refreshAdvanced();
     }
-    else
-    {
-        refreshCameras(); // back to the main screen: the tiles come back with it
-    }
 
-    advancedViewport.setVisible (advancedVisible);
-    cameraViewport.setVisible (cameraVisible);
-    mainViewport.setVisible (! advancedVisible && ! cameraVisible);
+    applyPanelVisibility();
+    refreshCameras();
 
     // Back to the top on entry, so opening Settings never starts halfway down
-    // wherever it was last left.
+    // wherever it was last left. And wide enough for both halves.
     if (advancedVisible)
     {
         advancedViewport.setViewPosition (0, 0);
-
-        // And give it room. The main screen opens the window at the height an
-        // audio-only rig needs, which is shorter than Settings -- so without
-        // this, opening Settings showed its first four rows and put the rest
-        // behind a scrollbar. Every panel that can be opened over the main
-        // screen asks for its own height on the way in.
-        growWindowToFit (advancedPanel.getRequiredHeight());
+        growWindowToFitWidth (kMainMinWidth + drawerWidth());
     }
 
     resized();
+}
+
+void MainComponent::toggleHelp()
+{
+    helpVisible = ! helpVisible;
+
+    if (helpVisible)
+    {
+        advancedVisible = false;
+
+        if (cameraVisible)
+        {
+            cameraVisible = false;
+            cameraPanel.setCameras ({});
+        }
+    }
+
+    applyPanelVisibility();
+    refreshCameras();
+
+    if (helpVisible)
+    {
+        helpViewport.setViewPosition (0, 0);
+        growWindowToFitWidth (kMainMinWidth + drawerWidth());
+
+        // The text wraps to the width, so the width has to be known before
+        // the height can be asked for.
+        helpPanel.setSize (juce::jmax (1, drawerWidth() - helpViewport.getScrollBarThickness()),
+                           juce::jmax (1, helpPanel.getHeight()));
+    }
+
+    resized();
+}
+
+void MainComponent::exportDiagnostics()
+{
+    // §11: logs, recent session.json files and the device inventory. Never audio.
+    const auto destination = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+                                 .getNonexistentChildFile ("SobStage-diagnostics", ".zip");
+    application.exportDiagnostics (destination);
+}
+
+int MainComponent::drawerWidth() const
+{
+    // Two fifths of the window, within limits: narrower than 380 the Settings
+    // rows squash their pickers, wider than 500 the main screen pays for room
+    // the drawer does not use.
+    return juce::jlimit (380, 500, getWidth() * 2 / 5);
+}
+
+void MainComponent::applyPanelVisibility()
+{
+    // The camera panel replaces the main screen, because it owns the live
+    // viewers while it is up. The two drawers sit beside it instead.
+    cameraViewport.setVisible (cameraVisible);
+    mainViewport.setVisible (! cameraVisible);
+    advancedViewport.setVisible (advancedVisible && ! cameraVisible);
+    helpViewport.setVisible (helpVisible && ! cameraVisible);
+
+    mainScreen.setDoorsOpen (advancedVisible && ! cameraVisible, helpVisible && ! cameraVisible);
+}
+
+void MainComponent::growWindowToFitWidth (int contentWidth)
+{
+    auto* window = getTopLevelComponent();
+
+    if (window == nullptr || window == this)
+        return;
+
+    const auto usable = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
+                        ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
+                        : juce::Rectangle<int> (0, 0, 1180, 900);
+
+    const int chrome = juce::jmax (0, window->getWidth() - getWidth());
+    const int wanted = contentWidth + chrome;
+
+    // Only ever grows, like the height. Shrinking would undo a width the user
+    // set by hand.
+    const int width = juce::jlimit (window->getWidth(),
+                                    juce::jmax (window->getWidth(), usable.getWidth()),
+                                    wanted);
+
+    if (width == window->getWidth())
+        return;
+
+    window->setSize (width, window->getHeight());
+
+    const int left = juce::jlimit (usable.getX(),
+                                   juce::jmax (usable.getX(), usable.getRight() - width),
+                                   window->getX());
+
+    window->setTopLeftPosition (left, window->getY());
+}
+
+void MainComponent::paint (juce::Graphics& g)
+{
+    // The drawer's edge: one hairline where the main screen ends and Settings
+    // begins, so the two read as a screen and a drawer rather than one wide
+    // screen with a seam in it.
+    if ((advancedVisible || helpVisible) && ! cameraVisible)
+    {
+        g.setColour (AppLookAndFeel::outline);
+        g.fillRect (mainViewport.getRight(), 0, 1, getHeight());
+    }
 }
 
 void MainComponent::resized()
 {
     auto bounds = getLocalBounds();
 
-    mainViewport.setBounds (bounds);
-    advancedViewport.setBounds (bounds);
     cameraViewport.setBounds (bounds);
+
+    // The drawer takes the right-hand side only while one is open; otherwise
+    // the main screen has the whole window, as before.
+    auto drawer = juce::Rectangle<int>();
+
+    if ((advancedVisible || helpVisible) && ! cameraVisible)
+    {
+        drawer = bounds.removeFromRight (drawerWidth());
+        drawer.removeFromLeft (1); // the hairline paint() draws
+    }
+
+    mainViewport.setBounds (bounds);
+    advancedViewport.setBounds (drawer);
+    helpViewport.setBounds (drawer);
 
     // The modal cards cover whichever screen is underneath, so they follow the
     // window rather than the viewport they happen to be over.
     saveLocationPrompt.setBounds (bounds);
     savedTakePanel.setBounds (bounds);
     recoveredTakesPanel.setBounds (bounds);
+    takeAlertCard.setBounds (bounds);
 
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one
@@ -994,6 +1276,12 @@ void MainComponent::resized()
     fit (mainViewport, mainScreen, mainScreen.getRequiredHeight());
     fit (advancedViewport, advancedPanel, advancedPanel.getRequiredHeight());
     fit (cameraViewport, cameraPanel, cameraPanel.getRequiredHeight());
+
+    // Width first, then height: the help text wraps, so what it needs
+    // depends on what it is given across.
+    helpPanel.setSize (juce::jmax (1, helpViewport.getWidth() - helpViewport.getScrollBarThickness()),
+                       juce::jmax (1, helpPanel.getHeight()));
+    fit (helpViewport, helpPanel, helpPanel.getRequiredHeight());
 }
 
 } // namespace mma

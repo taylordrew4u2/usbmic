@@ -3,9 +3,13 @@
 #include "MainScreen.h"
 #include "AdvancedPanel.h"
 #include "CameraPanel.h"
+#include "HelpPanel.h"
 #include "SaveLocationPrompt.h"
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
+#include "TakeAlertCard.h"
+#include "../Core/TakeWatchdog.h"
+#include "../Core/RecordingProof.h"
 #include <functional>
 
 namespace mma {
@@ -25,6 +29,7 @@ public:
     ~MainComponent() override;
 
     void resized() override;
+    void paint (juce::Graphics&) override;
 
 private:
     /// §8.2: the UI polls, the audio thread never pushes. Dropping a frame here
@@ -50,6 +55,18 @@ private:
     juce::Viewport cameraViewport;
     bool advancedVisible = false;
     bool cameraVisible = false;
+
+    // The third door, beside Settings: the answers to "why is it silent?",
+    // in the app rather than in a README. Same viewport arrangement as the
+    // other two, and like them only one is open at a time.
+    juce::Viewport helpViewport;
+    bool helpVisible = false;
+    HelpPanel helpPanel;
+    void toggleHelp();
+
+    /// §11: logs, recent session.json files and the device inventory to a
+    /// zip on the desktop. Never audio. Reachable from Settings and Help.
+    void exportDiagnostics();
     int lastCameraHeight = 0;
 
     /// Grows the window so the main screen's camera row gets the size the user
@@ -61,6 +78,17 @@ private:
     /// screen ask for their own on the way in, so none of them opens showing
     /// its first few rows with the rest behind a scrollbar.
     void growWindowToFit (int contentHeight);
+
+    /// Settings and Help open as a drawer down the right-hand side, with the
+    /// main screen -- meters, pictures, record button -- still live on the
+    /// left. A full-screen panel meant every trip into Settings was a trip
+    /// away from the thing being recorded.
+    int drawerWidth() const;
+    /// Widens the window (never narrows it) so the drawer and a usable main
+    /// screen fit side by side.
+    void growWindowToFitWidth (int contentWidth);
+    /// One place that decides which viewports show, from the three flags.
+    void applyPanelVisibility();
     int lastMicCount = -1;
     int lastAdvancedMicCount = -1;
     int framesUntilStatusRefresh = 1;
@@ -87,6 +115,18 @@ private:
     SaveLocationPrompt saveLocationPrompt;
     SavedTakePanel savedTakePanel;
     RecoveredTakesPanel recoveredTakesPanel;
+
+    // §0.1 / §6.5: the mid-take pop-up and the watcher that raises it. The
+    // watcher is fed one reading per slow tick while a take runs and speaks
+    // only when something changes; the card collects what it says.
+    TakeAlertCard takeAlertCard;
+    TakeWatchdog takeWatchdog;
+    RecordingProof recordingProof;
+    bool takeStoppedByProof = false;
+    void showTakeAlertCard();
+    bool wasRecording = false;
+    int ticksUntilCameraRecheck = 0;
+    void watchTake (bool isRecording);
     // The folder the panel is currently showing, so "Open the folder" opens the
     // one on screen rather than whatever the app has moved on to since.
     juce::String savedTakeFolder;

@@ -2,6 +2,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <memory>
 #include "../Core/DeviceManager.h"
+#include "../Core/ChannelPlan.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Core/RecordingEngine.h"
 #include "../Core/MonitorBus.h"
@@ -25,6 +26,8 @@
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/ActivityJournal.h"
 #include "../Core/CapacityMonitor.h"
+#include "../Core/TakeWatchdog.h"
+#include "../Core/RecordingProof.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
@@ -95,6 +98,16 @@ public:
     double getMasterVolume() const;
 
     int getIncludedMicCount() const;
+
+    /// §0.1 / §6.5: everything the mid-take pop-up watches, in one reading:
+    /// which microphones are live, which cameras are still listed, whether
+    /// sound has been dropped, whether the drive is keeping up, room left.
+    TakeHealth snapshotTakeHealth() const;
+
+    /// §0.1: the evidence that the current take is really landing on the
+    /// drive -- frames the writer accepted, bytes the session folder holds,
+    /// the loudest sample that has arrived. Read on the slow tick.
+    ProofReading snapshotProof() const;
 
     /// §6.5: false while this channel's microphone is unplugged mid-take. The
     /// channel stays in the file writing silence; this is what the UI dashes
@@ -192,19 +205,35 @@ public:
 
     /// §10.3 Advanced panel contents.
     double getSampleRate() const { return currentSampleRate; }
+
+    /// The rates every microphone in the rig can record at, for the Settings
+    /// picker. Ascending, capped at §2.2's 48 kHz.
+    std::vector<uint32_t> getAvailableSampleRates() const { return availableSampleRates; }
+
+    /// The rate the user pinned, or 0 for automatic.
+    uint32_t getSampleRateOverride() const noexcept { return sampleRateOverride; }
+
+    /// Pin a rate, or 0 to go back to automatic. Persists and reopens the
+    /// streams, because the rate is fixed for the life of a stream (§5.4).
+    void setSampleRateOverride (uint32_t rate);
     int getBitDepth() const { return currentBitDepth; }
+    /// Pin the bit depth of every take from now on (16, 24 or 32). Persists.
+    void setBitDepthOverride (int bits);
+
+    /// The user's pinned buffer size, or 0 for automatic.
+    int getBufferSizeOverride() const noexcept { return bufferSizeOverride; }
+    /// Pin the buffer size, or 0 to hand it back to §5.4's ladder. Persists and
+    /// reopens the streams, since the size is fixed for the life of a stream.
+    void setBufferSizeOverride (int samples);
     double getMeasuredLatencyMs() const { return measuredLatencyMs; }
     juce::String getActiveBackendDescription() const;
     /// Display names of every candidate monitor output, and of every mic that
     /// could serve as §3.1 clock master.
     const std::vector<std::string>& getOutputDeviceNames() const;
-    juce::String getClockMasterName() const;
     /// §3.2 per-device drift, one line per mic, or a plain line saying the
     /// 60-second measurement window has not elapsed yet (§3.1).
     juce::String getDriftReport() const;
     void setOutputDeviceByName (const juce::String& displayName);
-    /// §3.1: an explicit clock-master choice, by display name.
-    void setClockMasterByName (const juce::String& displayName);
 
     /// Every microphone the OS reports, in enumeration order, with whether the
     /// user currently has it selected. Includes deselected ones -- the point of
@@ -214,6 +243,22 @@ public:
         juce::String displayName;
         bool enabled = true;
         bool isBuiltIn = false;
+        /// How many microphones this one device records. An interface is a
+        /// single row here -- it is switched on and off as one thing -- so
+        /// without this the list looked identical whether the box had one
+        /// microphone on it or four, and a user with two people plugged into an
+        /// interface read the single row as the app refusing their second mic.
+        int channelCount = 1;
+
+        /// On an interface, one entry per socket: switchable on its own, and
+        /// labelled with whatever its person has been named.
+        struct Input
+        {
+            int index = 0;
+            juce::String label;
+            bool enabled = true;
+        };
+        std::vector<Input> inputs;
     };
     std::vector<MicSelection> getMicSelections() const;
 
@@ -236,6 +281,10 @@ public:
     /// Ticking or clearing a microphone in Settings. Rebuilds the audio streams
     /// only when the flag actually changed.
     void setMicEnabledByName (const juce::String& displayName, bool enabled);
+
+    /// Switch one socket of an interface on or off. Port memory, so it follows
+    /// the box across a replug; reopens the streams outside a take.
+    void setInputEnabled (const juce::String& displayName, int input, bool enabled);
     void setDestinationFolder (const juce::File& folder);
 
     /// §5.3 output selection result for the Advanced panel, and the plain-language
@@ -250,7 +299,7 @@ public:
     /// §5.4: report a callback overrun. Returns true when it pushed the buffer
     /// up a rung, so the caller can tell the user why latency just changed.
     bool noteCallbackOverrun();
-    int getCurrentBufferSize() const { return bufferLadder.getCurrentSize(); }
+    int getCurrentBufferSize() const { return desiredBufferSize(); }
 
     /// §5.4 requires every buffer step logged in session.json.
     const std::vector<BufferSizeChange>& getBufferSizeChanges() const { return bufferLadder.getChangeLog(); }
@@ -411,7 +460,10 @@ public:
     /// screen. Empty when the last run ended cleanly, which is the usual case.
     const std::vector<RecoveredSession>& getRecoveredSessions() const { return recoveredSessions; }
     /// Called once the user has been shown them.
-    void clearRecoveredSessions() { recoveredSessions.clear(); }
+    /// Called once the user has been shown them. Also marks each one as
+    /// finished on disk, so it is offered once rather than at every launch
+    /// until twenty newer takes push it out of the scan.
+    void clearRecoveredSessions();
 
     /// §11: diagnostics export -- logs, last 5 session.json files, device
     /// inventory. Never audio.
@@ -468,6 +520,14 @@ private:
     // until the take ends so session.json carries them. RecordingEngine has
     // always tracked this and nothing ever told it anything.
     std::vector<DropoutEntry> midTakeDropouts;
+
+    // Whether the mirror was still writing when this take was stopped, sampled
+    // before stopRecording() tears the pipeline down. Read after, isMirroring()
+    // is always false, so every finished take claimed its backup never ran --
+    // and verify_take.py skips the mirror comparison when it reads that, which
+    // is exactly the check a mirror that died mid-take needs to fail. -1 means
+    // no take has stopped yet, so a mid-take write uses the live flag.
+    int mirrorActiveAtStop = -1;
 
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
@@ -590,15 +650,37 @@ private:
     /// makes monitoring live from launch, and a hot-plug changes the channel
     /// set, so this runs at startup and on every device-list change.
     void restartCapture();
+
+    /// restartCapture() unless a take is running, in which case the restart
+    /// is owed and happens when the take stops. Every change refused mid-take
+    /// (a mic plugged in, an unplug, a rename, a rate) used to stay unapplied
+    /// forever: the next take planned N+1 files and wrote N.
+    void requestCaptureRestart();
+    bool captureRestartDeferred = false;
     /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
 
-    /// The user's name for a device if it has one, its product string
-    /// otherwise, and `fallback` when the device is no longer enumerated at
-    /// all -- which is exactly the case mid-take, where the channel outlives
-    /// the microphone that was unplugged from it.
-    juce::String nameForDevice (const std::string& identityKey,
-                                const juce::String& fallback) const;
+
+    /// The name one INPUT of a device is known by -- the port's name resolved
+    /// live, so a rename mid-take reaches the strip, plus the input number that
+    /// tells an interface's microphones apart.
+    ///
+    /// Answering per device cannot do this: asked about four inputs of one
+    /// interface it gave the same name four times, while the four files were
+    /// correctly named apart. The screen and the disk disagreed about who was
+    /// who. Empty when the device is no longer enumerated at all -- exactly the
+    /// case mid-take, where the channel outlives the microphone unplugged from
+    /// it, and the caller falls back to the name the channel opened with.
+    juce::String nameForChannel (const std::string& identityKey, int deviceChannel) const;
+
+    /// The device a strip belongs to: the take's frozen channel list mid-take,
+    /// the plan otherwise. Never a walk over included devices, which is a
+    /// different space once an interface contributes more than one strip.
+    std::string deviceKeyForStrip (int index) const;
+
+    /// The rig as the channel planner sees it: every included device, with
+    /// §2.4's remembered name and §2.1 verdict already resolved.
+    std::vector<ChannelPlanDevice> planDevices() const;
 
     std::vector<CaptureChannel> buildCaptureChannels() const;
     /// §6.2 folder name for a take started at `now` under `name`, including the
@@ -639,6 +721,22 @@ private:
     /// than the file does, so it has to stay around to be matched against them.
     int cameraTileScale = 5;
     AppSettings rememberedSettings;
+
+    /// The rates every included microphone can reach, for the Settings picker.
+    std::vector<uint32_t> availableSampleRates;
+
+    /// A rate the user pinned, or 0 for automatic (§2.2 decides).
+    uint32_t sampleRateOverride = 0;
+
+    /// Pinned in Settings, or 0 for automatic. The ladder still runs underneath
+    /// so handing control back later resumes from where it would have been.
+    int bufferSizeOverride = 0;
+
+    /// The buffer the streams are opened with: the user's pin, else the ladder.
+    int desiredBufferSize() const noexcept
+    {
+        return bufferSizeOverride > 0 ? bufferSizeOverride : bufferLadder.getCurrentSize();
+    }
     /// Suppresses saving while the loaded settings are still being applied, so
     /// a half-applied rig cannot be written back over a complete one.
     bool applyingRememberedSettings = false;

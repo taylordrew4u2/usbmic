@@ -91,5 +91,42 @@ int main()
                      s.getRequiredHeight() > grown ? "  OVERFLOWS WINDOW" : "");
     }
 
+    std::printf ("\n-- the monitor-problem line, which must fit its reason --\n");
+
+    // The message that named a cause used to be clipped to the first few words
+    // by a fixed one-line band, which left exactly the dead end it was written
+    // to end. The band has to grow with the text, and the screen has to stay
+    // inside the window while it does.
+    struct Msg { const char* label; const char* text; };
+    const Msg messages[] = {
+        { "empty",  "" },
+        { "short",  "Mic 1 couldn't be opened for recording." },
+        { "reason", "PUPGSIS-T12S 1 couldn't be opened for recording. This interface is "
+                    "running at 44.1 kHz and won't change to the 48 kHz this recording uses. "
+                    "Set the recording to 44.1 kHz in Settings, or change the interface to "
+                    "48 kHz in Audio MIDI Setup." },
+    };
+
+    for (const auto& m : messages)
+    {
+        mma::MainScreen s;
+        s.setMicCount (2);
+        s.setMonitorProblemText (m.text);
+
+        s.setVisibleHeight (560);
+        s.setSize (1180, juce::jmax (560, s.getRequiredHeight()));
+        s.resized();
+
+        const int grown = juce::jmin (s.getPreferredHeight(), 1071);
+        s.setVisibleHeight (grown);
+        s.setSize (1180, juce::jmax (grown, s.getRequiredHeight()));
+        s.resized();
+
+        std::printf ("%-8s band %3d px   required %4d  window %4d%s\n",
+                     m.label, s.getMonitorProblemBandHeight(),
+                     s.getRequiredHeight(), grown,
+                     s.getRequiredHeight() > grown ? "  OVERFLOWS WINDOW" : "");
+    }
+
     return 0;
 }

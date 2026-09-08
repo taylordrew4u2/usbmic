@@ -6,6 +6,8 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include <cmath>
 #include <vector>
 
@@ -191,6 +193,20 @@ double getNominalSampleRate (AudioObjectID device)
         return 0.0;
 
     return static_cast<double> (rate);
+}
+
+/// A sample rate as a person says it: "48 kHz", not "48000.000000".
+std::string formatRate (double rate)
+{
+    const double khz = rate / 1000.0;
+    char text[32] = {};
+
+    if (std::abs (khz - std::round (khz)) < 0.01)
+        std::snprintf (text, sizeof (text), "%d kHz", static_cast<int> (std::round (khz)));
+    else
+        std::snprintf (text, sizeof (text), "%.1f kHz", khz);
+
+    return text;
 }
 
 bool setNominalSampleRate (AudioObjectID device, double sampleRate)
@@ -440,6 +456,7 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         d.isBuiltIn = (readTransportType (deviceId) == kAudioDeviceTransportTypeBuiltIn);
         d.maxInputChannels = wantInput ? channels : 0;
         d.supportedSampleRates = querySupportedSampleRates (deviceId);
+        d.currentSampleRate = static_cast<uint32_t> (getNominalSampleRate (deviceId) + 0.5);
         d.isMicrophone = wantInput;
         result.push_back (d);
     }
@@ -518,12 +535,8 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
 
     if (device == kAudioObjectUnknown || ! callback)
     {
-        // The field existed and every failure below left it empty, so a refused
-        // open reached the user as the generic "couldn't open" with no cause --
-        // §5.4 asks for the cause to be named, and this is where it is known.
-        lastOpenError = isOutput
-            ? "That sound output isn't there any more. Choose another one."
-            : "That microphone isn't there any more. Plug it back in and try again.";
+        lastOpenError = "This microphone is no longer connected. Unplug it and plug it back in, "
+                        "then try again.";
         return false;
     }
 
@@ -531,8 +544,16 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     // is not still converting when audio begins.
     if (! setNominalSampleRate (device, sampleRate))
     {
-        lastOpenError = "This device won't run at the sample rate the others are using. "
-                        "Unplug it, or change the sample rate in Advanced.";
+        // Name both rates. "Couldn't be opened" sends the user hunting through
+        // cables for a fault that is one number in a settings pane, and the
+        // rate the device is actually running at is the whole answer.
+        const double actual = getNominalSampleRate (device);
+
+        lastOpenError = "This interface is running at " + formatRate (actual)
+                      + " and won't change to the " + formatRate (sampleRate)
+                      + " this recording uses. Set the recording to "
+                      + formatRate (actual) + " in Settings, or change the interface "
+                      + "to " + formatRate (sampleRate) + " in Audio MIDI Setup.";
         return false;
     }
 
@@ -562,8 +583,9 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     if (AudioDeviceCreateIOProcID (device, ioProcTrampoline, stream.get(), &stream->ioProcId) != noErr
         || stream->ioProcId == nullptr)
     {
-        lastOpenError = "The system refused to start audio on this device. Unplug it and plug it "
-                        "back in, or restart the app.";
+        lastOpenError = "macOS wouldn't let this app attach to this interface. Another app is "
+                        "usually holding it -- close anything else recording or streaming from "
+                        "it, then try again.";
         return false;
     }
 
@@ -571,8 +593,11 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     {
         AudioDeviceDestroyIOProcID (device, stream->ioProcId);
 
-        lastOpenError = "This device accepted the connection but wouldn't start. Another app may "
-                        "have taken it -- close anything else using it and try again.";
+        // The commonest cause by far, and the one with a fix the user can
+        // actually carry out: macOS has not been told this app may listen.
+        lastOpenError = "macOS wouldn't start this interface. Check that SobStage is allowed to "
+                        "use the microphone in System Settings > Privacy & Security > Microphone, "
+                        "and that no other app is recording from it.";
         return false;
     }
 
@@ -626,6 +651,11 @@ bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDevic
 bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double sampleRate,
                                         int bufferSizeSamples, AudioCallback callback)
 {
+    // Cleared here, not in openStream: the output path clears it before taking
+    // hog mode and sets its own reason on failure, and reporting that message
+    // against a microphone would name the wrong device entirely.
+    lastOpenError.clear();
+
     return openStream (inputDeviceId, sampleRate, bufferSizeSamples, std::move (callback), false);
 }
 

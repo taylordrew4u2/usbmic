@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SobStage VERSION 1.0.1 LANGUAGES CXX)
+project(SobStage VERSION 1.11.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,6 +36,7 @@ add_library(mma_core STATIC
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
+    Source/Core/ChannelPlan.cpp
     Source/Core/ClockMasterResolver.cpp
     Source/Core/TakeCompleteness.cpp
     Source/Core/RecordingEngine.cpp
@@ -48,6 +49,9 @@ add_library(mma_core STATIC
     Source/Core/WritePipeline.cpp
     Source/Core/TapToNameDetector.cpp
     Source/Core/PermissionGuidance.cpp
+    Source/Core/HelpTopics.cpp
+    Source/Core/TakeWatchdog.cpp
+    Source/Core/RecordingProof.cpp
     Source/Core/CaptureCoordinator.cpp
     Source/Core/DeviceInputStream.cpp
     Source/Core/CombinedTakePlan.cpp
@@ -138,11 +142,13 @@ if (MMA_BUILD_APP)
         Source/UI/MixBarComponent.cpp
         Source/UI/MainScreen.cpp
         Source/UI/AdvancedPanel.cpp
+        Source/UI/HelpPanel.cpp
         Source/UI/CameraPanel.cpp
         Source/UI/ModalCard.cpp
         Source/UI/SaveLocationPrompt.cpp
         Source/UI/SavedTakePanel.cpp
         Source/UI/RecoveredTakesPanel.cpp
+        Source/UI/TakeAlertCard.cpp
         Source/UI/MainComponent.cpp
         Source/UI/Main.cpp
         Source/App/Application.cpp
@@ -313,6 +319,18 @@ if (MMA_BUILD_TOOLS)
     target_compile_definitions(sim_coreaudio PRIVATE MMA_SIMULATE_MAC=1)
     target_include_directories(sim_coreaudio PRIVATE Simulation/CoreAudio Source)
 
+    # The macOS path, end to end: the real backend, the real coordinator and the
+    # real writer, against the virtual HAL. sim_coreaudio checks the backend and
+    # live_capture checks the coordinator, and nothing joined them -- which is
+    # how a stereo device recording at 24 bits reached a user untested.
+    add_executable(sim_capture_mac
+        Tools/sim_capture_mac.cpp
+        Source/Platform/CoreAudioBackend.cpp
+        Simulation/CoreAudio/FakeCoreAudio.cpp)
+    target_compile_definitions(sim_capture_mac PRIVATE MMA_SIMULATE_MAC=1)
+    target_include_directories(sim_capture_mac PRIVATE Simulation/CoreAudio Source)
+    target_link_libraries(sim_capture_mac PRIVATE mma_core)
+
     add_executable(sim_wasapi
         Tools/sim_wasapi.cpp
         Source/Platform/WasapiAsioBackend.cpp
@@ -328,6 +346,7 @@ if (MMA_BUILD_TOOLS)
     # alike, not only on the one OS that can compile it natively.
     if (MMA_BUILD_TESTS)
         add_test(NAME sim_coreaudio COMMAND sim_coreaudio)
+        add_test(NAME sim_capture_mac COMMAND sim_capture_mac)
         add_test(NAME sim_wasapi COMMAND sim_wasapi)
     endif()
 endif()

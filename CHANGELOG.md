@@ -1,5 +1,553 @@
 # Changelog
 
+## v1.11.0 -- 2026-09-08
+
+### Added -- the take must prove itself on disk, or it stops
+
+A day-long recording was lost because the app kept the button red and the
+clock running over files that never grew. That cannot happen now:
+
+- Three seconds after record is pressed, the files on the drive must have
+  grown past their headers. If they have not, the take stops itself and a
+  red card says "Recording failed. Nothing was recorded."
+- If the files stop growing for six seconds mid-take, a red card says the
+  drive has stopped taking audio and what to do, while the take carries on.
+- If no sound above -60 dBFS reaches the app for twenty seconds, the card
+  says the files hold silence and names the mixer checks.
+- The record button is disabled, with the reason, whenever the microphones
+  are not actually open -- an output that refused low-latency mode, a
+  microphone held by another app.
+
+The rules live in Core (RecordingProof) under seven tests. A second
+end-to-end gate, `Tools/e2e_refusal.sh`, runs the real app with
+microphones that cannot open and requires that no take of empty files is
+left behind; it passes alongside `Tools/e2e_app_take.sh`.
+
+## v1.10.0 -- 2026-09-08
+
+### Fixed -- the audit's silent-loss findings, proven end to end
+
+- **Recording no longer depends on the headphone output.** The rig was
+  pulled onto the output device's callback, so with no output selected
+  nothing recorded and nothing said so, and an output unplugged mid-take
+  froze the take silently. A software clock now pulls whenever the output
+  is absent or stops calling back; the mid-take card says "The headphone
+  output has stopped" and the take carries on. Reproduced for real: a
+  headless take on this rig used to leave seven 0-byte files, and now
+  leaves seven files of audio.
+- **32-bit takes are written correctly.** The header said 32-bit over
+  24-bit samples; every file was unreadable. The packer now writes 32-bit
+  integer PCM, and a depth it cannot pack is refused.
+- **Dropped audio is always counted.** A full input ring discarded samples
+  without counting them; they now reach the mid-take card, said once and
+  then at most once a minute with the running total.
+- **Unplugging an interface silences every socket it carries**, not only
+  the first, and every socket comes back together.
+- **The first take of every launch gets its backup copy.** The mirror
+  decision was read before it was made. It is now made at arm, before the
+  folders exist, and a mirror folder never overwrites an earlier one with
+  the same name.
+- **Changes refused mid-take are applied when the take ends** (a mic
+  plugged in, an unplug, a rename, a rate change), so the next take's plan
+  and its streams agree.
+- **Trim sliders act on the right device** on an interface with several
+  sockets; unticking a mic in Settings mid-take no longer reads as an
+  unplug; a mic switched off stays off across an unplug.
+- **"The drive is full. Recording has stopped" now stops**, and unknown
+  free space is no longer reported as a full drive.
+- **Recovered takes are offered once.** After the Recovered card, each take
+  is marked finished, so it does not come back at every launch.
+- A lock-free hand-off now uses sequentially consistent ordering (a
+  nanosecond crash window on Intel and Windows); a 24-bit decode no longer
+  left-shifts a negative value; a Windows notification class is final.
+
+### Added -- an end-to-end gate
+
+`Tools/e2e_app_take.sh` starts the real app headless, records a real take
+through the real ALSA backend against the virtual microphones, stops it,
+and `Tools/verify_take.py` checks every file: bit depth and block align as
+configured, length, signal, the right tone on the right stem, a stop
+timestamp, and the mirror copy's sizes when the mirror ran. No release
+ships without it passing.
+
+## v1.9.0 -- 2026-09-06
+
+### Added -- a pop-up the moment something goes wrong mid-take
+
+If a microphone stops sending sound, a camera goes away, sound is dropped,
+the drive falls behind or drops to mix-only, the monitor path breaks, or
+the drive is down to ten or two minutes of room, a card comes up over the
+main screen the moment it happens and says so in plain words, with how far
+into the take it was. The take carries on behind it: Keep recording (or
+Escape) dismisses the card, Stop recording is the same press as the record
+button. Good news -- a mic or camera coming back -- joins the card without
+raising it. Each change is said once; a mic that was already dead when
+record was pressed was on screen already and is not an alert. Cameras are
+re-listed every two seconds during a take, because the system does not
+announce one being unplugged, it just stops listing it.
+
+The rules live in Core (TakeWatchdog) under twelve tests; the card is one
+more ModalCard beside the save prompt and the saved-take card.
+
+## v1.8.0 -- 2026-09-06
+
+### Changed -- Settings and Help are a drawer beside the main screen
+
+Settings used to replace the whole window, so every trip to a picker was a
+trip away from the meters, the pictures and the record button. It now opens
+as a drawer down the right-hand side, scrolling on its own, with the main
+screen still live on the left: the skulls keep filling, the camera tiles
+keep running, and recording can be started without closing anything. Help
+opens the same way. The Settings or Help button stays lit while its drawer
+is open and closes it again; so does Close at the top of the drawer, and
+Escape. The window widens (never narrows) so both halves fit, and the
+footer keeps to one line at the narrower width. The camera panel still
+takes the whole window, because it owns the live viewers while it is up.
+
+## v1.7.1 -- 2026-09-06
+
+### Changed -- controls that look like controls, and are easier to hit
+
+Buttons were filled in the same tone as the panel behind them with a hairline
+nobody could see, so a screen of buttons read as a screen of labels, and the
+smallest of them were 24 px tall. Every button, picker and tick box is now
+one step lighter than its panel with a visible edge, brightens plainly under
+the pointer, and the pointer becomes a hand over anything that can be
+pressed, including a strip's name. Sizes went up across the app: header
+buttons 36 px, Settings rows 32 px, tick boxes 20 px with the whole row as
+the target, menu rows 32 px, card buttons 38 px, and the footer 40 px.
+Button and menu text is 14 px everywhere instead of scaling down with the
+control. Escape closes Settings, Cameras or Help.
+
+## v1.7.0 -- 2026-09-05
+
+### Added -- a Help screen
+
+A third door beside Settings, and a Help button on the Settings screen too.
+It answers "why is it silent?" in the app, in the order the causes actually
+turn up: the checklist for a mixer or interface (the box ticked in Settings,
+microphone permission, the channel unmuted and its faders up, the USB send --
+LOOPBACK on a PUPGSIS T12S -- switched on, the gain up), whether the mic is
+dynamic or a condenser needing 48 V the mixer may not have, what the amber
+line under the strips means and what to do about each cause it names, what
+to choose for sample rate, bit depth and buffer size and why, how an
+interface with several sockets is shown and named, where the files are, and
+what to send when none of that applied. Open Settings and Export diagnostics
+are buttons under the last topic.
+
+The words live in Core rather than in the UI, so a test holds them to
+account: the mixer checklist stays first and keeps naming the causes this
+app has actually shipped fixes for.
+
+## v1.6.0 -- 2026-09-05
+
+### Added -- choose which sockets of an interface to record
+
+An interface is one row in Settings, with a tick box per physical input
+indented under it. An eight-input box with two people on it used to record
+eight files, six of them silence, and report room for a fraction of the take
+it could actually hold. Untick the unused sockets and they are not recorded:
+no strip, no file, no share of the disk estimate. The sockets left keep their
+physical numbers, so "input 3" is still the one labelled 3 on the box.
+
+### Added -- name each socket of an interface separately
+
+Clicking a strip's name used to name the whole box, so both people on a
+two-input interface became "Kitchen 1" and "Kitchen 2". On an interface each
+socket is a person, and naming a strip now names that socket: "Alex" and
+"Sam", used on the strips and in the stem filenames, with no socket number
+after a name that already says who it is. A single-input microphone still
+takes the name as before.
+
+Both are port memory (§2.4): they follow the interface across a replug and a
+relaunch, verified by a round-trip test.
+
+## v1.5.1 -- 2026-09-05
+
+### Changed -- the clock master is this computer, always; the picker is gone
+
+Every microphone was already corrected onto the output clock -- the machine's
+own. Naming one microphone as "master" changed nothing about that path; it
+only moved which crystal the drift figures were quoted against, and handed the
+user a picker for a choice with no audible consequence. (The picker had also
+been showing nothing selected since v1.2.1, because it was filled with
+per-input strip names while its selection was a device name.)
+
+Drift is now measured against this computer, so every microphone's figure
+means the same thing, no master can be unplugged mid-take, and Settings shows
+"This computer" where the picker was.
+
+### Documentation
+
+The Settings screenshot in the README was two versions stale: it showed sample
+rate, bit depth and buffer size as read-only text, and the microphone rows
+without their input counts. Retaken from the current build.
+
+## v1.5.0 -- 2026-09-05
+
+### Added -- sample rate, bit depth and buffer size are controls, like Audio MIDI Setup
+
+All three were read-only lines in Settings, and the app once told a user to
+change one of them there. They are pickers now:
+
+- **Sample rate** offers every rate any recorded microphone reports, plus the
+  rate each is running at. A pinned rate is honoured, full stop. The earlier
+  rule quietly dropped a pin the rig "could not reach" and fell back to
+  automatic, which from the user's side is a control that does nothing. If the
+  hardware refuses, the main screen names the device and both rates.
+- **Bit depth**: 16, 24 or 32. Applies to the next take; no stream is reopened.
+- **Buffer size**: Automatic (§5.4's ladder) or a fixed 64 to 1024 samples.
+
+All three persist across relaunch, verified by a round-trip test.
+
+## v1.4.2 -- 2026-09-05
+
+### Verified -- the backend actually reports the rate a device is running at
+
+v1.4.1's rule depends on one number: the rate the interface is on right now.
+Nothing checked that CoreAudioBackend reports it. A field left at 0 would have
+silently reverted the whole rule to highest-common -- the same way v1.4.0
+shipped unable to fire. `sim_coreaudio` now drives the real backend against a
+fake interface sitting at 44.1 kHz and asserts it says 44100.
+
+### Fixed -- a key mismatch can no longer silently reselect 48 kHz
+
+If the microphones in the take fail to match what the OS listed, the negotiator
+would have been handed an empty list and returned its 48 kHz default -- the
+exact failure this rule exists to end, through a side door. Every enumerated
+device votes instead, and a debug build asserts.
+
+## v1.4.1 -- 2026-09-04
+
+### Fixed -- a microphone nobody is recording no longer decides the sample rate
+
+v1.4.0 was supposed to keep the recording on whatever rate the interface was
+already using. On the rig that reported it, nothing changed: the app still
+demanded 48 kHz from hardware locked at 44.1, and still would not open.
+
+The vote was taken over every microphone the OS lists, not the ones being
+recorded. A MacBook's built-in microphone sitting at 48 kHz -- switched off, no
+strip on screen, no file in the take -- outvoted the interface the recording
+actually runs on. The rig "disagreed", so v1.4.0's rule fell through to
+highest-common, which is exactly where it came in.
+
+A microphone nobody is recording cannot resample, cannot drift, and cannot be
+harmed by the choice. Letting it constrain the rate only ever costs the
+microphones that are. Only included devices vote now.
+
+### Fixed -- the rate a device is running at counts as a rate it supports
+
+An interface advertising only 48 kHz while sitting at 44.1 is doing 44.1. Some
+report only the rate they would prefer, and taking that list as the whole truth
+ruled out the one rate guaranteed to work -- the one already running.
+
+### The rule now lives where the tests can reach it
+
+`SampleRateNegotiator::votingDevices()` decides who votes, in Core, tested. It
+was app code, which needs JUCE and no headless test can reach -- which is how
+v1.4.0 shipped a fix that could not fire on the hardware that reported the bug.
+The same mistake as v1.1.0.
+
+## v1.4.0 -- 2026-09-04
+
+### Fixed -- the app stays on the rate your interface is already using
+
+A PUPGSIS mixer running at 44.1 kHz, which advertises 48 kHz and then refuses
+to switch to it, could not record at all:
+
+    PUPGSIS-T12S 1 couldn't be opened for recording. This interface is running
+    at 44.1 kHz and won't change to the 48 kHz this recording uses.
+
+§2.2 chose the highest rate common to every device, which is right on paper and
+worth nothing when the hardware will not move. An interface clock-locked to
+44.1, or one another process has a claim on, lists 48 kHz among its
+capabilities and refuses the write -- and the take never starts.
+
+The rule now has one exception: when every device is ALREADY running at one
+common rate, that rate is chosen even if a higher one is also available.
+Switching is the step that fails; staying put cannot. The difference between
+44.1 and 48 kHz is inaudible next to a recording that did not happen. A rig
+whose devices disagree still gets highest-common, and §3 resamples whichever
+cannot follow.
+
+### Added -- Sample rate is a control in Settings, not a read-only line
+
+The message above told people to "set the recording to 44.1 kHz in Settings".
+Settings displayed the sample rate and offered no way to change it, so the one
+instruction on screen named a control that did not exist.
+
+It is now a picker, defaulting to **Automatic**, listing the rates every
+microphone in the rig can actually reach. The choice is remembered, and is
+ignored if the rig later cannot reach it -- a rate pinned for last week's
+interface must not silently break this week's.
+
+## v1.3.0 -- 2026-09-04
+
+### Fixed -- a mixer that is also your headphones is opened once, not twice
+
+A small livestream mixer presents its microphone inputs and its monitor output
+as a SINGLE duplex device. SobStage opened it for output, took hog mode on it --
+§5.4 requires the monitor path be exclusive -- and then opened it a second time
+for input. That asks macOS for another claim on a device this process has just
+taken exclusively, and the refusal arrives as:
+
+    <mic name> couldn't be opened for recording.
+
+against a microphone that is plugged in and working. Because every take channel
+on that rig comes off the one device, the whole capture failed, which is a
+silent recording from hardware with nothing wrong with it.
+
+The device is now opened once and that single stream carries both halves of the
+cycle: the microphones are read from the same callback that fills the
+headphones, which is also how CoreAudio means a duplex device to be driven. A
+rig where the microphones and the output are different boxes is untouched.
+
+### Fixed -- an oversized callback no longer drops the whole block in silence
+
+CoreAudio is allowed to hand a callback more frames than the buffer size that
+was asked for, and `CoreAudioBackend` sizes its own scratch for exactly that.
+The coordinator did not: one oversized slice made the entire pull return early,
+so no audio, no meters and no error -- the silent failure §0.1 forbids. Its
+scratch now carries the same headroom the backend gives its own.
+
+### Documentation
+
+A diagram of how a rig becomes tracks, covering the single-input microphone, the
+multi-input interface, and the duplex mixer -- the mapping that was got wrong
+repeatedly and is impossible to see from the UI alone.
+
+## v1.2.2 -- 2026-09-04
+
+### Fixed -- when a microphone won't open, the app says why
+
+"PUPGSIS-T12S 1 couldn't be opened for recording." was the whole message, and
+it named a microphone rather than a cause. Four different faults produced that
+one sentence, and they have four different fixes:
+
+- the interface is running at a sample rate the recording isn't using
+- macOS has not granted SobStage microphone access
+- another app is holding the interface
+- the microphone was unplugged between being listed and being opened
+
+The backend knew which of those it was at the moment it failed and threw the
+answer away. §0.1 is about audio, but the principle is the same: the app knew
+and said nothing, and the person was left to guess. The monitor-output path had
+always reported its cause; the microphone path now does too, naming the rates
+involved where a rate is the problem, and where to change them.
+
+### Fixed -- a reason that doesn't fit on one line is no longer clipped
+
+The problem line was a fixed 20px band, so a message long enough to explain
+anything was cut off after a few words -- which left exactly the dead end the
+message was written to end. It now grows with its text, capped at four lines so
+a runaway message can never push the record button off the bottom of the
+window, and `layout_probe` checks the screen still fits.
+
+## v1.2.1 -- 2026-09-04
+
+### Fixed -- the screen agreed with the files about how many microphones there are
+
+v1.2.0 made a two-input interface record two tracks. It did not make the app
+*look* like it had. Everything the user sees before pressing record was still
+counted per device, while the recording itself was counted per input, and the
+two answers disagreed:
+
+- The main screen showed **one** meter strip for a two-input interface, and
+  only grew to two at the moment recording started. Before that, the app
+  looked exactly like one that could not see the second microphone -- which is
+  how it was reported.
+- The Settings list showed one row for the interface with nothing to say it
+  carried two microphones, so the row read as the app refusing the second mic.
+- §6.4's remaining-time figure was computed for the device count, so it
+  promised twice the recording time a two-input interface would actually fit,
+  and four times on a four-input one. The disk cannot keep that promise.
+
+### Fixed -- an interface's microphones are told apart on screen, not just on disk
+
+Asked for the name of a channel, the app answered per device. On a four-input
+interface that gave four identically-named strips over four correctly-named
+files: the meters were right, the files were right, and there was no way to
+tell which meter belonged to which person.
+
+### How this is prevented from coming back
+
+The rule was written down twice -- once in the capture builder, per input, and
+once in the screen's accessors, per device -- and the copies drifted. There is
+now one description of what a rig records, `planChannels()` in Core, and every
+caller resolves through it. It is Core rather than app code for the reason
+`takeChannelsForDevice` was moved there: the app's builder needs JUCE and the
+headless tests cannot reach it, so a rule that lives only there is a rule
+nothing checks.
+
+## v1.2.0 — 2026-09-04
+
+### Fixed -- two microphones on a two-input interface are both recorded
+
+A two-input interface with two people plugged into it is the commonest
+small multi-mic rig there is, and this app collapsed it to a single track.
+
+Two channels were assumed to be a stereo USB microphone presenting the same
+voice on both sides, so §2.1 picked one side and discarded the other. One of
+the two people was thrown away without a word -- and if the discarded side
+was the one carrying the microphone that mattered, the whole take came back
+silent from a rig that was working perfectly.
+
+v1.1.0 addressed this for interfaces with more than two inputs and left
+two-input devices collapsing exactly as before, which is why it changed
+nothing for the rig that reported it.
+
+§0.1 settles which way to guess when the app cannot tell the two apart.
+Keeping both sides of a duplicated mono microphone costs a redundant file,
+which is untidy. Collapsing two microphones into one loses somebody's audio
+entirely, with nothing said. Those are not comparable, so both sides are now
+kept until §2.1's analyzer has actually examined the audio and decided they
+carry the same source -- a verdict §2.4 already remembers per port, so a
+stereo USB mic still collapses correctly from its second take onward.
+
+Covered in Tools/sim_capture_mac by the failure as reported: a two-input
+interface where only the second person is speaking, checked to confirm both
+files exist at full length and the talking one carries signal.
+
+## v1.1.1 — 2026-09-04
+
+### Fixed -- the interface fix in v1.1.0 never actually took effect
+
+v1.1.0 made a device contribute one take channel per input it presents.
+For anyone whose interface was already in the device list, it changed
+nothing at all, and the report was exactly that: absolutely nothing
+changed.
+
+How many inputs a device has is the OS's to say, and syncToEnumeration
+refreshes what the OS owns each time the device list changes -- the display
+name, whether it is built in. The input count was not in that list. So a
+device that arrived by any other route, or was present before the first
+enumeration, kept the default of one input for the rest of the session. The
+app went on believing a four-microphone interface had one microphone on it,
+and the v1.1.0 rule never fired.
+
+The count is now refreshed like every other fact the OS owns.
+
+### Added -- the rule that decides this is testable now
+
+The decision lived inside the app's channel builder, which needs JUCE and so
+cannot be reached by the Core tests at all. That is how it shipped untested
+and how the stale count went unnoticed: nothing anywhere could have caught
+either.
+
+takeChannelsForDevice() is a plain Core function now, with the reconcile
+covered by a test that fails against the old code.
+
+## v1.1.0 — 2026-09-04
+
+### Fixed -- an audio interface's microphones are all recorded, not just one
+
+Reported from a real rig: "it's not letting me add the mics I have
+connected to my interface."
+
+One device is not one microphone. An interface with four microphones
+plugged into it is a single device presenting four inputs, and this app
+took exactly one channel from any device it opened. §2.1's stereo collapse
+-- written for a USB mic that presents the same voice on both sides -- was
+being applied to interfaces, where the two sides are two different people.
+It picked one and discarded the rest without a word. Inputs three and four
+were never even read.
+
+Anyone recording several people through one interface got one of them. If
+their own microphone happened to be on a discarded input, they got a
+silent recording and nothing on screen explaining why.
+
+§2.1 had already said what should happen: collapse to mono when a side is
+silent or duplicated, "otherwise record true stereo". The otherwise was
+never implemented.
+
+A device now contributes one take channel per input it presents, each with
+its own strip, its own name and its own file. Two-input devices are
+unchanged -- that is the USB-mic case §2.1 was written for, and the
+analyzer still decides. Above two, a device is an interface and every input
+is a microphone.
+
+The streams are also grouped by device now. Opening one stream per channel
+would have asked the OS for the same exclusive device once per microphone,
+and on macOS the second request is refused -- the take would have died
+naming a microphone that was plugged in and working.
+
+Covered by Tools/sim_capture_mac: a four-input interface carrying a
+different tone on each input, recorded through the real coordinator, with
+every tone checked into its own file.
+
+## v1.0.3 — 2026-09-04
+
+### Added -- the macOS recording path is tested end to end
+
+sim_coreaudio proved the backend hands over the right samples. live_capture
+proved the coordinator and writer turn samples into files. Nothing joined
+them, and the join is where macOS actually lives -- so three things reached
+users untested:
+
+- live_capture's fixture microphones are mono, so the stereo path, which is
+  what a USB mixer or any stereo interface takes through §2.1's
+  channel-layout analysis, had never reached a file in any test.
+- every harness and every unit test recorded at 16 bits. The app ships 24.
+- the backend had only ever been asked for audio in isolation, never while
+  a take was running.
+
+Tools/sim_capture_mac closes all three: a stereo interleaved device, at 24
+bits, recorded through the real coordinator into real files, with the bytes
+checked rather than the file size. It runs in CI on every platform.
+
+### Added -- a silent take now says whose fault it is
+
+When a take comes back with no sound, the single most useful thing to know
+is whether any audio arrived. If none did, the rig is worth checking: a
+mute switch, a cable, the wrong input selected. If audio DID arrive and
+none of it reached the files, nothing about the rig explains it -- the
+samples were here and this program lost them.
+
+The app could not tell those apart, so it said "silent" for both, and the
+only available next step was to go and check hardware that may have been
+working perfectly the whole time.
+
+The capture path now records the loudest sample that ARRIVED, alongside the
+loudest the writer managed to WRITE. When audio arrived and nothing was
+written, the take is reported as a fault in SobStage, in those words,
+rather than as a silent microphone.
+
+This is the §0.1 rule taken one step further. Reporting that audio was lost
+is the requirement; saying which half of the system lost it is what makes
+the report worth reading.
+
+## v1.0.2 — 2026-09-04
+
+### Fixed -- a take could record silence while the meters showed signal
+
+Reported from a real Mac: the on-screen meters moved while the user
+talked, and the files came out silent.
+
+The capture path hands the writer whatever channels the device delivered,
+clamped to the take's channel list. The writer then required that count to
+match the take's exactly, and rejected the whole block when it did not --
+every channel of it, including the ones that had arrived intact. If a
+device simply reports fewer inputs than the take was built for, that is not
+an occasional dropped block: it is the entire recording.
+
+It was invisible on screen because metering happens after, reads the same
+buffer, and has no equivalent check. So the app displayed live level for
+audio it was dropping on the floor, which is §0.1's unacceptable failure at
+its largest -- everything lost, nothing said.
+
+The earlier audit found this code and fixed the wrong half of it. It saw
+that a rejected block left framesDropped at zero and made it count instead,
+which made the loss visible without stopping it. The remedy was wrong: §6.5
+already settles what to do when a channel is not there, for the case of a
+mic unplugged mid-take -- the file layout holds and that channel writes
+silence. A short block is the same problem and now gets the same answer, so
+every channel that arrives is written.
+
+A block carrying MORE channels than the take is the genuinely lossy case,
+since those samples have nowhere to go. Those are still counted, and the
+channels that fit are still written rather than the whole block going in
+the bin.
+
 ## v1.0.1 — 2026-09-04
 
 ### Fixed -- a take that records silence is no longer called saved

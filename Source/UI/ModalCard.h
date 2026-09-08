@@ -47,6 +47,7 @@ protected:
     virtual void layOutContent (juce::Rectangle<int> area) = 0;
 
     void setHeading (const juce::String& heading, const juce::String& subheading);
+    void setHeadingColour (juce::Colour colour);
 
     /// Note for anything added here later: a child that starts hidden goes in
     /// with addChildComponent, never addAndMakeVisible followed by
@@ -63,7 +64,7 @@ protected:
     static constexpr int kCardWidth   = 480;
     static constexpr int kCardPadding = 22;
     static constexpr int kRowHeight   = 22;
-    static constexpr int kButtonHeight = 34;
+    static constexpr int kButtonHeight = 38;
 
     juce::Rectangle<int> getCardBounds() const;
 

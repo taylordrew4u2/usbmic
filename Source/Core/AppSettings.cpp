@@ -16,6 +16,9 @@ JsonValue AppSettings::toJson() const
     root["cameraTileScale"] = JsonValue (static_cast<double> (cameraTileScale));
     root["combineVideoAndAudio"] = JsonValue (combineVideoAndAudio);
     root["deliveryTarget"] = JsonValue (deliveryTarget);
+    root["sampleRateOverride"] = JsonValue (static_cast<double> (sampleRateOverride));
+    root["bitDepthOverride"] = JsonValue (static_cast<double> (bitDepthOverride));
+    root["bufferSizeOverride"] = JsonValue (static_cast<double> (bufferSizeOverride));
 
     JsonValue portArr = JsonValue::makeArray();
     for (const auto& p : ports)
@@ -26,6 +29,22 @@ JsonValue AppSettings::toJson() const
         pv["trimDb"] = JsonValue (static_cast<double> (p.settings.trimDb));
         pv["channelLayoutIsMono"] = JsonValue (p.settings.channelLayoutIsMono);
         pv["hasChannelLayoutDecision"] = JsonValue (p.settings.hasChannelLayoutDecision);
+
+        JsonValue disabledInputs = JsonValue::makeArray();
+        for (int input : p.settings.disabledInputs)
+            disabledInputs.push_back (JsonValue (static_cast<double> (input)));
+        pv["disabledInputs"] = disabledInputs;
+
+        JsonValue inputNames = JsonValue::makeArray();
+        for (const auto& [input, name] : p.settings.inputNames)
+        {
+            JsonValue entry = JsonValue::makeObject();
+            entry["input"] = JsonValue (static_cast<double> (input));
+            entry["name"] = JsonValue (name);
+            inputNames.push_back (entry);
+        }
+        pv["inputNames"] = inputNames;
+
         portArr.push_back (pv);
     }
     root["ports"] = portArr;
@@ -66,6 +85,12 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("cameraTileScale")) s.cameraTileScale = static_cast<int> (p->asDouble (1.0));
     if (auto* p = v.find ("combineVideoAndAudio")) s.combineVideoAndAudio = p->asBool (false);
     if (auto* p = v.find ("deliveryTarget")) s.deliveryTarget = p->asString ("");
+    if (auto* p = v.find ("sampleRateOverride"))
+        s.sampleRateOverride = static_cast<uint32_t> (p->asDouble (0.0));
+    if (auto* p = v.find ("bitDepthOverride"))
+        s.bitDepthOverride = static_cast<int> (p->asDouble (0.0));
+    if (auto* p = v.find ("bufferSizeOverride"))
+        s.bufferSizeOverride = static_cast<int> (p->asDouble (0.0));
 
     if (auto* p = v.find ("ports"))
         for (const auto& pv : p->asArray())
@@ -82,6 +107,26 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
             if (auto* n = pv.find ("trimDb")) port.settings.trimDb = static_cast<float> (n->asDouble());
             if (auto* n = pv.find ("channelLayoutIsMono")) port.settings.channelLayoutIsMono = n->asBool (true);
             if (auto* n = pv.find ("hasChannelLayoutDecision")) port.settings.hasChannelLayoutDecision = n->asBool (false);
+
+            if (auto* n = pv.find ("disabledInputs"))
+                for (const auto& iv : n->asArray())
+                    if (const int input = static_cast<int> (iv.asDouble (-1.0)); input >= 0)
+                        port.settings.disabledInputs.push_back (input);
+
+            if (auto* n = pv.find ("inputNames"))
+                for (const auto& ev : n->asArray())
+                {
+                    const auto* inputV = ev.find ("input");
+                    const auto* nameV = ev.find ("name");
+
+                    if (inputV == nullptr || nameV == nullptr)
+                        continue;
+
+                    if (const int input = static_cast<int> (inputV->asDouble (-1.0)); input >= 0)
+                        if (const auto name = nameV->asString(); ! name.empty())
+                            port.settings.inputNames[input] = name;
+                }
+
             s.ports.push_back (port);
         }
 
