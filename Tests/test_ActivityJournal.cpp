@@ -327,3 +327,20 @@ TEST_CASE (ActivityJournal_RepeatsCollapseEvenWhenSeveralThingsFailAtOnce)
     for (const auto& e : journal.getEntries())
         REQUIRE (e.repeats == 30u);
 }
+
+TEST_CASE (ActivityJournal_NoteSaysWhetherItWasNewsOrARepeat)
+{
+    // A caller that also writes entries somewhere append-only -- the app's
+    // log file -- needs to tell a new entry from a repeat, or one failure
+    // repeating twice a second fills that file with the same sentence.
+    ActivityJournal journal;
+
+    REQUIRE (journal.note (0.0, ActivityLevel::Failed, "Card", "It stopped accepting writes."));
+    REQUIRE (! journal.note (0.5, ActivityLevel::Failed, "Card", "It stopped accepting writes."));
+    REQUIRE (! journal.note (1.0, ActivityLevel::Failed, "Card", "It stopped accepting writes."));
+
+    // Different subject, and the same one again once the window has passed.
+    REQUIRE (journal.note (1.0, ActivityLevel::Failed, "Local backup", "It stopped accepting writes."));
+    REQUIRE (journal.note (ActivityJournal::kRepeatWindowSeconds + 2.0, ActivityLevel::Failed,
+                           "Card", "It stopped accepting writes."));
+}
