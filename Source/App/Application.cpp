@@ -38,6 +38,20 @@ juce::String appVersionString()
    #endif
 }
 
+// Writes text and then checks the file actually holds it. On a full drive
+// juce::File::replaceWithText can report success having left a truncated or
+// empty file behind -- seen for real: a take whose card filled up ended with a
+// zero-byte session.json and nothing said so. Everything durable this app
+// writes goes through here, so a write that did not survive is a write the
+// user hears about.
+bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
+{
+    if (! file.replaceWithText (text))
+        return false;
+
+    return file.getSize() == static_cast<juce::int64> (text.getNumBytesAsUTF8());
+}
+
 } // namespace
 
 Application::Application()
@@ -2579,7 +2593,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // above -- every dropout, every buffer change, why the backup stopped --
     // and it was written with the return value discarded, so the one file that
     // explains a difficult take could fail to appear and nothing would say so.
-    if (! juce::File (currentSessionFolder).getChildFile ("session.json").replaceWithText (juce::String (json)))
+    if (! replaceWithTextChecked (juce::File (currentSessionFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the details file for this take. The audio itself is saved.");
 
@@ -2588,7 +2602,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // of how the take went -- which is the half of the pair the user reaches
     // for precisely when the card's copy is the one that went wrong.
     if (currentMirrorFolder.isNotEmpty()
-        && ! juce::File (currentMirrorFolder).getChildFile ("session.json").replaceWithText (juce::String (json)))
+        && ! replaceWithTextChecked (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Local backup",
                       "Couldn't write the details file into the backup copy. The backed-up audio "
                       "itself is there.");
@@ -2623,7 +2637,7 @@ void Application::writeActivityLog (const juce::File& folder) const
 
     // Checked like everything else here. A log that failed to write is exactly
     // the sort of thing this file exists to stop happening quietly.
-    if (! folder.getChildFile ("activity.log").replaceWithText (text))
+    if (! replaceWithTextChecked (folder.getChildFile ("activity.log"), text))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the activity log into " + folder.getFileName()
                       + ". The audio itself is saved.");
@@ -3309,7 +3323,7 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     // §11: a bundle missing the device inventory is the bundle that cannot
     // answer "what was plugged in", which is the first question anyone reading
     // it asks. Silently shipping one without it wastes a round trip.
-    if (! tempInventory.getFile().replaceWithText (juce::JSON::toString (juce::var (summary), true)))
+    if (! replaceWithTextChecked (tempInventory.getFile(), juce::JSON::toString (juce::var (summary), true)))
         noteActivity (ActivityLevel::Warning, "Diagnostics",
                       "Couldn't list the connected devices, so the diagnostics file won't include "
                       "them.");
@@ -3561,7 +3575,7 @@ void Application::saveSettings()
     // Checked, because silently failing here presents next launch as an app
     // that forgot the user's microphone names, trims and destination -- and
     // there is no moment at which that is explained.
-    if (! file.replaceWithText (juce::String (settings.toJsonString())))
+    if (! replaceWithTextChecked (file, juce::String (settings.toJsonString())))
         noteActivity (ActivityLevel::Warning, "Settings",
                       "Couldn't save your settings, so they may not be remembered next time.");
 
@@ -3646,7 +3660,7 @@ void Application::clearRecoveredSessions()
                 // read-only, full, the very card whose failure caused the
                 // interruption -- produced the same list forever with nothing
                 // explaining why dismissing it did not stick.
-                if (! file.replaceWithText (juce::String (meta.toJsonString())))
+                if (! replaceWithTextChecked (file, juce::String (meta.toJsonString())))
                     noteActivity (ActivityLevel::Warning, "Interrupted take",
                                   file.getParentDirectory().getFileName()
                                   + " can't be marked as dealt with -- this card won't accept the "
