@@ -458,3 +458,20 @@ TEST_CASE (DeviceInputStream_ReconnectedChannelDoesNotReplayAudioFromBeforeTheGa
     REQUIRE_FALSE (sawStale);
     REQUIRE (sawFresh); // and it did resume, rather than staying silent forever
 }
+
+TEST_CASE (DeviceInputStream_OverrunsAreCountedNotSwallowed)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> block (64, 0.5f);
+    REQUIRE (s.getOverrunSamples() == 0);
+
+    // Twice the ring's worth with no pull between: half is thrown away, and
+    // this used to throw the count away with it.
+    for (int i = 0; i < DeviceInputStream::kRingBlocks * 2; ++i)
+        s.pushBlock (block.data(), 64);
+
+    REQUIRE (s.getOverrunSamples() > 0);
+    REQUIRE (s.getOverrunSamples() < static_cast<uint64_t> (DeviceInputStream::kRingBlocks) * 2 * 64);
+}

@@ -25,6 +25,13 @@ struct TakeHealth
     /// Audio frames this app dropped so far in the take. Any increase is
     /// sound that is gone.
     uint64_t framesDropped = 0;
+    /// Samples the per-device rings discarded because nothing pulled them in
+    /// time. Any increase is sound that is gone.
+    uint64_t samplesOverrun = 0;
+
+    /// True while the headphone output has stopped calling back and the take
+    /// is running on the computer's own clock.
+    bool outputClockLost = false;
     /// True while the writer is falling behind (ring buffer past its warning
     /// mark) and true while it has given up the stems and kept only the mix.
     bool writerBehind = false;
@@ -32,6 +39,10 @@ struct TakeHealth
 
     /// Room left on the destination, in seconds. Negative when unknown.
     double remainingSeconds = -1.0;
+
+    /// How far into the take this reading was taken. Used to space out
+    /// repeats of the same complaint.
+    double elapsedSeconds = 0.0;
 };
 
 struct TakeAlert
@@ -40,6 +51,7 @@ struct TakeAlert
     {
         MicLost, MicBack, CameraLost, CameraBack, CameraTrouble,
         AudioDropped, WriterBehind, MixOnly, MonitorTrouble,
+        OutputLost, OutputBack,
         TenMinutesLeft, TwoMinutesLeft,
     };
 
@@ -74,11 +86,19 @@ public:
     static constexpr double kTenMinutes = 600.0;
     static constexpr double kTwoMinutes = 120.0;
 
+    /// Dropped audio is said when it starts and then no more than once a
+    /// minute, with the running total: a machine that is struggling drops a
+    /// little on every tick, and a card that grows a line twice a second is
+    /// one nobody can read or dismiss.
+    static constexpr double kDroppedRepeatSeconds = 60.0;
+
 private:
     bool watching = false;
     TakeHealth last;
     bool warnedTenMinutes = false;
     bool warnedTwoMinutes = false;
+    bool droppedReported = false;
+    double droppedReportedAt = 0.0;
 };
 
 } // namespace mma
