@@ -2785,9 +2785,21 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // warning kept recording into a dead handle for another poll. The
         // journal carries it, and the advice line picks it up once nothing
         // more urgent is holding the line.
+        const auto& driftChannels = capture->getChannels();
+
         for (int i = 0; i < micCount; ++i)
         {
             if (! capture->hasSustainedExcessDrift (i))
+                continue;
+
+            // Not about a microphone that has been unplugged. Its stream is
+            // gone, so whatever the drift figure still says is about a device
+            // that is not there -- and "try a different USB port" is advice
+            // for a microphone the user has already pulled out. Seen for real:
+            // a mic unplugged mid-take went on filing sync warnings under its
+            // own name for the rest of the take.
+            if (static_cast<size_t> (i) < driftChannels.size()
+                && recordingEngine.isWritingSilence (driftChannels[static_cast<size_t> (i)].deviceId))
                 continue;
 
             noteActivity (ActivityLevel::Warning, getMicDisplayName (i),
