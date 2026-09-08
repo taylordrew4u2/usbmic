@@ -490,6 +490,15 @@ void Application::publishAggregateDevice()
     if (systemAggregate == nullptr)
         return;
 
+    // A platform with no combined device is not a failure to report. publish()
+    // answers false there by definition, and once its result started being
+    // read, every Windows and Linux launch filed "Couldn't make the combined
+    // device" as a FAILURE -- about a feature that platform has never had.
+    // What other apps see is already explained accurately, in the Advanced
+    // panel, by getStatus().
+    if (! systemAggregate->isSupported())
+        return;
+
     std::vector<std::string> uids;
     for (const auto& d : deviceManager.getDevices())
         if (d.included)
