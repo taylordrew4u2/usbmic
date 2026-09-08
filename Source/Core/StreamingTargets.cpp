@@ -112,7 +112,22 @@ LoudnessAdvice adviseForTarget (const StreamingTarget& target,
     const std::string direction = gain >= 0.0 ? "up" : "down";
     const std::string amount = oneDecimal (std::abs (gain));
 
-    if (advice.limitedByTruePeak)
+    if (advice.limitedByTruePeak && gain < 0.0)
+    {
+        // The peaks are ALREADY past the ceiling, so the only move is down --
+        // whatever the loudness figure wants. This branch used to say "Turn up
+        // by N dB" regardless of which way the gain went, so a quiet take with
+        // a few loud peaks was told to turn UP a signal that was already
+        // clipping: the number was right and the sentence was its opposite.
+        advice.summary = "The peaks are already louder than " + target.name + " allows. Turn down by "
+                       + amount + " dB.";
+
+        if (measuredLufs < wanted)
+            advice.summary += " That leaves it quieter than " + target.name
+                            + " wants overall, so the next take wants a steadier level rather than "
+                              "a louder one -- back off the microphone a little and bring the gain up.";
+    }
+    else if (advice.limitedByTruePeak)
     {
         advice.summary = "Quieter than " + target.name + " wants, but there's only "
                        + amount + " dB of headroom before the peaks clip. Turn up by "
