@@ -1244,12 +1244,23 @@ void Application::setDestinationByPath (const juce::String& path)
     {
         setDestinationFolder (target);
 
-        // Only when it actually took effect. Mid-take the change is deferred
-        // and setDestinationFolder says so itself; announcing "Takes will be
-        // saved to X" on top of that would contradict it in the same breath.
-        if (recordingEngine.getState() != RecordingState::Recording)
+        // Announced only when it actually took effect. Mid-take the change is
+        // deferred and setDestinationFolder says so itself, so announcing
+        // "Takes will be saved to X" on top would contradict it in the same
+        // breath. And the check is against what the setting NOW says rather
+        // than against the recording state: a card pulled between the
+        // isDirectory() test above and the assignment leaves the old folder in
+        // place, and this used to announce the new one anyway.
+        if (recordingEngine.getState() == RecordingState::Recording)
+            return;
+
+        if (destinationFolder == target.getFullPathName().toStdString())
             noteActivity (ActivityLevel::Started, "Save location",
                           "Takes will be saved to " + target.getFullPathName() + ".");
+        else
+            noteActivity (ActivityLevel::Failed, "Save location",
+                          target.getFullPathName() + " stopped being available, so takes are still "
+                          "going to " + juce::String (destinationFolder) + ".");
 
         return;
     }
@@ -1515,23 +1526,46 @@ void Application::toggleRecording()
         // this one's.
         stopReason.clear();
 
-        // A destination the user chose mid-take, applied now that applying it
-        // cannot move a running take's files out from under it. Owed, like a
-        // deferred capture restart -- a change refused and then never applied
-        // is its own kind of silence.
-        if (pendingDestinationFolder.isNotEmpty())
-        {
-            const juce::File chosen (pendingDestinationFolder);
-            pendingDestinationFolder.clear();
-            setDestinationFolder (chosen);
-        }
-
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
 
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
+
+        // A destination the user chose mid-take, applied now that applying it
+        // cannot move a running take's files out from under it.
+        //
+        // Placed here, AFTER recordingEngine.stop(), and that is the whole
+        // point: run before it, the state is still Recording, so the apply fell
+        // into its own deferral branch, re-armed the pending value and
+        // re-emitted the promise -- forever. The user was told at every stop
+        // that their new folder took effect from the next take, and it never
+        // did, for the life of the process. applyDestinationFolder is used
+        // rather than setDestinationFolder so that cannot happen again: it does
+        // not consult the recording state at all.
+        if (pendingDestinationFolder.isNotEmpty())
+        {
+            const juce::File chosen (pendingDestinationFolder);
+            pendingDestinationFolder.clear();
+
+            if (chosen.isDirectory())
+            {
+                applyDestinationFolder (chosen);
+
+                noteActivity (ActivityLevel::Started, "Save location",
+                              "Takes are now being saved to " + chosen.getFullPathName() + ".");
+            }
+            else
+            {
+                // Told at the time that it would apply from the next take, so
+                // told now that it did not. The alternative is a promise that
+                // quietly expires.
+                noteActivity (ActivityLevel::Failed, "Save location",
+                              chosen.getFullPathName() + " isn't there any more, so takes are still "
+                              "going to " + juce::String (destinationFolder) + ".");
+            }
+        }
 
         // Everything refused during the take -- a mic plugged in, an unplug,
         // a rename, a rate change -- is applied now, so the next take's plan
@@ -2299,6 +2333,11 @@ void Application::setDestinationFolder (const juce::File& folder)
         return;
     }
 
+    applyDestinationFolder (folder);
+}
+
+void Application::applyDestinationFolder (const juce::File& folder)
+{
     destinationFolder = folder.getFullPathName().toStdString();
 
     // §10.1: the user agreed to a place, not to a setting. Somewhere else has

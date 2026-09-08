@@ -690,6 +690,12 @@ private:
     /// goes for its duration, so the change waits for the take to end rather
     /// than being dropped -- the same bargain requestCaptureRestart strikes.
     juce::String pendingDestinationFolder;
+
+    /// Does what setDestinationFolder does, without asking whether a take is
+    /// running. The deferral decision lives in setDestinationFolder alone, so
+    /// the deferred apply cannot re-enter it and defer itself -- which is
+    /// exactly what it did when both jobs lived in one function.
+    void applyDestinationFolder (const juce::File& folder);
     void applyClockMaster();
 
 
