@@ -544,6 +544,36 @@ void aStalledMicrophoneIsReportedRatherThanSpunOnForever()
     backend.closeAllStreams();
 }
 
+// The rig-watch registration is allowed to fail on Windows -- a locked-down
+// session, a dying audio service -- and when it does, a microphone plugged in
+// is never noticed and one pulled out MID-TAKE is never reported. That silence
+// is worse than the failure: a take that lost a channel looks like a clean one.
+void aSessionThatCannotWatchTheRigSaysSo()
+{
+    std::printf ("\nA session Windows will not let the app watch the rig from\n");
+    fakewasapi::reset();
+
+    {
+        mma::WasapiAsioBackend backend;
+        backend.setDeviceChangeCallback ([] {});
+
+        check (backend.getHotplugProblem().empty(),
+               "a session that CAN watch the rig reports no problem");
+    }
+
+    fakewasapi::setNotificationRegistrationAllowed (false);
+
+    {
+        mma::WasapiAsioBackend backend;
+        backend.setDeviceChangeCallback ([] {});
+
+        check (! backend.getHotplugProblem().empty(),
+               "a session that cannot watch the rig says so rather than going quiet");
+    }
+
+    fakewasapi::setNotificationRegistrationAllowed (true);
+}
+
 int main()
 {
     std::printf ("WASAPI backend, driven against a virtual endpoint layer\n");
@@ -563,6 +593,7 @@ int main()
     eightMicrophonesInMixedFormatsStaySeparate();
     closingStopsEveryStream();
     aStalledMicrophoneIsReportedRatherThanSpunOnForever();
+    aSessionThatCannotWatchTheRigSaysSo();
 
     // Tear the last scenario down so a leak check sees only what the
     // backend failed to release, not what the harness never cleaned up.

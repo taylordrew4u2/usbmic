@@ -68,6 +68,7 @@ struct World
     std::vector<std::string> order;
     std::vector<IMMNotificationClient*> notificationClients;
     bool asioInstalled = false;
+    bool allowNotificationRegistration = true;
 };
 
 World& world()
@@ -600,6 +601,16 @@ struct FakeEnumerator : RefCounted<IMMDeviceEnumerator>
         if (client == nullptr)
             return E_POINTER;
 
+        {
+            // Windows can refuse the registration -- a locked-down session, a
+            // dying audio service. The backend then never hears about a
+            // microphone being plugged in or pulled out.
+            std::lock_guard<std::mutex> lock (world().mutex);
+
+            if (! world().allowNotificationRegistration)
+                return E_FAIL;
+        }
+
         client->AddRef(); // the enumerator holds its own reference, as on Windows
         std::lock_guard<std::mutex> lock (world().mutex);
         world().notificationClients.push_back (client);
@@ -826,6 +837,13 @@ void reset()
     world().order.clear();
     world().notificationClients.clear();
     world().asioInstalled = false;
+    world().allowNotificationRegistration = true;
+}
+
+void setNotificationRegistrationAllowed (bool allowed)
+{
+    std::lock_guard<std::mutex> lock (world().mutex);
+    world().allowNotificationRegistration = allowed;
 }
 
 void addEndpoint (const EndpointSpec& spec)

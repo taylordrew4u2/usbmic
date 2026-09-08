@@ -51,6 +51,7 @@ struct State
     std::vector<AudioObjectID> order;
     std::vector<Listener> listeners;
     AudioObjectID nextId = 100;
+    bool allowPropertyListeners = true;
 };
 
 State& state()
@@ -390,6 +391,11 @@ OSStatus AudioObjectAddPropertyListener (AudioObjectID object,
     if (address == nullptr || listener == nullptr)
         return kAudioHardwareUnspecifiedError;
 
+    // macOS can refuse it, and the backend has to notice: with no listener,
+    // nothing about the rig is ever heard again.
+    if (! state().allowPropertyListeners)
+        return kAudioHardwareUnspecifiedError;
+
     state().listeners.push_back ({ object, address->mSelector, listener, clientData });
     return noErr;
 }
@@ -481,6 +487,12 @@ void reset()
     state().order.clear();
     state().listeners.clear();
     state().nextId = 100;
+    state().allowPropertyListeners = true;
+}
+
+void setPropertyListenersAllowed (bool allowed)
+{
+    state().allowPropertyListeners = allowed;
 }
 
 AudioObjectID addDevice (const DeviceSpec& spec)

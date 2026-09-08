@@ -515,9 +515,20 @@ void CoreAudioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
 
 void CoreAudioBackend::installDeviceListListener()
 {
+    hotplugProblem.clear();
+
     AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
                                          kAudioObjectPropertyElementMain };
-    AudioObjectAddPropertyListener (kAudioObjectSystemObject, &address, deviceListChanged, &deviceChangeCallback);
+
+    // The result is read. Discarded, a listener macOS refused to install left
+    // the app deaf to the rig for the rest of the session without a word: a
+    // microphone plugged in is never noticed, and one pulled out MID-TAKE is
+    // never reported, so a take that lost a channel looks like a clean one.
+    if (AudioObjectAddPropertyListener (kAudioObjectSystemObject, &address, deviceListChanged,
+                                        &deviceChangeCallback) != noErr)
+        hotplugProblem =
+            "This Mac won't tell the app when microphones are plugged in or unplugged, so the list "
+            "only updates when the app starts. Restart it after changing your rig.";
 }
 
 void CoreAudioBackend::removeDeviceListListener()
