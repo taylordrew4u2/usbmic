@@ -59,9 +59,12 @@ click() {
 
 # A launch after an interrupted take shows the Recovered card first, and a
 # card swallows every click behind it by design. Its Done button sits at
-# (417,263) relative to the window on this display; with no card up the click lands on an inert
+# (417,312) relative to the window on this display; with no card up the click lands on an inert
 # label. Either way the main screen is reachable afterwards.
-click 417 263
+# The card's height depends on how many takes it lists, so its Done button
+# does not sit at one fixed offset. Each candidate that misses lands on an
+# inert label, so trying all of them is safe and one of them lands.
+for DONE_Y in 263 293 312 332; do click 417 "$DONE_Y"; done
 sleep 1
 
 newest() { ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1; }
