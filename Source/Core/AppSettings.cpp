@@ -173,8 +173,13 @@ AppSettings AppSettings::fromJsonString (const std::string& text)
         // written by a different version legitimately carries a different set
         // of keys and must keep whatever it can -- so the test is that
         // something was read, not that a particular thing was.
+        // Counted by members that carry a VALUE. A file truncated before its
+        // first value -- {"destinationFolde -- parses to one dangling key with
+        // nothing under it, which the member count read as a setting recovered,
+        // so everything the user had was reset and the warning never fired.
+        // Seen for real: a settings.json cut short reported nothing at all.
         const bool readSomething = parsed.getType() == JsonValue::Type::Object
-                                && parsed.getMemberCount() > 0;
+                                && parsed.getValuedMemberCount() > 0;
 
         if (! readSomething)
         {

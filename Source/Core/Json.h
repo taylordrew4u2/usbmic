@@ -38,6 +38,21 @@ public:
     /// whether anything actually came out of it.
     size_t getMemberCount() const { return objectValue.size(); }
 
+    /// Members that actually carry a value. A truncated file ends mid-member,
+    /// and the lenient parse above stores that dangling key with a null value
+    /// -- so counting members alone reports "I read something" for a file that
+    /// yielded nothing at all.
+    size_t getValuedMemberCount() const
+    {
+        size_t count = 0;
+
+        for (const auto& kv : objectValue)
+            if (kv.second.getType() != Type::Null)
+                ++count;
+
+        return count;
+    }
+
     void push_back (JsonValue v) { arrayValue.push_back (std::move (v)); }
 
     JsonValue& operator[] (const std::string& key)
