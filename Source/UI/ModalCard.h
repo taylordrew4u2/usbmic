@@ -47,6 +47,7 @@ protected:
     virtual void layOutContent (juce::Rectangle<int> area) = 0;
 
     void setHeading (const juce::String& heading, const juce::String& subheading);
+    void setHeadingColour (juce::Colour colour);
 
     /// Note for anything added here later: a child that starts hidden goes in
     /// with addChildComponent, never addAndMakeVisible followed by

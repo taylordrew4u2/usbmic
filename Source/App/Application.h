@@ -26,6 +26,7 @@
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/CapacityMonitor.h"
 #include "../Core/TakeWatchdog.h"
+#include "../Core/RecordingProof.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
@@ -101,6 +102,11 @@ public:
     /// which microphones are live, which cameras are still listed, whether
     /// sound has been dropped, whether the drive is keeping up, room left.
     TakeHealth snapshotTakeHealth() const;
+
+    /// §0.1: the evidence that the current take is really landing on the
+    /// drive -- frames the writer accepted, bytes the session folder holds,
+    /// the loudest sample that has arrived. Read on the slow tick.
+    ProofReading snapshotProof() const;
 
     /// §6.5: false while this channel's microphone is unplugged mid-take. The
     /// channel stays in the file writing silence; this is what the UI dashes

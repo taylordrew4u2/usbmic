@@ -50,6 +50,30 @@ void TakeAlertCard::addAlert (const juce::String& whenInTake, const juce::String
 void TakeAlertCard::clear()
 {
     rows.clear();
+    setSevere (false, false);
+    resized();
+}
+
+void TakeAlertCard::setSevere (bool severe, bool takeStopped)
+{
+    if (severe)
+    {
+        setHeading (takeStopped ? "Recording failed." : "Recording is in trouble.",
+                    takeStopped ? "The take was stopped. Nothing after this point was recorded."
+                                : "The take is still running, but read this before trusting it.");
+        setHeadingColour (AppLookAndFeel::danger);
+        keepButton.setVisible (! takeStopped);
+        stopButton.setButtonText (takeStopped ? "OK" : "Stop recording");
+    }
+    else
+    {
+        setHeading ("Something changed mid-take.",
+                    "The recording is still running. Here is what happened, newest last.");
+        setHeadingColour (AppLookAndFeel::bone);
+        keepButton.setVisible (true);
+        stopButton.setButtonText ("Stop recording");
+    }
+
     resized();
 }
 

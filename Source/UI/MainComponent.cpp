@@ -250,7 +250,12 @@ MainComponent::MainComponent (Application& app)
     };
     takeAlertCard.onStopRecording = [this] {
         takeAlertCard.setVisible (false);
-        startRecordingNow();
+
+        // "OK" on a take the proof already stopped; "Stop recording" otherwise.
+        if (application.getRecordingEngine().getState() == RecordingState::Recording)
+            startRecordingNow();
+        else
+            grabKeyboardFocus();
     };
     addChildComponent (takeAlertCard);
 
@@ -488,19 +493,51 @@ void MainComponent::watchTake (bool isRecording)
     {
         takeAlertCard.clear();
         takeAlertCard.setVisible (false);
+        takeStoppedByProof = false;
         takeWatchdog.beginTake (application.snapshotTakeHealth());
+        recordingProof.begin (application.snapshotProof());
         ticksUntilCameraRecheck = 0;
     }
     else if (! isRecording && wasRecording)
     {
         takeWatchdog.endTake();
-        takeAlertCard.setVisible (false);
+
+        // A take the proof stopped keeps its red card up: that card IS the
+        // news, and hiding it with the take would be the old silence again.
+        if (! takeStoppedByProof)
+            takeAlertCard.setVisible (false);
     }
 
     wasRecording = isRecording;
 
     if (! isRecording)
         return;
+
+    // §0.1: the disk has to agree that this is a take. Judged before the
+    // watchdog's softer news, because "nothing is being recorded" outranks
+    // everything else that could be said.
+    const auto verdict = recordingProof.observe (application.snapshotProof());
+
+    if (verdict == ProofVerdict::NothingWritten || verdict == ProofVerdict::Stalled
+        || verdict == ProofVerdict::NoSoundArriving)
+    {
+        const auto when = Application::formatDuration (application.getElapsedRecordingSeconds()) + " in";
+        takeAlertCard.addAlert (when, juce::String (RecordingProof::message (verdict)), false);
+
+        if (verdict == ProofVerdict::NothingWritten)
+        {
+            // Stop it NOW. The saved-take card that follows says the files
+            // are empty; this card says why the take ended.
+            takeStoppedByProof = true;
+            takeAlertCard.setSevere (true, true);
+            showTakeAlertCard();
+            startRecordingNow();
+            return;
+        }
+
+        takeAlertCard.setSevere (true, false);
+        showTakeAlertCard();
+    }
 
     // The OS does not announce a camera going away; it just stops listing
     // it. Re-list every couple of seconds during a take, which is cheap, and
@@ -531,13 +568,16 @@ void MainComponent::watchTake (bool isRecording)
     if (anyBad && ! takeAlertCard.isVisible()
         && ! saveLocationPrompt.isVisible() && ! savedTakePanel.isVisible()
         && ! recoveredTakesPanel.isVisible())
-    {
-        growWindowToFit (takeAlertCard.getRequiredHeight() + 32);
-        takeAlertCard.setBounds (getLocalBounds());
-        takeAlertCard.setVisible (true);
-        takeAlertCard.toFront (true);
-        takeAlertCard.prepareToShow();
-    }
+        showTakeAlertCard();
+}
+
+void MainComponent::showTakeAlertCard()
+{
+    growWindowToFit (takeAlertCard.getRequiredHeight() + 32);
+    takeAlertCard.setBounds (getLocalBounds());
+    takeAlertCard.setVisible (true);
+    takeAlertCard.toFront (true);
+    takeAlertCard.prepareToShow();
 }
 
 void MainComponent::showSavedTake()
