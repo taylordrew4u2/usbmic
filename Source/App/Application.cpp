@@ -3813,7 +3813,25 @@ void Application::scanForInterruptedSessions()
 
             try
             {
-                meta = SessionMetadata::fromJsonString (metadataFile.loadFileAsString().toStdString());
+                const auto text = metadataFile.loadFileAsString().toStdString();
+                const auto parsed = JsonValue::parse (text);
+
+                // The parser is lenient by design and hardly ever throws: a
+                // file cut short mid-key comes back as one dangling key with
+                // nothing under it, so the catch below could not fire and a
+                // take whose record was destroyed was recovered in silence,
+                // with no start time and no explanation for either. Judged by
+                // whether any field actually carried a value, the same way an
+                // unreadable settings file is.
+                if (parsed.getType() != JsonValue::Type::Object || parsed.getValuedMemberCount() == 0)
+                {
+                    meta = {};
+                    metadataUnreadable = true;
+                }
+                else
+                {
+                    meta = SessionMetadata::fromJson (parsed);
+                }
             }
             catch (...)
             {
@@ -3873,6 +3891,17 @@ void Application::scanForInterruptedSessions()
             // someone spends an evening trying to open.
             if (session.isWorthPresenting())
             {
+                // In the record as well as on the card. The card is dismissed
+                // in a second and then the only trace that a take was repaired
+                // at all was gone -- from the log the app ships to whoever is
+                // helping, and from the account of the session it belongs to.
+                noteActivity (ActivityLevel::Recovered, "Interrupted take",
+                              juce::String (folder.getFileName())
+                              + " was interrupted, and its "
+                              + juce::String (static_cast<int> (session.files.size()))
+                              + (session.files.size() == 1 ? " file has" : " files have")
+                              + " been repaired and can be played.");
+
                 recoveredSessions.push_back (std::move (session));
             }
             else
