@@ -895,6 +895,21 @@ void Application::reselectOutputDevice()
 
     haveEnumeratedOutputsOnce = true;
 
+    // Headphones arriving or leaving is a change to the rig and was said only
+    // when it left the user with nothing to listen on at all. A microphone's
+    // own playback endpoint is skipped: it is the same physical thing the
+    // microphone list already announced, and saying it twice under two names
+    // is noise rather than news.
+    {
+        std::map<std::string, std::string> outputs;
+
+        for (const auto& c : candidates)
+            if (! c.isMicrophonePlaybackEndpoint)
+                outputs[c.id] = c.displayName;
+
+        announceOutputChanges (outputs);
+    }
+
     const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
     outputSelectionProblem = selection.explanation;
@@ -2685,21 +2700,39 @@ double Application::activityClockSeconds() const
     return (juce::Time::getMillisecondCounterHiRes() - appStartMs) / 1000.0;
 }
 
+void Application::announceArrivalsAndDepartures (const std::map<std::string, std::string>& current,
+                                                 std::map<std::string, std::string>& known,
+                                                 bool& seeded,
+                                                 const std::set<std::string>& saidElsewhere) const
+{
+    // The first enumeration is the rig as the user set it up, not a series of
+    // arrivals. "N microphones are live" covers the launch.
+    if (! seeded)
+    {
+        seeded = true;
+        known = current;
+        return;
+    }
+
+    for (const auto& [key, name] : current)
+        if (known.find (key) == known.end())
+            noteActivity (ActivityLevel::Started, juce::String (name),
+                          juce::String (name) + " is connected.", true);
+
+    for (const auto& [key, name] : known)
+        if (current.find (key) == current.end() && saidElsewhere.count (key) == 0)
+            noteActivity (ActivityLevel::Warning, juce::String (name),
+                          juce::String (name) + " was unplugged.", true);
+
+    known = current;
+}
+
 void Application::announceDeviceChanges (const std::vector<MicDeviceState>& seen) const
 {
     std::map<std::string, std::string> current;
 
     for (const auto& d : seen)
         current[d.identity.key()] = d.displayName;
-
-    // The first enumeration is the rig as the user set it up, not a series of
-    // arrivals. "N microphones are live" covers the launch.
-    if (! haveEnumeratedDevicesOnce)
-    {
-        haveEnumeratedDevicesOnce = true;
-        knownDeviceNames = std::move (current);
-        return;
-    }
 
     // Whether a take is running decides only ONE thing here: a microphone that
     // is part of the take gets §6.5's own sentence when it goes, which says
@@ -2713,17 +2746,12 @@ void Application::announceDeviceChanges (const std::vector<MicDeviceState>& seen
         for (const auto& ch : capture->getChannels())
             takeChannels.insert (ch.deviceId);
 
-    for (const auto& [key, name] : current)
-        if (knownDeviceNames.find (key) == knownDeviceNames.end())
-            noteActivity (ActivityLevel::Started, juce::String (name),
-                          juce::String (name) + " is connected.", true);
+    announceArrivalsAndDepartures (current, knownDeviceNames, haveEnumeratedDevicesOnce, takeChannels);
+}
 
-    for (const auto& [key, name] : knownDeviceNames)
-        if (current.find (key) == current.end() && takeChannels.count (key) == 0)
-            noteActivity (ActivityLevel::Warning, juce::String (name),
-                          juce::String (name) + " was unplugged.", true);
-
-    knownDeviceNames = std::move (current);
+void Application::announceOutputChanges (const std::map<std::string, std::string>& current) const
+{
+    announceArrivalsAndDepartures (current, knownOutputNames, haveAnnouncedOutputsOnce, {});
 }
 
 void Application::noteActivity (ActivityLevel level, const juce::String& subject,
