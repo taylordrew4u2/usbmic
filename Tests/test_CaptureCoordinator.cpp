@@ -1382,3 +1382,17 @@ TEST_CASE (CaptureCoordinator_ABlockThatDoesNotFitTheLayoutIsCountedNotJustDropp
 
     REQUIRE (c.getFramesMissedByLayout() == 64u);
 }
+
+TEST_CASE (CaptureCoordinator_TheWorstChannelIsWhatBecomesSeconds)
+{
+    // Summing every channel answers "how many samples were thrown away", which
+    // is right for a record of the loss and wrong for a clock: four rings
+    // overflowing together for one second lose one second of recording, not
+    // four. The alert that says "about N seconds lost so far" was fed the sum.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.getWorstChannelOverrunThisTake() == 0u);
+    REQUIRE (c.getOverrunSamplesThisTake() == 0u);
+}

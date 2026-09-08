@@ -685,7 +685,6 @@ private:
     /// forever: the next take planned N+1 files and wrote N.
     void requestCaptureRestart();
     bool captureRestartDeferred = false;
-    /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
     void applyClockMaster();
 
 

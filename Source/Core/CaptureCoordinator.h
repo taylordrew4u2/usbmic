@@ -170,9 +170,28 @@ public:
     /// position where degradation began, and this is that clock.
     uint64_t getFramesAccepted() const noexcept { return pipeline != nullptr ? pipeline->getFramesAccepted() : 0; }
 
-        /// §6.5 "target card removed": the destination stopped accepting writes.
+    /// §6.5 "target card removed": the destination stopped accepting writes.
     /// The take is over -- the owner stops and finalizes, and tells the user.
     bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
+
+    /// The worst single channel's overrun since the take began, in frames.
+    ///
+    /// Summing every channel answers "how many samples were thrown away", which
+    /// is the right question for a record of the loss. It is the WRONG number
+    /// to turn into seconds: four rings overflowing together for one second
+    /// lose one second of recording, not four. The alert that says "about N
+    /// seconds lost so far" needs the worst channel, and used to get the sum --
+    /// overstating by the channel count on exactly the rigs this app is for.
+    uint64_t getWorstChannelOverrunThisTake() const noexcept;
+
+    /// Overrun samples since the current take began, summed across channels.
+    /// getOverrunSamples() is the whole monitoring session's; this is the one a
+    /// take may report.
+    uint64_t getOverrunSamplesThisTake() const noexcept
+    {
+        const auto total = getOverrunSamples();
+        return total >= overrunAtTakeStart ? total - overrunAtTakeStart : total;
+    }
 
     /// §0.1: audio that arrived from a device and had nowhere to go, because
     /// the block did not match the layout this take was opened with.
@@ -180,15 +199,8 @@ public:
     /// The take's channel list is fixed for its duration (§6.5) and that is
     /// right, but a device handing over two inputs where four were planned then
     /// leaves two channels writing silence -- which used to happen with nothing
-    /// counting it anywhere. Cumulative while this coordinator lives.
-    /// Overrun samples since the current take began. getOverrunSamples() is
-    /// the whole monitoring session's; this is the one a take may report.
-    uint64_t getOverrunSamplesThisTake() const noexcept
-    {
-        const auto total = getOverrunSamples();
-        return total >= overrunAtTakeStart ? total - overrunAtTakeStart : total;
-    }
-
+    /// counting it anywhere. Wall-clock frames, counted once per block, and
+    /// zeroed when a take begins.
     uint64_t getFramesMissedByLayout() const noexcept
     {
         return framesMissedByLayout.load (std::memory_order_relaxed);
@@ -373,6 +385,10 @@ private:
     /// stream's counter, but streams are prepared when monitoring starts, not
     /// when a take does -- so the take's own figure is measured from here.
     uint64_t overrunAtTakeStart = 0;
+
+    /// Per-stream overrun totals when the take began, so the worst channel can
+    /// be measured against its own starting point rather than the rig's.
+    std::vector<uint64_t> overrunBaselinePerStream;
 
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a

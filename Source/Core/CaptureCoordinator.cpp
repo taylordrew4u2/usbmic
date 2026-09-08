@@ -299,6 +299,25 @@ uint64_t CaptureCoordinator::getOverrunSamples() const noexcept
     return total;
 }
 
+uint64_t CaptureCoordinator::getWorstChannelOverrunThisTake() const noexcept
+{
+    uint64_t worst = 0;
+
+    for (size_t i = 0; i < deviceStreams.size(); ++i)
+    {
+        const auto total = deviceStreams[i]->getOverrunSamples();
+
+        // A stream rebuilt since the take began has a counter below its
+        // baseline; everything it has counted is then this take's.
+        const auto base = i < overrunBaselinePerStream.size() ? overrunBaselinePerStream[i] : 0;
+        const auto sinceStart = total >= base ? total - base : total;
+
+        worst = std::max (worst, sinceStart);
+    }
+
+    return worst;
+}
+
 bool CaptureCoordinator::isChannelLive (int index) const noexcept
 {
     if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
@@ -450,6 +469,12 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     // everything that happened while merely monitoring.
     framesMissedByLayout.store (0, std::memory_order_relaxed);
     overrunAtTakeStart = getOverrunSamples();
+
+    overrunBaselinePerStream.clear();
+    overrunBaselinePerStream.reserve (deviceStreams.size());
+
+    for (const auto& stream : deviceStreams)
+        overrunBaselinePerStream.push_back (stream->getOverrunSamples());
 
     pipeline = std::move (p);
     activePipeline.store (pipeline.get(), std::memory_order_release);

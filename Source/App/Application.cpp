@@ -905,7 +905,10 @@ TakeHealth Application::snapshotTakeHealth() const
         // divides this by the sample rate and says "about N seconds lost so
         // far" about the CURRENT take, so a session-lifetime number made that
         // sentence describe audio lost before the take began.
-        health.samplesOverrun = capture->getOverrunSamplesThisTake();
+        // The worst single channel, not the sum. TakeWatchdog turns this into
+        // "about N seconds lost so far", and four rings overflowing together
+        // for a second lose a second of recording, not four.
+        health.samplesOverrun = capture->getWorstChannelOverrunThisTake();
         health.outputClockLost = capture->isOutputClockLost();
         health.writerBehind = capture->getRingFillFraction() >= CapacityMonitor::kFillWarningFraction;
         health.mixOnly = capture->isMixOnly();
@@ -2599,6 +2602,39 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         return juce::String (cardRemovalNotice.message);
     }
 
+    // §6.5: the drive is full, so the take stops -- here, before any of the
+    // warning branches below.
+    //
+    // The stop used to sit at the bottom, beneath five branches that return as
+    // soon as their condition holds and keep holding it: backend drops, layout
+    // losses, monitor glitches, mirror failures, ring fill. A rig with any one
+    // of those persisting therefore never reached the capacity check, and the
+    // take was NOT stopped on a full drive -- which is precisely the failure
+    // the "said AND done" fix was written to prevent. The card-removal stop was
+    // already hoisted for the same reason; this one was left behind.
+    //
+    // Only the stop is hoisted. The remaining-time warnings stay where they
+    // are, below the things that are actively going wrong now.
+    // Evaluated ONCE per poll and used in both places. CapacityMonitor latches:
+    // each threshold fires exactly once, so asking twice in one poll would let
+    // this branch consume the answer and leave the ten- and two-minute warnings
+    // below with None -- silencing the two warnings that exist to give the user
+    // time to act, in the name of a fix about not being silent.
+    const auto capacityWarning = pollCapacityWarning();
+
+    if (recordingEngine.getState() == RecordingState::Recording
+        && capacityWarning == RemainingTimeWarning::Exhausted)
+    {
+        stopReason = "the drive ran out of room";
+        toggleRecording();
+
+        const auto line = juce::String ("The drive is full. Recording has stopped -- free some "
+                                        "space or choose another drive.");
+
+        noteActivity (ActivityLevel::Failed, "Drive", line);
+        return line;
+    }
+
     // §0.1: a stream that opened and has since stopped. Taken here, on the
     // message thread, from wherever the backend's worker thread left it.
     //
@@ -2676,13 +2712,24 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         const auto missed = capture->getFramesMissedByLayout();
 
+        // The same backwards guard its siblings carry. The counter is only
+        // zeroed by startRecording today, in the same call that zeroes this --
+        // but being the one member of the family without the guard is how the
+        // next person introduces the bug the others already had.
+        if (missed < reportedLayoutMisses)
+            reportedLayoutMisses = 0;
+
         if (missed > reportedLayoutMisses)
         {
             reportedLayoutMisses = missed;
 
-            const auto line = juce::String ("A microphone changed how many channels it sends, so "
-                                            "some of its audio isn't being recorded. Unplug it and "
-                                            "plug it back in after this take.");
+            // Worded for what every path here has in common -- a device is
+            // delivering audio this take cannot fit -- rather than asserting
+            // the channel-count diagnosis, which is true of one of the four
+            // ways this counter rises and wrong advice for the other three.
+            const auto line = juce::String ("A microphone is sending audio this take can't fit, so "
+                                            "some of it isn't being recorded. Unplug it and plug it "
+                                            "back in after this take.");
 
             noteActivity (ActivityLevel::Failed, "Recording", line);
             return line;
@@ -2854,19 +2901,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
     // §6.5 next: running out of room stops the take, which outranks everything
     // else that is merely a warning.
-    switch (pollCapacityWarning())
+    switch (capacityWarning)
     {
         case RemainingTimeWarning::Exhausted:
-            // Said AND done. This line used to claim the take had stopped
-            // while the writer carried on into a full drive until a write
-            // failed, which then arrived as the wrong notice.
-            if (recordingEngine.getState() == RecordingState::Recording)
-            {
-                stopReason = "the drive ran out of room";
-                toggleRecording();
-            }
-
-            return "The drive is full. Recording has stopped -- free some space or choose another drive.";
+            // The stop itself happens at the top of this function, above every
+            // branch that could return before reaching here. This is what is
+            // left to say when a take was not running to be stopped.
+            return "The drive is full. There isn't room to record here -- free some space or "
+                   "choose another drive.";
         case RemainingTimeWarning::TwoMinutes:
             return "About two minutes of room left. Wrap up or switch drives now.";
         case RemainingTimeWarning::TenMinutes:
