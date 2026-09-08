@@ -236,3 +236,15 @@ TEST_CASE (AppSettings_AReadableFileIsNotFlagged)
     REQUIRE_FALSE (read.wasUnreadable);
     REQUIRE (read.destinationFolder == std::string ("/Volumes/CARD"));
 }
+
+TEST_CASE (AppSettings_ATruncationThatSavedNothingIsUnreadable)
+{
+    // The other half of the truncation case above. This file stops before its
+    // first value, so nothing of the user's survived -- and the lenient parser
+    // still hands back one dangling key, which used to read as a setting
+    // recovered. Everything was reset and nothing said so.
+    const auto settings = AppSettings::fromJsonString ("{\"destinationFolde");
+
+    REQUIRE (settings.wasUnreadable);
+    REQUIRE (settings.destinationFolder.empty());
+}
