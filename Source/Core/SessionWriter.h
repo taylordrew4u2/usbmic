@@ -35,7 +35,18 @@ public:
     /// Call periodically (e.g. from a timer, not the audio thread) with elapsed
     /// wall-clock seconds; rewrites the RIFF/data-chunk-size header fields every
     /// kHeaderRewriteIntervalSeconds so a crash mid-take leaves a playable file.
-    void tick (double dtSeconds);
+    /// Returns false when the periodic header rewrite failed, which is what a
+    /// card pulled mid-take looks like from here. §6.6 rewrites the header
+    /// every 5 seconds so an interrupted file stays playable; the result was
+    /// discarded, so the write that keeps a four-hour take recoverable could
+    /// start failing and nothing would notice until the stop.
+    bool tick (double dtSeconds);
+
+    /// Why the last write failed, in the user's words, or empty. §6.1 rolls to
+    /// a new file at 3.9 GB, and a roll-over that fails is a different fault
+    /// from a write that fails -- the take stops at a file boundary rather than
+    /// mid-block, and "the card stopped accepting writes" does not describe it.
+    const std::string& getWriteProblem() const noexcept { return writeProblem; }
 
     /// Finalizes the current file (writes a final correct header) and closes it.
     ///
@@ -62,6 +73,7 @@ private:
 
     std::fstream file;
     std::string currentFilePath;
+    std::string writeProblem;
     uint64_t dataBytesWrittenToCurrentFile = 0;
     uint64_t totalFramesWritten = 0;
     double secondsSinceLastHeaderRewrite = 0.0;

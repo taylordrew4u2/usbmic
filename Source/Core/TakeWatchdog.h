@@ -40,6 +40,13 @@ struct TakeHealth
     /// Room left on the destination, in seconds. Negative when unknown.
     double remainingSeconds = -1.0;
 
+    /// The rate the take is actually running at. The seconds figure below was
+    /// computed against a hardcoded 48000, so at 96 kHz it said twice the audio
+    /// had been lost -- the same wrong-magnitude family as counting channel
+    /// frames as wall-clock ones. Zero or less means "unknown", and the
+    /// sentence falls back to 48 kHz rather than dividing by nothing.
+    double sampleRate = 0.0;
+
     /// How far into the take this reading was taken. Used to space out
     /// repeats of the same complaint.
     double elapsedSeconds = 0.0;

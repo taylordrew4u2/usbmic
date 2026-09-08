@@ -3,6 +3,7 @@
 #include "Core/SessionWriter.h"
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -196,4 +197,26 @@ TEST_CASE (SessionRecovery_aSessionCountsWhatIsWorthOffering)
     allEmpty.files.push_back ({ "MIX.wav", 10, 0.0002, true, true });
     REQUIRE_FALSE (allEmpty.isWorthPresenting());
     REQUIRE (allEmpty.longestSeconds() == 0.0);
+}
+
+TEST_CASE (SessionRecovery_AFileThatIsThereButUnreadableIsNotCalledEmpty)
+{
+    // A path with nothing at it is nothing, and "empty" is the right answer --
+    // that is the case above. A file that IS there and cannot be opened for
+    // repair is a recording of unknown length on a card that has gone
+    // read-only, and calling THAT empty sends the user away from audio that may
+    // be perfectly intact. The two used to give the same answer.
+    //
+    // Driven through the read-only case by pointing at a directory: it exists,
+    // so the existence check passes, and it cannot be opened as a file.
+    // std::filesystem rather than mkdir: these tests run on Windows CI too.
+    const auto dir = tmpPath ("mma-recovery-dir-case");
+    std::filesystem::create_directory (dir);
+
+    const auto result = SessionRecovery::repairWavFile (dir);
+
+    REQUIRE_FALSE (result.reportedEmpty);
+    REQUIRE (result.repairFailed);
+
+    std::filesystem::remove (dir);
 }

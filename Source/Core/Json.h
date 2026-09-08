@@ -31,6 +31,13 @@ public:
     Type getType() const { return type; }
     bool isNull() const { return type == Type::Null; }
 
+    /// How many key/value pairs this object holds. Zero for anything that is
+    /// not an object. This parser is deliberately lenient -- it returns a value
+    /// rather than throwing on input it cannot make sense of -- so a caller that
+    /// needs to tell "a file I could read" from "a file I could not" has to ask
+    /// whether anything actually came out of it.
+    size_t getMemberCount() const { return objectValue.size(); }
+
     void push_back (JsonValue v) { arrayValue.push_back (std::move (v)); }
 
     JsonValue& operator[] (const std::string& key)

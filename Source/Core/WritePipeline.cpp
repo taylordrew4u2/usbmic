@@ -320,16 +320,31 @@ void WritePipeline::drainOnce (bool finalFlush)
     {
         // §6.3: stopped for space, or stopped by the user. Close the partial
         // copy properly so its headers are valid rather than truncated.
+        //
+        // Judged, like every other close. This is the one place mirror files
+        // are finalized outside stop(), and its results were the two in this
+        // file still thrown away -- so a partial copy whose headers failed to
+        // land was left looking like a partial copy that closed cleanly, which
+        // is the difference between a short file that plays and one that does
+        // not open at all.
+        bool finalizeFailed = false;
+
         for (auto& w : mirrorStemWriters)
-            w->close();
+            if (! w->close())
+                finalizeFailed = true;
 
         mirrorStemWriters.clear();
 
         if (mirrorMixWriter != nullptr)
         {
-            mirrorMixWriter->close();
+            if (! mirrorMixWriter->close())
+                finalizeFailed = true;
+
             mirrorMixWriter.reset();
         }
+
+        if (finalizeFailed)
+            mirrorWriteFailed.store (true, std::memory_order_release);
     }
 
     for (;;)
@@ -344,7 +359,15 @@ void WritePipeline::drainOnce (bool finalFlush)
         const size_t samples = frames * static_cast<size_t> (numChannels);
 
         if (ring.read (drainBuffer.data(), samples) != samples)
+        {
+            // Unreachable while this is the ring's only consumer, which is
+            // exactly why it is counted rather than returned from in silence:
+            // if a second consumer ever appears, the loss shows up in the
+            // take's own dropped-frame figure instead of nowhere.
+            framesDropped.fetch_add (static_cast<uint64_t> (samples / std::max (1, numChannels)),
+                                     std::memory_order_relaxed);
             return;
+        }
 
         std::fill (mixScratch.begin(), mixScratch.begin() + static_cast<long> (frames), 0.0f);
 
@@ -409,18 +432,28 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         const double elapsed = static_cast<double> (frames) / sampleRate;
 
+        // §6.6 rewrites each header every 5 seconds so an interrupted file stays
+        // playable. Its result was thrown away, so the write that keeps a
+        // four-hour take recoverable could start failing on a dying card and
+        // nothing would notice until the stop -- by which point the header
+        // being wrong is the whole loss. Judged the same way the audio writes
+        // above are, and kept on the same side of the card/mirror line.
         if (writeStems)
             for (auto& w : stemWriters)
-                w->tick (elapsed);
-        mixWriter->tick (elapsed);
+                if (! w->tick (elapsed))
+                    cardWriteFailed.store (true, std::memory_order_release);
+
+        if (! mixWriter->tick (elapsed))
+            cardWriteFailed.store (true, std::memory_order_release);
 
         if (mirrorActiveForThisPass)
         {
             for (auto& w : mirrorStemWriters)
-                w->tick (elapsed);
+                if (! w->tick (elapsed))
+                    mirrorWriteFailed.store (true, std::memory_order_release);
 
-            if (mirrorMixWriter != nullptr)
-                mirrorMixWriter->tick (elapsed);
+            if (mirrorMixWriter != nullptr && ! mirrorMixWriter->tick (elapsed))
+                mirrorWriteFailed.store (true, std::memory_order_release);
         }
 
         // §6.3: a mirror that has failed stops for the rest of the take, the
@@ -464,6 +497,21 @@ void WritePipeline::runWriterThread()
         drainOnce (false);
         std::this_thread::sleep_for (std::chrono::milliseconds (kWriterIdleMs));
     }
+}
+
+std::string WritePipeline::getCardWriteProblem() const
+{
+    // The mix writer first: it is the one every take has, and the one whose
+    // failure stops the take. A stem's account is used only when the mix has
+    // none of its own.
+    if (mixWriter != nullptr && ! mixWriter->getWriteProblem().empty())
+        return mixWriter->getWriteProblem();
+
+    for (const auto& w : stemWriters)
+        if (w != nullptr && ! w->getWriteProblem().empty())
+            return w->getWriteProblem();
+
+    return {};
 }
 
 void WritePipeline::stop()

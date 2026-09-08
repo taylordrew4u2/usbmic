@@ -111,6 +111,14 @@ struct AppSettings
     /// to start over a preferences file would be the opposite.
     static AppSettings fromJsonString (const std::string& text);
 
+    /// True when fromJsonString() could not read the file and returned defaults
+    /// instead. Not an error -- a preferences file is never worth failing to
+    /// launch over -- but not a secret either: every remembered microphone
+    /// name, trim, disabled mic and the destination folder have just been
+    /// silently replaced by defaults, and the user is about to meet an app that
+    /// appears to have forgotten them.
+    bool wasUnreadable = false;
+
     /// Look-ups the App layer needs when applying these to a live rig.
     const PersistedPort* findPort (const std::string& key) const;
     const PersistedCamera* findCamera (const std::string& id) const;

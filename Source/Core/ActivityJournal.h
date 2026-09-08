@@ -110,6 +110,12 @@ public:
     size_t size() const;
     void clear();
 
+    /// How many entries the bound has dropped this session. A log that quietly
+    /// loses its own beginning is the same failure this class exists to stop,
+    /// one level up -- so the written log says so rather than simply starting
+    /// part way through.
+    size_t getDroppedCount() const;
+
     /// The journal as a JSON array, for session.json and the take folder's own
     /// copy. Oldest first there -- a log is read forwards.
     std::string toJson() const;
@@ -121,6 +127,7 @@ private:
     mutable std::mutex lock;
     std::vector<ActivityEntry> entries; // oldest first
     uint64_t nextId = 1;
+    size_t droppedCount = 0;
 
     void dropOldestLocked();
 };

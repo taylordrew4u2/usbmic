@@ -1,7 +1,9 @@
 #include "SessionRecovery.h"
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 
 namespace mma {
 
@@ -92,7 +94,39 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
     std::fstream file (path, std::ios::in | std::ios::out | std::ios::binary);
 
     if (! file.is_open())
+    {
+        // Two different things arrive here and they need different answers.
+        //
+        // A path with nothing at it is nothing: no audio was lost, and calling
+        // it empty is exactly right. A file that IS there and will not open for
+        // writing is a recording of unknown length on a card that has gone
+        // read-only -- calling that one empty sends the user away from audio
+        // that may be perfectly intact.
+        // std::filesystem::exists, not an ifstream open. Opening was a proxy
+        // for "is there something here", and it answers differently for a
+        // directory on Windows than on Linux -- so the question is asked
+        // directly. An error_code overload because a path that cannot even be
+        // interrogated is, for our purposes, a path with nothing at it.
+        std::error_code ec;
+
+        if (! std::filesystem::exists (path, ec) || ec)
+            return result;
+
+        // A file this app cannot even open is not a file that holds under a
+        // second of audio, and reporting it as one -- which is what
+        // reportedEmpty alone said -- sends the user away from a recording that
+        // may be perfectly intact on a card that has gone read-only.
+        //
+        // reportedEmpty is cleared as well as repairFailed set, or the panel
+        // goes on counting it under "empty file left alone" and a folder of
+        // nothing but unopenable files still fails isWorthPresenting() and is
+        // announced as one where nothing survived. Nobody knows whether
+        // anything survived -- that is the whole point -- so it is listed, and
+        // the per-file warning says it could not be read.
+        result.reportedEmpty = false;
+        result.repairFailed = true;
         return result;
+    }
 
     file.seekg (0, std::ios::end);
     const auto fileSize = static_cast<uint64_t> (file.tellg());
@@ -181,6 +215,12 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
         // RIFF size counts everything after the size field itself.
         writeU32LE (file, riffSizeFieldPos, static_cast<uint32_t> (dataStart + wholeFrameBytes - 8));
         file.flush();
+
+        // Checked. A card that is read-only, full or failing takes the repair
+        // and drops it, and this used to report the file as repaired anyway --
+        // the user then meets the same broken header in whatever they open it
+        // with, having been told it was fixed.
+        result.repairFailed = ! file.good();
     }
 
     // §6.6: under a second is a stub. Reported as empty rather than offered --

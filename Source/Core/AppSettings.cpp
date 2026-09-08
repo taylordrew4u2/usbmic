@@ -156,13 +156,40 @@ AppSettings AppSettings::fromJsonString (const std::string& text)
 {
     // JsonValue::parse throws on anything it cannot read. A preferences file is
     // never worth failing to launch over, so anything unreadable is defaults.
+    // An empty file is a first launch, not a corrupt one: there is nothing to
+    // have forgotten, so it is defaults without a word.
+    if (text.find_first_not_of (" \t\r\n") == std::string::npos)
+        return {};
+
     try
     {
-        return fromJson (JsonValue::parse (text));
+        const auto parsed = JsonValue::parse (text);
+
+        // The parser is lenient: it returns null, or an object it could make no
+        // members out of, rather than throwing -- so the catch below almost
+        // never fires, and this is where a corrupt file actually presents.
+        //
+        // Judged by whether ANY setting came back, not by which ones. A file
+        // written by a different version legitimately carries a different set
+        // of keys and must keep whatever it can -- so the test is that
+        // something was read, not that a particular thing was.
+        const bool readSomething = parsed.getType() == JsonValue::Type::Object
+                                && parsed.getMemberCount() > 0;
+
+        if (! readSomething)
+        {
+            AppSettings defaults;
+            defaults.wasUnreadable = true;
+            return defaults;
+        }
+
+        return fromJson (parsed);
     }
     catch (...)
     {
-        return {};
+        AppSettings defaults;
+        defaults.wasUnreadable = true;
+        return defaults;
     }
 }
 

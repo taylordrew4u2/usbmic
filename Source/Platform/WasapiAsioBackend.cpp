@@ -112,6 +112,13 @@ struct WasapiStream
     std::string deviceId;
     StreamFailureSink* failures = nullptr;
 
+    /// §0.1: frames that arrived from the device and were never handed to the
+    /// callback. The two ways that happens in here -- a packet wider than the
+    /// scratch this stream allocated, and a packet the device refused to hand
+    /// over -- both used to discard audio without counting it, which is the one
+    /// failure §0.1 does not allow to be invisible.
+    std::atomic<uint64_t> framesDropped { 0 };
+
     // Pre-allocated deinterleave scratch and channel pointers. §11 forbids
     // allocation on the audio thread, so these are sized once at open time.
     std::vector<float> scratch;
@@ -195,6 +202,35 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
     return format;
 }
 
+/// Called when the capture side has failed often enough to be called dead.
+void reportCaptureDeath (WasapiStream* stream)
+{
+    if (stream->failures != nullptr)
+        stream->failures->note (stream->deviceId,
+                                "stopped sending audio. Unplug it and plug it back in.");
+
+    stream->running.store (false, std::memory_order_release);
+
+    if (stream->client)
+        stream->client->Stop();
+}
+
+/// Called when the render side has failed often enough to be called dead. Stops
+/// the stream rather than leaving it spinning on a device the message below is
+/// asking the user to reconnect.
+void reportRenderDeath (WasapiStream* stream)
+{
+    if (stream->failures != nullptr)
+        stream->failures->note (stream->deviceId,
+                                "stopped accepting audio, so you can't hear anything through it. "
+                                "Try selecting it again.");
+
+    stream->running.store (false, std::memory_order_release);
+
+    if (stream->client)
+        stream->client->Stop();
+}
+
 /// The audio worker. Waits on the client's event and services one buffer per
 /// wake. §11: no allocation, locking, logging or file I/O in here.
 void runStreamThread (WasapiStream* stream)
@@ -212,6 +248,11 @@ void runStreamThread (WasapiStream* stream)
     // under load is not accused of failing.
     constexpr int kTimeoutsBeforeGivingUp = 3;
     int consecutiveTimeouts = 0;
+    int consecutiveRenderFailures = 0;
+    int consecutiveCaptureFailures = 0;
+
+    /// A run this long means the device is refusing everything, not glitching.
+    constexpr int kCaptureFailuresBeforeGivingUp = 200;
 
     while (stream->running.load (std::memory_order_acquire))
     {
@@ -259,10 +300,40 @@ void runStreamThread (WasapiStream* stream)
                 DWORD flags = 0;
 
                 if (FAILED (stream->capture->GetBuffer (&data, &frames, &flags, nullptr, nullptr)))
+                {
+                    // Counted once per run of failures, not once per attempt.
+                    // GetNextPacketSize keeps reporting the same undelivered
+                    // packet, so charging a buffer's worth on every retry made
+                    // the reported loss 200x the real one -- and an inflated
+                    // number is its own kind of wrong answer.
+                    if (consecutiveCaptureFailures == 0)
+                        stream->framesDropped.fetch_add (stream->bufferFrames,
+                                                         std::memory_order_relaxed);
+
+                    // A device that refuses every packet is not dropping audio,
+                    // it is gone. Counting alone reported that as drift and
+                    // never as a dead stream, so the mic went on being written
+                    // as silence with only a rising number to show for it.
+                    if (++consecutiveCaptureFailures >= kCaptureFailuresBeforeGivingUp)
+                    {
+                        reportCaptureDeath (stream);
+                        return;
+                    }
+
                     break;
+                }
+
+                consecutiveCaptureFailures = 0;
 
                 if (frames > stream->bufferFrames)
+                {
+                    // The scratch was sized at open time and cannot grow on
+                    // this thread (§11), so the tail of an over-size packet has
+                    // nowhere to go. Counted rather than silently trimmed.
+                    stream->framesDropped.fetch_add (frames - stream->bufferFrames,
+                                                     std::memory_order_relaxed);
                     frames = stream->bufferFrames;
+                }
 
                 // AUDCLNT_BUFFERFLAGS_SILENT means the buffer contents are
                 // undefined and must be treated as silence rather than read.
@@ -289,17 +360,44 @@ void runStreamThread (WasapiStream* stream)
         }
         else
         {
+            // The render side's own way of dying. Each of these used to
+            // `continue` unconditionally, so an output that had stopped
+            // accepting audio spun here for the rest of the session: no sound,
+            // no error, no end -- the user simply could not hear anything and
+            // nothing anywhere said why. One failure is a glitch; a run of them
+            // is a dead output, and the same three-strikes rule the wait above
+            // uses applies.
+            constexpr int kRenderFailuresBeforeGivingUp = 200;
+
             UINT32 padding = 0;
             if (FAILED (stream->client->GetCurrentPadding (&padding)))
-                continue;
+            {
+                if (++consecutiveRenderFailures < kRenderFailuresBeforeGivingUp)
+                    continue;
+
+                reportRenderDeath (stream);
+                break;
+            }
 
             const UINT32 frames = stream->bufferFrames - padding;
             if (frames == 0)
+            {
+                // Nothing to fill is normal -- the device simply has not
+                // drained yet -- so this is not counted against the stream.
                 continue;
+            }
 
             BYTE* data = nullptr;
             if (FAILED (stream->render->GetBuffer (frames, &data)) || data == nullptr)
-                continue;
+            {
+                if (++consecutiveRenderFailures < kRenderFailuresBeforeGivingUp)
+                    continue;
+
+                reportRenderDeath (stream);
+                break;
+            }
+
+            consecutiveRenderFailures = 0;
 
             std::memset (stream->scratch.data(), 0, stream->scratch.size() * sizeof (float));
 
@@ -523,11 +621,20 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     if (! callback)
         return false;
 
+    lastOpenError.clear();
+
     ComPtr<IMMDevice> device;
     if (! resolveDevice (deviceId, device) || device == nullptr)
+    {
+        // §5.4 asks for the cause to be named. Only the format-refused case
+        // below ever filled this in, so every other refusal in here reached the
+        // user as a generic "couldn't open" with nothing to act on.
+        lastOpenError = isInput
+            ? "This microphone is no longer connected. Unplug it and plug it back in, then try "
+              "again."
+            : "This sound output isn't there any more. Pick a different one in Advanced.";
         return false;
-
-    lastOpenError.clear();
+    }
 
     auto stream = std::make_unique<WasapiStream>();
     stream->callback = std::move (callback);
@@ -541,7 +648,14 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
     if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
                                   reinterpret_cast<void**> (stream->client.GetAddressOf()))))
+    {
+        lastOpenError = isInput
+            ? "Windows wouldn't let this app attach to this microphone. Check Settings > Privacy > "
+              "Microphone, then try again."
+            : "Windows wouldn't let this app attach to this output. Close anything else using it, "
+              "then try again.";
         return false;
+    }
 
     // §5.4: exclusive mode or nothing -- falling back to shared would deliver
     // 40-100 ms and the product fails at that latency. But exclusive mode also
@@ -641,26 +755,53 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     }
 
     if (FAILED (hr))
+    {
+        // The commonest cause by far, and the one with a fix the user can carry
+        // out: exclusive mode is refused because something else already holds
+        // the device, or because it is switched off for this endpoint.
+        lastOpenError = isInput
+            ? "This microphone wouldn't give this app exclusive use, which recording needs. Close "
+              "anything else recording or streaming from it, and check \"Allow applications to take "
+              "exclusive control\" is ticked for it in Sound settings."
+            : "These headphones wouldn't give this app exclusive use, which live monitoring needs. "
+              "Close anything else playing sound, or pick a different output in Advanced.";
         return false;
+    }
 
     stream->readyEvent = CreateEventW (nullptr, FALSE, FALSE, nullptr);
     if (stream->readyEvent == nullptr || FAILED (stream->client->SetEventHandle (stream->readyEvent)))
+    {
+        lastOpenError = "Windows refused to set up the audio connection for this device. "
+                        "Unplug it and plug it back in, or restart the app.";
         return false;
+    }
 
     if (FAILED (stream->client->GetBufferSize (&stream->bufferFrames)))
+    {
+        lastOpenError = "Windows refused to set up the audio connection for this device. "
+                        "Unplug it and plug it back in, or restart the app.";
         return false;
+    }
 
     if (isInput)
     {
         if (FAILED (stream->client->GetService (__uuidof (IAudioCaptureClient),
                                                 reinterpret_cast<void**> (stream->capture.GetAddressOf()))))
+        {
+            lastOpenError = "Windows refused to hand over this microphone's audio. Unplug it and "
+                            "plug it back in, or restart the app.";
             return false;
+        }
     }
     else
     {
         if (FAILED (stream->client->GetService (__uuidof (IAudioRenderClient),
                                                 reinterpret_cast<void**> (stream->render.GetAddressOf()))))
+        {
+            lastOpenError = "Windows refused to hand over this output's audio. Pick a different "
+                            "output in Advanced.";
             return false;
+        }
     }
 
     stream->channels = format.Format.nChannels;
@@ -670,7 +811,14 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     stream->channelPointers.resize (stream->channels);
 
     if (FAILED (stream->client->Start()))
+    {
+        lastOpenError = isInput
+            ? "This microphone accepted the connection but wouldn't start. Unplug it and plug it "
+              "back in, then try again."
+            : "This output accepted the connection but wouldn't start. Pick a different one in "
+              "Advanced.";
         return false;
+    }
 
     stream->running = true;
     auto* raw = stream.get();
@@ -678,6 +826,17 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
     openStreams.push_back (std::move (stream));
     return true;
+}
+
+uint64_t WasapiAsioBackend::getFramesDroppedByBackend() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr)
+            total += stream->framesDropped.load (std::memory_order_relaxed);
+
+    return total;
 }
 
 bool WasapiAsioBackend::openExclusiveOutputStream (const std::string& outputDeviceId, double sampleRate,

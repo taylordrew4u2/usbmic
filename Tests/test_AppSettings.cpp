@@ -191,3 +191,48 @@ TEST_CASE (AppSettings_PerInputSettingsRoundTrip)
     REQUIRE (back.ports[0].settings.inputNames.at (0) == "Alex");
     REQUIRE (back.ports[0].settings.inputNames.at (2) == "Sam");
 }
+
+TEST_CASE (AppSettings_AnUnreadableFileSaysSoRatherThanQuietlyResetting)
+{
+    // Defaults instead of a failure is right -- a preferences file is never
+    // worth failing to launch over. Defaults instead of a failure AND without a
+    // word is not: every remembered microphone name, trim, disabled mic and the
+    // destination folder have just been replaced, and the user is about to meet
+    // an app that looks like it forgot them.
+    const auto settings = AppSettings::fromJsonString ("\x01\x02 not json at all");
+
+    REQUIRE (settings.wasUnreadable);
+    REQUIRE (settings.destinationFolder.empty());
+    REQUIRE (settings.ports.empty());
+}
+
+TEST_CASE (AppSettings_ATruncatedFileKeepsWhatSurvivedAndIsNotCalledUnreadable)
+{
+    // A power cut mid-write leaves a file that stops part way. Whatever keys
+    // did land are still the user's settings and are still worth keeping, so
+    // this is not the "everything is gone" case and must not claim to be --
+    // crying wolf about settings that are actually intact is its own noise.
+    const auto settings = AppSettings::fromJsonString ("{\"masterVolume\": 0.5, \"destinationFol");
+
+    REQUIRE_FALSE (settings.wasUnreadable);
+    REQUIRE (settings.masterVolume == 0.5);
+}
+
+TEST_CASE (AppSettings_AnEmptyFileIsAFirstLaunchNotACorruptOne)
+{
+    // Nothing to have forgotten, so nothing to report.
+    REQUIRE_FALSE (AppSettings::fromJsonString ("").wasUnreadable);
+    REQUIRE_FALSE (AppSettings::fromJsonString ("   \n\t ").wasUnreadable);
+}
+
+TEST_CASE (AppSettings_AReadableFileIsNotFlagged)
+{
+    AppSettings written;
+    written.destinationFolder = "/Volumes/CARD";
+    written.masterVolume = 0.5;
+
+    const auto read = AppSettings::fromJsonString (written.toJsonString());
+
+    REQUIRE_FALSE (read.wasUnreadable);
+    REQUIRE (read.destinationFolder == std::string ("/Volumes/CARD"));
+}

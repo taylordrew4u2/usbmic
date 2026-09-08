@@ -4,6 +4,7 @@
 
 #include <alsa/asoundlib.h>
 #include <sys/inotify.h>
+#include <cerrno>    // EBUSY, to tell "in use" from "not there"
 #include <climits>   // NAME_MAX, for the inotify read buffer
 #include <unistd.h>
 #include <pthread.h>
@@ -125,6 +126,18 @@ struct AlsaStream
 
     std::thread worker;
     std::atomic<bool> running { false };
+
+    /// §0.1: frames the device dropped and this app never saw. An xrun is
+    /// recoverable and the stream carries on, which is exactly why it needs
+    /// counting: nothing else in the run leaves a trace of it.
+    ///
+    /// Capture only. The monitor path's own xruns are audible but are not lost
+    /// recording, and mixing the two makes the take's record say something
+    /// untrue about the audio on the card.
+    std::atomic<uint64_t> framesDropped { 0 };
+
+    /// Recovered xruns on the monitor output: heard, not recorded.
+    std::atomic<uint64_t> outputGlitches { 0 };
 
     ~AlsaStream()
     {
@@ -316,8 +329,25 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
 
     const auto direction = isInput ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
 
-    if (snd_pcm_open (&stream->pcm, deviceId.c_str(), direction, 0) < 0)
+    lastOpenError.clear();
+
+    if (const int err = snd_pcm_open (&stream->pcm, deviceId.c_str(), direction, 0); err < 0)
+    {
+        // The two causes worth telling apart, because they have different
+        // answers: something else is holding the device, or the device is not
+        // there any more. snd_strerror is not shown to the user -- it is a
+        // developer string -- so the message says what to do instead.
+        lastOpenError = err == -EBUSY
+            ? (isInput ? "Another app is using this microphone. Close anything else recording or "
+                         "streaming from it, then try again."
+                       : "Another app has taken these headphones. Close anything else playing "
+                         "sound, or pick a different output in Advanced.")
+            : (isInput ? "This microphone is no longer connected. Unplug it and plug it back in, "
+                         "then try again."
+                       : "This sound output isn't there any more. Pick a different one in "
+                         "Advanced.");
         return false;
+    }
 
     // Float first because it needs no conversion; the integer formats are the
     // fallbacks real hardware actually offers.
@@ -346,7 +376,15 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
     }
 
     if (! configured)
+    {
+        // Every format the device could plausibly want was offered and refused.
+        lastOpenError = isInput
+            ? "This microphone won't record in any format this app can use. Try a different USB "
+              "port, or a different microphone."
+            : "These headphones won't accept audio in any format this app can use. Pick a "
+              "different output in Advanced.";
         return false;
+    }
 
     stream->periodFrames = static_cast<snd_pcm_uframes_t> (std::max (1, bufferSizeSamples));
 
@@ -405,6 +443,17 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                         break;
                     }
 
+                    // Recovered, but not without cost: an xrun IS lost audio.
+                    // The device kept running and the app carried on, so this
+                    // was the one loss on Linux that nothing counted and nothing
+                    // reported -- the same hole the Windows and macOS counters
+                    // were added to close, left open on the platform whose CI
+                    // job is the only one that opens a real device.
+                    //
+                    // A period's worth is the honest figure: that is what the
+                    // read was for, and what the device dropped on the floor.
+                    raw->framesDropped.fetch_add (static_cast<uint64_t> (frames),
+                                                  std::memory_order_relaxed);
                     continue;
                 }
 
@@ -466,10 +515,22 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
 
                 const auto put = snd_pcm_writei (raw->pcm, raw->buffers.interleaved.data(), frames);
 
-                if (put < 0 && snd_pcm_recover (raw->pcm, static_cast<int> (put), 1) < 0)
+                if (put < 0)
                 {
-                    died = true;
-                    break;
+                    if (snd_pcm_recover (raw->pcm, static_cast<int> (put), 1) < 0)
+                    {
+                        died = true;
+                        break;
+                    }
+
+                    // Counted apart from the capture side, and deliberately.
+                    // The previous attempt put these on framesDropped, which
+                    // feeds a sentence about audio lost BEFORE RECORDING and a
+                    // permanent line in the take's own record -- so a monitor
+                    // glitch on a take that recorded perfectly wrote a lasting
+                    // claim that recorded audio had been lost. The comment even
+                    // said "it is not recorded audio" while doing exactly that.
+                    raw->outputGlitches.fetch_add (1, std::memory_order_relaxed);
                 }
             }
         }
@@ -497,6 +558,28 @@ bool AlsaBackend::openInputStream (const std::string& inputDeviceId, double samp
                                    int bufferSizeSamples, AudioCallback callback)
 {
     return openStream (inputDeviceId, sampleRate, bufferSizeSamples, true, std::move (callback));
+}
+
+uint64_t AlsaBackend::getFramesDroppedByBackend() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr)
+            total += stream->framesDropped.load (std::memory_order_relaxed);
+
+    return total;
+}
+
+uint64_t AlsaBackend::getOutputGlitchCount() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr)
+            total += stream->outputGlitches.load (std::memory_order_relaxed);
+
+    return total;
 }
 
 void AlsaBackend::closeAllStreams()

@@ -485,6 +485,12 @@ public:
     /// the rename moves that folder across rather than starting empty.
     static juce::File getSupportFolder();
 
+    /// True when the one-time move of the old settings folder onto the current
+    /// name failed. Static because getSupportFolder() is, and it has to be: the
+    /// settings file is located before any Application exists to tell. Read
+    /// once at startup and turned into a sentence there.
+    static bool supportFolderMigrationFailed;
+
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
     std::unique_ptr<CaptureCoordinator> capture;
@@ -531,7 +537,6 @@ private:
 
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
-    std::string appliedMasterDeviceId;
 
     // §9.3, read once at construction. See prefersReducedMotion().
     bool reducedMotionPreferred = false;
@@ -569,7 +574,6 @@ private:
     // mutable: getRecordDisabledReason() is const and must read the result.
     mutable std::mutex preflightMutex;
     std::thread preflightThread;
-    std::string preflightTargetPath;
     void runPreflight (const std::string& destination, int channelCount);
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
     std::unique_ptr<SystemAggregateDevice> systemAggregate;
@@ -626,6 +630,30 @@ private:
     int journalledMonitorCount = -1;
     bool journalledMonitorOk = false;
 
+    /// The backend drop count already reported, so a loss that is still growing
+    /// is said again and one that has stopped is not repeated forever.
+    uint64_t reportedBackendDrops = 0;
+
+    /// The backend's drop total when the current take started, so the take's
+    /// own record reports its own losses rather than the session's.
+    uint64_t backendDropsAtTakeStart = 0;
+
+    /// The monitor-glitch count already reported. Same shape as
+    /// reportedBackendDrops, including the reset when the streams are rebuilt.
+    uint64_t reportedOutputGlitches = 0;
+
+    /// The camera problem already journalled, so an open failure that persists
+    /// across takes is said once rather than at every take start.
+    juce::String reportedCameraProblem;
+
+    /// Layout losses already reported live. Reset with each take, because the
+    /// counter behind it is.
+    uint64_t reportedLayoutMisses = 0;
+
+    /// Why the app stopped the current take, when the app is what stopped it.
+    /// Empty means the user did, which is the ordinary case.
+    juce::String stopReason;
+
     /// True once the mirror-never-opened line has been said for this take, so
     /// it is said once rather than on every poll.
     bool mirrorMissingReported = false;
@@ -657,7 +685,17 @@ private:
     /// forever: the next take planned N+1 files and wrote N.
     void requestCaptureRestart();
     bool captureRestartDeferred = false;
-    /// §3.1/§3.3: pushes DeviceManager's master choice into the coordinator.
+
+    /// A destination chosen while a take was running. §6.5 fixes where a take
+    /// goes for its duration, so the change waits for the take to end rather
+    /// than being dropped -- the same bargain requestCaptureRestart strikes.
+    juce::String pendingDestinationFolder;
+
+    /// Does what setDestinationFolder does, without asking whether a take is
+    /// running. The deferral decision lives in setDestinationFolder alone, so
+    /// the deferred apply cannot re-enter it and defer itself -- which is
+    /// exactly what it did when both jobs lived in one function.
+    void applyDestinationFolder (const juce::File& folder);
     void applyClockMaster();
 
 

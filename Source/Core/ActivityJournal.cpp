@@ -73,6 +73,7 @@ void ActivityJournal::dropOldestLocked()
                                          });
 
     entries.erase (droppable != entries.end() ? droppable : entries.begin());
+    ++droppedCount;
 }
 
 std::vector<ActivityEntry> ActivityJournal::getEntries() const
@@ -138,6 +139,12 @@ size_t ActivityJournal::getUnseenCount() const
     return count;
 }
 
+size_t ActivityJournal::getDroppedCount() const
+{
+    std::lock_guard<std::mutex> guard (lock);
+    return droppedCount;
+}
+
 size_t ActivityJournal::size() const
 {
     std::lock_guard<std::mutex> guard (lock);
@@ -148,6 +155,7 @@ void ActivityJournal::clear()
 {
     std::lock_guard<std::mutex> guard (lock);
     entries.clear();
+    droppedCount = 0;
 }
 
 static void appendJsonString (std::string& out, const std::string& value)

@@ -236,3 +236,82 @@ TEST_CASE (TakeWatchdog_RingOverrunsCountAsDroppedAudio)
     REQUIRE (has (w.observe (now), TakeAlert::Kind::AudioDropped));
     REQUIRE (w.observe (now).empty());
 }
+
+TEST_CASE (TakeWatchdog_TheSecondsLostFigureUsesTheTakesOwnRate)
+{
+    // The figure was computed against a hardcoded 48000, so a take at 96 kHz
+    // was told twice as much audio had been lost as actually had -- the same
+    // wrong-magnitude family as counting channel frames as wall-clock ones.
+    TakeWatchdog watchdog;
+
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    start.sampleRate = 96000.0;
+    watchdog.beginTake (start);
+
+    TakeHealth now = start;
+    now.elapsedSeconds = 5.0;
+    now.framesDropped = 96000;   // one second at this take's rate
+    now.sampleRate = 96000.0;
+
+    const auto alerts = watchdog.observe (now);
+
+    bool saidOneSecond = false;
+    for (const auto& a : alerts)
+        if (a.message.find ("1 s lost") != std::string::npos)
+            saidOneSecond = true;
+
+    // Either it names one second, or it is the first-time wording that gives no
+    // figure at all. What it must never do is say two.
+    for (const auto& a : alerts)
+        REQUIRE (a.message.find ("2 s lost") == std::string::npos);
+
+    (void) saidOneSecond;
+}
+
+TEST_CASE (TakeWatchdog_ADriveWithNoRoomIsNotToldItHasTwoMinutes)
+{
+    // Zero used to be unreachable here: the app collapsed a full drive into the
+    // "unknown" sentinel, which this block's gate excluded. Now that zero is a
+    // real value it would fall into the two-minute arm and tell someone with no
+    // room at all that they have about two minutes and should wrap up --
+    // contradicting, one tick earlier, the stop that is about to happen.
+    TakeWatchdog watchdog;
+
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    start.remainingSeconds = 3600.0;
+    watchdog.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 10.0;
+    now.remainingSeconds = 0.0;
+
+    for (const auto& a : watchdog.observe (now))
+    {
+        REQUIRE (a.message.find ("two minutes of room") == std::string::npos);
+        REQUIRE (a.message.find ("ten minutes of room") == std::string::npos);
+    }
+}
+
+TEST_CASE (TakeWatchdog_RealRoomWarningsStillFire)
+{
+    // The gate above must not have silenced the warnings it sits in front of.
+    TakeWatchdog watchdog;
+
+    auto start = healthyRig();
+    start.elapsedSeconds = 0.0;
+    start.remainingSeconds = 3600.0;
+    watchdog.beginTake (start);
+
+    auto now = start;
+    now.elapsedSeconds = 10.0;
+    now.remainingSeconds = 100.0; // inside two minutes, and genuinely non-zero
+
+    bool warned = false;
+    for (const auto& a : watchdog.observe (now))
+        if (a.message.find ("two minutes of room") != std::string::npos)
+            warned = true;
+
+    REQUIRE (warned);
+}
