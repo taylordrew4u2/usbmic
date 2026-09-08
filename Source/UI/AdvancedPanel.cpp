@@ -4,6 +4,13 @@
 namespace mma {
 
 namespace {
+
+/// Room for a dozen lines of activity at 11pt. Fixed rather than measured
+/// because getRequiredHeight() has to be able to state the panel's height
+/// without laying it out, and this is the one block that would otherwise grow
+/// under it.
+constexpr int kActivityHeight = 12 * 14;
+
 void configureRow (juce::Label& label, juce::Label& value, const juce::String& text)
 {
     label.setText (text, juce::dontSendNotification);
@@ -42,10 +49,14 @@ AdvancedPanel::AdvancedPanel()
                      &backendValue })
         v->setColour (juce::Label::textColourId, AppLookAndFeel::bone);
 
-    // Supporting text, not body text: the drift report, the aggregate status
-    // and the clock-master explanation all sat at the same size and weight as
-    // the settings they describe.
-    for (auto* l : { &driftLabel, &aggregateStatusLabel, &clockMasterHelpLabel })
+    activityLabel.setJustificationType (juce::Justification::topLeft);
+    activityLabel.setText ("Nothing to report yet.", juce::dontSendNotification);
+    addAndMakeVisible (activityLabel);
+
+    // Supporting text, not body text: the drift report, the aggregate status,
+    // the clock-master explanation and the activity list all sat at the same
+    // size and weight as the settings they describe.
+    for (auto* l : { &driftLabel, &aggregateStatusLabel, &clockMasterHelpLabel, &activityLabel })
     {
         l->setFont (juce::Font (11.0f));
         l->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
@@ -137,6 +148,7 @@ AdvancedPanel::AdvancedPanel()
         { &deliverySection, "WHERE IT'S GOING" },
         { &micSection,     "MICROPHONES" },
         { &outputSection,  "MONITORING AND OUTPUT" },
+        { &activitySection, "WHAT HAPPENED" },
     };
 
     for (auto& [label, text] : sections)
@@ -375,6 +387,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kAggregate     = 20 + 16;
     constexpr int kMirror        = 26 + 16;
     constexpr int kDiagnostics   = 30;
+    constexpr int kActivity      = 16 + kActivityHeight;
 
     // save-to volume, destination folder, sample rate, bit depth, buffer size,
     // latency, delivery target, clock master, output device, backend,
@@ -393,10 +406,10 @@ int AdvancedPanel::getRequiredHeight() const
     // "Where it's going": the explanation and the line of advice under it.
     constexpr int kDelivery    = 56 + 4 + 36;
 
-    return kMargins + kCloseButton + (kSection * 5) + (kRow * kRowCount)
+    return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount)
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
-         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics;
+         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kActivity;
 }
 
 void AdvancedPanel::resized()
@@ -501,6 +514,13 @@ void AdvancedPanel::resized()
     area.removeFromTop (16);
 
     diagnosticsExportButton.setBounds (area.removeFromTop (30).removeFromLeft (180));
+    area.removeFromTop (16);
+
+    // Last, and deliberately: it is the thing you come looking for rather than
+    // the thing you set, and it grows downwards without pushing a control off
+    // the bottom of the panel.
+    section (activitySection);
+    activityLabel.setBounds (area.removeFromTop (kActivityHeight));
 }
 
 
@@ -541,6 +561,16 @@ void AdvancedPanel::setDeliveryTargets (const juce::StringArray& names, const ju
 void AdvancedPanel::setLoudnessAdvice (const juce::String& text)
 {
     loudnessAdviceLabel.setText (text, juce::dontSendNotification);
+}
+
+void AdvancedPanel::setActivityLines (const juce::StringArray& lines)
+{
+    // Said plainly when there is nothing, rather than left blank: an empty
+    // space under a heading reads as broken, and "nothing has gone wrong" is
+    // itself worth knowing.
+    activityLabel.setText (lines.isEmpty() ? juce::String ("Nothing to report yet.")
+                                           : lines.joinIntoString ("\n"),
+                           juce::dontSendNotification);
 }
 
 } // namespace mma

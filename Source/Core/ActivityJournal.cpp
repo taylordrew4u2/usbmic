@@ -48,6 +48,7 @@ void ActivityJournal::note (double nowSeconds, ActivityLevel level,
         dropOldestLocked();
 
     ActivityEntry entry;
+    entry.id = nextId++;
     entry.atSeconds = nowSeconds;
     entry.level = level;
     entry.subject = std::move (subject);
@@ -101,6 +102,20 @@ bool ActivityJournal::getMostSeriousUnseen (ActivityEntry& out) const
     }
 
     return found;
+}
+
+void ActivityJournal::markSeen (uint64_t id)
+{
+    std::lock_guard<std::mutex> guard (lock);
+
+    for (auto& e : entries)
+    {
+        if (e.id == id)
+        {
+            e.seen = true;
+            return;
+        }
+    }
 }
 
 void ActivityJournal::markAllSeen()

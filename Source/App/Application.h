@@ -23,6 +23,7 @@
 #include <mutex>
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
+#include "../Core/ActivityJournal.h"
 #include "../Core/CapacityMonitor.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
@@ -280,6 +281,36 @@ public:
     /// §10.6: what happened then what to do, never a code.
     juce::String pollStatusAdvice (double sinceLastCallSeconds);
 
+    /// Everything the app has done and everything that has gone wrong this
+    /// session, newest first.
+    ///
+    /// pollStatusAdvice above is the loud channel and it holds one sentence.
+    /// This is the record, so that a mic that dropped and came back while a
+    /// disk warning held the line still left a trace somewhere the user can
+    /// look. It is also what goes into the take's session.json, so a take
+    /// carries the story of how it went.
+    const ActivityJournal& getActivityJournal() const noexcept { return activity; }
+
+    /// The recent activity as lines for a panel, newest first, at most `limit`.
+    juce::StringArray getRecentActivityLines (int limit = 12) const;
+
+    /// How many entries the user has not been shown yet. What a badge counts.
+    size_t getUnseenActivityCount() const { return activity.getUnseenCount(); }
+    void markActivitySeen() { activity.markAllSeen(); }
+
+    /// Records one thing that happened, on the app's own clock. Public because
+    /// the UI layer owns some of the events worth recording (a camera the user
+    /// switched off, an export they asked for) and they belong in the same
+    /// record as everything else.
+    ///
+    /// Const because recording what happened is observation, not a change to
+    /// anything the rest of the class promises -- and because several of the
+    /// places that most need to report a failure (working out where a take
+    /// would go, planning a save) are const themselves. A journal that only
+    /// non-const code could write to would have been silent in exactly those
+    /// places.
+    void noteActivity (ActivityLevel level, const juce::String& subject, const juce::String& message) const;
+
     /// §6.5: "New microphone plugged in mid-take -- do not add to the
     /// in-progress recording. State in one line." That line, for the few
     /// seconds after it happens, or empty. RecordingEngine has always had the
@@ -512,6 +543,44 @@ private:
     std::string destinationFolder;
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
+    mutable ActivityJournal activity;
+
+    /// Seconds since the app started, for journal timestamps. One clock for
+    /// every entry, so entries can be compared with each other and with the
+    /// take's own elapsed time.
+    double appStartMs = 0.0;
+    double activityClockSeconds() const;
+
+    /// Writes activity.log beside a take, so the folder carries its own story.
+    void writeActivityLog (const juce::File& folder);
+
+    /// §10.6: why the last attempt to start recording failed. Shown until the
+    /// next attempt, because a record button that does nothing and says nothing
+    /// is the worst failure in the app: the user believes they are recording.
+    juce::String recordStartProblem;
+
+    /// How many microphones the last journalled monitoring change was about,
+    /// and whether that change was a success. restartCapture() runs on every
+    /// rename, hot-plug and output change, so an entry per call would bury the
+    /// journal in "2 microphones are live" -- only an actual change is news.
+    int journalledMonitorCount = -1;
+    bool journalledMonitorOk = false;
+
+    /// True once the mirror-never-opened line has been said for this take, so
+    /// it is said once rather than on every poll.
+    bool mirrorMissingReported = false;
+
+    /// The journal entry currently being shown on the advice line, and how much
+    /// longer it stays there. This is what makes "nothing is silent" true on
+    /// the main screen: when nothing more serious is happening, the line shows
+    /// the most serious thing the user has not been shown yet, rather than
+    /// going blank over a journal full of unread news.
+    juce::String activityLine;
+    double activityLineSeconds = 0.0;
+
+    /// The last take's combine outcome that has already been reported, so a
+    /// finished combine is announced once.
+    juce::String reportedCombineProblem;
 
     // §5.1 listening level. Owned here, not on the bus, because the coordinator
     // that owns the bus is rebuilt on a rate or buffer change.
@@ -539,7 +608,7 @@ private:
     /// §6.2 destination folder for a new take, created on disk. Empty on failure.
     juce::String createSessionFolder (juce::Time now) const;
     /// §6.3 local backup folder for a take, created on disk. Empty on failure.
-    static juce::String createMirrorFolder (const juce::String& sessionFolderName);
+    juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
     /// §11: the newest session.json files under the destination, newest first.

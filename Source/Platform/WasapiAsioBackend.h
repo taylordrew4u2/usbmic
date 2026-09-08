@@ -46,8 +46,13 @@ public:
 
     std::string getLastOpenError() const override { return lastOpenError; }
 
+    std::vector<StreamFailure> takeStreamFailures() override { return streamFailures.take(); }
+
 private:
     std::string lastOpenError;
+
+    /// §0.1: where the worker threads leave a stream that stopped on its own.
+    StreamFailureSink streamFailures;
 
     bool preferAsio = false;
     DeviceChangeCallback deviceChangeCallback;

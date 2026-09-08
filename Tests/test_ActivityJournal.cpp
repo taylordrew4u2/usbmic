@@ -243,3 +243,50 @@ TEST_CASE (ActivityJournal_ClearingLeavesNothingBehind)
     ActivityEntry top;
     REQUIRE_FALSE (journal.getMostSeriousUnseen (top));
 }
+
+TEST_CASE (ActivityJournal_ShowingOneEntryDoesNotSilenceTheOthers)
+{
+    // The bug this id exists to prevent: the advice line can only show one
+    // sentence, so marking everything seen because one was shown loses every
+    // other piece of unread news -- including a worse one that arrived while
+    // the line was busy.
+    ActivityJournal journal;
+    journal.note (0.0, ActivityLevel::Warning, "Drive", "The drive is falling behind.");
+    journal.note (1.0, ActivityLevel::Failed, "Card", "The card stopped accepting writes.");
+
+    ActivityEntry shown;
+    REQUIRE (journal.getMostSeriousUnseen (shown));
+    REQUIRE (shown.subject == std::string ("Card"));
+
+    journal.markSeen (shown.id);
+
+    // The warning underneath it is still waiting to be said.
+    ActivityEntry next;
+    REQUIRE (journal.getMostSeriousUnseen (next));
+    REQUIRE (next.subject == std::string ("Drive"));
+    REQUIRE (journal.getUnseenCount() == 1u);
+
+    journal.markSeen (next.id);
+    REQUIRE_FALSE (journal.getMostSeriousUnseen (next));
+}
+
+TEST_CASE (ActivityJournal_MarkingAnEntryThatIsGoneIsHarmless)
+{
+    // A caller can hold a copy of an entry the bound has since dropped.
+    ActivityJournal journal;
+    journal.note (0.0, ActivityLevel::Failed, "Card", "The card stopped accepting writes.");
+
+    journal.markSeen (999999);
+    REQUIRE (journal.getUnseenCount() == 1u);
+}
+
+TEST_CASE (ActivityJournal_EveryEntryGetsItsOwnId)
+{
+    ActivityJournal journal;
+    journal.note (0.0, ActivityLevel::Started, "Recording", "Started.");
+    journal.note (1.0, ActivityLevel::Stopped, "Recording", "Stopped.");
+
+    const auto entries = journal.getEntries();
+    REQUIRE (entries[0].id != entries[1].id);
+    REQUIRE (entries[0].id != 0u);
+}

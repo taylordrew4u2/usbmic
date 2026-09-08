@@ -510,15 +510,31 @@ ExclusiveModeCapability CoreAudioBackend::checkExclusiveModeCapability (const st
 bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                                    AudioCallback callback, bool isOutput)
 {
+    // Cleared here so a message from a previous failed open cannot be read back
+    // as the reason this one failed -- or, worse, be shown beside a success.
+    lastOpenError.clear();
+
     const AudioObjectID device = findDeviceByUID (deviceId);
 
     if (device == kAudioObjectUnknown || ! callback)
+    {
+        // The field existed and every failure below left it empty, so a refused
+        // open reached the user as the generic "couldn't open" with no cause --
+        // §5.4 asks for the cause to be named, and this is where it is known.
+        lastOpenError = isOutput
+            ? "That sound output isn't there any more. Choose another one."
+            : "That microphone isn't there any more. Plug it back in and try again.";
         return false;
+    }
 
     // Match the negotiated rate (§2.2) before the IOProc starts, so the device
     // is not still converting when audio begins.
     if (! setNominalSampleRate (device, sampleRate))
+    {
+        lastOpenError = "This device won't run at the sample rate the others are using. "
+                        "Unplug it, or change the sample rate in Advanced.";
         return false;
+    }
 
     // §5.4 buffer ladder: the requested size is a target, and CoreAudio clamps
     // it to what the device allows. Failing to set it is not fatal -- a larger
@@ -545,11 +561,18 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
 
     if (AudioDeviceCreateIOProcID (device, ioProcTrampoline, stream.get(), &stream->ioProcId) != noErr
         || stream->ioProcId == nullptr)
+    {
+        lastOpenError = "The system refused to start audio on this device. Unplug it and plug it "
+                        "back in, or restart the app.";
         return false;
+    }
 
     if (AudioDeviceStart (device, stream->ioProcId) != noErr)
     {
         AudioDeviceDestroyIOProcID (device, stream->ioProcId);
+
+        lastOpenError = "This device accepted the connection but wouldn't start. Another app may "
+                        "have taken it -- close anything else using it and try again.";
         return false;
     }
 
@@ -563,7 +586,10 @@ bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDevic
     const AudioObjectID device = findDeviceByUID (outputDeviceId);
 
     if (device == kAudioObjectUnknown)
+    {
+        lastOpenError = "That sound output isn't there any more. Choose another one.";
         return false;
+    }
 
     // Hog mode is the exclusive-equivalent on macOS: it stops the HAL mixing
     // other processes into this device. §5.4 requires the monitor path be

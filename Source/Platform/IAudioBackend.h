@@ -4,6 +4,8 @@
 #include <vector>
 #include <functional>
 #include <cstdint>
+#include <mutex>
+#include <utility>
 
 namespace mma {
 
@@ -27,6 +29,57 @@ struct ExclusiveModeCapability
     bool exclusiveModeAvailable = false;
     double measuredOrEstimatedLatencyMs = 0.0;
     std::string unavailableReason; // populated when exclusiveModeAvailable is false
+};
+
+/// A stream that died after it had been opened. See takeStreamFailures().
+struct StreamFailure
+{
+    /// The device the stream was opened for. Empty for the monitor output.
+    std::string deviceId;
+
+    /// §10.6: what happened, in the user's words. The owner adds the device's
+    /// name -- the backend only knows its id.
+    std::string reason;
+};
+
+/// Where a backend's worker threads leave a failure for the message thread to
+/// pick up. Locked rather than lock-free: a stream dying is a once-per-session
+/// event, and the alternative -- a fixed slot that the second failure
+/// overwrites -- loses exactly the information this exists to keep.
+///
+/// note() is called from a worker thread that has already stopped feeding the
+/// audio callback, so it is not on the real-time path and may lock.
+class StreamFailureSink
+{
+public:
+    void note (std::string deviceId, std::string reason)
+    {
+        const std::lock_guard<std::mutex> guard (lock);
+
+        // A device that fails repeatedly says it once. The owner turns this
+        // into a sentence for the user, not a counter.
+        for (const auto& existing : failures)
+            if (existing.deviceId == deviceId)
+                return;
+
+        failures.push_back ({ std::move (deviceId), std::move (reason) });
+    }
+
+    std::vector<StreamFailure> take()
+    {
+        const std::lock_guard<std::mutex> guard (lock);
+        return std::exchange (failures, {});
+    }
+
+    void clear()
+    {
+        const std::lock_guard<std::mutex> guard (lock);
+        failures.clear();
+    }
+
+private:
+    std::mutex lock;
+    std::vector<StreamFailure> failures;
 };
 
 using AudioCallback = std::function<void (const float* const* inputChannels, int numInputChannels,
@@ -78,6 +131,20 @@ public:
     /// Opens one input device's capture stream.
     virtual bool openInputStream (const std::string& inputDeviceId, double sampleRate,
                                   int bufferSizeSamples, AudioCallback callback) = 0;
+
+    /// A stream that opened successfully and has since stopped delivering
+    /// audio on its own, with the reason, taken and cleared.
+    ///
+    /// Every backend has a worker loop that gives up on an unrecoverable device
+    /// error and exits, and none of them told anyone. The stream simply stopped:
+    /// monitoring went quiet, or a microphone's track went on being written as
+    /// silence for the rest of a four-hour take, and the only evidence was in
+    /// the file afterwards. §0.1 does not allow that, so a backend that stops
+    /// says so, and the owner turns it into a sentence.
+    ///
+    /// Taken rather than read, so each failure is reported once. Empty
+    /// deviceId means the monitor output rather than an input.
+    virtual std::vector<StreamFailure> takeStreamFailures() { return {}; }
 
     virtual void closeAllStreams() = 0;
 };

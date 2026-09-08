@@ -252,6 +252,32 @@ void aDeviceThatCannotReachTheRateIsRefused()
 
     check (! backend.openInputStream ("uid-stuck", 48000.0, 256, capture.callback()),
            "the open is refused rather than silently running at the wrong rate");
+
+    // §5.4 asks for the cause to be named. The field existed and every refusal
+    // in here left it empty, so a refused open reached the user as a generic
+    // "couldn't open" with nothing to act on.
+    check (! backend.getLastOpenError().empty(), "and says why, rather than just refusing");
+}
+
+/// A microphone that has been unplugged between the device list being drawn and
+/// the user clicking it. The open must fail, and it must say what happened --
+/// "couldn't open your microphone" sends someone looking at settings when the
+/// answer is that the thing is not plugged in.
+void anAbsentDeviceNamesItsCause()
+{
+    std::printf ("\nA mic that was unplugged before it could be opened\n");
+    fakeca::reset();
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (! backend.openInputStream ("uid-not-here", 48000.0, 256, capture.callback()),
+           "the open is refused");
+
+    const auto why = backend.getLastOpenError();
+    check (! why.empty(), "and names a cause");
+    check (why.find ("Plug it back in") != std::string::npos,
+           "with a next step the user can actually take");
 }
 
 /// §5.4: the monitor path is exclusive or it is nothing. Reporting success
@@ -431,6 +457,7 @@ int main()
     continuousSampleRateRangeIsExpanded();
     aDeviceAlreadyAtTheRequestedRateStillOpens();
     aDeviceThatCannotReachTheRateIsRefused();
+    anAbsentDeviceNamesItsCause();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();

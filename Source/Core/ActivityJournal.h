@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,6 +20,12 @@ enum class ActivityLevel
 
 struct ActivityEntry
 {
+    /// Identifies this entry for the life of the journal, so a caller that has
+    /// shown one entry can mark exactly that one as seen. Marking everything
+    /// seen because one thing was shown is how a second, quieter failure gets
+    /// lost -- which is the failure mode this class exists to remove.
+    uint64_t id = 0;
+
     /// Seconds on the app's own clock, from the same source the take's elapsed
     /// time uses, so an entry can be lined up against the recording.
     double atSeconds = 0.0;
@@ -88,8 +95,13 @@ public:
     /// reports its current form rather than its first.
     bool getMostSeriousUnseen (ActivityEntry& out) const;
 
-    /// Marks everything currently recorded as shown. Called once the entries
-    /// have actually been put in front of the user, never speculatively.
+    /// Marks one entry as shown. Unknown ids are ignored, so a caller holding
+    /// a copy of an entry that has since been dropped is not an error.
+    void markSeen (uint64_t id);
+
+    /// Marks everything currently recorded as shown. For the panel, which shows
+    /// them all at once -- never for a single line, which can only have shown
+    /// one of them.
     void markAllSeen();
 
     /// How many entries the user has not been shown. What a badge counts.
@@ -108,6 +120,7 @@ public:
 private:
     mutable std::mutex lock;
     std::vector<ActivityEntry> entries; // oldest first
+    uint64_t nextId = 1;
 
     void dropOldestLocked();
 };
