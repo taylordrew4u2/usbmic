@@ -165,6 +165,10 @@ public:
     /// The take is over -- the owner stops and finalizes, and tells the user.
     bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
 
+    /// A more specific account of a card write failure than "it stopped
+    /// accepting writes", when the writer has one. Empty otherwise.
+    std::string getCardWriteProblem() const { return pipeline != nullptr ? pipeline->getCardWriteProblem() : std::string(); }
+
     /// §6.3: the mirror's equivalent. The pipeline already stops mirroring on
     /// a failed write and deliberately leaves the card write alone -- what this
     /// exposes is the fact that it happened, so the take's owner can say so and

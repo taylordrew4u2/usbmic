@@ -180,3 +180,20 @@ TEST_CASE (SessionWriter_TheFiveSecondHeaderRewriteReportsWhetherItLanded)
     REQUIRE (w.tick (600.0));
     REQUIRE (w.close());
 }
+
+TEST_CASE (SessionWriter_AHealthyWriterHasNoWriteProblemToReport)
+{
+    // The reason field exists for the roll-over failure at 3.9 GB, which no
+    // test can reach without writing 3.9 GB. What is worth holding is that it
+    // stays empty otherwise -- a stale reason shown beside a healthy take would
+    // send someone checking a card that is fine.
+    SessionWriter w;
+    REQUIRE (w.open (tempBasePath ("no-problem"), 48000.0, 1, 16, "2026-09-08T00:00:00Z"));
+
+    std::vector<float> block (128, 0.25f);
+    REQUIRE (w.writeInterleaved (block.data(), 128));
+    REQUIRE (w.getWriteProblem().empty());
+
+    REQUIRE (w.close());
+    REQUIRE (w.getWriteProblem().empty());
+}

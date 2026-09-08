@@ -476,6 +476,21 @@ void WritePipeline::runWriterThread()
     }
 }
 
+std::string WritePipeline::getCardWriteProblem() const
+{
+    // The mix writer first: it is the one every take has, and the one whose
+    // failure stops the take. A stem's account is used only when the mix has
+    // none of its own.
+    if (mixWriter != nullptr && ! mixWriter->getWriteProblem().empty())
+        return mixWriter->getWriteProblem();
+
+    for (const auto& w : stemWriters)
+        if (w != nullptr && ! w->getWriteProblem().empty())
+            return w->getWriteProblem();
+
+    return {};
+}
+
 void WritePipeline::stop()
 {
     if (! running.exchange (false, std::memory_order_acq_rel))

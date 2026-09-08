@@ -55,6 +55,7 @@ bool SessionWriter::open (const std::string& basePath, double sampleRateIn, int 
     originTimestamp = originTimestampIso;
     splitIndex = 0;
     splitSuffixActive = false;
+    writeProblem.clear();
     totalFramesWritten = 0;
     secondsSinceLastHeaderRewrite = 0.0;
 
@@ -148,8 +149,17 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
             rewriteHeaderSizes();
             splitIndex = std::max (1, splitIndex + 1);
             splitSuffixActive = true;
+
             if (! openNewFile (splitIndex))
+            {
+                // The caller turns a false into "the card stopped accepting
+                // writes", which is true but not what happened: the take ran
+                // past 3.9 GB and the next file could not be created. Same
+                // outcome, different thing to check.
+                writeProblem = "Couldn't start the next file after " + currentFilePath
+                             + ". The card may be full, or may not allow files this large.";
                 return false;
+            }
         }
 
         const float* frame = interleaved + frameStart * static_cast<size_t> (numChannels);

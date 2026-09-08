@@ -202,6 +202,22 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
     return format;
 }
 
+/// Called when the render side has failed often enough to be called dead. Stops
+/// the stream rather than leaving it spinning on a device the message below is
+/// asking the user to reconnect.
+void reportRenderDeath (WasapiStream* stream)
+{
+    if (stream->failures != nullptr)
+        stream->failures->note (stream->deviceId,
+                                "stopped accepting audio, so you can't hear anything through it. "
+                                "Try selecting it again.");
+
+    stream->running.store (false, std::memory_order_release);
+
+    if (stream->client)
+        stream->client->Stop();
+}
+
 /// The audio worker. Waits on the client's event and services one buffer per
 /// wake. §11: no allocation, locking, logging or file I/O in here.
 void runStreamThread (WasapiStream* stream)
@@ -219,6 +235,7 @@ void runStreamThread (WasapiStream* stream)
     // under load is not accused of failing.
     constexpr int kTimeoutsBeforeGivingUp = 3;
     int consecutiveTimeouts = 0;
+    int consecutiveRenderFailures = 0;
 
     while (stream->running.load (std::memory_order_acquire))
     {
@@ -309,17 +326,44 @@ void runStreamThread (WasapiStream* stream)
         }
         else
         {
+            // The render side's own way of dying. Each of these used to
+            // `continue` unconditionally, so an output that had stopped
+            // accepting audio spun here for the rest of the session: no sound,
+            // no error, no end -- the user simply could not hear anything and
+            // nothing anywhere said why. One failure is a glitch; a run of them
+            // is a dead output, and the same three-strikes rule the wait above
+            // uses applies.
+            constexpr int kRenderFailuresBeforeGivingUp = 200;
+
             UINT32 padding = 0;
             if (FAILED (stream->client->GetCurrentPadding (&padding)))
-                continue;
+            {
+                if (++consecutiveRenderFailures < kRenderFailuresBeforeGivingUp)
+                    continue;
+
+                reportRenderDeath (stream);
+                break;
+            }
 
             const UINT32 frames = stream->bufferFrames - padding;
             if (frames == 0)
+            {
+                // Nothing to fill is normal -- the device simply has not
+                // drained yet -- so this is not counted against the stream.
                 continue;
+            }
 
             BYTE* data = nullptr;
             if (FAILED (stream->render->GetBuffer (frames, &data)) || data == nullptr)
-                continue;
+            {
+                if (++consecutiveRenderFailures < kRenderFailuresBeforeGivingUp)
+                    continue;
+
+                reportRenderDeath (stream);
+                break;
+            }
+
+            consecutiveRenderFailures = 0;
 
             std::memset (stream->scratch.data(), 0, stream->scratch.size() * sizeof (float));
 

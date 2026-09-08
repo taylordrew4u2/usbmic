@@ -2483,6 +2483,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // notice, which is what shows the user whatever did survive.
         toggleRecording();
 
+        // The writer's own account when it has one -- a roll-over past 3.9 GB
+        // that could not create the next file is not "the card was removed",
+        // and sending someone to check a cable for a card that is simply full
+        // wastes the one moment they are still next to the rig.
+        if (const auto why = capture->getCardWriteProblem(); ! why.empty())
+            noteActivity (ActivityLevel::Failed, "Card", juce::String (why));
+
         noteActivity (ActivityLevel::Failed, "Card", juce::String (cardRemovalNotice.message));
         return juce::String (cardRemovalNotice.message);
     }
@@ -3285,8 +3292,24 @@ void Application::scanForInterruptedSessions()
 
             // §6.6: a take where nothing survived is not presented at all --
             // better to say nothing than to hand someone an unplayable stub.
+            //
+            // But §6.6 asks for the other half too: "report it as empty rather
+            // than presenting an unplayable stub." Reporting it was the half
+            // that never happened, so an interrupted take that lost everything
+            // vanished from the recovery list with no trace -- and a folder
+            // sitting on the card holding nothing playable is exactly the thing
+            // someone spends an evening trying to open.
             if (session.isWorthPresenting())
+            {
                 recoveredSessions.push_back (std::move (session));
+            }
+            else
+            {
+                noteActivity (ActivityLevel::Failed, "Interrupted take",
+                              juce::String (folder.getFileName())
+                              + " was interrupted and nothing playable survived in it. There is "
+                                "nothing to recover from that folder.");
+            }
         }
     }
 }

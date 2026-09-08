@@ -42,6 +42,12 @@ public:
     /// start failing and nothing would notice until the stop.
     bool tick (double dtSeconds);
 
+    /// Why the last write failed, in the user's words, or empty. §6.1 rolls to
+    /// a new file at 3.9 GB, and a roll-over that fails is a different fault
+    /// from a write that fails -- the take stops at a file boundary rather than
+    /// mid-block, and "the card stopped accepting writes" does not describe it.
+    const std::string& getWriteProblem() const noexcept { return writeProblem; }
+
     /// Finalizes the current file (writes a final correct header) and closes it.
     ///
     /// Returns false when that final header rewrite or the flush behind it
@@ -67,6 +73,7 @@ private:
 
     std::fstream file;
     std::string currentFilePath;
+    std::string writeProblem;
     uint64_t dataBytesWrittenToCurrentFile = 0;
     uint64_t totalFramesWritten = 0;
     double secondsSinceLastHeaderRewrite = 0.0;
