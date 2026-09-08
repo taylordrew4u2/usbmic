@@ -48,8 +48,11 @@ jobs:
       - name: Simulated backends under sanitizers
         if: runner.os == 'Linux'
         run: |
+          # -fno-sanitize-recover so a UBSan diagnostic aborts the run:
+          # without it the sanitizer prints the error and the binary still
+          # exits 0, which is how undefined behaviour rides through a green CI.
           cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug \
-                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
           cmake --build build-asan --target sim_coreaudio sim_wasapi -j 4
           ./build-asan/sim_coreaudio
           ./build-asan/sim_wasapi

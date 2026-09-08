@@ -106,6 +106,12 @@ struct WasapiStream
     std::thread worker;
     std::atomic<bool> running { false };
 
+    /// Which device this stream is for, and where to report it dying. The
+    /// worker thread is the only thing that knows the stream has stopped, and
+    /// until now it was also the only thing that would ever know.
+    std::string deviceId;
+    StreamFailureSink* failures = nullptr;
+
     // Pre-allocated deinterleave scratch and channel pointers. §11 forbids
     // allocation on the audio thread, so these are sized once at open time.
     std::vector<float> scratch;
@@ -198,10 +204,43 @@ void runStreamThread (WasapiStream* stream)
     DWORD taskIndex = 0;
     HANDLE task = AvSetMmThreadCharacteristicsW (L"Pro Audio", &taskIndex);
 
+    // Consecutive two-second waits that timed out. A device that has stopped
+    // waking its event is not going to start again, and the loop used to spin
+    // on that forever: no audio, no error, no end -- monitoring simply went
+    // quiet, or a microphone's track was written as silence for the rest of the
+    // take. Three in a row is six seconds, long enough that a machine briefly
+    // under load is not accused of failing.
+    constexpr int kTimeoutsBeforeGivingUp = 3;
+    int consecutiveTimeouts = 0;
+
     while (stream->running.load (std::memory_order_acquire))
     {
         if (WaitForSingleObject (stream->readyEvent, 2000) != WAIT_OBJECT_0)
-            continue;
+        {
+            if (++consecutiveTimeouts < kTimeoutsBeforeGivingUp)
+                continue;
+
+            if (stream->failures != nullptr)
+                stream->failures->note (stream->deviceId,
+                                        stream->isInput
+                                            ? "stopped sending audio. Unplug it and plug it back in."
+                                            : "stopped accepting audio, so you can't hear anything "
+                                              "through it. Try selecting it again.");
+
+            // Stopped rather than left spinning: a dead stream that keeps its
+            // thread alive holds the device open against the reconnection the
+            // message above is asking the user to make. Stopping the client is
+            // the half that actually releases it; a second Stop() from
+            // closeAllStreams later is harmless.
+            stream->running.store (false, std::memory_order_release);
+
+            if (stream->client)
+                stream->client->Stop();
+
+            break;
+        }
+
+        consecutiveTimeouts = 0;
 
         const int channels = stream->channels;
 
@@ -493,6 +532,12 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     auto stream = std::make_unique<WasapiStream>();
     stream->callback = std::move (callback);
     stream->isInput = isInput;
+
+    // The output stream reports itself with an empty id, which is what the
+    // owner uses to tell "your headphones stopped" from "this microphone
+    // stopped" without having to know the device.
+    stream->deviceId = isInput ? deviceId : std::string();
+    stream->failures = &streamFailures;
 
     if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
                                   reinterpret_cast<void**> (stream->client.GetAddressOf()))))

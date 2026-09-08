@@ -52,7 +52,12 @@ public:
 
     void closeAllStreams() override;
 
+    std::vector<StreamFailure> takeStreamFailures() override { return streamFailures.take(); }
+
 private:
+    /// §0.1: where the worker threads leave a stream that stopped on its own.
+    StreamFailureSink streamFailures;
+
     DeviceChangeCallback deviceChangeCallback;
     std::vector<std::unique_ptr<AlsaStream>> openStreams;
 

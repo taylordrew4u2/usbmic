@@ -170,6 +170,15 @@ public:
     /// exposes is the fact that it happened, so the take's owner can say so and
     /// put it in the record.
     bool hasMirrorWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasMirrorWriteFailed(); }
+
+    /// §6.3: a mirror was asked for and could not be opened, so this take has
+    /// no second copy at all. Distinct from a mirror that stopped mid-take.
+    bool hasMirrorFailedToOpen() const noexcept { return pipeline != nullptr && pipeline->hasMirrorFailedToOpen(); }
+
+    /// Why the last startRecording() returned false, in the user's words.
+    /// Empty when the take started. The bool was the whole report until now,
+    /// which is why a take that could not open its files failed in silence.
+    const std::string& getRecordingProblem() const noexcept { return recordingProblem; }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
 
     /// BS.1770 loudness of the mix as written. What every streaming platform
@@ -324,6 +333,7 @@ private:
 
     bool monitoring = false;
     std::string monitorProblem;
+    std::string recordingProblem;
 
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a

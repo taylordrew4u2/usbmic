@@ -190,10 +190,10 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
     return file.good();
 }
 
-void SessionWriter::rewriteHeaderSizes()
+bool SessionWriter::rewriteHeaderSizes()
 {
     if (! file.is_open())
-        return;
+        return false;
 
     const auto currentPos = file.tellp();
     file.seekp (0, std::ios::end);
@@ -211,6 +211,8 @@ void SessionWriter::rewriteHeaderSizes()
 
     file.seekp (currentPos);
     file.flush();
+
+    return file.good();
 }
 
 void SessionWriter::tick (double dtSeconds)
@@ -223,12 +225,20 @@ void SessionWriter::tick (double dtSeconds)
     }
 }
 
-void SessionWriter::close()
+bool SessionWriter::close()
 {
     if (! file.is_open())
-        return;
-    rewriteHeaderSizes();
+        return false;
+
+    // Taken before close(), because closing clears the stream state that says
+    // whether the final header actually landed.
+    const bool headerLanded = rewriteHeaderSizes();
+
     file.close();
+
+    // file.good() is false after a successful close on some implementations,
+    // so the close itself is judged by fail(), not good().
+    return headerLanded && ! file.fail();
 }
 
 } // namespace mma

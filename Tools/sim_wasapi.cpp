@@ -9,6 +9,8 @@
 #include "../Source/Platform/WasapiAsioBackend.h"
 
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
@@ -499,6 +501,49 @@ void closingStopsEveryStream()
 
 } // namespace
 
+/// §0.1: a microphone that stops waking its event has stopped sending audio.
+/// The worker used to spin on that forever -- no audio, no error, no end -- so
+/// a mic that died mid-take had its track written as silence for the rest of
+/// the take and nothing anywhere said so.
+///
+/// Six seconds of real waiting, because that is what the backend does before it
+/// is willing to call a device dead, and a test that shortened it would not be
+/// testing the shipped decision.
+void aStalledMicrophoneIsReportedRatherThanSpunOnForever()
+{
+    std::printf ("\nA microphone that stops waking its event\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (microphone ("mic-stall", "Dying Mic",
+                                         { fakewasapi::Format::pcm (1, 24, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("mic-stall", 48000.0, 256, capture.callback()),
+           "the stream opens");
+    check (backend.takeStreamFailures().empty(), "and a healthy stream reports no failure");
+
+    // Nothing is ever pushed, so the event never signals -- exactly what a
+    // microphone that has stopped delivering looks like from in here.
+    std::this_thread::sleep_for (std::chrono::milliseconds (6800));
+
+    const auto failed = backend.takeStreamFailures();
+
+    check (failed.size() == 1, "the stall is reported once");
+    check (failed.size() == 1 && failed[0].deviceId == "mic-stall",
+           "against the device that stopped, by id");
+    check (failed.size() == 1 && failed[0].reason.find ("stopped sending audio") != std::string::npos,
+           "in words the user can act on");
+    check (! fakewasapi::isRunning ("mic-stall"),
+           "and the dead stream lets go of the device rather than holding it open");
+
+    // Taken, not read: the same failure must not be reported twice.
+    check (backend.takeStreamFailures().empty(), "and it is not reported again");
+
+    backend.closeAllStreams();
+}
+
 int main()
 {
     std::printf ("WASAPI backend, driven against a virtual endpoint layer\n");
@@ -517,6 +562,7 @@ int main()
     enumerationReportsNamesAndSeparatesDirections();
     eightMicrophonesInMixedFormatsStaySeparate();
     closingStopsEveryStream();
+    aStalledMicrophoneIsReportedRatherThanSpunOnForever();
 
     // Tear the last scenario down so a leak check sees only what the
     // backend failed to release, not what the harness never cleaned up.

@@ -368,8 +368,22 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
     stream->running.store (true, std::memory_order_release);
 
     auto* raw = stream.get();
-    stream->worker = std::thread ([raw]
+    auto* failureSink = &streamFailures;
+
+    // §0.1: the worker below gives up on a dead PCM and exits. It used to exit
+    // in silence -- monitoring simply stopped, or a microphone's track went on
+    // being written as silence for the rest of a four-hour take -- so it now
+    // says which device stopped and what to do about it on its way out.
+    const auto failureId = isInput ? deviceId : std::string();
+    const std::string failureReason = isInput
+        ? "stopped sending audio. Unplug it and plug it back in."
+        : "stopped accepting audio, so you can't hear anything through it. "
+          "Try selecting it again.";
+
+    stream->worker = std::thread ([raw, failureSink, failureId, failureReason]
     {
+        bool died = false;
+
         requestRealtimePriority();
 
         const auto frames = raw->periodFrames;
@@ -386,7 +400,10 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                     // An xrun is recoverable and expected under load; anything
                     // else ends the stream rather than spinning on a dead PCM.
                     if (snd_pcm_recover (raw->pcm, static_cast<int> (got), 1) < 0)
+                    {
+                        died = true;
                         break;
+                    }
 
                     continue;
                 }
@@ -450,11 +467,20 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                 const auto put = snd_pcm_writei (raw->pcm, raw->buffers.interleaved.data(), frames);
 
                 if (put < 0 && snd_pcm_recover (raw->pcm, static_cast<int> (put), 1) < 0)
+                {
+                    died = true;
                     break;
+                }
             }
         }
 
         raw->running.store (false, std::memory_order_release);
+
+        // Only a genuine failure. A stream that ended because it was closed, or
+        // because a file-backed device ran out, is not something to alarm
+        // anyone about.
+        if (died && failureSink != nullptr)
+            failureSink->note (failureId, failureReason);
     });
 
     openStreams.push_back (std::move (stream));
