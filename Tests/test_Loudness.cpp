@@ -166,6 +166,26 @@ TEST_CASE (StreamingTargets_NeverAdvisesGainThatWouldClip)
     REQUIRE (std::abs (advice.gainDb - 1.0) < 0.05);
 }
 
+TEST_CASE (StreamingTargets_PeaksAlreadyOverTheCeilingAreNeverToldToTurnUp)
+{
+    const auto* spotify = findStreamingTarget ("Spotify");
+    REQUIRE (spotify != nullptr);
+
+    // The other side of the clamp above, and the one nobody had looked at: a
+    // quiet take whose peaks are ALREADY past the ceiling. The loudness figure
+    // wants +5 dB, the headroom is -2, so the gain comes out NEGATIVE -- and
+    // the sentence said "Turn up by 2.0 dB" regardless of which way the gain
+    // went. Following it would push a signal that is already clipping further
+    // past the ceiling, in the app's own voice.
+    const auto advice = adviseForTarget (*spotify, -22.0, 1.0, 100);
+
+    REQUIRE (advice.measurable);
+    REQUIRE (advice.limitedByTruePeak);
+    REQUIRE (advice.gainDb < 0.0);
+    REQUIRE (advice.summary.find ("Turn down") != std::string::npos);
+    REQUIRE (advice.summary.find ("Turn up") == std::string::npos);
+}
+
 TEST_CASE (StreamingTargets_CloseEnoughIsLeftAlone)
 {
     const auto* spotify = findStreamingTarget ("Spotify");
