@@ -44,30 +44,39 @@ done
 DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null || { echo "FAIL: window never appeared"; exit 1; }
 sleep 4  # devices enumerate and streams open after the window shows
 
-click() { DISPLAY="$DISPLAY_NUM" xdotool mousemove "$1" "$2" click 1; }
+# Clicks are given relative to the app window's top-left corner, because the
+# window manager-less Xvfb root places the window wherever it likes: hard-coded
+# screen coordinates missed the record button entirely on a taller screen and
+# the gate then reported "no take folder" for a perfectly healthy app.
+click() {
+  local win geo x y
+  win=$(DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage | head -1)
+  geo=$(DISPLAY="$DISPLAY_NUM" xdotool getwindowgeometry --shell "$win")
+  x=$(echo "$geo" | sed -n 's/^X=//p')
+  y=$(echo "$geo" | sed -n 's/^Y=//p')
+  DISPLAY="$DISPLAY_NUM" xdotool mousemove $(( x + $1 )) $(( y + $2 )) click 1
+}
 
 # A launch after an interrupted take shows the Recovered card first, and a
 # card swallows every click behind it by design. Its Done button sits at
-# (467,702) on this display; with no card up the click lands on an inert
+# (417,263) relative to the window on this display; with no card up the click lands on an inert
 # label. Either way the main screen is reachable afterwards.
-click 467 702
+click 417 263
 sleep 1
 
 newest() { ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1; }
 
-# 2. Record. The button is at (1023,617) on a 1180-wide window centred on this
-#    display. A take is proven started by its folder appearing.
+# 2. Record. The button is at (973,178) relative to the window. A take is proven started by its folder appearing.
 TAKE=""
 for attempt in 1 2 3; do
-  click 1023 617
+  click 973 178
   # The first record press on a machine that has never recorded raises the
   # "Where does this recording go?" card instead of starting, and that card
   # swallows every click behind it -- so without this the gate fails on any
-  # fresh profile. Its Start recording button sits at (783,979) on this
-  # display; with no card up the point is below the window and the click
+  # fresh profile. Its Start recording button sits at (733,540) relative to the window; with no card up the point is below the window and the click
   # lands on the root window, which does nothing.
   sleep 1
-  click 783 979
+  click 733 540
   for i in $(seq 1 10); do
     sleep 1
     CUR=$(newest)
@@ -92,7 +101,7 @@ DISPLAY="$DISPLAY_NUM" import -window root /tmp/mma-e2e-recording.png
 #    its "keep recording", and the Keep button sits where the card puts it.
 DISPLAY="$DISPLAY_NUM" xdotool key Escape
 sleep 1
-click 1023 617
+click 973 178
 STOPPED=""
 for i in $(seq 1 20); do
   sleep 1
@@ -108,4 +117,4 @@ trap - EXIT
 
 # Two seconds of slack for start-up and finalisation.
 python3 Tools/verify_take.py "$RECORDINGS/$TAKE" --seconds "$((SECONDS_TO_RECORD - 3))" \
-  --tone mma_mic1-1=440 --tone mma_mic2-1=1000 "${@:2}"
+  --tone mma_mic1=440 --tone mma_mic2=1000 --silent-ok mma_out "${@:2}"

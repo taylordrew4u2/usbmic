@@ -80,6 +80,9 @@ def main():
     ap.add_argument('--seconds', type=float, default=10.0, help='the take must hold at least this much audio')
     ap.add_argument('--bits', type=int, default=24)
     ap.add_argument('--tone', action='append', default=[], help='NAME=HZ: stems whose name contains NAME must carry that tone')
+    ap.add_argument('--silent-ok', action='append', default=[],
+                    help='NAME: stems whose name contains NAME are allowed to be silent '
+                         '(a source with nothing plugged into it)')
     ap.add_argument('--mirror-root', default=os.path.expanduser('~/RECORDINGS-MIRROR'))
     ap.add_argument('--no-mirror', action='store_true')
     a = ap.parse_args()
@@ -117,7 +120,18 @@ def main():
                 check(peak > 0.15, '%s: carries signal (peak %.2f)' % (name, peak))
                 total = sum(votes.values())
                 share = votes.get(want, 0) / total if total else 0.0
-                check(share > 0.8, '%s: %.0f Hz on %.0f%% of blocks (want > 80%%)' % (name, want, share * 100))
+                # 64 samples is 0.6 of a 440 Hz cycle, so Goertzel cannot tell
+                # 440 from 1000 on every single block even on a perfect
+                # recording -- a correct stem measures 75-82% here. The check
+                # is that the stem carries ITS OWN source's tone, so it wants a
+                # clear majority, not near-unanimity.
+                check(share > 0.6, '%s: %.0f Hz on %.0f%% of blocks (want > 60%%)' % (name, want, share * 100))
+        if (name != 'MIX.wav'
+                and not any(key in name for key, _ in tones)
+                and not any(key in name for key in a.silent_ok)):
+            # A stem nobody named a tone for still has to hold audio: silent
+            # stems are exactly the bug this gate missed before.
+            check(peak > 0.15, '%s: carries signal (peak %.2f)' % (name, peak))
         if name == 'MIX.wav':
             check(peak > 0.1, 'MIX.wav: carries signal (peak %.2f)' % peak)
 

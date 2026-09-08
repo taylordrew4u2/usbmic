@@ -224,7 +224,13 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
             d.usbLocationId = name;
             d.isMicrophone = wantInput;
             d.hasPhysicalHeadphoneJack = ! wantInput;
-            d.maxInputChannels = wantInput ? 2 : 0;
+            // openStream opens capture PCMs with one channel (§6.1 mono
+            // stems), and probing the real count here means opening every PCM
+            // during enumeration, which breaks the device the app then wants
+            // to record from. Advertising more than is opened is what made
+            // every channel past the first record pure silence, so this says
+            // exactly what a take will get.
+            d.maxInputChannels = wantInput ? 1 : 0;
             d.supportedSampleRates = { 44100, 48000 };
             d.supportedBitDepths = { 16, 24, 32 };
 
