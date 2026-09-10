@@ -180,6 +180,63 @@ struct AlsaHotplugWatcher
     }
 };
 
+namespace {
+
+/// How many inputs a capture device actually presents.
+///
+/// A mixer or an audio interface is a device with several inputs, and each of
+/// them is a person who expects their own track. ALSA's device hints carry no
+/// channel count, so the only way to learn it is to ask the PCM -- which means
+/// opening it. Opened in NONBLOCK and closed again immediately, exactly as the
+/// exclusive-mode check above already does for outputs: what broke recording
+/// once before was holding the device open past the probe, not the probe.
+///
+/// Answers 1 for anything it cannot ask, which is where this started: one
+/// microphone is the safe reading of a device that will not say.
+unsigned int captureChannelsFor (const char* name)
+{
+    // Where a real device stops and a plugin's shrug begins.
+    //
+    // A PCM backed by hardware answers with its actual count -- 2 for a small
+    // interface, 18 for a big one. A plugin PCM (default, plug, file, null)
+    // has no channels of its own and will be configured to whatever it is
+    // asked for, so it answers 1073741823: not "I have a billion inputs" but
+    // "I have no opinion". Read literally that would put a billion tracks --
+    // clamped to some arbitrary ceiling -- on every virtual device on the
+    // machine, which is a worse failure than the one this fixes.
+    //
+    // Anything above this line is taken as the shrug it is, and a device with
+    // no opinion is one microphone.
+    constexpr unsigned int kMostInputsRealHardwareHas = 64;
+
+    snd_pcm_t* pcm = nullptr;
+
+    if (snd_pcm_open (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK) < 0)
+        return 1;
+
+    snd_pcm_hw_params_t* params = nullptr;
+    snd_pcm_hw_params_alloca (&params);
+
+    unsigned int most = 1;
+
+    if (snd_pcm_hw_params_any (pcm, params) >= 0)
+    {
+        unsigned int reported = 0;
+
+        // Zero is success here, not one -- getting that wrong makes the branch
+        // unreachable, and an unreachable probe answers 1 for real hardware too,
+        // which is the bug this function exists to fix wearing a disguise.
+        if (snd_pcm_hw_params_get_channels_max (params, &reported) == 0
+            && reported >= 1 && reported <= kMostInputsRealHardwareHas)
+            most = reported;
+    }
+
+    snd_pcm_close (pcm);
+    return most;
+}
+
+} // namespace
+
 AlsaBackend::AlsaBackend() = default;
 
 AlsaBackend::~AlsaBackend()
@@ -224,13 +281,13 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
             d.usbLocationId = name;
             d.isMicrophone = wantInput;
             d.hasPhysicalHeadphoneJack = ! wantInput;
-            // openStream opens capture PCMs with one channel (§6.1 mono
-            // stems), and probing the real count here means opening every PCM
-            // during enumeration, which breaks the device the app then wants
-            // to record from. Advertising more than is opened is what made
-            // every channel past the first record pure silence, so this says
-            // exactly what a take will get.
-            d.maxInputChannels = wantInput ? 1 : 0;
+            // What the device actually presents, so a mixer or an interface
+            // gets a track per input. Claiming one input for everything meant
+            // that the moment someone plugged in an interface, every performer
+            // but the first was unreachable -- and openStream asks the same
+            // question the same way, so the take gets the channels the list
+            // promised rather than silence where the rest should be.
+            d.maxInputChannels = wantInput ? static_cast<int> (captureChannelsFor (name)) : 0;
             d.supportedSampleRates = { 44100, 48000 };
             d.supportedBitDepths = { 16, 24, 32 };
 
@@ -377,25 +434,57 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                                             SND_PCM_FORMAT_S32_LE,
                                             SND_PCM_FORMAT_S16_LE };
 
-    const unsigned int channels = isInput ? 1u : 2u; // §6.1 mono stems, stereo monitor
+    // Inputs: every input the device has, because each one is somebody's
+    // track. Outputs: stereo, which is what a monitor mix is. The input count
+    // comes from the same question enumeration asked, so the take opens with
+    // the channels the microphone list promised.
+    const unsigned int channels = isInput ? captureChannelsFor (deviceId.c_str()) : 2u;
     const auto rate = static_cast<unsigned int> (sampleRate);
     const auto latencyMicroseconds = static_cast<unsigned int> (
         (static_cast<double> (bufferSizeSamples) / std::max (1.0, sampleRate)) * 1.0e6 * 2.0);
 
     bool configured = false;
 
-    for (auto format : candidates)
+    // Every input first, then one, and never nothing.
+    //
+    // A device can report inputs it will not actually open at this rate, and
+    // asking for all of them and giving up would turn an interface that used to
+    // record one track into one that records none -- a worse rig than before
+    // the app knew interfaces existed. So the full count is tried, then mono.
+    std::vector<unsigned int> counts { channels };
+
+    if (isInput && channels > 1)
+        counts.push_back (1u);
+
+    for (auto wanted : counts)
     {
-        if (snd_pcm_set_params (stream->pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
-                                channels, rate, 1 /* allow resampling */,
-                                latencyMicroseconds) == 0)
+        for (auto format : candidates)
         {
-            stream->format = format;
-            stream->channels = channels;
-            configured = true;
-            break;
+            if (snd_pcm_set_params (stream->pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
+                                    wanted, rate, 1 /* allow resampling */,
+                                    latencyMicroseconds) == 0)
+            {
+                stream->format = format;
+                stream->channels = wanted;
+                configured = true;
+                break;
+            }
         }
+
+        if (configured)
+            break;
     }
+
+    // Fewer inputs than the microphone list promised, which means the tracks
+    // for the rest would be written as silence. Said rather than left to be
+    // discovered in the files afterwards -- silence that nobody warned about is
+    // the whole failure this app is built against.
+    if (configured && isInput && stream->channels < channels)
+        streamFailures.note (deviceId,
+                             "only gave this app one input, though it reports "
+                                 + std::to_string (channels)
+                                 + ". The other tracks from it will be silent. Try a different USB "
+                                   "port, or record it at a different sample rate.");
 
     if (! configured)
     {
