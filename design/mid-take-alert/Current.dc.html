@@ -1,0 +1,57 @@
+<script src="./support.js"></script>
+<style>
+:root{
+  --background:#0A0E13; --surface:#121A23; --surfaceHigh:#1C2733;
+  --bone:#E3EAF2; --secondary:#8496A8; --tertiary:#566372;
+  --accent:#22D3EE; --danger:#FF4D5E; --warning:#FBBF24;
+  --outline:#27333F; --meterLow:#2DD4A7; --dimmedOutline:#4A5B6D;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+.scrim{width:100%;height:100%;background:rgba(10,14,19,0.82);display:flex;align-items:center;justify-content:center;font-family:"Inter","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.card{width:480px;background:var(--surface);border:1px solid var(--outline);border-radius:12px;padding:22px}
+.eyebrow{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.09em;text-transform:uppercase;font-weight:600;color:var(--meterLow)}
+.eyebrow.bad{color:var(--danger)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--meterLow);box-shadow:0 0 0 3px rgba(45,212,167,.16)}
+.dot.bad{background:var(--danger);box-shadow:0 0 0 3px rgba(255,77,94,.16)}
+.clock{margin-left:auto;font-variant-numeric:tabular-nums;font-size:11px;letter-spacing:.04em;color:var(--tertiary);text-transform:none}
+h1{font-size:21px;line-height:1.2;font-weight:600;color:var(--bone);margin:14px 0 6px}
+h1.bad{color:var(--danger)}
+.sub{font-size:13px;line-height:1.45;color:var(--secondary)}
+.rows{margin:18px 0 0;border-top:1px solid var(--outline)}
+.row{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--outline)}
+.mark{width:3px;align-self:stretch;border-radius:2px;background:var(--warning);flex:0 0 3px}
+.mark.bad{background:var(--danger)}
+.mark.ok{background:var(--meterLow)}
+.mark.quiet{background:var(--dimmedOutline)}
+.body{flex:1;min-width:0}
+.msg{font-size:13px;line-height:1.45;color:var(--bone)}
+.msg.quiet{color:var(--secondary)}
+.meta{margin-top:4px;font-size:11px;color:var(--tertiary);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.chip{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:4px}
+.chip.fixed{color:var(--meterLow);background:rgba(45,212,167,.12)}
+.chip.open{color:var(--warning);background:rgba(251,191,36,.12)}
+.chip.lost{color:var(--danger);background:rgba(255,77,94,.12)}
+.when{font-variant-numeric:tabular-nums;font-size:11px;color:var(--tertiary);flex:0 0 auto;padding-top:1px}
+.more{padding:11px 0 0;font-size:12px;color:var(--tertiary)}
+.buttons{display:flex;align-items:center;margin-top:20px}
+button{height:38px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid transparent;cursor:pointer;font-family:inherit}
+.stop{background:transparent;border-color:rgba(255,77,94,.45);color:var(--danger);padding:0 18px}
+.keep{margin-left:auto;background:var(--accent);color:var(--background);padding:0 26px;box-shadow:0 0 0 3px rgba(34,211,238,.18)}
+.ok{margin-left:auto;background:var(--danger);color:var(--background);padding:0 26px}
+</style>
+<div class="scrim">
+  <div class="card">
+    <h1 style="margin-top:0">Something changed mid-take.</h1>
+    <p class="sub">The recording is still running. Here is what happened, newest last.</p>
+    <div style="margin-top:18px">
+      <div style="display:flex;height:46px"><span class="when" style="width:64px">02:18</span><span style="font-size:13px;color:var(--warning);line-height:1.35">Logitech BRIO was unplugged.</span></div>
+      <div style="display:flex;height:46px"><span class="when" style="width:64px">06:02</span><span style="font-size:13px;color:var(--warning);line-height:1.35">Some sound was dropped: this computer could not keep up for a moment. Close other apps. The take carries on.</span></div>
+      <div style="display:flex;height:46px"><span class="when" style="width:64px">11:27</span><span style="font-size:13px;color:var(--warning);line-height:1.35">Shure SM7B was unplugged.</span></div>
+      <div style="display:flex;height:46px"><span class="when" style="width:64px">11:31</span><span style="font-size:13px;color:var(--secondary);line-height:1.35">Shure SM7B is back.</span></div>
+    </div>
+    <div class="buttons" style="margin-top:14px">
+      <button class="stop" style="border-color:transparent;background:var(--danger);color:var(--background);width:150px;padding:0">Stop recording</button>
+      <button class="keep" style="box-shadow:none;width:170px;padding:0">Keep recording</button>
+    </div>
+  </div>
+</div>
