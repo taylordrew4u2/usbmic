@@ -484,6 +484,48 @@ void MainComponent::showRecoveredTakes()
     recoveredTakesPanel.prepareToShow();
 }
 
+namespace {
+
+/// §6.5: how loudly each piece of mid-take news should be drawn. Everything
+/// bad used to share one amber, which told the user a camera going away and a
+/// microphone going away were the same size of problem. They are not: one of
+/// them cost recorded audio and the other did not.
+TakeAlertCard::Tone toneFor (const TakeAlert& alert)
+{
+    using Kind = TakeAlert::Kind;
+
+    if (alert.recovery)
+        return TakeAlertCard::Tone::Fixed;
+
+    switch (alert.kind)
+    {
+        case Kind::MicLost:
+        case Kind::MixOnly:
+        case Kind::TwoMinutesLeft:
+            return TakeAlertCard::Tone::NeedsYou;
+
+        // Real news, worth saying, but the recorded audio was never at risk:
+        // the camera and the headphone output are both outside the take.
+        case Kind::CameraLost:
+        case Kind::CameraTrouble:
+        case Kind::OutputLost:
+        case Kind::MonitorTrouble:
+            return TakeAlertCard::Tone::Quiet;
+
+        case Kind::AudioDropped:
+        case Kind::WriterBehind:
+        case Kind::TenMinutesLeft:
+        case Kind::MicBack:
+        case Kind::CameraBack:
+        case Kind::OutputBack:
+            break;
+    }
+
+    return TakeAlertCard::Tone::Watch;
+}
+
+} // namespace
+
 void MainComponent::watchTake (bool isRecording)
 {
     // Runs on the slow tick. The first tick of a take is the baseline --
@@ -535,7 +577,8 @@ void MainComponent::watchTake (bool isRecording)
         || verdict == ProofVerdict::NoSoundArriving)
     {
         const auto when = Application::formatDuration (application.getElapsedRecordingSeconds()) + " in";
-        takeAlertCard.addAlert (when, juce::String (RecordingProof::message (verdict)), false);
+        takeAlertCard.addAlert (when, juce::String (RecordingProof::message (verdict)),
+                                TakeAlertCard::Tone::NeedsYou);
 
         if (verdict == ProofVerdict::NothingWritten)
         {
@@ -560,7 +603,7 @@ void MainComponent::watchTake (bool isRecording)
     const auto when = Application::formatDuration (application.getElapsedRecordingSeconds()) + " in";
 
     for (const auto& alert : alerts)
-        takeAlertCard.addAlert (when, juce::String (alert.message), alert.recovery);
+        takeAlertCard.addAlert (when, juce::String (alert.message), toneFor (alert));
 
     // Good news alone does not interrupt anyone; it joins the card if the
     // card is already up. Bad news brings the card up, unless another card

@@ -9,3 +9,7 @@ cmake-build-*/
 
 dist/
 __pycache__/
+
+# Seeded design-canvas payload: a 2.4 MB generated bundle, re-made from the
+# .dc.html artboards beside it whenever the canvas is republished.
+design/**/*-card.html
