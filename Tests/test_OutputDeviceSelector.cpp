@@ -141,6 +141,43 @@ TEST_CASE (OutputDeviceSelector_FallsBackToSystemDefault)
     REQUIRE (result.reason == OutputSelectionReason::SystemDefault);
 }
 
+TEST_CASE (OutputDeviceSelector_PrefersBuiltInOverAnArbitraryCaptureCardOutput)
+{
+    // The real failure: the mixer is both the selected input and the OS default
+    // output, so feedback protection correctly excludes it. CoreAudio then
+    // listed an HDMI capture-card playback endpoint before the Mac speakers.
+    // Picking that arbitrary 48 kHz endpoint made a 44.1 kHz recording fail
+    // before SobStage even reached the microphone streams.
+    auto captureCard = makeDevice ("capture-card-audio");
+
+    auto mixer = makeDevice ("selected-mixer");
+    mixer.isAlsoSelectedInput = true;
+    mixer.isSystemDefault = true;
+
+    auto computer = makeDevice ("mac-speakers");
+    computer.isBuiltIn = true;
+
+    const auto result = OutputDeviceSelector::select ({ captureCard, mixer, computer }, "");
+
+    REQUIRE (result.found);
+    REQUIRE (result.id == "mac-speakers");
+    REQUIRE (result.reason == OutputSelectionReason::BuiltInOutput);
+
+    // The same capture card arriving later would normally outrank every
+    // automatic fallback. Positive knowledge that it cannot run at this
+    // recording rate excludes it before priorities are evaluated.
+    captureCard.appearedAfterLaunch = true;
+    captureCard.connectionOrder = 3;
+    captureCard.supportsRecordingSampleRate = false;
+
+    const auto afterHotPlug = OutputDeviceSelector::select (
+        { computer, mixer, captureCard }, "");
+
+    REQUIRE (afterHotPlug.found);
+    REQUIRE (afterHotPlug.id == "mac-speakers");
+    REQUIRE (afterHotPlug.reason == OutputSelectionReason::BuiltInOutput);
+}
+
 TEST_CASE (OutputDeviceSelector_NeverSelectsAMicrophonePlaybackEndpoint)
 {
     // §5.2: the mic jacks carry non-defeatable analog direct monitoring, so they
@@ -205,4 +242,20 @@ TEST_CASE (OutputDeviceSelector_EligibilityRuleIsExplicit)
     auto alsoInput = makeDevice ("input");
     alsoInput.isAlsoSelectedInput = true;
     REQUIRE_FALSE (OutputDeviceSelector::isEligible (alsoInput));
+
+    auto wrongRate = makeDevice ("fixed-48k-hdmi");
+    wrongRate.supportsRecordingSampleRate = false;
+    REQUIRE_FALSE (OutputDeviceSelector::isEligible (wrongRate));
+
+    const auto noCompatibleOutput = OutputDeviceSelector::select ({ wrongRate }, "");
+    REQUIRE_FALSE (noCompatibleOutput.found);
+    REQUIRE (noCompatibleOutput.explanation.find ("recording's sample rate")
+             != std::string::npos);
+
+    // Some drivers report a stale/incomplete supported range while their
+    // nominal clock is already running at the requested rate. Do not reject a
+    // working output on the weaker fact.
+    REQUIRE (OutputDeviceSelector::supportsRecordingRate (44100, { 48000 }, 44100));
+    REQUIRE (OutputDeviceSelector::supportsRecordingRate (48000, {}, 44100));
+    REQUIRE_FALSE (OutputDeviceSelector::supportsRecordingRate (48000, { 48000 }, 44100));
 }

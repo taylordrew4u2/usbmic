@@ -1046,8 +1046,10 @@ void MainComponent::refreshCameras()
     cameraPanel.setUnavailableReason (controller.getUnavailableReason());
     cameraPanel.setProblemText (controller.getProblem());
     cameraPanel.setPreviewQuality (controller.getPreviewQuality());
-    cameraPanel.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording
-                                  && controller.isRecording());
+    // A take with zero successfully opened camera writers is still a take.
+    // Camera controls must stay frozen until the audio recording ends, or an
+    // apparent late camera change would not be represented in that take.
+    cameraPanel.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
 
     std::vector<CameraPanel::CameraRow> cameras;
 
@@ -1055,9 +1057,33 @@ void MainComponent::refreshCameras()
         cameras.push_back ({ camera.id,
                              juce::String (controller.getSelection().getDisplayName (camera.id)),
                              controller.getSelection().isEnabled (camera.id),
-                             controller.getPlannedFileNameFor (camera.id) });
+                             true,
+                             false,
+                             controller.getPlannedFileNameFor (camera.id),
+                             controller.getViewerRevision (camera.id) });
 
-    cameraPanel.setCameras (cameras);
+    // Keep remembered rows actionable while the asynchronous first snapshot
+    // runs. If a platform driver wedges, the user can still switch its camera
+    // off and record sound; after the bounded grace period this becomes the
+    // ordinary unavailable row while discovery continues in the background.
+    for (const auto& camera : controller.getSelection().getUnavailableEnabledCameras())
+        cameras.push_back ({ camera.id,
+                             juce::String (camera.displayName),
+                             true,
+                             false,
+                             controller.isInitialDiscoveryPending(),
+                             controller.getPlannedFileNameFor (camera.id),
+                             controller.getViewerRevision (camera.id) });
+
+    // Only the visible surface owns preview hosts. Keeping CameraPanel rows
+    // populated while it was hidden let its cached host lose the native view
+    // when MainScreen reparented it; opening the panel then reused that empty
+    // cache and showed black. The native viewer itself remains alive in the
+    // controller, so rebuilding these lightweight rows is safe.
+    if (cameraVisible)
+        cameraPanel.setCameras (cameras);
+    else
+        cameraPanel.setCameras ({});
 
     // The main screen shows only what is switched on: a tile per camera that is
     // actually going into the take. The off ones are a settings question, and
@@ -1068,8 +1094,8 @@ void MainComponent::refreshCameras()
         std::vector<MainScreen::CameraTile> tiles;
 
         for (const auto& camera : cameras)
-            if (camera.enabled)
-                tiles.push_back ({ camera.id, camera.displayName });
+            if (camera.enabled && camera.available)
+                tiles.push_back ({ camera.id, camera.displayName, camera.viewerRevision });
 
         const int before = mainScreen.getPreferredHeight();
         mainScreen.setCameraTiles (tiles);

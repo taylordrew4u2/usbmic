@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -12,6 +13,17 @@ struct OutputDeviceCandidate
 
     /// True for a device exposing a physical headphone jack (§5.3 priority 3).
     bool hasPhysicalHeadphoneJack = false;
+
+    /// The computer's own speakers/headphone output. This is the safe fallback
+    /// when the OS default is ineligible because it is also a selected input;
+    /// an arbitrary USB camera/capture-card playback endpoint is not.
+    bool isBuiltIn = false;
+
+    /// False when the backend positively reports that this output cannot run
+    /// at the recording rate. Such an endpoint cannot clock the shared monitor
+    /// stream and must not win merely because a capture card just appeared.
+    /// Unknown capability remains true so enumeration gaps fail visibly at open.
+    bool supportsRecordingSampleRate = true;
 
     /// True for a microphone's own playback endpoint. Never selectable at any
     /// priority (§5.2): the mic jacks carry non-defeatable analog direct
@@ -40,6 +52,7 @@ enum class OutputSelectionReason
     NewlyConnected,                // priority 2
     PhysicalHeadphoneJack,         // priority 3
     SystemDefault,                 // priority 4
+    BuiltInOutput,                 // safe fallback before arbitrary endpoints
 };
 
 struct OutputSelection
@@ -89,8 +102,16 @@ public:
     static OutputSelection select (const std::vector<OutputDeviceCandidate>& candidates,
                                    const std::string& rememberedId);
 
-    /// A device is ineligible if it is a microphone's playback endpoint or is
-    /// also a selected input. Both exclusions hold at every priority.
+    /// A backend's advertised ranges can lag the nominal rate it is already
+    /// running successfully. Either positive fact makes an output compatible;
+    /// an empty capability list remains unknown/eligible.
+    static bool supportsRecordingRate (uint32_t currentRate,
+                                       const std::vector<uint32_t>& supportedRates,
+                                       uint32_t recordingRate);
+
+    /// A device is ineligible if it cannot run at the recording rate, is a
+    /// microphone's playback endpoint, or is also a selected input. Every
+    /// exclusion holds at every priority.
     static bool isEligible (const OutputDeviceCandidate& candidate);
 };
 

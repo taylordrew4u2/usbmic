@@ -114,6 +114,14 @@ Automatic, in this priority order:
 3. A device exposing a physical headphone jack.
 4. System default output.
 Never a microphone's playback endpoint, at any priority.
+Never an output the backend positively reports cannot run at the recording
+sample rate; continue the priority order among compatible outputs. An output
+with unknown rate capability remains eligible so an actual open refusal is
+reported rather than guessed.
+If the selected output still refuses its real low-latency open, show the reason
+and reopen the microphones input-only under the software clock. Headphone
+monitoring is off, but recording remains available; an output failure must not
+become a recording-input failure.
 ### 5.4 Latency budget — hard constraint
 Zero latency is not achievable in a software monitor path. The requirement is a budget.
 - **Target: under 6 ms** mic diaphragm to headphone, **measured by loopback at startup, not estimated.**

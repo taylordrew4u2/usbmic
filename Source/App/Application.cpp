@@ -977,6 +977,16 @@ void Application::reselectOutputDevice()
         c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
         c.displayName = d.name;
         c.hasPhysicalHeadphoneJack = d.hasPhysicalHeadphoneJack;
+        c.isBuiltIn = d.isBuiltIn;
+
+        // The monitor output shares the recording clock. A fixed-48 kHz HDMI
+        // capture-card endpoint cannot serve a 44.1 kHz T12S take and must not
+        // displace a compatible Mac output merely because it hot-plugged most
+        // recently. An empty capability list means the backend cannot say, so
+        // keep it eligible and let the open path report any real refusal.
+        const auto recordingRate = static_cast<uint32_t> (currentSampleRate + 0.5);
+        c.supportsRecordingSampleRate = OutputDeviceSelector::supportsRecordingRate (
+            d.currentSampleRate, d.supportedSampleRates, recordingRate);
 
         // §5.2: a microphone's own playback endpoint is never a monitor output.
         c.isMicrophonePlaybackEndpoint = d.isMicrophone;
@@ -2189,10 +2199,10 @@ juce::String Application::getRecordDisabledReason() const
         return "Plug in a USB microphone or audio interface first.";
 
     // The microphones have to be OPEN, not merely plugged in. A rig whose
-    // streams failed to open -- the output refused low-latency mode, a mic
-    // held by another app -- used to leave this button live, and pressing it
-    // produced a take of empty files with the clock running. Now the button
-    // says why it is off, in the words the streams gave.
+    // recording-input streams failed to open -- for example, a mic held by
+    // another app -- used to leave this button live, and pressing it produced
+    // a take of empty files with the clock running. Output failure falls back
+    // to input-only recording and is shown separately as a monitoring warning.
     if (capture == nullptr || ! capture->isMonitoring())
     {
         const auto problem = capture != nullptr ? capture->getMonitorProblem() : std::string();
@@ -2751,17 +2761,12 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     for (const auto& change : bufferLadder.getChangeLog())
         meta.bufferChanges.push_back ({ change.atSeconds, change.fromSamples, change.toSamples });
 
-    // The cameras in this take, and their files. An editor opening the folder
-    // later needs to know which picture goes with which take and that the sound
-    // is not in it -- the session origin every stem carries is what lines the
-    // two up, so the fact that they are separate files has to be on the record.
-    {
-        const auto videoNames = cameraController.getTakePlannedFileNames();
-        const auto& plans = cameraController.getTakePlans();
-
-        for (size_t i = 0; i < plans.size() && (int) i < videoNames.size(); ++i)
-            meta.videos.push_back ({ plans[i].displayName, videoNames[(int) i].toStdString(), false });
-    }
+    // Only camera writers which actually started belong in session.json. The
+    // watchdog separately keeps the complete intended roster so it can report
+    // a missing capture card, but inventing that card's movie filename here
+    // would make an editor look for a file which never existed.
+    for (const auto& video : cameraController.getTakeVideoRecords())
+        meta.videos.push_back ({ video.displayName, video.fileName, false });
 
     meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
     meta.mirrorActive = sessionHasStopped && mirrorActiveAtStop >= 0
@@ -4018,18 +4023,14 @@ void Application::saveSettings()
             settings.disabledMicKeys.push_back (key);
     }
 
-    // Every camera the user has an opinion about, not only the connected ones:
-    // a camera unplugged today should come back tomorrow as it was left.
+    // Every known camera, not only the connected ones: a camera unplugged
+    // today should come back tomorrow as it was left, while changing the
+    // toggle on its unavailable row must replace (not resurrect) old state.
     const auto& selection = cameraController.getSelection();
-    for (const auto& camera : selection.getAvailableCameras())
+    for (const auto& camera : selection.getKnownCameras())
         settings.cameras.push_back ({ camera.id,
                                       selection.isEnabled (camera.id),
                                       selection.getDisplayName (camera.id) });
-
-    for (const auto& remembered : rememberedSettings.cameras)
-        if (settings.cameras.end() == std::find_if (settings.cameras.begin(), settings.cameras.end(),
-                [&remembered] (const PersistedCamera& c) { return c.id == remembered.id; }))
-            settings.cameras.push_back (remembered);
 
     const auto file = getSettingsFile();
     file.getParentDirectory().createDirectory();
@@ -4359,7 +4360,7 @@ void Application::shutdown()
     // that may itself be stuck in removable-volume I/O. Putting the movie stop
     // behind that join could leave its header open forever. JUCE camera teardown
     // is message-thread-affine, so these two finalizers cannot safely be raced.
-    cameraController.stopRecording();
+    cameraController.stopRecordingForShutdown();
 
     if (capture != nullptr)
         capture->stopRecording();

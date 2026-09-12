@@ -24,6 +24,8 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   in a separately compiled test binary.
 - Cameras now start off. Merely launching SobStage, opening the Cameras panel or
   connecting a camera does not enable it; the user must switch it on.
+  That explicit choice is remembered, so previously enabled cameras reopen on
+  later launches until they are switched off.
 - Linux now asks an ALSA device how many channels it can actually open, then
   falls back to mono with an explicit warning instead of advertising silent
   phantom stems. The end-to-end verifier requires signal on every expected stem.
@@ -68,6 +70,19 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 
 ### Fixed
 
+- Camera screens now share one native preview for each open device instead of
+  recreating an AVFoundation preview layer on an already-running session.
+  Same-device retries replace stale placeholders, reported runtime capture
+  errors replace the affected tile with an explanation, and an enabled HDMI
+  capture card that disappears from the operating-system camera list remains
+  visible as unavailable with reconnection guidance. This does not claim that
+  every black frame can be diagnosed: the physical HDMI preview-and-recording
+  gate remains open in `RELEASE_CHECKLIST.md`.
+- A missing capture card remains in the frozen watchdog roster without being
+  promised as a file or written into `session.json` as a movie that never
+  started. A connected busy/privacy-blocked camera retains that precise error,
+  and a card which reconnects during a take is restored synchronously for an
+  immediate next take.
 - `session.json` now records whether the mirror actually ran, so the end-to-end
   gate really compares every mirrored file. First-run save-location handling in
   that gate is also exercised.
@@ -90,6 +105,12 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   destination cannot be changed underneath it.
 - CoreAudio rate changes wait up to a bounded 500 ms for the asynchronous HAL
   update instead of rejecting a change on the first stale read-back.
+- Monitor selection carries the backend's built-in and sample-rate capability
+  facts. A fixed-48 kHz HDMI capture-card output can no longer displace a
+  compatible Mac output at launch or on hot-plug during a 44.1 kHz take. If a
+  driver advertises compatibility but refuses the real output open, SobStage
+  reopens the microphones input-only, keeps recording available, and shows
+  that live headphone monitoring is off.
 - Open CoreAudio devices now watch nominal-rate, alive and processor-overload
   events individually. Listener callbacks remain real-time-safe; the message
   thread reports typed failures, omits an immediately dead device, and
@@ -149,8 +170,8 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 
 ### Verification baseline
 
-The candidate contains 528 unit tests, 115 CoreAudio simulator checks, 70
-WASAPI simulator checks and 85 camera simulator checks, plus the capture,
+The candidate contains 532 unit tests, 115 CoreAudio simulator checks, 70
+WASAPI simulator checks and 158 camera simulator checks, plus the capture,
 refusal and end-to-end harnesses. These numbers describe automated coverage,
 not physical-hardware certification.
 
@@ -744,9 +765,11 @@ status line beside it said "Saved to ...".
 The first stable release. No code changes from v0.9.4.
 
 > **Correction, 12 September 2026:** the original note said the camera work had
-> been confirmed on real hardware. The available evidence confirms that the app
-> was opened on a Mac, not that a real camera completed preview and recording.
-> That hardware gate remains outstanding for the v1.12.0 candidate.
+> been confirmed on real hardware. Later log review confirms something narrower:
+> the older v1.11.0 app opened a physical USB HDMI capture device reported as
+> `USB2 Video`, and AVFoundation enqueued a first frame. It does not confirm that
+> SobStage displayed a visibly non-black preview or completed a camera recording.
+> Those hardware gates remain outstanding for the v1.12.0 candidate.
 
 ### What 1.0 claims
 
@@ -1255,7 +1278,8 @@ What was missing was every way the user or the record would have known.
 - **A camera could push a card past what it can sustain, and nothing checked.**
   §6.4 blocks arming unless the destination sustains twice what the take needs,
   but that figure counted the audio only. Eight microphones at 24-bit/48k need
-  about 4.6 MB/s and one camera at its best quality can ask for as much again,
+  about 4.6 MB/s and one camera in requested high-quality mode can ask for as
+  much again,
   so a card could pass the gate and then fail once a camera started -- the exact
   mid-take degradation §6.4 exists to refuse in advance. The video is now part
   of the required rate, added once rather than doubled, since the x2 covers the
@@ -1358,9 +1382,10 @@ What was missing was every way the user or the record would have known.
 - **Live from the moment the panel opens.** Framing is something you fix before
   a take, and a picture you cannot see until you press record is a picture you
   aim afterwards.
-- **Recording is always at the camera's best quality, and nothing on screen can
-  change that.** The preview toggle decides how large the picture is *drawn*,
-  so the live view can be cheap without ever costing the file quality -- §6.6
+- **Recording requests JUCE's high-quality mode, and nothing on screen lowers
+  that request.** The operating system and driver select the actual format. The
+  preview toggle decides how large the picture is *drawn*, so the live view can
+  be cheap without deliberately asking for a lower recording format -- §6.6
   warns about spending CPU before it starts dropping audio, and a 4K frame
   redrawn to check someone is in shot is exactly that spend.
 - **Picture and sound are separate files.** Each camera writes one file into the
@@ -1371,9 +1396,9 @@ What was missing was every way the user or the record would have known.
 - **The remaining-time figure counts the video.** "Room for 8h" with two cameras
   running would have been out by an order of magnitude, and §6.5's whole point
   is that a novice cannot act on a surprise part-way through a take.
-- **Nothing is opened until asked for.** No camera is opened at launch, so no
-  camera light comes on and no privacy prompt is spent before the user has
-  opened the panel or armed a take with a camera switched on.
+- **New cameras stay closed until asked for.** The user must explicitly switch
+  a camera on the first time. That choice is remembered, so an enabled camera
+  reopens on later launches until the user switches it off.
 - **The camera path compiles everywhere.** JUCE implements camera capture on
   macOS and Windows only, so on any other machine it would have been unverified
   by construction -- which is how CoreAudioBackend and WasapiAsioBackend came to

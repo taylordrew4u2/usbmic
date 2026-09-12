@@ -1,6 +1,7 @@
 // Lays out the real MainScreen with camera tiles and reports what the picture
 // actually comes out as. No display needed: Component layout is arithmetic.
 #include "UI/MainScreen.h"
+#include "UI/CameraPanel.h"
 #include "UI/ModalCard.h"
 #include <algorithm>
 #include <cstdio>
@@ -83,6 +84,136 @@ int main()
     failures += spaceActivated ? 0 : 1;
     failures += returnActivated ? 0 : 1;
     failures += hintNamesBothKeys ? 0 : 1;
+
+    std::printf ("-- camera viewer revision invalidates UI caches --\n");
+
+    int mainViewerCreates = 0;
+    mma::MainScreen cameraScreen;
+    cameraScreen.makeViewer = [&mainViewerCreates] (const std::string&)
+    {
+        ++mainViewerCreates;
+        return std::make_unique<juce::Component>();
+    };
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1 } });
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1 } });
+    const bool mainCacheKeepsViewer = mainViewerCreates == 1;
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 2 } });
+    const bool mainRevisionRebuildsViewer = mainViewerCreates == 2;
+
+    const auto hasExactLabel = [&cameraScreen] (const juce::String& text)
+    {
+        for (int i = 0; i < cameraScreen.getNumChildComponents(); ++i)
+            if (auto* label = dynamic_cast<juce::Label*> (cameraScreen.getChildComponent (i));
+                label != nullptr && label->getText() == text)
+                return true;
+
+        return false;
+    };
+
+    cameraScreen.setRecording (true);
+    const bool recCaptionIsOutsideNativePreview = hasExactLabel ("REC: HDMI");
+    cameraScreen.setRecording (false);
+    const bool stoppedCaptionDropsRec = hasExactLabel ("HDMI")
+                                     && ! hasExactLabel ("REC: HDMI");
+
+    int panelViewerCreates = 0;
+    mma::CameraPanel cameraPanel;
+    cameraPanel.makeViewer = [&panelViewerCreates] (const std::string&)
+    {
+        ++panelViewerCreates;
+        return std::make_unique<juce::Component>();
+    };
+    cameraPanel.setCameras ({ { "capture", "HDMI", true, true, false, "HDMI.mov", 1 } });
+    cameraPanel.setCameras ({ { "capture", "HDMI", true, true, false, "HDMI.mov", 1 } });
+    const bool panelCacheKeepsViewer = panelViewerCreates == 1;
+    cameraPanel.setCameras ({ { "capture", "HDMI", true, true, false, "HDMI.mov", 2 } });
+    const bool panelRevisionRebuildsViewer = panelViewerCreates == 2;
+
+    auto cameraConfigurationHasState = [&cameraPanel] (bool expectedEnabled)
+    {
+        bool foundRecordToggle = false;
+        bool foundNameEditor = false;
+        bool allMatch = true;
+
+        for (int i = 0; i < cameraPanel.getNumChildComponents(); ++i)
+        {
+            auto* child = cameraPanel.getChildComponent (i);
+            if (auto* toggle = dynamic_cast<juce::ToggleButton*> (child);
+                toggle != nullptr && toggle->getButtonText() == "Record this camera")
+            {
+                foundRecordToggle = true;
+                allMatch = allMatch && toggle->isEnabled() == expectedEnabled;
+            }
+
+            if (auto* editor = dynamic_cast<juce::TextEditor*> (child))
+            {
+                foundNameEditor = true;
+                allMatch = allMatch && editor->isEnabled() == expectedEnabled;
+            }
+        }
+
+        return foundRecordToggle && foundNameEditor && allMatch;
+    };
+
+    cameraPanel.setRecording (true);
+    const bool takeFreezesCameraControls = cameraConfigurationHasState (false);
+    cameraPanel.setRecording (false);
+    const bool stopRestoresCameraControls = cameraConfigurationHasState (true);
+
+    mma::CameraPanel takeUnavailablePanel;
+    takeUnavailablePanel.setRecording (true);
+    takeUnavailablePanel.setCameras (
+        { { "late", "Late HDMI", true, false, false, "V01_Late-HDMI.mov", 1 } });
+    juce::String inTakeUnavailableCopy;
+    for (int i = 0; i < takeUnavailablePanel.getNumChildComponents(); ++i)
+        if (auto* label = dynamic_cast<juce::Label*> (
+                takeUnavailablePanel.getChildComponent (i)))
+            inTakeUnavailableCopy += " " + label->getText();
+    const bool lateCameraCopyNamesThisTake =
+        inTakeUnavailableCopy.containsIgnoreCase ("out for this take")
+        && inTakeUnavailableCopy.containsIgnoreCase ("next take");
+
+    takeUnavailablePanel.setRecording (false);
+    takeUnavailablePanel.setCameras (
+        { { "late", "Late HDMI", true, false, false, "V01_Late-HDMI.mov", 1 } });
+    juce::String afterTakeUnavailableCopy;
+    for (int i = 0; i < takeUnavailablePanel.getNumChildComponents(); ++i)
+        if (auto* label = dynamic_cast<juce::Label*> (
+                takeUnavailablePanel.getChildComponent (i)))
+            afterTakeUnavailableCopy += " " + label->getText();
+    const bool afterTakeCopyReturnsToReconnect =
+        afterTakeUnavailableCopy.containsIgnoreCase ("reconnect");
+
+    std::printf ("main cache preserves unchanged viewer: %s\n",
+                 mainCacheKeepsViewer ? "PASS" : "FAIL");
+    std::printf ("main revision rebuilds viewer: %s\n",
+                 mainRevisionRebuildsViewer ? "PASS" : "FAIL");
+    std::printf ("camera REC state uses caption below native preview: %s\n",
+                 recCaptionIsOutsideNativePreview ? "PASS" : "FAIL");
+    std::printf ("stopped camera caption clears REC state: %s\n",
+                 stoppedCaptionDropsRec ? "PASS" : "FAIL");
+    std::printf ("panel cache preserves unchanged viewer: %s\n",
+                 panelCacheKeepsViewer ? "PASS" : "FAIL");
+    std::printf ("panel revision rebuilds viewer: %s\n\n",
+                 panelRevisionRebuildsViewer ? "PASS" : "FAIL");
+    std::printf ("recording freezes camera roster controls: %s\n",
+                 takeFreezesCameraControls ? "PASS" : "FAIL");
+    std::printf ("stopping restores camera roster controls: %s\n\n",
+                 stopRestoresCameraControls ? "PASS" : "FAIL");
+    std::printf ("late camera copy says this take/next take: %s\n",
+                 lateCameraCopyNamesThisTake ? "PASS" : "FAIL");
+    std::printf ("after-take unavailable copy returns to reconnect: %s\n\n",
+                 afterTakeCopyReturnsToReconnect ? "PASS" : "FAIL");
+    failures += mainCacheKeepsViewer ? 0 : 1;
+    failures += mainRevisionRebuildsViewer ? 0 : 1;
+    failures += recCaptionIsOutsideNativePreview ? 0 : 1;
+    failures += stoppedCaptionDropsRec ? 0 : 1;
+    failures += panelCacheKeepsViewer ? 0 : 1;
+    failures += panelRevisionRebuildsViewer ? 0 : 1;
+    failures += takeFreezesCameraControls ? 0 : 1;
+    failures += stopRestoresCameraControls ? 0 : 1;
+    failures += lateCameraCopyNamesThisTake ? 0 : 1;
+    failures += afterTakeCopyReturnsToReconnect ? 0 : 1;
 
     struct Case { int w, h, mics; const char* label; };
     const Case cases[] = {

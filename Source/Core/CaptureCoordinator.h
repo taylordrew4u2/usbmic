@@ -69,8 +69,9 @@ public:
 
     /// §5.1: monitoring is live from launch, independent of record state, so
     /// this opens one input stream per microphone plus the single output stream
-    /// §5.2 permits. Returns false and names the cause if the exclusive-mode
-    /// monitor path is unavailable (§5.4).
+    /// §5.2 permits. If the output cannot provide §5.4 exclusive mode, it opens
+    /// the inputs under the software clock and returns true with a visible
+    /// warning; false is reserved for a recording-input failure.
     bool startMonitoring (const std::vector<CaptureChannel>& channels,
                           const std::string& outputDeviceId);
 

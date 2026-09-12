@@ -20,9 +20,9 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **528 unit tests**; if tests change, record the final discovered count here.
+  is **532 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_coreaudio`, `sim_wasapi` and `sim_camera` pass. The candidate baseline
-  is **115 CoreAudio checks**, **70 WASAPI checks** and **85 camera checks**;
+  is **115 CoreAudio checks**, **70 WASAPI checks** and **158 camera checks**;
   record final counts from the candidate run rather than copying these numbers
   blindly.
 - [ ] The sanitizer jobs pass. Both platform simulators run with ASan/UBSan
@@ -72,6 +72,12 @@ they are not a completed consumer release.
 Run the §12 matrix on clean supported machines and attach the logs/results to the
 release record. Simulation is not a substitute.
 
+Known camera evidence as of 12 September is diagnostic only: the older v1.11.0
+app opened a USB HDMI capture device reported as `USB2 Video`, and AVFoundation
+logged a first-frame enqueue. No visible non-black preview or completed camera
+recording has been verified from that run, and the v1.12.0 candidate has not yet
+passed the physical camera matrix.
+
 - [ ] **GA blocker:** Complete a real macOS take with a directly attached
   PUPGSIS T12S at its observed fixed **44.1 kHz** rate. Verify audible stems and
   MIX, correct duration/format, stop metadata, activity log and mirror copy.
@@ -100,8 +106,16 @@ release record. Simulation is not a substitute.
   enforces the 2× gate rather than accepting page-cache speed.
 - [ ] Run the novice acceptance test and verify every failure is visible and
   leaves an honest session/activity record.
-- [ ] On macOS and Windows, verify cameras remain off at first launch, require an
-  explicit enable, and can preview/record alongside the maximum audio load.
+- [ ] On macOS and Windows with clean settings, verify newly discovered cameras
+  remain off and require an explicit enable; relaunch and verify that explicit
+  choice is remembered until the camera is switched off.
+- [ ] **GA blocker:** On the final macOS and Windows candidate artifacts, connect
+  a UVC HDMI capture card to a known-good, non-HDCP video source. Verify a visibly
+  non-black preview after enabling it, then move main screen → Cameras panel →
+  main screen and confirm the picture remains live. Record and play back the
+  resulting video, verify duration and advancing frames, and repeat alongside
+  the maximum audio load. A device-open result, non-null viewer, first-frame log
+  or simulator pass alone does not close this gate.
 
 ## 5. Product, legal and support
 
