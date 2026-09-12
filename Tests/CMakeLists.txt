@@ -40,6 +40,8 @@ add_executable(mma_core_tests
     test_DeviceInputStream.cpp
     test_ChannelPlan.cpp
     test_AlsaInputPolicy.cpp
+    test_FilesystemStatusProbe.cpp
+    test_StreamFailurePolicy.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)

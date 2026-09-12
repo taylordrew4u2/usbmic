@@ -37,11 +37,16 @@ public:
     void setMetering (Metering* meteringSource) { metering = meteringSource; }
     void setMicName (const juce::String& name)
     {
-        // Called every UI frame now; only a real change earns a repaint.
-        if (micName != name) { micName = name; repaint(); }
+        if (micName != name) { micName = name; updateAccessibilityText(); repaint(); }
     }
-    void setDeviceName (const juce::String& name) { deviceName = name; repaint(); }
-    void setNoSignal (bool isNoSignal) { noSignal = isNoSignal; repaint(); }
+    void setDeviceName (const juce::String& name)
+    {
+        if (deviceName != name) { deviceName = name; updateAccessibilityText(); repaint(); }
+    }
+    void setNoSignal (bool isNoSignal)
+    {
+        if (noSignal != isNoSignal) { noSignal = isNoSignal; updateAccessibilityText(); repaint(); }
+    }
     void setReducedMotion (bool shouldReduceMotion) { reducedMotion = shouldReduceMotion; }
 
     /// §14.6: lit while this mic is the one being heard, so a user with four
@@ -55,6 +60,8 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseUp (const juce::MouseEvent& event) override;
+    bool keyPressed (const juce::KeyPress& key) override;
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
 
 private:
     void timerCallback() override;
@@ -72,6 +79,7 @@ private:
     // §9.3: the count is what makes clip a number rather than only a hue, so it
     // is read alongside the latch rather than derived from it.
     int currentClipCount = 0;
+    int lastAccessibleLevelDb = -1000;
 
     // §9.2 palette, verbatim.
     static const juce::Colour kBackground;
@@ -96,6 +104,8 @@ private:
 
     juce::Path buildSkullSilhouette (juce::Rectangle<float> bounds) const;
     juce::Colour fillColourForLevel (float levelDb) const;
+    void performPrimaryAction();
+    void updateAccessibilityText();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SkullMeterComponent)
 };

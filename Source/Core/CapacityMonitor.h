@@ -8,8 +8,9 @@ enum class WritePipelineState
     Healthy,
     /// 50% fill: warn visually. Never silently drop (§0.1).
     FillWarning,
-    /// 90% fill with no mirror to fall back on: write the mix file only and log
-    /// the exact sample position where that started.
+    /// 90% fill: write the mix file only and log the exact sample position
+    /// where that started. A mirror is fed from this same ring and writer
+    /// thread, so it cannot protect either set of stems from a ring overflow.
     DegradedToMixOnly,
 };
 
@@ -33,10 +34,10 @@ public:
     static constexpr double kTenMinutesSeconds = 600.0;
     static constexpr double kTwoMinutesSeconds = 120.0;
 
-    /// mirrorAvailable is false once the mirror has been stopped for space
-    /// (§6.3) or was never enabled. Degrading to mix-only is only correct when
-    /// there is no second copy to protect the stems.
-    WritePipelineState evaluateFill (double fillFraction, bool mirrorAvailable) noexcept;
+    /// The threshold deliberately does not take mirror state. Both destinations
+    /// are downstream of the same ring, so a second copy cannot make it safe to
+    /// keep writing stems while that ring is about to overflow.
+    WritePipelineState evaluateFill (double fillFraction) noexcept;
 
     /// Call with the current remaining recording time. Returns a warning the
     /// first time each threshold is crossed and None thereafter, so the UI is

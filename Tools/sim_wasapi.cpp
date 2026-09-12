@@ -539,6 +539,27 @@ void missingExternalEvidenceFailsClosed()
            "topology, property, devnode, and removal-proof failures expose no inputs");
 }
 
+void openingAnInputRechecksTheExternalHardwarePolicy()
+{
+    std::printf ("\nOpening a disallowed WASAPI input directly\n");
+    fakewasapi::reset();
+
+    auto phone = microphone ("phone-direct-open", "Continuity phone",
+                             { fakewasapi::Format::pcm (1, 24, 48000.0) });
+    phone.physicalInstanceId = "ROOT\\CONTINUITY_AUDIO";
+    phone.deviceNodeChain = { { phone.physicalInstanceId, true, true, true } };
+    fakewasapi::addEndpoint (phone);
+
+    mma::WasapiAsioBackend backend;
+    Capture capture;
+    check (! backend.openInputStream (phone.id, 48000.0, 256, capture.callback()),
+           "a caller cannot bypass discovery and open a phone input by endpoint id");
+    check (! fakewasapi::isRunning (phone.id),
+           "the rejected endpoint never starts a WASAPI stream");
+    check (backend.getLastOpenError().find ("directly connected external") != std::string::npos,
+           "the refusal explains the external-hardware policy");
+}
+
 /// Eight microphones, the §1 ceiling, each on its own worker thread and each in
 /// a different wire format. This is where a shared-state or channel-indexing
 /// error surfaces that two devices would hide.
@@ -751,6 +772,7 @@ int main()
     enumerationPreservesEveryInputAndSupportedRate();
     onlyDirectlyAttachedHardwareEnumeratesAsInput();
     missingExternalEvidenceFailsClosed();
+    openingAnInputRechecksTheExternalHardwarePolicy();
     a24BitOnlyMicrophoneOpensAndDeliversAudio();
     a16BitMicrophoneRoundTripsWithinItsQuantisation();
     aFloatCapableDeviceStillGetsFloat();

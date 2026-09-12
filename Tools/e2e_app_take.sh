@@ -25,7 +25,11 @@ echo "App: $APP (built $(date -r "$APP" '+%Y-%m-%d %H:%M:%S'))"
 bash Tools/setup_alsa_fixture.sh >/dev/null
 RECORDINGS="$HOME/RECORDINGS"
 mkdir -p "$RECORDINGS"
-BEFORE=$(ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1 || true)
+newest_recording() {
+  find "$RECORDINGS" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+    | LC_ALL=C sort | tail -1
+}
+BEFORE=$(newest_recording)
 
 cleanup() { kill "${APP_PID:-0}" 2>/dev/null || true; sleep 1; pkill Xvfb 2>/dev/null || true; }
 trap cleanup EXIT
@@ -37,7 +41,7 @@ DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-app.log 2>&1 &
 APP_PID=$!
 
 # 1. The window is up.
-for i in $(seq 1 60); do
+for _ in {1..60}; do
   if DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null 2>&1; then break; fi
   sleep 1
 done
@@ -67,8 +71,6 @@ click() {
 for DONE_Y in 263 293 312 332; do click 417 "$DONE_Y"; done
 sleep 1
 
-newest() { ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1; }
-
 # 2. Record. The button is at (973,178) relative to the window. A take is proven started by its folder appearing.
 TAKE=""
 for attempt in 1 2 3; do
@@ -80,9 +82,9 @@ for attempt in 1 2 3; do
   # lands on the root window, which does nothing.
   sleep 1
   click 733 540
-  for i in $(seq 1 10); do
+  for _ in {1..10}; do
     sleep 1
-    CUR=$(newest)
+    CUR=$(newest_recording)
     if [ -n "$CUR" ] && [ "$CUR" != "$BEFORE" ]; then TAKE="$CUR"; break; fi
   done
   [ -n "$TAKE" ] && break
@@ -106,7 +108,7 @@ DISPLAY="$DISPLAY_NUM" xdotool key Escape
 sleep 1
 click 973 178
 STOPPED=""
-for i in $(seq 1 20); do
+for _ in {1..20}; do
   sleep 1
   if python3 -c "import json,sys; sys.exit(0 if json.load(open('$RECORDINGS/$TAKE/session.json')).get('stopTimestamp') else 1)" 2>/dev/null; then
     STOPPED=yes; break

@@ -177,8 +177,9 @@ public:
 
     void resetArrivalPeak() noexcept { peakArrived.store (0.0f, std::memory_order_relaxed); }
 
-    /// §6.5: shed the stems and keep the mix when the ring is nearly full and
-    /// there is no mirror to fall back on.
+    /// §6.5: shed the stems and keep the mix when the ring is nearly full.
+    /// The mirror is downstream of the same ring, so it cannot protect stems
+    /// from a ring overflow and does not change this decision.
     void fallBackToMixOnly() noexcept { if (pipeline != nullptr) pipeline->fallBackToMixOnly(); }
     bool isMixOnly() const noexcept { return pipeline != nullptr && pipeline->isMixOnly(); }
 

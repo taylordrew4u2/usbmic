@@ -7,6 +7,8 @@
 // What it CANNOT: how real crystals behave. Simulated offsets are steady;
 // real ones wander with temperature.
 //
+// Usage: ./soak_drift [hours=4] [block-size=64] [sample-rate=48000]
+//
 // The clock master is deliberately given a NON-zero offset below. It used to be
 // 0.0 -- a crystal identical to the output stream's -- which is what let this
 // gate pass while the master was the one channel exempt from correction: the
@@ -16,6 +18,7 @@
 // (§3.2), so keep this offset non-zero: it is what makes the master's own
 // crystal part of what the gate measures.
 #include "Core/DeviceInputStream.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -39,10 +42,25 @@ struct Mic {
 } // namespace
 
 int main (int argc, char** argv) {
-    const double rate = 48000.0;
-    const int block = 64;
+    const double rate = argc > 3 ? std::atof (argv[3]) : 48000.0;
+    const int block = argc > 2 ? std::atoi (argv[2]) : 64;
     const double hours = argc > 1 ? std::atof (argv[1]) : 4.0;
+
+    if (hours <= 0.0 || block <= 0 || rate <= 0.0)
+    {
+        std::fprintf (stderr,
+                      "usage: soak_drift [positive-hours] [positive-block-size] [positive-sample-rate]\n");
+        return 2;
+    }
+
     const long long totalBlocks = static_cast<long long> (rate * 3600.0 * hours / block);
+    const long long markerLeadBlocks = static_cast<long long> (rate * 30.0 / block);
+
+    if (totalBlocks <= markerLeadBlocks)
+    {
+        std::fprintf (stderr, "duration must exceed 30 seconds so the end marker can be observed\n");
+        return 2;
+    }
 
     // Deliberately dissimilar, and wider than USB audio devices typically are.
     std::vector<Mic> mics (4);
@@ -59,7 +77,7 @@ int main (int argc, char** argv) {
     // The marker goes in at the same source instant for every mic, near the end
     // once the loops have long since settled. Where it lands in each output is
     // the inter-channel alignment.
-    const long long markerBlock = totalBlocks - static_cast<long long> (rate * 30.0 / block);
+    const long long markerBlock = totalBlocks - markerLeadBlocks;
 
     std::vector<float> out (block);
     long long outputIndex = 0;
@@ -94,7 +112,7 @@ int main (int argc, char** argv) {
 
         outputIndex += block;
 
-        if (blk % (totalBlocks / 8) == 0)
+        if (blk % std::max (1LL, totalBlocks / 8) == 0)
             std::printf ("  %5.1f%%  ch1 drift %+7.2f PPM  ch2 %+7.2f  ch3 %+7.2f\n",
                          100.0 * static_cast<double> (blk) / static_cast<double> (totalBlocks),
                          mics[1].stream.getDriftPpm(), mics[2].stream.getDriftPpm(),

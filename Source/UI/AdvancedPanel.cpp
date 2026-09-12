@@ -31,6 +31,15 @@ AdvancedPanel::AdvancedPanel()
     aggregateNameLabel.setText ("Combined device name", juce::dontSendNotification);
     destinationFolderLabel.setText ("Destination folder", juce::dontSendNotification);
 
+    outputDeviceCombo.setTitle ("Output device");
+    outputDeviceCombo.setDescription ("Choose where the live monitor mix is heard.");
+    sampleRateCombo.setTitle ("Sample rate");
+    bitDepthCombo.setTitle ("Bit depth");
+    bufferSizeCombo.setTitle ("Buffer size");
+    storageCombo.setTitle ("Save recordings to");
+    deliveryCombo.setTitle ("Delivery loudness target");
+    aggregateNameEditor.setTitle ("Combined device name");
+
     for (auto* c : { &sampleRateLabel, &bitDepthLabel,
                      &bufferSizeLabel, &latencyLabel, &latencyValue,
                      &clockMasterLabel, &driftLabel, &outputDeviceLabel, &backendLabel,
@@ -263,6 +272,18 @@ void fillCombo (juce::ComboBox& combo, const juce::StringArray& names, const juc
 
 void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce::String& selected)
 {
+    juce::String signature;
+    for (const auto& name : names)
+        signature += name + "\n";
+    signature += "@" + selected;
+
+    // This is called on the Settings refresh tick. Rebuilding an unchanged
+    // combo twice a second blanked its selection and could close the menu under
+    // someone using it; a snapshot with the same options and choice is a no-op.
+    if (signature == lastOutputSignature)
+        return;
+
+    lastOutputSignature = signature;
     fillCombo (outputDeviceCombo, names, selected);
 }
 
@@ -474,6 +495,8 @@ void AdvancedPanel::setTrimChannels (const juce::StringArray& micNames,
         // §4: -20..+20 dB in 0.5 dB steps, defaulting to 0.
         slider->setRange (-20.0, 20.0, 0.5);
         slider->setTextValueSuffix (" dB");
+        slider->setTitle (micNames[i] + " monitor trim");
+        slider->setDescription ("Adjust this microphone in the headphones only; the recorded track stays unchanged.");
         slider->setValue (currentTrimDb != nullptr ? currentTrimDb (i) : 0.0,
                           juce::dontSendNotification);
 

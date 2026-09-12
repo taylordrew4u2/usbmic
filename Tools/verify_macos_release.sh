@@ -4,14 +4,15 @@
 # or ship a bundle built for the runner instead of the supported Macs.
 set -euo pipefail
 
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-  echo "Usage: $0 /path/to/SobStage.app EXPECTED_VERSION [EXPECTED_MINIMUM_MACOS]" >&2
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+  echo "Usage: $0 /path/to/SobStage.app EXPECTED_VERSION [EXPECTED_MINIMUM_MACOS] [--capture-entitlements]" >&2
   exit 2
 fi
 
 APP_PATH="$1"
 EXPECTED_VERSION="$2"
 EXPECTED_MINIMUM_MACOS="${3:-13.0}"
+SIGNING_MODE="${4:-}"
 EXPECTED_BUNDLE_IDENTIFIER="com.taylordrew.sobstage"
 EXPECTED_COPYRIGHT="Copyright (c) 2026 Taylor Drew Kozero"
 EXPECTED_MIC_PERMISSION="SobStage records from external USB, FireWire, and Thunderbolt microphones and audio interfaces you connect."
@@ -101,9 +102,29 @@ done <<< "$MINIMUM_VERSIONS"
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
+if [[ "$SIGNING_MODE" == "--capture-entitlements" ]]; then
+  ENTITLEMENTS="$(mktemp)"
+  cleanup_entitlements() { rm -f "$ENTITLEMENTS"; }
+  trap cleanup_entitlements EXIT
+
+  codesign -d --entitlements :- "$APP_PATH" > "$ENTITLEMENTS"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$ENTITLEMENTS" 2>/dev/null)" == "true" ]] \
+    || fail "production signature is missing the audio-input entitlement"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.camera' "$ENTITLEMENTS" 2>/dev/null)" == "true" ]] \
+    || fail "production signature is missing the camera entitlement"
+
+  cleanup_entitlements
+  trap - EXIT
+elif [[ -n "$SIGNING_MODE" ]]; then
+  fail "unknown signing-verification mode: $SIGNING_MODE"
+fi
+
 echo "Verified $APP_PATH"
 echo "  version: $EXPECTED_VERSION"
 echo "  identifier: $BUNDLE_IDENTIFIER"
 echo "  architectures: $ARCHITECTURES"
 echo "  minimum macOS: $EXPECTED_MINIMUM_MACOS"
 echo "  executable permission and privacy strings: present"
+if [[ "$SIGNING_MODE" == "--capture-entitlements" ]]; then
+  echo "  hardened-runtime capture entitlements: present"
+fi

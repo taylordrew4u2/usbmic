@@ -2,9 +2,13 @@
 
 namespace mma {
 
-WritePipelineState CapacityMonitor::evaluateFill (double fillFraction, bool mirrorAvailable) noexcept
+WritePipelineState CapacityMonitor::evaluateFill (double fillFraction) noexcept
 {
-    if (fillFraction >= kFillDegradeFraction && ! mirrorAvailable)
+    // Card and mirror writes are serialized after this same ring. A mirror may
+    // protect against the card disappearing, but it cannot protect either copy
+    // from samples the shared ring has already dropped. Shed both sets of stems
+    // before that happens and keep the complete mix(es) moving.
+    if (fillFraction >= kFillDegradeFraction)
         return WritePipelineState::DegradedToMixOnly;
 
     if (fillFraction >= kFillWarningFraction)

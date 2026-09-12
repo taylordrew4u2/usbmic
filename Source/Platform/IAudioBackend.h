@@ -34,7 +34,37 @@ struct ExclusiveModeCapability
     std::string unavailableReason; // populated when exclusiveModeAvailable is false
 };
 
-/// A stream that died after it had been opened. See takeStreamFailures().
+/// Machine-readable cause for a backend event. Most historical backends only
+/// supplied prose, so unknown remains the compatibility default. The CoreAudio
+/// rate/alive listeners use explicit values because the application must react
+/// to those state changes, not parse user-facing English.
+enum class StreamFailureKind
+{
+    unknown,
+    sampleRateChanged,
+    deviceUnavailable,
+    processorOverload,
+    safetyMonitoringUnavailable
+};
+
+/// Application policy for typed backend events. A live sample-rate change
+/// invalidates the WAV format the take was opened with, so continuing would
+/// knowingly write audio under a stale header. Disconnects retain the frozen
+/// take layout and write silence (§6.5); overload/listener reports are visible
+/// warnings rather than reasons to discard the rest of a take.
+constexpr bool streamFailureRequiresRecordingStop (StreamFailureKind kind) noexcept
+{
+    return kind == StreamFailureKind::sampleRateChanged;
+}
+
+constexpr bool streamFailureIsWarning (StreamFailureKind kind) noexcept
+{
+    return kind == StreamFailureKind::processorOverload
+        || kind == StreamFailureKind::safetyMonitoringUnavailable;
+}
+
+/// A stream that died or became unsafe after it had been opened. See
+/// takeStreamFailures().
 struct StreamFailure
 {
     /// The device the stream was opened for. Empty for the monitor output.
@@ -47,7 +77,9 @@ struct StreamFailure
     /// A complete subject to use instead of the device's name, for the reports
     /// that are not about one device ("The sound card", "This interface").
     /// Empty means the owner names the device, which is the usual case.
-    std::string subject;
+    std::string subject {};
+
+    StreamFailureKind kind = StreamFailureKind::unknown;
 };
 
 /// Where a backend's worker threads leave a failure for the message thread to
@@ -141,7 +173,8 @@ public:
                                   int bufferSizeSamples, AudioCallback callback) = 0;
 
     /// A stream that opened successfully and has since stopped delivering
-    /// audio on its own, with the reason, taken and cleared.
+    /// audio, or received a backend safety event such as a live sample-rate
+    /// change or processor overload, with the reason, taken and cleared.
     ///
     /// Every backend has a worker loop that gives up on an unrecoverable device
     /// error and exits, and none of them told anyone. The stream simply stopped:
@@ -151,7 +184,9 @@ public:
     /// says so, and the owner turns it into a sentence.
     ///
     /// Taken rather than read, so each failure is reported once. Empty
-    /// deviceId means the monitor output rather than an input.
+    /// deviceId means the monitor output rather than an input. `kind`
+    /// distinguishes events that require application action; user-facing prose
+    /// is never an API.
     /// Called from the message thread only, like every other method on this
     /// interface except the audio callback itself. Implementations walk their
     /// own stream list, which the open/close methods mutate, so calling this

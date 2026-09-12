@@ -57,6 +57,36 @@ jobs:
             exit 1
           fi
 
+          # A public artifact may only be cut from the exact tip of main. This
+          # rejects both a dispatch from another branch and a tag placed on an
+          # older/off-main commit, so the published source and the branch the
+          # owner asked us to keep authoritative can never diverge.
+          if [[ -n "$release_tag" ]]; then
+            git fetch --no-tags --depth=1 origin \
+              +refs/heads/main:refs/remotes/origin/main
+            candidate_sha="$(git rev-parse HEAD)"
+            main_sha="$(git rev-parse refs/remotes/origin/main)"
+            if [[ "$candidate_sha" != "$main_sha" ]]; then
+              echo "::error::Public releases must run from the exact tip of main ($main_sha), not $candidate_sha."
+              exit 1
+            fi
+
+            # A dispatch may name a tag that already exists even when no
+            # GitHub Release exists yet. In that case target_commitish is
+            # ignored by GitHub, so verify the tag itself cannot make the
+            # automatic source archives point at different code.
+            if git ls-remote --exit-code --tags origin \
+                 "refs/tags/$release_tag" >/dev/null 2>&1; then
+              git fetch --no-tags origin \
+                "refs/tags/$release_tag:refs/tags/$release_tag"
+              tagged_sha="$(git rev-list -n 1 "$release_tag")"
+              if [[ "$tagged_sha" != "$candidate_sha" ]]; then
+                echo "::error::Existing tag $release_tag points to $tagged_sha, not candidate $candidate_sha."
+                exit 1
+              fi
+            fi
+          fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           if [[ -n "$release_tag" ]]; then
@@ -122,6 +152,39 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+      # A public release must carry its own evidence instead of assuming the
+      # separate branch CI run has already finished. Keep test-only ALSA input
+      # support in an isolated build tree so it can never leak into out/.
+      - name: Live capture through the real Linux audio API
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -B build-live -DCMAKE_BUILD_TYPE=Release -DMMA_ALLOW_TEST_INPUTS=ON
+          cmake --build build-live --config Release --target live_capture -j 4
+          ./Tools/setup_alsa_fixture.sh
+          ./build-live/live_capture "${RUNNER_TEMP}/live"
+
+      # These are duplicated deliberately from CI: release publication is a
+      # separate workflow and must fail on memory, undefined-behaviour, or data
+      # race findings even if branch CI is still pending or has failed.
+      - name: Simulated audio backends under release sanitizers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          cmake --build build-asan --target sim_coreaudio sim_wasapi -j 4
+          ./build-asan/sim_coreaudio
+          ./build-asan/sim_wasapi
+
+          cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+          cmake --build build-tsan --target sim_coreaudio sim_wasapi -j 4
+          ./build-tsan/sim_coreaudio
+          ./build-tsan/sim_wasapi
+
       # The production Linux build rejects virtual inputs. Build a separate,
       # compile-time test binary for the file-backed ALSA fixture; never put this
       # opt-in binary in out/ or any downloadable artifact.
@@ -169,6 +232,95 @@ jobs:
       - name: Install
         run: cmake --install build --prefix out --config Release
 
+      - name: Prove the Windows ZIP needs no Visual C++ redistributable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw 'vswhere.exe was not found on the Windows runner.'
+          }
+
+          $visualStudio = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          $dumpbin = Get-ChildItem "$visualStudio\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $dumpbin) {
+            throw 'dumpbin.exe was not found on the Windows runner.'
+          }
+
+          $imports = (& $dumpbin.FullName /dependents out/bin/SobStage.exe 2>&1) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            throw "dumpbin failed with exit code $LASTEXITCODE.`n$imports"
+          }
+          if ($imports -match '(?im)^\s*(MSVCP|VCRUNTIME)[^\s]*\.dll\s*$') {
+            throw "The portable executable still depends on an unbundled Visual C++ runtime DLL.`n$imports"
+          }
+          Write-Host 'No MSVCP/VCRUNTIME imports: the portable Windows binary carries its MSVC runtime.'
+
+      # A public release is never allowed to fall back to an unsigned Windows
+      # executable. Build-only rehearsals remain possible without repository
+      # secrets, but a tag/release request fails closed until the owner has
+      # supplied the code-signing certificate.
+      - name: Authenticode-sign the Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publishing = '${{ needs.prepare.outputs.release_tag }}' -ne ''
+          $haveCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX)
+          $havePassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
+
+          if ($haveCertificate -ne $havePassword) {
+            throw 'Windows signing secrets are incomplete. Set both WINDOWS_CERTIFICATE_PFX and WINDOWS_CERTIFICATE_PASSWORD.'
+          }
+
+          if (-not $haveCertificate) {
+            if ($publishing) {
+              throw 'A public release requires an Authenticode certificate. Build-only rehearsals may remain unsigned.'
+            }
+
+            'SOBSTAGE_WINDOWS_SIGNING=unsigned-rehearsal' | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Warning 'Unsigned Windows build: this artifact is for release rehearsal only.'
+            exit 0
+          }
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'sobstage-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
+
+          try {
+            $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+
+            if ($null -eq $signTool) {
+              throw 'signtool.exe was not found on the Windows runner.'
+            }
+
+            & $signTool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+              /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD out/bin/SobStage.exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+
+            & $signTool.FullName verify /pa /all /v out/bin/SobStage.exe
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed with exit code $LASTEXITCODE" }
+
+            $signature = Get-AuthenticodeSignature out/bin/SobStage.exe
+            if ($signature.Status -ne 'Valid') {
+              throw "Authenticode status is $($signature.Status), expected Valid."
+            }
+
+            'SOBSTAGE_WINDOWS_SIGNING=authenticode' | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+          finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Check the artifact is not empty
         shell: bash
         run: |
@@ -193,6 +345,46 @@ jobs:
                 || { echo "::error::Linux executable missing or not executable"; exit 1; }
               ;;
           esac
+
+      # Package on Windows, extract the exact ZIP, re-check its signature when
+      # present, and launch that round-tripped executable. This is the supported
+      # Windows distribution format; a source-tree binary is not release proof.
+      - name: Package and smoke-test the Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stagingRoot = Join-Path $env:RUNNER_TEMP 'windows-zip'
+          $staging = Join-Path $stagingRoot 'SobStage-Windows'
+          $verify = Join-Path $env:RUNNER_TEMP 'windows-zip-verify'
+          Remove-Item $stagingRoot, $verify -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $staging, $verify | Out-Null
+          Copy-Item out/* $staging -Recurse -Force
+          Compress-Archive -Path $staging -DestinationPath SobStage-Windows.zip -CompressionLevel Optimal
+          Expand-Archive SobStage-Windows.zip -DestinationPath $verify
+
+          $exe = Join-Path $verify 'SobStage-Windows/bin/SobStage.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw 'Windows ZIP is missing SobStage.exe.'
+          }
+
+          if ($env:SOBSTAGE_WINDOWS_SIGNING -eq 'authenticode') {
+            $signature = Get-AuthenticodeSignature $exe
+            if ($signature.Status -ne 'Valid') {
+              throw "Round-tripped Authenticode status is $($signature.Status), expected Valid."
+            }
+          }
+
+          $process = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          try {
+            if ($process.HasExited) {
+              throw "The packaged Windows application exited during its clean-runner smoke test with code $($process.ExitCode)."
+            }
+          }
+          finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
 
       # Create the Linux container before artifact transport. Uploading the
       # install tree as loose files normalizes its Unix modes; zipping it later
@@ -219,33 +411,132 @@ jobs:
               || { echo "::error::$document missing from Linux ZIP"; exit 1; }
           done
 
+          # Launch the round-tripped production binary in a clean virtual
+          # desktop. A healthy GUI keeps running until timeout asks it to stop;
+          # an earlier exit is a packaging/runtime failure.
+          set +e
+          timeout 8s xvfb-run -a "$verify/SobStage-Linux/bin/SobStage" \
+            >"${RUNNER_TEMP}/sobstage-smoke.log" 2>&1
+          smoke_status=$?
+          set -e
+          if [[ "$smoke_status" -ne 124 ]]; then
+            cat "${RUNNER_TEMP}/sobstage-smoke.log"
+            echo "::error::The packaged Linux application exited during its clean-runner smoke test ($smoke_status)."
+            exit 1
+          fi
+
       # Create both macOS containers on macOS. In particular, the .app must be
       # placed into its .zip by ditto before Actions transports it; uploading an
       # unpacked bundle and re-zipping it on Linux drops its executable bit.
       - name: Verify and package the macOS application
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
 
           version="${{ needs.prepare.outputs.version }}"
+          publishing="${{ needs.prepare.outputs.release_tag }}"
           app="$(find out -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app"
           appname="$(basename "$app")"
 
-          # Ad-hoc re-sign, and the reason this step exists at all.
-          #
-          # The linker ad-hoc signs every arm64 binary, because Apple Silicon
-          # refuses to execute one that carries no signature. But CMake's
-          # install(DIRECTORY) copies the bundle as ordinary files and does not
-          # preserve that signature, so what lands in out/ has a broken one.
-          # Gatekeeper reports a broken signature as "is damaged and can't be
-          # opened" -- a message that sounds like a corrupt download and sends
-          # people off re-downloading a file that was never the problem. And
-          # unlike an unsigned-but-intact app, Control-click -> Open does not get
-          # past it. So re-sign here, after the install, where it sticks.
-          codesign --force --sign - --timestamp=none "$app"
-          bash Tools/verify_macos_release.sh "$app" "$version" 13.0
+          signing_values=(
+            "$APPLE_CERTIFICATE_P12"
+            "$APPLE_CERTIFICATE_PASSWORD"
+            "$APPLE_ID"
+            "$APPLE_APP_PASSWORD"
+            "$APPLE_TEAM_ID"
+          )
+          signing_value_count=0
+          for value in "${signing_values[@]}"; do
+            [[ -n "$value" ]] && signing_value_count=$((signing_value_count + 1))
+          done
+
+          if (( signing_value_count != 0 && signing_value_count != ${#signing_values[@]} )); then
+            echo "::error::Apple signing secrets are incomplete. Set APPLE_CERTIFICATE_P12, APPLE_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_APP_PASSWORD and APPLE_TEAM_ID together."
+            exit 1
+          fi
+
+          production_signing=false
+          signing_keychain=""
+          cleanup_signing() {
+            if [[ -n "$signing_keychain" ]]; then
+              security delete-keychain "$signing_keychain" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_signing EXIT
+
+          if (( signing_value_count == ${#signing_values[@]} )); then
+            production_signing=true
+            signing_keychain="${RUNNER_TEMP}/sobstage-signing.keychain-db"
+            signing_keychain_password="$(openssl rand -hex 24)"
+            certificate_path="${RUNNER_TEMP}/sobstage-signing.p12"
+            printf '%s' "$APPLE_CERTIFICATE_P12" | base64 -D > "$certificate_path"
+
+            security create-keychain -p "$signing_keychain_password" "$signing_keychain"
+            security set-keychain-settings -lut 21600 "$signing_keychain"
+            security unlock-keychain -p "$signing_keychain_password" "$signing_keychain"
+            security import "$certificate_path" -k "$signing_keychain" \
+              -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+            rm -f "$certificate_path"
+            security set-key-partition-list -S apple-tool:,apple: -s \
+              -k "$signing_keychain_password" "$signing_keychain"
+            security list-keychains -d user -s "$signing_keychain"
+
+            signing_identity="$(security find-identity -v -p codesigning "$signing_keychain" \
+              | sed -nE 's/.*"(Developer ID Application: [^"]+)".*/\1/p' | head -1)"
+            if [[ -z "$signing_identity" ]]; then
+              echo "::error::The imported certificate does not contain a Developer ID Application identity."
+              exit 1
+            fi
+
+            codesign --force --options runtime --timestamp \
+              --entitlements Resources/SobStage.entitlements \
+              --sign "$signing_identity" "$app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+
+            # Notarize the signed bundle first, then staple the ticket before
+            # either public container is created. The ZIP therefore carries a
+            # stapled app even on a machine that is offline when it is opened.
+            notary_zip="${RUNNER_TEMP}/SobStage-notary.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$notary_zip"
+            xcrun notarytool submit "$notary_zip" --wait \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID"
+            xcrun stapler staple "$app"
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+            echo "SOBSTAGE_MAC_SIGNING=developer-id-notarized" >> "$GITHUB_ENV"
+          else
+            if [[ -n "$publishing" ]]; then
+              echo "::error::A public release requires Developer ID signing and notarization. Build-only rehearsals may use an ad-hoc signature."
+              exit 1
+            fi
+
+            # Ad-hoc re-sign, and the reason this fallback exists at all.
+            #
+            # The linker ad-hoc signs every arm64 binary, because Apple Silicon
+            # refuses to execute one that carries no signature. But CMake's
+            # install(DIRECTORY) copies the bundle as ordinary files and does not
+            # preserve that signature, so what lands in out/ has a broken one.
+            # Gatekeeper reports a broken signature as "is damaged and can't be
+            # opened" -- a message that sounds like a corrupt download and sends
+            # people off re-downloading a file that was never the problem. And
+            # unlike an unsigned-but-intact app, Control-click -> Open does not get
+            # past it. So re-sign here, after the install, where it sticks.
+            codesign --force --options runtime --timestamp=none \
+              --entitlements Resources/SobStage.entitlements --sign - "$app"
+            echo "SOBSTAGE_MAC_SIGNING=adhoc-rehearsal" >> "$GITHUB_ENV"
+            echo "::warning::Ad-hoc macOS build: this artifact is for release rehearsal only."
+          fi
+          bash Tools/verify_macos_release.sh \
+            "$app" "$version" 13.0 --capture-entitlements
 
           zip_staging="${RUNNER_TEMP}/zip/SobStage-macOS"
           rm -rf "${RUNNER_TEMP}/zip"
@@ -264,11 +555,28 @@ jobs:
           mkdir -p "$zip_verify"
           ditto -x -k "SobStage-macOS.zip" "$zip_verify"
           bash Tools/verify_macos_release.sh \
-            "$zip_verify/SobStage-macOS/$appname" "$version" 13.0
+            "$zip_verify/SobStage-macOS/$appname" "$version" 13.0 \
+            --capture-entitlements
           for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
             test -f "$zip_verify/SobStage-macOS/$document" \
               || { echo "::error::$document missing from macOS ZIP"; exit 1; }
           done
+
+          # Launch the app extracted from the exact ZIP on this clean runner.
+          # It should remain alive until asked to quit; an immediate exit means
+          # the package passed static inspection but is not usable.
+          zip_app="$zip_verify/SobStage-macOS/$appname"
+          "$zip_app/Contents/MacOS/SobStage" >"${RUNNER_TEMP}/sobstage-smoke.log" 2>&1 &
+          smoke_pid=$!
+          sleep 5
+          if ! kill -0 "$smoke_pid" 2>/dev/null; then
+            wait "$smoke_pid" || smoke_status=$?
+            cat "${RUNNER_TEMP}/sobstage-smoke.log"
+            echo "::error::The packaged macOS application exited during its clean-runner smoke test (${smoke_status:-unknown})."
+            exit 1
+          fi
+          kill "$smoke_pid"
+          wait "$smoke_pid" || true
 
           staging="${RUNNER_TEMP}/dmg/SobStage"
           rm -rf "${RUNNER_TEMP}/dmg"
@@ -342,6 +650,23 @@ jobs:
 
           hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 \
             -o "SobStage-macOS.dmg" -ov
+
+          if [[ "$production_signing" == true ]]; then
+            # The app inside is already signed and stapled. The DMG is a
+            # separate executable-code container and needs its own Developer
+            # ID signature before Apple notarizes it.
+            codesign --force --timestamp --sign "$signing_identity" \
+              --identifier com.taylordrew.sobstage.dmg "SobStage-macOS.dmg"
+            codesign --verify --strict --verbose=2 "SobStage-macOS.dmg"
+            xcrun notarytool submit "SobStage-macOS.dmg" --wait \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID"
+            xcrun stapler staple "SobStage-macOS.dmg"
+            xcrun stapler validate "SobStage-macOS.dmg"
+            spctl --assess --type open --context context:primary-signature \
+              --verbose=2 "SobStage-macOS.dmg"
+          fi
+
           hdiutil verify "SobStage-macOS.dmg"
 
           # Prove the signature survived the image round-trip, rather than
@@ -351,7 +676,12 @@ jobs:
           rm -rf "$verify"; mkdir -p "$verify"
           hdiutil attach "SobStage-macOS.dmg" \
             -mountpoint "$verify" -nobrowse -readonly
-          bash Tools/verify_macos_release.sh "$verify/$appname" "$version" 13.0
+          bash Tools/verify_macos_release.sh \
+            "$verify/$appname" "$version" 13.0 --capture-entitlements
+          if [[ "$production_signing" == true ]]; then
+            xcrun stapler validate "$verify/$appname"
+            spctl --assess --type execute --verbose=2 "$verify/$appname"
+          fi
           test -f "$verify/.background/background.png"
           for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
             test -f "$verify/$document" \
@@ -371,14 +701,17 @@ jobs:
           fi
 
           hdiutil detach "$verify"
+          cleanup_signing
+          trap - EXIT
 
-      - name: Upload the Windows install tree
+      - name: Upload the Windows ZIP
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ matrix.artifact }}
-          path: out/
+          name: SobStage-Windows-zip
+          path: SobStage-Windows.zip
           if-no-files-found: error
+          compression-level: 0
 
       - name: Upload the Linux ZIP
         if: runner.os == 'Linux'
@@ -407,11 +740,182 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # Download the opaque containers onto a second clean runner of the matching
+  # OS and launch what came back from Actions. This catches transport damage,
+  # missing runtime libraries and package-only startup failures that a launch
+  # beside the compiler cannot see.
+  smoke:
+    name: Downloaded artifact (${{ matrix.label }})
+    needs: [prepare, build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS
+          - os: windows-latest
+            label: Windows
+          - os: ubuntu-latest
+            label: Linux
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download macOS ZIP
+        if: runner.os == 'macOS'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: SobStage-macOS-zip
+          path: downloaded
+
+      - name: Download macOS DMG
+        if: runner.os == 'macOS'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: SobStage-macOS-dmg
+          path: downloaded
+
+      - name: Download Windows ZIP
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: SobStage-Windows-zip
+          path: downloaded
+
+      - name: Download Linux ZIP
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: SobStage-Linux-zip
+          path: downloaded
+
+      - name: Verify and launch downloaded macOS containers
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          extracted="${RUNNER_TEMP}/downloaded-mac-zip"
+          mounted="${RUNNER_TEMP}/downloaded-mac-dmg"
+          mkdir -p "$extracted" "$mounted"
+          ditto -x -k downloaded/SobStage-macOS.zip "$extracted"
+          zip_app="$(find "$extracted" -maxdepth 3 -name SobStage.app -print -quit)"
+          test -n "$zip_app"
+          bash Tools/verify_macos_release.sh \
+            "$zip_app" "$version" 13.0 --capture-entitlements
+
+          hdiutil verify downloaded/SobStage-macOS.dmg
+          hdiutil attach downloaded/SobStage-macOS.dmg \
+            -mountpoint "$mounted" -nobrowse -readonly
+          cleanup_mount() { hdiutil detach "$mounted" >/dev/null 2>&1 || true; }
+          trap cleanup_mount EXIT
+          dmg_app="$mounted/SobStage.app"
+          bash Tools/verify_macos_release.sh \
+            "$dmg_app" "$version" 13.0 --capture-entitlements
+
+          if [[ -n "${{ needs.prepare.outputs.release_tag }}" ]]; then
+            xcrun stapler validate downloaded/SobStage-macOS.dmg
+            spctl --assess --type open --context context:primary-signature \
+              --verbose=2 downloaded/SobStage-macOS.dmg
+            for app in "$zip_app" "$dmg_app"; do
+              xcrun stapler validate "$app"
+              spctl --assess --type execute --verbose=2 "$app"
+            done
+          fi
+
+          for app in "$zip_app" "$dmg_app"; do
+            "$app/Contents/MacOS/SobStage" \
+              >"${RUNNER_TEMP}/$(basename "$(dirname "$app")")-smoke.log" 2>&1 &
+            pid=$!
+            sleep 5
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || status=$?
+              echo "::error::Downloaded macOS app exited during smoke test (${status:-unknown})."
+              exit 1
+            fi
+            kill "$pid"
+            wait "$pid" || true
+          done
+
+          cleanup_mount
+          trap - EXIT
+
+      - name: Verify and launch downloaded Windows ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extracted = Join-Path $env:RUNNER_TEMP 'downloaded-windows'
+          Expand-Archive downloaded/SobStage-Windows.zip -DestinationPath $extracted
+          $exe = Join-Path $extracted 'SobStage-Windows/bin/SobStage.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw 'The downloaded Windows ZIP is missing SobStage.exe.'
+          }
+
+          if ('${{ needs.prepare.outputs.release_tag }}' -ne '') {
+            $signature = Get-AuthenticodeSignature $exe
+            if ($signature.Status -ne 'Valid') {
+              throw "Downloaded Authenticode status is $($signature.Status), expected Valid."
+            }
+          }
+
+          $process = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          try {
+            if ($process.HasExited) {
+              throw "The downloaded Windows app exited during smoke test with code $($process.ExitCode)."
+            }
+          }
+          finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev \
+            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev xvfb
+
+      - name: Verify and launch downloaded Linux ZIP
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          extracted="${RUNNER_TEMP}/downloaded-linux"
+          mkdir -p "$extracted"
+          unzip -q downloaded/SobStage-Linux.zip -d "$extracted"
+          app="$extracted/SobStage-Linux/bin/SobStage"
+          test -x "$app"
+
+          set +e
+          timeout 8s xvfb-run -a "$app" >"${RUNNER_TEMP}/sobstage-smoke.log" 2>&1
+          status=$?
+          set -e
+          if [[ "$status" -ne 124 ]]; then
+            cat "${RUNNER_TEMP}/sobstage-smoke.log"
+            echo "::error::Downloaded Linux app exited during smoke test ($status)."
+            exit 1
+          fi
+
   package:
     name: Assemble release candidate
-    needs: [prepare, build]
+    needs: [prepare, build, smoke]
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the exact SobStage source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check out the exact JUCE corresponding source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 4f43011b96eb0636104cb3e433894cda98243626
+          path: corresponding-source/JUCE
+          fetch-depth: 1
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { path: artifacts }
 
@@ -421,6 +925,26 @@ jobs:
           set -euo pipefail
 
           mkdir release-assets
+
+          # Ship complete, offline-buildable corresponding source beside the
+          # binaries. The normal GitHub-generated archive contains SobStage but
+          # not the JUCE code fetched while compiling; this bundle contains the
+          # exact revisions of both and CMake automatically consumes its
+          # ThirdParty/JUCE tree.
+          version="${{ needs.prepare.outputs.version }}"
+          source_name="SobStage-${version}-source"
+          source_root="source-staging/${source_name}"
+          mkdir -p "$source_root/ThirdParty/JUCE"
+          git archive HEAD | tar -xf - -C "$source_root"
+          juce_sha="$(git -C corresponding-source/JUCE rev-parse HEAD)"
+          [[ "$juce_sha" == "4f43011b96eb0636104cb3e433894cda98243626" ]] \
+            || { echo "::error::Wrong JUCE source revision: $juce_sha"; exit 1; }
+          git -C corresponding-source/JUCE archive HEAD \
+            | tar -xf - -C "$source_root/ThirdParty/JUCE"
+          printf 'SobStage commit: %s\nJUCE commit: %s\n' \
+            "$(git rev-parse HEAD)" "$juce_sha" > "$source_root/SOURCE_REVISIONS.txt"
+          (cd source-staging && zip -qr "../release-assets/${source_name}.zip" "$source_name")
+
           cd artifacts
           shopt -s nullglob
           for d in */; do
@@ -443,15 +967,24 @@ jobs:
           test -f SobStage-macOS.dmg
           test -f SobStage-macOS.zip
           test -f SobStage-Windows.zip
+          test -f "SobStage-${version}-source.zip"
           assets=(*.zip *.dmg)
-          (( ${#assets[@]} == 4 )) \
-            || { echo "::error::Expected exactly four release containers, found ${#assets[@]}"; exit 1; }
+          (( ${#assets[@]} == 5 )) \
+            || { echo "::error::Expected four binaries plus source, found ${#assets[@]} assets"; exit 1; }
           sha256sum \
             SobStage-Linux.zip \
             SobStage-macOS.dmg \
             SobStage-macOS.zip \
-            SobStage-Windows.zip > SHA256SUMS
+            SobStage-Windows.zip \
+            "SobStage-${version}-source.zip" > SHA256SUMS
           sha256sum --check SHA256SUMS
+
+          source_verify="$(mktemp -d)"
+          unzip -q "SobStage-${version}-source.zip" -d "$source_verify"
+          test -f "$source_verify/SobStage-${version}-source/CMakeLists.txt"
+          test -f "$source_verify/SobStage-${version}-source/ThirdParty/JUCE/CMakeLists.txt"
+          test -f "$source_verify/SobStage-${version}-source/ThirdParty/JUCE/LICENSE.md"
+          test -f "$source_verify/SobStage-${version}-source/SOURCE_REVISIONS.txt"
 
           # Prove the macOS ZIP retained its executable mode through the
           # Actions upload/download boundary before this exact file is promoted.
@@ -492,6 +1025,10 @@ jobs:
     needs: [prepare, package]
     runs-on: ubuntu-latest
     if: needs.prepare.outputs.release_tag != ''
+    env:
+      # This job intentionally does not check out the repository, so make the
+      # gh CLI target explicit instead of relying on local Git metadata.
+      GH_REPO: ${{ github.repository }}
     permissions:
       contents: write
     steps:
@@ -500,15 +1037,41 @@ jobs:
           name: SobStage-release-candidate
           path: release-assets
 
+      - name: Reconfirm the candidate is still the tip of main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)"
+          if [[ "$main_sha" != "$CANDIDATE_SHA" ]]; then
+            echo "::error::main moved to $main_sha while this candidate was building; rerun the release from the new tip instead of publishing $CANDIDATE_SHA."
+            exit 1
+          fi
+
       - name: Verify the promoted release candidate
         run: |
           set -euo pipefail
           cd release-assets
           sha256sum --check SHA256SUMS
 
+      - name: Refuse to replace an existing release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. SobStage release assets are immutable; publish a new version instead."
+            exit 1
+          fi
+
       # On a dispatch, the action creates the already-validated version tag at
       # the exact commit whose already-packaged artifacts passed every check.
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      - name: Create a draft release and upload every asset
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
@@ -518,3 +1081,20 @@ jobs:
             release-assets/SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true
+          overwrite_files: false
+          draft: true
+
+      # A failed upload leaves a private draft instead of a half-published
+      # release. Only after every remote asset downloads and its checksums pass
+      # does the workflow make the release public.
+      - name: Verify the draft from GitHub, then publish it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          downloaded="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --dir "$downloaded"
+          (cd "$downloaded" && sha256sum --check SHA256SUMS)
+          gh release edit "$RELEASE_TAG" --draft=false --verify-tag

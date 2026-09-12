@@ -54,6 +54,8 @@ MainScreen::MainScreen()
         setCameraScale (cameraScale + 1);
         if (onCameraScaleChanged) onCameraScaleChanged (cameraScale);
     };
+    cameraSmallerButton.setTitle ("Make camera previews smaller");
+    cameraLargerButton.setTitle ("Make camera previews larger");
 
     for (auto* b : { &cameraSmallerButton, &cameraLargerButton })
     {
@@ -138,6 +140,8 @@ MainScreen::MainScreen()
         return text.retainCharacters ("0123456789").getDoubleValue();
     };
     volumeSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, true, 86, 20);
+    volumeSlider.setTitle ("Monitor volume");
+    volumeSlider.setDescription ("Adjust headphone volume; recorded levels stay unchanged.");
     volumeSlider.setRange (0.0, 100.0, 1.0);
     volumeSlider.setValue (70.0); // §5.1 default
     volumeSlider.onValueChange = [this] { if (onVolumeChanged) onVolumeChanged (volumeSlider.getValue()); };
@@ -150,6 +154,7 @@ MainScreen::MainScreen()
     // §6.2: naming the take is optional and never a gate -- the placeholder
     // says what happens if it is left alone.
     sessionNameEditor.setTextToShowWhenEmpty ("Session name (optional)", juce::Colours::grey);
+    sessionNameEditor.setTitle ("Session name, optional");
     sessionNameEditor.setJustification (juce::Justification::centredLeft);
     addAndMakeVisible (sessionNameEditor);
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mma {
@@ -45,11 +46,37 @@ struct OutputSelection
 {
     bool found = false;
     std::string id;
+    std::string displayName;
     OutputSelectionReason reason = OutputSelectionReason::None;
 
     /// Plain-language line for the user when nothing could be selected, per
     /// §10.6. Empty when a device was found.
     std::string explanation;
+};
+
+/// Keeps §5.3's "newly connected" priority tied to an actual arrival rather
+/// than to an enumeration pass. Backends return snapshots, and a device-list
+/// notification may be about an input, a rename, or no visible change at all;
+/// treating every member of every later snapshot as new makes enumeration
+/// order override the user's real choice.
+class OutputDeviceTracker
+{
+public:
+    /// Applies appearedAfterLaunch and a stable connectionOrder to a snapshot.
+    /// The first snapshot is the launch baseline. A device becomes new only
+    /// when its id was absent from the immediately preceding snapshot.
+    std::vector<OutputDeviceCandidate> observe (std::vector<OutputDeviceCandidate> snapshot);
+
+private:
+    struct Connection
+    {
+        int order = 0;
+        bool appearedAfterLaunch = false;
+    };
+
+    bool haveBaseline = false;
+    int nextConnectionOrder = 0;
+    std::unordered_map<std::string, Connection> connected;
 };
 
 /// §5.3 automatic output selection, in strict priority order. The user is never

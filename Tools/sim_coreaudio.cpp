@@ -8,6 +8,7 @@
 #include "../Source/Platform/CoreAudioBackend.h"
 
 #include <chrono>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -469,6 +470,230 @@ void hotplugArrivesThroughTheOsListener()
     check (notifications > before, "unplugging notifies too");
 }
 
+/// H11: another app can change a live interface's nominal rate without adding
+/// or removing a device. The per-device property listener must catch it, name
+/// both rates, and hand the change back to the normal re-enumeration path.
+void aLiveSampleRateChangeIsReportedAndReenumerated()
+{
+    std::printf ("\nA live interface whose sample rate another app changes\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Rate Change Mic", "uid-rate-change", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    int deviceChanges = 0;
+    backend.setDeviceChangeCallback ([&deviceChanges] { ++deviceChanges; });
+
+    check (backend.openInputStream ("uid-rate-change", 48000.0, 256, capture.callback()),
+           "the stream opens at 48 kHz");
+    check (fakeca::propertyListenerCount (id) == 3,
+           "nominal-rate, device-alive, and processor-overload listeners are installed");
+
+    check (fakeca::setNominalRateExternally (id, 44100.0),
+           "Audio MIDI Setup changes the live device to 44.1 kHz");
+
+    const auto first = backend.takeStreamFailures();
+    check (first.size() == 1, "the mismatch is reported on the next message-thread poll");
+
+    if (! first.empty())
+    {
+        check (first.front().deviceId == "uid-rate-change",
+               "the report identifies the affected microphone");
+        check (first.front().kind == mma::StreamFailureKind::sampleRateChanged,
+               "the event is typed so the app can stop a take without parsing prose");
+        check (first.front().reason.find ("44.1 kHz") != std::string::npos
+               && first.front().reason.find ("48 kHz") != std::string::npos,
+               "the report names both the new hardware rate and SobStage's rate");
+    }
+
+    check (deviceChanges == 1,
+           "the property event is bridged into the ordinary re-enumeration callback");
+    check (backend.takeStreamFailures().empty(),
+           "an unchanged mismatch is not repeated on every status poll");
+
+    fakeca::setNominalRateExternally (id, 48000.0);
+    check (backend.takeStreamFailures().empty(),
+           "returning to the stream rate clears the mismatch without a false failure");
+
+    fakeca::setNominalRateExternally (id, 44100.0);
+    check (backend.takeStreamFailures().size() == 1,
+           "a later, separate rate mismatch can be reported again");
+
+    backend.closeAllStreams();
+    check (fakeca::propertyListenerCount (id) == 0,
+           "closing the stream removes every per-device listener");
+}
+
+/// H11: kAudioDevicePropertyDeviceIsAlive reaches the backend before the
+/// system device list necessarily drops the AudioObjectID. This must report a
+/// dead stream immediately rather than waiting five seconds for the IOProc
+/// watchdog, and recovery must release the one-shot latch.
+void aDeviceAliveChangeIsReportedImmediately()
+{
+    std::printf ("\nA live AudioObject that becomes unusable before disappearing\n");
+    fakeca::reset();
+
+    const auto id = fakeca::addDevice (microphone ("Dying Mic", "uid-dying", 1,
+                                                   fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openInputStream ("uid-dying", 48000.0, 256, capture.callback()),
+           "the stream opens");
+
+    check (fakeca::setDeviceAlive (id, false),
+           "the HAL marks the still-present device unusable");
+
+    const auto dead = backend.takeStreamFailures();
+    check (dead.size() == 1, "the device-alive listener reports it without a five-second wait");
+
+    if (! dead.empty())
+    {
+        check (dead.front().deviceId == "uid-dying", "the dead-device report names the mic");
+        check (dead.front().kind == mma::StreamFailureKind::deviceUnavailable,
+               "the event is typed for app-level dropout handling");
+        check (dead.front().reason.find ("no longer available") != std::string::npos,
+               "the reason describes an unavailable device, not generic silence");
+    }
+
+    check (backend.takeStreamFailures().empty(),
+           "the same dead state is reported once");
+    check (backend.enumerateInputDevices().empty(),
+           "an alive=false AudioObject is omitted before the system list removes it");
+
+    fakeca::setDeviceAlive (id, true);
+    check (backend.takeStreamFailures().empty(),
+           "the same AudioObject can recover without a false failure");
+    check (backend.enumerateInputDevices().size() == 1,
+           "a revived AudioObject returns to enumeration");
+
+    fakeca::setDeviceAlive (id, false);
+    check (backend.takeStreamFailures().size() == 1,
+           "a second genuine death after recovery is reported again");
+    backend.closeAllStreams();
+}
+
+/// Processor-overload is normally notified from CoreAudio's IO thread. Input
+/// overruns must be surfaced as possible take loss; output overruns feed the
+/// monitor-glitch counter and must not be mislabelled as recorded-audio loss.
+void processorOverloadsAreCountedOnTheRightPath()
+{
+    std::printf ("\nCoreAudio processor-overload events on input and output\n");
+    fakeca::reset();
+
+    const auto input = fakeca::addDevice (microphone ("Busy Mic", "uid-busy-in", 1,
+                                                       fakeca::BufferShape::oneChannelPerBuffer));
+    const auto output = fakeca::addDevice (headphones ("Busy Out", "uid-busy-out", 2,
+                                                        fakeca::BufferShape::interleaved));
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openInputStream ("uid-busy-in", 48000.0, 256, capture.callback()),
+           "the input stream opens");
+    check (backend.openExclusiveOutputStream (
+               "uid-busy-out", 48000.0, 256,
+               [] (const float* const*, int, float* const*, int, int) {}),
+           "the output stream opens");
+
+    fakeca::fireProcessorOverload (input);
+    fakeca::fireProcessorOverload (input);
+
+    const auto inputFailures = backend.takeStreamFailures();
+    check (inputFailures.size() == 1,
+           "one poll reports the accumulated input deadline misses once");
+    check (! inputFailures.empty()
+           && inputFailures.front().kind == mma::StreamFailureKind::processorOverload
+           && inputFailures.front().reason.find ("audio processing deadline") != std::string::npos,
+           "the input warning is typed and explains possible recording loss");
+    check (backend.getOutputGlitchCount() == 0,
+           "input overloads do not inflate the monitor-glitch counter");
+    check (backend.takeStreamFailures().empty(),
+           "input overloads are not repeated without a new event");
+
+    fakeca::fireProcessorOverload (output);
+    check (backend.getOutputGlitchCount() == 1,
+           "an output deadline miss increments the monitor-glitch counter");
+    check (backend.takeStreamFailures().empty(),
+           "an output glitch is not also reported as microphone loss");
+
+    backend.closeAllStreams();
+    check (fakeca::propertyListenerCount (input) == 0
+           && fakeca::propertyListenerCount (output) == 0,
+           "both streams remove their listeners during teardown");
+}
+
+/// Processor-overload listeners normally execute on CoreAudio's IO thread
+/// while the message thread reads the counter. Exercise that actual overlap so
+/// ThreadSanitizer verifies the listener shares only atomics with the reader.
+void processorOverloadNotificationIsThreadSafe()
+{
+    std::printf ("\nProcessor-overload callbacks racing the message-thread reader\n");
+    fakeca::reset();
+
+    const auto output = fakeca::addDevice (headphones ("Threaded Out", "uid-threaded-out", 2,
+                                                        fakeca::BufferShape::interleaved));
+
+    mma::CoreAudioBackend backend;
+    check (backend.openExclusiveOutputStream (
+               "uid-threaded-out", 48000.0, 256,
+               [] (const float* const*, int, float* const*, int, int) {}),
+           "the output stream opens");
+
+    constexpr uint64_t eventCount = 2000;
+    std::atomic<bool> producerDone { false };
+
+    std::thread producer ([&]
+    {
+        for (uint64_t i = 0; i < eventCount; ++i)
+            fakeca::fireProcessorOverload (output);
+
+        producerDone.store (true, std::memory_order_release);
+    });
+
+    uint64_t observed = 0;
+    while (! producerDone.load (std::memory_order_acquire))
+        observed = std::max (observed, backend.getOutputGlitchCount());
+
+    producer.join();
+    observed = std::max (observed, backend.getOutputGlitchCount());
+
+    check (observed == eventCount,
+           "every IO-thread overload is retained while the message thread reads");
+    backend.closeAllStreams();
+}
+
+/// A third-party driver may refuse one or every listener. Continuing in total
+/// silence would recreate H11 on that hardware, so the open remains compatible
+/// but the missing safety watch is reported once.
+void aDeviceThatRefusesSafetyListenersSaysSo()
+{
+    std::printf ("\nA device driver that refuses per-device safety listeners\n");
+    fakeca::reset();
+
+    fakeca::addDevice (microphone ("Opaque Mic", "uid-opaque", 1,
+                                   fakeca::BufferShape::oneChannelPerBuffer));
+    fakeca::setPropertyListenersAllowed (false);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openInputStream ("uid-opaque", 48000.0, 256, capture.callback()),
+           "the unusual device remains usable");
+
+    const auto problem = backend.takeStreamFailures();
+    check (problem.size() == 1, "the missing safety listeners are not silent");
+    check (! problem.empty()
+           && problem.front().kind == mma::StreamFailureKind::safetyMonitoringUnavailable
+           && problem.front().reason.find ("can't report every sample-rate") != std::string::npos,
+           "the report is typed and names the safety information that is unavailable");
+    check (backend.takeStreamFailures().empty(),
+           "the listener problem is reported once rather than on every poll");
+    backend.closeAllStreams();
+}
+
 /// A microphone that stops sending audio after it was opened -- the HAL keeps
 /// the stream, the IOProc simply never runs again. Nothing about that is
 /// visible from anywhere else in the app, so if the watchdog does not report
@@ -516,6 +741,42 @@ void aMicrophoneThatGoesQuietAfterOpeningIsReported()
     std::this_thread::sleep_for (std::chrono::milliseconds (5400));
 
     check (backend.takeStreamFailures().size() == 1, "a second death is reported again");
+}
+
+/// AudioDeviceStart can return success without the driver ever invoking its
+/// IOProc. A watchdog based only on the most recent callback sees the initial
+/// zero timestamp and skips that stream forever, leaving a take silently empty.
+void aMicrophoneWhoseFirstCallbackNeverArrivesIsReported()
+{
+    std::printf ("\nA mic whose first IOProc never arrives\n");
+    fakeca::reset();
+
+    fakeca::addDevice (microphone ("Never Started Mic", "uid-never-callback", 1,
+                                  fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("uid-never-callback", 48000.0, 256, capture.callback()),
+           "the HAL reports that the mic started");
+    check (backend.takeStreamFailures().empty(),
+           "the first callback receives the same five-second grace period");
+
+    std::this_thread::sleep_for (std::chrono::milliseconds (5400));
+
+    const auto failures = backend.takeStreamFailures();
+    check (failures.size() == 1, "a missing first callback is reported once");
+
+    if (! failures.empty())
+    {
+        check (failures.front().deviceId == "uid-never-callback",
+               "the first-callback failure names the microphone");
+        check (failures.front().reason.find ("stopped sending audio") != std::string::npos,
+               "the first-callback failure gives the same recovery guidance");
+    }
+
+    check (backend.takeStreamFailures().empty(),
+           "the missing first callback is not repeated on every poll");
 }
 
 /// A Mac that refuses the device-list listener leaves the app deaf to the rig:
@@ -727,12 +988,33 @@ void onlyDirectlyAttachedHardwareEnumeratesAsInput()
            "the input policy does not hide built-in or wireless monitor outputs");
 }
 
+void openingAnInputRechecksTheExternalHardwarePolicy()
+{
+    std::printf ("\nOpening a disallowed CoreAudio input directly\n");
+    fakeca::reset();
+
+    auto phone = microphone ("Continuity phone", "phone-direct-open", 1,
+                             fakeca::BufferShape::oneChannelPerBuffer);
+    phone.transportType = kAudioDeviceTransportTypeContinuityCaptureWired;
+    const auto id = fakeca::addDevice (phone);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (! backend.openInputStream (phone.uid, 48000.0, 256, capture.callback()),
+           "a caller cannot bypass discovery and open a Continuity input by UID");
+    check (! fakeca::isRunning (id),
+           "the rejected input never starts an IOProc");
+    check (backend.getLastOpenError().find ("directly connected external") != std::string::npos,
+           "the refusal explains the external-hardware policy");
+}
+
 int main()
 {
     std::printf ("CoreAudio backend, driven against a virtual HAL\n");
     std::printf ("===============================================\n");
 
     onlyDirectlyAttachedHardwareEnumeratesAsInput();
+    openingAnInputRechecksTheExternalHardwarePolicy();
     interleavedStereoMicrophoneDeliversBothChannels();
     oneChannelPerBufferStillWorks();
     interleavedOutputCarriesTheMonitorMix();
@@ -747,8 +1029,14 @@ int main()
     hogModeIsTakenAndReleased();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
     hotplugArrivesThroughTheOsListener();
+    aLiveSampleRateChangeIsReportedAndReenumerated();
+    aDeviceAliveChangeIsReportedImmediately();
+    processorOverloadsAreCountedOnTheRightPath();
+    processorOverloadNotificationIsThreadSafe();
+    aDeviceThatRefusesSafetyListenersSaysSo();
     aMacThatWillNotWatchTheRigSaysSo();
     aMicrophoneThatGoesQuietAfterOpeningIsReported();
+    aMicrophoneWhoseFirstCallbackNeverArrivesIsReported();
     aLargerThanRequestedCallbackIsStillDelivered();
     anOversizedBufferKeepsItsPhysicalChannelSlots();
     eightMicrophonesEachKeepTheirOwnAudio();

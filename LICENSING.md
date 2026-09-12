@@ -6,12 +6,24 @@ with the JUCE 7 dependency for an open-source distribution. Read the official
 [JUCE 7 licence](https://juce.com/legal/juce-7-license/) before distributing a
 build; this summary is not a substitute for its terms.
 
+## Distribution review (12 September 2026)
+
+The release configuration was checked against the official JUCE 7 licence on
+that date. This repository is public, ships its GPLv3 source, and pins JUCE
+7.0.12 at commit `4f43011b96eb0636104cb3e433894cda98243626` in
+`CMakeLists.txt`; those are the facts the GPL distribution path relies on. A
+release owner must still confirm the final source archive and notices beside
+each published binary. This engineering review is not legal advice or a
+substitute for the release owner's approval.
+
 ## What GPLv3 means here
 
 - You may use, build, modify and redistribute the app and its source freely.
 - If you distribute binaries, you must make the corresponding source available
-  under the same licence. The source archive shipped alongside each release
-  already satisfies this.
+  under the same licence. Tagged SobStage releases are configured to ship a
+  versioned source bundle containing both the exact SobStage revision and the
+  pinned JUCE tree; the release owner still verifies that bundle and its
+  notices against the binaries before publishing.
 - This repository does not rely on a commercial JUCE price tier. Distribution
   still has to follow the GPLv3 and JUCE 7 terms linked above.
 
@@ -27,10 +39,10 @@ terms.
 
 ## Unrelated to JUCE
 
-Nothing else in this repository carries a third-party licence obligation. The
-test framework (`Tests/TestFramework.h`) and the JSON reader/writer
-(`Source/Core/Json.h`) were written here rather than vendored in, so
-`Source/Core` and the test suite have no external dependencies at all.
+No other third-party source is vendored into `Source/Core` or `Tests`. The test
+framework (`Tests/TestFramework.h`) and the JSON reader/writer
+(`Source/Core/Json.h`) were written here, so the platform-independent core and
+unit-test target do not add another source dependency.
 
 The §7 virtual-device backends remain separate: backend C would bundle a
 commercially licensed third-party driver and backend D needs an EV certificate;

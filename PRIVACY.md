@@ -4,9 +4,9 @@ Effective 12 September 2026. Applies to the SobStage v1.12.0 release candidate.
 
 SobStage is a local-first desktop recorder. It has no account system and this
 candidate does not automatically upload recordings, diagnostics, analytics or
-crash reports. It also has no automatic updater. Crash reporting and an update
-path described as goals in the specification are not implemented capabilities
-of this candidate.
+crash reports. It also has no automatic updater. Those are deliberate v1 scope
+decisions: diagnostics are created only when you ask, and updates are explicit
+downloads whose published checksum can be verified.
 
 ## Information the app accesses
 

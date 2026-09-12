@@ -47,6 +47,9 @@ struct AppSettings
     bool mirrorEnabled = true;                          // §6.3, default on
     std::string aggregateName = "SobStage"; // §7, what other apps see
     double masterVolume = 70.0;                         // §5.1 default
+    /// Stable id of the monitor output the user explicitly chose. §5.3 makes
+    /// that choice priority one on the next launch.
+    std::string rememberedOutputDeviceId;
     bool cameraPreviewFullQuality = false;
 
     /// How large the camera tiles on the main screen are drawn, as a step into

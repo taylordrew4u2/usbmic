@@ -20,12 +20,13 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **513 unit tests**; if tests change, record the final discovered count here.
-- [ ] `sim_coreaudio` and `sim_wasapi` pass. The baseline before final hardening
-  is **68 CoreAudio checks** and **67 WASAPI checks**; record final counts from
-  the candidate run rather than copying these numbers blindly.
-- [ ] The sanitizer jobs pass. Both platform simulators run with ASan/UBSan;
-  WASAPI also runs with TSan.
+  is **528 unit tests**; if tests change, record the final discovered count here.
+- [ ] `sim_coreaudio`, `sim_wasapi` and `sim_camera` pass. The candidate baseline
+  is **115 CoreAudio checks**, **70 WASAPI checks** and **85 camera checks**;
+  record final counts from the candidate run rather than copying these numbers
+  blindly.
+- [ ] The sanitizer jobs pass. Both platform simulators run with ASan/UBSan
+  and TSan.
 - [ ] `sim_camera`, `sim_capture_mac`, `e2e_capture`, `live_capture`,
   `e2e_app_take.sh` and `e2e_refusal.sh` pass where their workflows support them.
 
@@ -48,11 +49,20 @@ release until every **GA blocker** below is closed with evidence.
 
 - [ ] **macOS is Developer ID signed and notarized**, and Gatekeeper opens the
   downloaded app without asking the user to remove quarantine.
-- [ ] **Windows is Authenticode signed** and its supported installer/package
-  does not require a SmartScreen bypass.
-- [ ] A supported update approach and a crash-reporting/privacy decision are
-  implemented or explicitly removed from the v1 specification. This candidate
-  has neither automatic updates nor automatic crash reporting.
+- [ ] **Windows is Authenticode signed** and shows the expected verified
+  publisher. Record the browser-download/MOTW SmartScreen result on a clean
+  machine; if a new publisher still receives a reputation warning, document it
+  as an owner-approved launch limitation rather than calling the signature bad.
+- [x] The v1 update and crash-reporting/privacy decision is explicit: manual,
+  checksum-verified updates and user-reviewed diagnostic exports; no automatic
+  update or crash upload.
+
+The release workflow fails closed on a public tag unless all production secrets
+exist. macOS requires `APPLE_CERTIFICATE_P12`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_PASSWORD` and
+`APPLE_TEAM_ID`; Windows requires `WINDOWS_CERTIFICATE_PFX` and
+`WINDOWS_CERTIFICATE_PASSWORD`. A build-only rehearsal may remain ad-hoc or
+unsigned, and its workflow log labels it as such.
 
 Unsigned packages may be labelled and distributed to informed beta testers;
 they are not a completed consumer release.

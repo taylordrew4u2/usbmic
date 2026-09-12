@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-513%20passing-brightgreen" alt="513 tests passing">
+  <img src="https://img.shields.io/badge/tests-528%20passing-brightgreen" alt="528 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -35,8 +35,8 @@ reference, in a callback that may not allocate, may not lock, and may not log,
 while also writing 24-bit audio to disk and feeding a monitor mix back out under
 a latency budget small enough that nobody in the room hears themselves late.
 
-**Measured result: 0.021 ms of inter-channel drift after a four-hour soak,
-against a 1 ms ceiling — a 47× margin.**
+**Measured result: at most 0.042 ms of inter-channel drift in the current
+four-hour 44.1/48 kHz soaks, against a 1 ms ceiling — more than a 23× margin.**
 
 | | |
 |---|---|
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-513 unit tests, an end-to-end take and an end-to-end refusal through the real
+528 unit tests, an end-to-end take and an end-to-end refusal through the real
 app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
 checks run in CI.
 
@@ -255,20 +255,45 @@ Builds for macOS, Windows and Linux are produced by the
 - **Tagged releases** — all of the above are attached to the
   [Releases page](../../releases). Start here; this is the supported download.
 - **Any commit** — run the Release workflow from the Actions tab
-  (`workflow_dispatch`) and download the artifacts it uploads. Same build, no
-  tag required. Artifacts are wrapped in an extra `.zip` by GitHub and expire
+  (`workflow_dispatch`) and download the artifacts it uploads. It uses the same
+  source revision and package layout, but an untagged rehearsal may be
+  ad-hoc/unsigned. Artifacts are wrapped in an extra `.zip` by GitHub and expire
   after 90 days, so prefer a release unless you specifically need an untagged
   commit.
 
 Each archive and the disk image contain the application, this README, `LICENSE`,
 `LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist.
+Tagged releases also carry `SobStage-<version>-source.zip`, containing the exact
+SobStage and pinned JUCE source revisions, and `SHA256SUMS` covering every
+download.
 
-The macOS disk image is **not signed with an Apple Developer ID or notarized**.
-That needs a paid Apple account and a certificate, not something the source can
-produce. So after downloading you must clear the quarantine flag with one
-`xattr` command before the app will open — right-click → Open is *not* enough,
-and skipping it produces a misleading *"is damaged"* message.
-[Installing → macOS](#macos) has the exact command.
+To check one downloaded file before opening it, keep it beside `SHA256SUMS` and
+run the command for your system (replace the filename when checking another
+asset):
+
+```sh
+# macOS
+grep ' SobStage-macOS.dmg$' SHA256SUMS | shasum -a 256 -c -
+
+# Linux
+grep ' SobStage-Linux.zip$' SHA256SUMS | sha256sum -c -
+```
+
+On Windows, PowerShell can compare the published and measured values directly:
+
+```powershell
+$expected = ((Select-String ' SobStage-Windows.zip$' SHA256SUMS).Line -split '\s+')[0]
+$actual = (Get-FileHash SobStage-Windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw 'SobStage-Windows.zip checksum does not match' }
+```
+
+The workflow distinguishes a public release from a rehearsal. A tagged public
+release fails unless the macOS app is Developer ID signed, notarized and
+stapled and the Windows executable has a valid Authenticode signature. An
+untagged build-only artifact may remain ad-hoc/unsigned for informed testing and
+is labelled that way in its workflow log. [Installing → macOS](#macos) explains
+the extra step for such a rehearsal artifact; a notarized tagged release does
+not need it.
 
 The Blue Yeti in the spec is reference hardware only. Recording-input discovery
 uses a positive external-hardware rule and fails closed rather than guessing:
@@ -305,7 +330,7 @@ sources before distributing a binary or considering a proprietary build.
 ## What to expect on your platform
 
 This is the **v1.12.0 release candidate**. The recording engine is covered by
-513 unit tests plus capture and platform harnesses. What differs by platform is
+528 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
@@ -329,10 +354,11 @@ a public issue, then follow [`SUPPORT.md`](SUPPORT.md).
 
 ## Installing
 
-No installer is needed on any platform — the app is self-contained. The current
-macOS and Windows packages are unsigned release-candidate builds. The manual
-launch workarounds below are acceptable for a private beta, but signing and
-macOS notarization are blockers for a general consumer release; see
+No separate installer is used. The macOS app and Windows portable ZIP carry
+their application runtime; the Linux ZIP expects the system audio/desktop
+libraries listed below. Tagged public artifacts must pass the workflow's
+signature and notarization gates; untagged rehearsal artifacts can be
+ad-hoc/unsigned and are private-beta material only. See
 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ### macOS
@@ -340,14 +366,15 @@ macOS notarization are blockers for a general consumer release; see
 1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
    and an arrow pointing at your **Applications** folder.
 2. Drag the skull onto **Applications**. That is the install.
-3. **First launch only:** open **Terminal** and run this once:
+3. For an **untagged rehearsal artifact only**, open **Terminal** and run this
+   once before first launch:
 
    ```sh
    xattr -dr com.apple.quarantine "/Applications/SobStage.app"
    ```
 
-   Then open the app normally. This step is needed because the build is signed
-   ad-hoc rather than with a paid Apple Developer ID, so macOS quarantines it;
+   Then open the app normally. This step is needed only when the workflow built
+   an ad-hoc rehearsal rather than a notarized Developer ID release;
    without clearing that flag you get *"SobStage is damaged and
    can't be opened"*. Nothing is wrong with the download — see
    [Troubleshooting](#troubleshooting-macos) below for the full explanation.
@@ -365,8 +392,7 @@ macOS notarization are blockers for a general consumer release; see
 
 #### Troubleshooting (macOS)
 
-**"SobStage is damaged and can't be opened. You should eject the
-disk image."**
+**An untagged rehearsal says "SobStage is damaged and can't be opened."**
 
 Nothing is damaged and your download is fine — this is what Gatekeeper says
 when a quarantined app's signature does not satisfy it. Control-click → Open
@@ -379,33 +405,40 @@ xattr -dr com.apple.quarantine "/Applications/SobStage.app"
 Then open the app normally. If you put the app somewhere other than
 Applications, point the command at wherever it actually is.
 
-This is also the fastest route if you would simply rather not click through
-dialogs: the command works regardless of macOS version, and is the only step
-needed after dragging the app across.
-
-The step exists at all because signing an app so macOS trusts it silently
-requires an Apple Developer ID — a paid account plus a certificate — which
-cannot be produced from source code. Any project distributing an unsigned build
-has this same step.
+This workaround is for an explicitly ad-hoc rehearsal artifact, not a public
+release. A tagged release is required to be Developer ID signed, notarized and
+stapled; the workflow fails instead of publishing when those credentials are
+absent.
 
 ### Windows
 
 1. Unzip `SobStage-Windows.zip` anywhere (e.g. a folder in
    `Program Files` or your Desktop).
-2. Run `bin\SobStage.exe` from the unzipped folder. SmartScreen
-   will warn once about an unrecognised app: click **More info → Run anyway**.
+2. Run `bin\SobStage.exe` from the unzipped folder. A tagged public release is
+   Authenticode-signed and should show its verified publisher. SmartScreen also
+   uses download reputation, so a newly published, correctly signed build may
+   still show a reputation warning until it has established trust. An untagged
+   rehearsal can be unsigned and is not a consumer release.
 3. If no microphones appear: Settings → Privacy & security → Microphone →
    make sure **Let desktop apps access your microphone** is on.
 4. Plug in mics and headphones; monitoring is live from launch.
 
 ### Linux
 
-1. Unzip `SobStage-Linux.zip`.
-2. From the unzipped folder, run it:
+1. On Debian or Ubuntu, install the runtime providers used by the verified build:
+
+   ```sh
+   sudo apt-get install libasound2-dev libx11-dev libxext-dev libxinerama-dev \
+     libxrandr-dev libxcursor-dev libxcomposite-dev libfreetype6-dev \
+     libfontconfig1-dev libgl1-mesa-dev
+   ```
+
+2. Unzip `SobStage-Linux.zip`.
+3. From the unzipped folder, run it:
    ```sh
    "bin/SobStage"
    ```
-3. The production build lists only ALSA hardware whose Linux device ancestry
+4. The production build lists only ALSA hardware whose Linux device ancestry
    identifies it as removable. Built-in cards, PipeWire/PulseAudio aliases and
    virtual PCMs are intentionally omitted. If a plugged-in interface does not
    appear, check that your user can access ALSA devices (often through the
@@ -417,7 +450,8 @@ has this same step.
 
 - **One device for other apps (macOS)** — the app publishes a combined input
   device containing the eligible external inputs, created through CoreAudio's
-  public aggregate-device API: no driver, no signing. It is published as a
+  public aggregate-device API: no separately installed HAL driver or separate
+  driver signature is required. The SobStage app itself is still signed. It is published as a
   CoreAudio input choice (for example in Zoom, OBS or a DAW) under a name you set in **Settings →
   Combined device name**, with one channel per mic and the same §3.1 clock
   master the app itself uses. It tracks hot-plug and is removed when the app
@@ -609,7 +643,7 @@ remove those too if you want nothing left.
 ```
 Source/Core/        platform-independent engine logic, no JUCE dependency
                     (including settings persistence and §6.6 crash recovery)
-Source/Platform/    audio backends (CoreAudio, WASAPI/ASIO) + virtual device backends A-D
+Source/Platform/    shipping CoreAudio/WASAPI backends + isolated post-v1 stubs
 Source/UI/          JUCE components: skull meters, main screen, settings and
                     camera panels, the save-location and saved-take cards
 Source/App/         composition root wiring devices + engine + monitor + UI
@@ -709,7 +743,7 @@ to JUCE 8.
 ### Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-513 unit tests passing in CI on Linux, macOS
+528 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
@@ -806,11 +840,11 @@ never what failed:
 | Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
 | Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
 
-The current baseline is 68 CoreAudio checks and 67 WASAPI checks, run by `ctest`
+The current baseline is 115 CoreAudio checks and 70 WASAPI checks, run by `ctest`
 on Linux, macOS and Windows alike. The WASAPI backend's worker thread is a real
 thread doing a real event handshake, so that path is exercised rather than
-reasoned about. Both simulators run under AddressSanitizer and
-UndefinedBehaviorSanitizer; the WASAPI simulator also runs under ThreadSanitizer.
+reasoned about. Both simulators run under AddressSanitizer,
+UndefinedBehaviorSanitizer and ThreadSanitizer.
 The release checklist requires recording the final counts if the candidate gains
 another check during hardening.
 
@@ -856,8 +890,11 @@ The full application builds and links in CI on Linux, macOS and Windows, so
 - `CameraController` compiles twice: once as it ships (camera path compiled out
   on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
   stand-in `juce_video`, via the `sim_camera` target. That simulator executes
-  enumeration, selection, arrival and removal; real device open, preview and
-  recording still need macOS or Windows hardware.
+  enumeration, selection, arrival/removal, open failure/retry, a list reorder
+  during open, and a recorded camera unplug/replug. It verifies that an
+  interrupted camera stays out for the rest of that take and its remembered
+  preview reopens only afterwards; real AVFoundation/DirectShow open, preview
+  and recording still need macOS or Windows hardware.
 - `RecoveredTakesPanel` has been rendered against a real interrupted take:
   a session folder with no stop timestamp and four WAVs whose size fields were
   zeroed, as a SIGKILL leaves them. The app found it at launch, repaired all
@@ -872,23 +909,28 @@ saved-take panel listing every file that was written with its size. Pressing
 record a second time started immediately with no card, into a `_2` folder — so
 "asked once, then never again" is a checked claim rather than an intended one.
 
-What that does **not** cover: no camera has been opened. Simulated discovery,
-selection, arrival and removal execute, but `CameraDevice::openDevice`, the live
-viewer and `startRecordingToFile` need a real camera on a real macOS or Windows
-machine. See *Not yet validated against hardware*.
+What that does **not** cover: no physical camera has been opened. The simulator
+drives the `CameraDevice::openDevice` boundary, including failures and a
+hot-plug reorder, but the real AVFoundation/DirectShow path, live viewer and
+`startRecordingToFile` need a camera on a real macOS or Windows machine. See
+*Not yet validated against hardware*.
 
-### Wired but unreportable
+### Hardware signals and safeguards
 
-Two inputs have no source on either platform, so the code that consumes them
-is correct and permanently quiet rather than wrong:
+The app treats unavailable platform evidence as unknown rather than inventing a
+warning. CPU pressure is measured from the audio callback's own deadline usage;
+platform thermal and USB-controller evidence is reported only where the OS can
+provide it. The release matrix still verifies those paths on the supported
+hardware rather than treating a simulator as proof.
 
-- **Thermal throttling** (§6.6). `CpuPressureMonitor` takes it as an argument
-  and acts on it; no backend reports it, so it is always passed `false`. The
-  CPU-pressure half of §6.6 is live, measured from the audio callback's own
-  deadline usage rather than from overall machine load.
+- **Thermal throttling** (§6.6). On macOS, `SystemThermalState` reads
+  `NSProcessInfo.thermalState`; serious and critical states feed the warning.
+  Windows and Linux currently report unknown and retain the callback-deadline
+  pressure check rather than guessing from an unsupported platform signal.
 - **USB host-controller topology** (§14.3). `ControllerContentionDetector`
-  treats unknown topology as unjudgeable and stays silent, which is right —
-  guessing would warn people whose card reader is fine.
+  treats unknown topology as unjudgeable and stays silent. No current backend
+  populates a dependable controller ID; implementing that requires a separate
+  OS-registry mapping and physical validation.
 
 ### Deliberately stubbed
 
@@ -908,19 +950,20 @@ something that cannot be obtained from source code:
 | C — licensed signed virtual cable | Interface + stub | commercial per-seat license (VB-Audio / VAC / Thesycon) |
 | D — own attestation-signed WDM driver | Interface + stub | registered legal entity, EV certificate, Partner Center |
 
-### Not code, and therefore not done
+### Release-owner gates
 
 These release gates require credentials, hardware or distribution operations
 outside the source tree:
 
-- Apple Developer ID signing and notarization of the macOS build.
-- Windows code-signing certificate and signed installer.
-- Legal entity registration and EV certificate procurement, which §13 says
-  should start on day one because backends C and D are gated on it.
-- macOS `AudioServerPlugIn` bundle installation flow (the plugin itself is in
-  scope for v1; the signed install is not until the certificate exists).
-- A production crash-reporting decision and implementation, and a supported
-  update path. They are goals in the spec, not capabilities of this candidate.
+- Add the Apple Developer ID/notarization and Windows Authenticode credentials
+  named in `RELEASE_CHECKLIST.md`; the release workflow refuses a public tag
+  without them and verifies signatures again after packaging.
+- Complete owner/legal/privacy/licensing sign-off and the physical matrix.
+
+An installed macOS HAL plugin, Windows virtual input, automatic crash upload
+and automatic updating are explicitly outside v1. The shipped macOS combined
+input is transient and uses CoreAudio's public aggregate-device API; Windows v1
+is the standalone recorder and monitor.
 
 ### Not yet validated against hardware
 
@@ -929,15 +972,16 @@ on a real Mac at 44.1 kHz, but no completed physical-microphone take has passed
 the matrix. In particular:
 
 - **§3.4 passes against simulated clocks, and only those.** `Tools/soak_drift`
-  runs four dissimilar clocks (0 / +100 / −80 / +45 PPM) for four hours and
-  measures inter-channel drift at the end: **1 sample = 0.021 ms** against the
-  1 ms ceiling, zero underruns, each loop settling within 0.4 PPM of its true
-  offset. Simulated offsets are steady, though; real crystals wander with
-  temperature and load, so the hardware run is still owed. What this does
+  runs four dissimilar clocks (+40 / +100 / −80 / +45 PPM) for four hours at
+  both 44.1 and 48 kHz. The current results are **1 sample = 0.023 ms** at
+  44.1 kHz and **2 samples = 0.042 ms** at 48 kHz against the 1 ms ceiling,
+  with zero underruns. Simulated offsets are steady, though; real crystals
+  wander with temperature and load, so the hardware run is still owed. What this does
   retire is the question of whether the *software* holds alignment — it does,
   and it did not before the two bugs below were found.
 - **§5.4 latency ceiling** — the 10 ms ceiling must be confirmed by loopback on
-  macOS, Windows ASIO, and Windows WASAPI exclusive.
+  macOS CoreAudio and Windows WASAPI exclusive. Add ASIO only if a real ASIO
+  path later ships.
 - Hostile-event matrix, card throughput on real slow media, bus-power
   exhaustion, and the §10.7 novice acceptance test.
 - **The card-removal path is proven at the pipeline, not in the running app.**
@@ -949,8 +993,10 @@ the matrix. In particular:
   the take, finalizing, and showing the alert are wired to that flag and each
   tested or exercised separately, but the four together need a real card to
   pull out.
-- **No camera has been opened.** `sim_camera` executes discovery, selection,
-  arrival and removal, but device open, preview and recording remain untested.
+- **No physical camera has been opened.** `sim_camera` executes discovery,
+  selection, arrival/removal, open failure/retry, a topology reorder during
+  open, and the no-false-recovery policy for a mid-take unplug/replug, but real
+  device open, preview and recording remain untested.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file
   costs per second against the estimate the remaining-time figure uses

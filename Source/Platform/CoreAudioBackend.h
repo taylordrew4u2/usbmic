@@ -23,6 +23,9 @@ struct CoreAudioStream;
 /// Continuity, wireless, aggregate, and virtual inputs are not recording
 /// sources. Hotplug arrives via
 /// kAudioHardwarePropertyDevices property listeners, never a timer (§2).
+/// Every open stream also watches its nominal rate, alive state, and processor
+/// overload property; those callbacks only touch atomics because CoreAudio may
+/// deliver overload notifications on the device IO thread.
 class CoreAudioBackend : public IAudioBackend
 {
 public:
@@ -52,6 +55,7 @@ public:
 
     std::vector<StreamFailure> takeStreamFailures() override;
     uint64_t getFramesDroppedByBackend() const override;
+    uint64_t getOutputGlitchCount() const override;
 
 private:
     DeviceChangeCallback deviceChangeCallback;

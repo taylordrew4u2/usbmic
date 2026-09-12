@@ -803,6 +803,27 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         return false;
     }
 
+    // Re-resolve the physical device evidence when an input is actually
+    // opened. Enumeration is deliberately fail-closed, but it is not an
+    // authorization token: endpoint state can change between the list refresh
+    // and this call, and this public method must also be safe when called by a
+    // future path that did not originate in enumerateInputDevices().
+    if (isInput)
+    {
+        ComPtr<IMMDeviceEnumerator> eligibilityEnumerator;
+        const bool hasEnumerator = SUCCEEDED (CoCreateInstance (
+            __uuidof (MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            __uuidof (IMMDeviceEnumerator),
+            reinterpret_cast<void**> (eligibilityEnumerator.GetAddressOf())));
+
+        if (! hasEnumerator
+            || ! isDirectlyAttachedExternalInput (device.Get(), eligibilityEnumerator.Get()))
+        {
+            lastOpenError = "SobStage only records from directly connected external audio hardware.";
+            return false;
+        }
+    }
+
     auto stream = std::make_unique<WasapiStream>();
     stream->callback = std::move (callback);
     stream->isInput = isInput;

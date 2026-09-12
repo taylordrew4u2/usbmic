@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <thread>
 #include <vector>
@@ -58,6 +59,29 @@ std::vector<WriteChannelSpec> twoChannels()
 {
     return { { "01_Left", 0.0f }, { "02_Right", 0.0f } };
 }
+
+struct ScopedTempTree
+{
+    explicit ScopedTempTree (const char* label)
+    {
+        const auto nonce = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        root = std::filesystem::path (tempDir())
+             / (std::string ("sobstage-") + label + "-" + std::to_string (nonce));
+        std::filesystem::create_directories (root / "card");
+        std::filesystem::create_directories (root / "mirror");
+    }
+
+    ~ScopedTempTree()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all (root, ignored);
+    }
+
+    std::string card() const { return (root / "card").string(); }
+    std::string mirror() const { return (root / "mirror").string(); }
+
+    std::filesystem::path root;
+};
 
 } // namespace
 
@@ -616,6 +640,56 @@ TEST_CASE (WritePipeline_TheMixStillCarriesEveryChannelAfterDegrading)
     std::remove ((dir + "/sum_a.wav").c_str());
     std::remove ((dir + "/sum_b.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
+}
+
+TEST_CASE (WritePipeline_MirroredDegradationStopsBothStemSetsAndKeepsBothMixes)
+{
+    // Ring pressure exists before either destination: card and mirror consume
+    // the same drained block on this one writer thread. Emergency mix-only mode
+    // therefore has to shed the stems on BOTH destinations. Keeping mirror
+    // stems would preserve the work that caused the shared queue to fill, not
+    // preserve audio that has already fallen out of it.
+    ScopedTempTree files ("mirrored-degradation");
+    WritePipeline p;
+    REQUIRE (p.start (files.card(), twoChannels(), 48000.0, 16,
+                      "2026-09-12T00:00:00Z", files.mirror()));
+    REQUIRE (p.isMirroring());
+
+    p.fallBackToMixOnly();
+    REQUIRE (p.isMixOnly());
+
+    std::vector<float> left (512, 0.25f), right (512, 0.25f);
+    const float* channels[] = { left.data(), right.data() };
+    REQUIRE (p.pushBlock (channels, 2, 512));
+    p.stop();
+
+    // Deliberate degradation is explicit state, not a destination failure.
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+    REQUIRE_FALSE (p.hasMirrorWriteFailed());
+
+    for (const auto& folder : { files.card(), files.mirror() })
+    {
+        for (const char* stem : { "/01_Left.wav", "/02_Right.wav" })
+        {
+            std::ifstream file (folder + stem, std::ios::binary);
+            REQUIRE (file.is_open());
+            REQUIRE (readU32LE (file, kDataSizeOffset) == 0);
+        }
+
+        std::ifstream mix (folder + "/MIX.wav", std::ios::binary);
+        REQUIRE (mix.is_open());
+        REQUIRE (readU32LE (mix, kDataSizeOffset) == 512 * 2);
+    }
+
+    // The safety copy remains meaningful in degraded mode: it carries the same
+    // complete MIX as the card, while neither side pretends its stems continued.
+    std::ifstream cardMix (files.card() + "/MIX.wav", std::ios::binary);
+    std::ifstream mirrorMix (files.mirror() + "/MIX.wav", std::ios::binary);
+    const std::string cardBytes ((std::istreambuf_iterator<char> (cardMix)),
+                                 std::istreambuf_iterator<char>());
+    const std::string mirrorBytes ((std::istreambuf_iterator<char> (mirrorMix)),
+                                   std::istreambuf_iterator<char>());
+    REQUIRE (cardBytes == mirrorBytes);
 }
 
 TEST_CASE (WritePipeline_AFreshTakeIsNotStillDegraded)

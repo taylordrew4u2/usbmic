@@ -20,6 +20,9 @@ const juce::Colour SkullMeterComponent::kTertiaryText      { palette::tertiary }
 
 SkullMeterComponent::SkullMeterComponent()
 {
+    setWantsKeyboardFocus (true);
+    setAccessible (true);
+    updateAccessibilityText();
     startTimerHz (60); // §8.2: UI polls at 60Hz, independent of the audio callback
 }
 
@@ -33,14 +36,33 @@ void SkullMeterComponent::timerCallback()
     if (metering == nullptr)
         return;
 
+    const bool wasClipped = currentClip;
+    const int previousClipCount = currentClipCount;
     currentLevelDb = metering->tick (1.0 / 60.0);
     currentPeakDb = metering->getPeakHoldDb();
     currentClip = metering->isClipped();
     currentClipCount = metering->getClipCount();
+
+    // Keep a screen reader's value useful without publishing a 60 Hz stream
+    // of tiny level changes. Whole decibels, clip transitions and clip-count
+    // changes are the same information a sighted user can actually read.
+    const int accessibleLevel = juce::roundToInt (currentLevelDb);
+    if (accessibleLevel != lastAccessibleLevelDb
+        || currentClip != wasClipped || currentClipCount != previousClipCount)
+    {
+        lastAccessibleLevelDb = accessibleLevel;
+        updateAccessibilityText();
+    }
+
     repaint();
 }
 
 void SkullMeterComponent::mouseUp (const juce::MouseEvent&)
+{
+    performPrimaryAction();
+}
+
+void SkullMeterComponent::performPrimaryAction()
 {
     // Tap the clip eyes to acknowledge and clear the latch (§9.1). Clearing a
     // clip is the click's first meaning; renaming takes the click only when
@@ -53,6 +75,57 @@ void SkullMeterComponent::mouseUp (const juce::MouseEvent&)
 
     if (onNameClicked)
         onNameClicked();
+}
+
+bool SkullMeterComponent::keyPressed (const juce::KeyPress& key)
+{
+    // This component exposes AccessibilityRole::button. Both Return and Space
+    // activate a focused button; letting Space bubble instead triggered the
+    // main window's global monitor-mute shortcut and made keyboard activation
+    // do something unrelated and potentially alarming.
+    if (key.getKeyCode() != juce::KeyPress::returnKey
+        && key != juce::KeyPress::spaceKey)
+        return false;
+
+    performPrimaryAction();
+    return true;
+}
+
+std::unique_ptr<juce::AccessibilityHandler> SkullMeterComponent::createAccessibilityHandler()
+{
+    juce::AccessibilityActions actions;
+    actions.addAction (juce::AccessibilityActionType::press,
+                       [this] { performPrimaryAction(); });
+
+    // A strip behaves like a named button: activate once to clear a clip, or
+    // to open its rename dialog when it is healthy. Supplying the press action
+    // is what lets VoiceOver and Narrator do the same thing as Return/click.
+    return std::make_unique<juce::AccessibilityHandler> (
+        *this, juce::AccessibilityRole::button, std::move (actions));
+}
+
+void SkullMeterComponent::updateAccessibilityText()
+{
+    const auto readableName = micName.isNotEmpty() ? micName : juce::String ("Unnamed microphone");
+    setTitle (readableName + " meter");
+
+    juce::String description;
+    if (deviceName.isNotEmpty())
+        description << deviceName << ". ";
+
+    if (noSignal)
+        description << "No signal. ";
+    else
+        description << juce::String (currentLevelDb, 0) << " decibels. ";
+
+    if (currentClip)
+        description << "Clipping, " << juce::jmax (1, currentClipCount)
+                    << (currentClipCount == 1 ? " clip. " : " clips. ")
+                    << "Press Return or Space to clear the clip warning. ";
+    else
+        description << "Press Return or Space to rename this microphone. ";
+
+    setDescription (description.trim());
 }
 
 void SkullMeterComponent::setHighlighted (bool shouldHighlight)
@@ -106,6 +179,15 @@ void SkullMeterComponent::paint (juce::Graphics& g)
         paintStrip (g, bounds);
     else
         paintTall (g, bounds);
+
+    // Keyboard navigation must be as visible as pointer hover. This ring is
+    // deliberately outside the meter's colour vocabulary so it cannot be
+    // mistaken for the highlighted/tapped microphone state.
+    if (hasKeyboardFocus (true))
+    {
+        g.setColour (AppLookAndFeel::accent);
+        g.drawRoundedRectangle (bounds.reduced (2.0f), 8.0f, 2.5f);
+    }
 }
 
 void SkullMeterComponent::paintTall (juce::Graphics& g, juce::Rectangle<float> bounds)

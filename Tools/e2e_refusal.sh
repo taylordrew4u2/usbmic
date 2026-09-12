@@ -27,14 +27,18 @@ restore() { [ -f /tmp/asoundrc.backup ] && cp /tmp/asoundrc.backup "$HOME/.asoun
 trap restore EXIT
 
 RECORDINGS="$HOME/RECORDINGS"; mkdir -p "$RECORDINGS"
-BEFORE=$(ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1 || true)
+newest_recording() {
+  find "$RECORDINGS" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+    | LC_ALL=C sort | tail -1
+}
+BEFORE=$(newest_recording)
 
 pkill Xvfb 2>/dev/null || true; sleep 1
 Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
 sleep 2
 DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-refusal.log 2>&1 &
 APP_PID=$!
-for i in $(seq 1 60); do DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null 2>&1 && break; sleep 1; done
+for _ in {1..60}; do DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null 2>&1 && break; sleep 1; done
 sleep 4
 click() { DISPLAY="$DISPLAY_NUM" xdotool mousemove "$1" "$2" click 1; }
 click 467 702; sleep 1            # Recovered card's Done, if it is up
@@ -42,7 +46,7 @@ DISPLAY="$DISPLAY_NUM" import -window root /tmp/mma-e2e-refusal-before.png
 click 1023 617; sleep 12          # record; give the proof time to act
 DISPLAY="$DISPLAY_NUM" import -window root /tmp/mma-e2e-refusal-after.png
 
-AFTER=$(ls -1 "$RECORDINGS" 2>/dev/null | sort | tail -1 || true)
+AFTER=$(newest_recording)
 if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
   echo "a take folder was created: $AFTER"
   python3 - "$RECORDINGS/$AFTER" <<'PY'

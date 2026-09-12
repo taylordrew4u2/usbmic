@@ -23,7 +23,7 @@ class MainComponent : public juce::Component,
 {
 public:
     static constexpr int kUiRefreshHz = 60;     // §8.2 meter polling
-    static constexpr int kStatusRefreshHz = 2;  // disk-backed status; see refreshStatus()
+    static constexpr int kStatusRefreshHz = 2;  // background-sampled status; see refreshStatus()
 
     explicit MainComponent (Application& app);
     ~MainComponent() override;

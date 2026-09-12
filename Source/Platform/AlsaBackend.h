@@ -75,9 +75,8 @@ private:
     std::vector<std::unique_ptr<AlsaStream>> openStreams;
 
     /// inotify watch on /dev/snd, so hotplug arrives from the kernel rather
-    /// than a poll (§2). Its own thread; -1 when unavailable.
-    int inotifyFd = -1;
-    int inotifyWatch = -1;
+    /// than a timer (§2). The watcher owns an explicit eventfd wake-up so its
+    /// thread has a bounded teardown even when no device event ever arrives.
     std::unique_ptr<struct AlsaHotplugWatcher> hotplug;
 
     std::vector<AudioDeviceDescriptor> enumerate (bool wantInput) const;

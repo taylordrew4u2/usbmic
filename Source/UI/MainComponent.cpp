@@ -109,7 +109,7 @@ MainComponent::MainComponent (Application& app)
         // Opening or releasing the camera immediately is what makes the toggle
         // mean something: the view appears or goes when it is clicked, not when
         // the next take starts.
-        application.openEnabledCameras();
+        application.openEnabledCameras (true);
         refreshCameras();
     };
 
@@ -553,11 +553,11 @@ void MainComponent::watchTake (bool isRecording)
     wasRecording = isRecording;
 
     // The OS does not announce a camera going away; it just stops listing it.
-    // Re-listed every couple of seconds, which is cheap -- and OUTSIDE a take
-    // as well as during one, which it was not: a camera plugged in or pulled
-    // out between takes was not even noticed, let alone said, so someone who
-    // connected a camera and pressed record found out it was missing from the
-    // take afterwards.
+    // Re-listed every couple of seconds on CameraController's discovery worker
+    // -- and OUTSIDE a take as well as during one, which it was not: a camera
+    // plugged in or pulled out between takes was not even noticed, let alone
+    // said, so someone who connected a camera and pressed record found out it
+    // was missing from the take afterwards.
     if (--ticksUntilCameraRecheck <= 0)
     {
         ticksUntilCameraRecheck = kStatusRefreshHz * 2;
@@ -689,6 +689,10 @@ void MainComponent::promptRenameMic (int index)
 {
     // §14.6: click the skull that lit up when you tapped the mic, type who it
     // is. The name follows the physical port across replug (§2.4).
+    const auto target = application.getMicRenameTarget (index);
+    if (! target.isValid())
+        return;
+
     auto* window = new juce::AlertWindow ("Name this microphone",
                                           "The name goes on its skull and into its recording's filename.",
                                           juce::MessageBoxIconType::QuestionIcon, this);
@@ -697,30 +701,33 @@ void MainComponent::promptRenameMic (int index)
     window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
     window->enterModalState (true,
-        juce::ModalCallbackFunction::create ([this, window, index] (int result)
+        juce::ModalCallbackFunction::create ([this, window, target] (int result)
         {
             if (result == 1)
-                application.setMicAssignedName (index, window->getTextEditorContents ("name"));
+                application.setMicAssignedName (target, window->getTextEditorContents ("name"));
         }),
         true); // delete the window when dismissed
 }
 
 void MainComponent::refreshStatus()
 {
-    const int micCount = application.getIncludedMicCount();
+    // The capture-rebuilt callback is the source of truth after construction.
+    // The first refresh performs the initial bind because Application has
+    // already opened monitoring before this component exists. In particular,
+    // do not rebuild the channel plan at 60 Hz just to rediscover an unchanged
+    // count.
+    if (lastMicCount < 0)
+        rebindMeters();
 
-    if (micCount != lastMicCount)
-    {
-        // §6.5: mics come and go without a dialog and without interrupting a take.
-        mainScreen.setMicCount (micCount);
+    const int micCount = juce::jmax (0, lastMicCount);
 
-        lastMicCount = micCount;
-    }
-
-    // Belt and braces on top of onCaptureRebuilt: rebinding every frame means
-    // even a rebuild path that forgets the callback cannot leave a stale
-    // pointer alive for more than one tick.
-    rebindMeters();
+    // Liveness can change mid-take without rebuilding the frozen channel set.
+    // This is cheap state, unlike names/product strings: those require a
+    // channel-plan rebuild and are bound only when capture itself changes.
+    for (int i = 0; i < micCount; ++i)
+        if (auto* skull = mainScreen.getSkullMeter (i))
+            skull->setNoSignal (application.getChannelMetering (i) == nullptr
+                                || ! application.isMicLive (i));
 
     // §14.6: light the skull of whoever was just heard alone.
     mainScreen.setHighlightedMic (application.getTappedChannel());
@@ -740,9 +747,8 @@ void MainComponent::refreshStatus()
         ? "Recording for " + Application::formatDuration (application.getElapsedRecordingSeconds())
         : juce::String());
 
-    // Remaining time reads free space off the destination volume, so it runs at
-    // kStatusRefreshHz rather than every frame -- 60 stat() calls a second on a
-    // slow card is exactly the contention §14.3 warns about.
+    // Remaining time consumes the filesystem worker's latest snapshot at the
+    // status cadence. No volume or per-file stat happens on this thread.
     if (--framesUntilStatusRefresh <= 0)
     {
         framesUntilStatusRefresh = kUiRefreshHz / kStatusRefreshHz;
@@ -761,15 +767,14 @@ void MainComponent::refreshStatus()
             ? "Saving into " + application.getCurrentSessionFolder()
             : "Saves to " + application.getDestinationFolder());
 
-        // §6.2/§10.6: the files themselves, growing. Read off the folder rather
-        // than assumed from the channel count, so what is on screen is what is
-        // on the disk. On the slow tick because it stats the destination
-        // volume, which §14.3 warns is exactly where contention shows up.
+        // §6.2/§10.6: the files themselves, growing. These are the worker's
+        // sampled file sizes rather than names inferred from channel count, so
+        // what is on screen still reflects what is actually on disk.
         juce::String savingLine;
 
         if (isRecording)
         {
-            const auto files = Application::listSessionFiles (application.getCurrentSessionFolder());
+            const auto files = application.getCurrentSessionFiles();
             int64_t total = 0;
 
             for (const auto& file : files)
@@ -811,8 +816,8 @@ void MainComponent::refreshStatus()
 
         mainScreen.setMonitorProblemText (monitorProblem);
 
-        // §10.5/§6.5/§6.6 guidance. On the slow tick because it stats the
-        // destination volume and runs the level detectors.
+        // §10.5/§6.5/§6.6 guidance. The slow tick consumes background disk
+        // snapshots and advances the level detectors.
         mainScreen.setAdviceText (application.pollStatusAdvice (1.0 / kStatusRefreshHz));
 
         mainScreen.setCameraCount (application.getCameraController().getSelection().getEnabledCount());
@@ -849,6 +854,7 @@ void MainComponent::rebindMeters()
     mainScreen.setMixMetering (application.getMixMetering());
 
     const int micCount = application.getIncludedMicCount();
+    lastMicCount = micCount;
 
     // Size the strip set BEFORE binding anything into it.
     //
@@ -930,7 +936,8 @@ void MainComponent::refreshAdvanced()
     for (const auto& name : application.getOutputDeviceNames())
         outputs.add (juce::String (name));
 
-    advancedPanel.setOutputDevices (outputs, {});
+    advancedPanel.setOutputDevices (outputs,
+                                    juce::String (application.getSelectedOutputDeviceName()));
 
     const int micCount = application.getIncludedMicCount();
     juce::StringArray micNames;
@@ -1006,7 +1013,7 @@ void MainComponent::toggleCameras()
         mainScreen.releaseCameraViews();
 
         application.getCameraController().refreshCameras();
-        application.openEnabledCameras();
+        application.openEnabledCameras (true);
         refreshCameras();
     }
     else
@@ -1032,6 +1039,9 @@ void MainComponent::toggleCameras()
 void MainComponent::refreshCameras()
 {
     auto& controller = application.getCameraController();
+
+    if (controller.applyPendingCameraList())
+        application.announceCameraChanges();
 
     cameraPanel.setUnavailableReason (controller.getUnavailableReason());
     cameraPanel.setProblemText (controller.getProblem());

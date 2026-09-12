@@ -14,6 +14,7 @@ AppSettings populated()
     s.mirrorEnabled = false;
     s.aggregateName = "Kitchen Table";
     s.masterVolume = 42.0;
+    s.rememberedOutputDeviceId = "usb-headphone-amp@3";
     s.cameraPreviewFullQuality = true;
     s.cameraTileScale = 3;
 
@@ -43,8 +44,19 @@ TEST_CASE (AppSettings_everythingSurvivesARoundTrip)
     REQUIRE_FALSE (restored.mirrorEnabled);
     REQUIRE (restored.aggregateName == std::string ("Kitchen Table"));
     REQUIRE (restored.masterVolume == 42.0);
+    REQUIRE (restored.rememberedOutputDeviceId == std::string ("usb-headphone-amp@3"));
     REQUIRE (restored.cameraPreviewFullQuality);
     REQUIRE (restored.cameraTileScale == 3);
+}
+
+TEST_CASE (AppSettings_OutputChoiceDefaultsToAutomaticAndRoundTripsWhenChosen)
+{
+    REQUIRE (AppSettings::fromJsonString ("{}").rememberedOutputDeviceId.empty());
+
+    AppSettings settings;
+    settings.rememberedOutputDeviceId = "headphones-at-left-port";
+    REQUIRE (AppSettings::fromJsonString (settings.toJsonString()).rememberedOutputDeviceId
+             == std::string ("headphones-at-left-port"));
 }
 
 TEST_CASE (AppSettings_aMicrophoneKeepsItsNameAndTrimAcrossLaunches)

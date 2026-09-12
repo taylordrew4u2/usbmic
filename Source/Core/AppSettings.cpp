@@ -12,6 +12,7 @@ JsonValue AppSettings::toJson() const
     root["mirrorEnabled"] = JsonValue (mirrorEnabled);
     root["aggregateName"] = JsonValue (aggregateName);
     root["masterVolume"] = JsonValue (masterVolume);
+    root["rememberedOutputDeviceId"] = JsonValue (rememberedOutputDeviceId);
     root["cameraPreviewFullQuality"] = JsonValue (cameraPreviewFullQuality);
     root["cameraTileScale"] = JsonValue (static_cast<double> (cameraTileScale));
     root["combineVideoAndAudio"] = JsonValue (combineVideoAndAudio);
@@ -83,6 +84,7 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("mirrorEnabled")) s.mirrorEnabled = p->asBool (true);
     if (auto* p = v.find ("aggregateName")) s.aggregateName = p->asString (s.aggregateName);
     if (auto* p = v.find ("masterVolume")) s.masterVolume = p->asDouble (s.masterVolume);
+    if (auto* p = v.find ("rememberedOutputDeviceId")) s.rememberedOutputDeviceId = p->asString();
     if (auto* p = v.find ("cameraPreviewFullQuality")) s.cameraPreviewFullQuality = p->asBool (false);
     if (auto* p = v.find ("cameraTileScale")) s.cameraTileScale = static_cast<int> (p->asDouble (1.0));
     if (auto* p = v.find ("combineVideoAndAudio")) s.combineVideoAndAudio = p->asBool (false);

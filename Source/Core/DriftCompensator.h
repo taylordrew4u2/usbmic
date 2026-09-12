@@ -12,7 +12,12 @@ namespace mma {
 class DriftCompensator
 {
 public:
-    static constexpr double kKp = 1.0e-6;              // proportional gain, per sample of fill error
+    // Five PPM per fill sample reaches the +/-200 PPM safety clamp at 40
+    // samples of phase debt: under 1 ms even at 44.1 kHz. The old 1 PPM per
+    // sample gain needed 200 samples, so an ordinary short take could remain
+    // over §3.4's alignment ceiling even though a long soak eventually settled.
+    // The output is still independently bounded to a 5 PPM/s slew below.
+    static constexpr double kKp = 5.0e-6;
     static constexpr double kKi = 1.0e-8;               // integral gain, per sample of fill error
     static constexpr double kMaxRatioDeviationPpm = 200.0; // clamp: max +/-200ppm ratio deviation
     static constexpr double kMaxSlewPpmPerSecond = 5.0;     // never correct instantaneously

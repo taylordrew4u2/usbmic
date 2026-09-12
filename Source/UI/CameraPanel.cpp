@@ -165,6 +165,8 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         row.nameEditor = std::make_unique<juce::TextEditor>();
         row.nameEditor->setText (camera.displayName, juce::dontSendNotification);
         row.nameEditor->setTextToShowWhenEmpty ("Name this camera", AppLookAndFeel::tertiary);
+        row.nameEditor->setTitle ("Name " + camera.displayName);
+        row.nameEditor->setDescription ("This name is used in the camera recording's filename.");
         row.nameEditor->onFocusLost = [this, id = camera.id, editor = row.nameEditor.get()] {
             if (onCameraRenamed)
                 onCameraRenamed (id, editor->getText());
