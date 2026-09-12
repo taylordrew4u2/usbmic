@@ -42,7 +42,9 @@ TEST_CASE (AlsaInputPolicy_RemovableAncestorIsAccepted)
 {
     TemporaryTree tree;
     const auto usbDevice = tree.root / "devices" / "usb" / "1-2";
-    const auto audioInterface = usbDevice / "1-2:1.0" / "sound" / "card4";
+    // The exact sysfs component spelling is irrelevant to this policy test.
+    // Avoid ':' so the same synthetic tree is legal on Windows runners too.
+    const auto audioInterface = usbDevice / "interface-1.0" / "sound" / "card4";
 
     std::filesystem::create_directories (audioInterface);
     writeRemovable (usbDevice, "removable");
