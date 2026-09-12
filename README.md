@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-498%20passing-brightgreen" alt="498 tests passing">
+  <img src="https://img.shields.io/badge/tests-503%20passing-brightgreen" alt="503 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-498 unit tests, an end-to-end take and an end-to-end refusal through the real
+503 unit tests, an end-to-end take and an end-to-end refusal through the real
 app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
 checks run in CI.
 
@@ -305,7 +305,7 @@ sources before distributing a binary or considering a proprietary build.
 ## What to expect on your platform
 
 This is the **v1.12.0 release candidate**. The recording engine is covered by
-498 unit tests plus capture and platform harnesses. What differs by platform is
+503 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
@@ -709,17 +709,17 @@ to JUCE 8.
 ### Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-498 unit tests passing in CI on Linux, macOS
+503 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
 |---|---|---|
-| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 18 |
+| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 20 |
 | `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 9 |
 | `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 13 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 8 |
 | `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 11 |
-| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 18 |
+| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 20 |
 | `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | `live_capture` |
 | `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 7 |
 | `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 28 |
