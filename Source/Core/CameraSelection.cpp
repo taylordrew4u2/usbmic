@@ -14,25 +14,16 @@ void CameraSelection::setAvailableCameras (std::vector<CameraDeviceInfo> cameras
     for (const auto& camera : available)
         choices.emplace (camera.id, Choice {});
 
-    // The first camera ever seen is switched on, so plugging a webcam in and
-    // looking at the screen is the whole setup. Only once: a second camera
-    // appearing later is an addition the user makes, not one the app makes on
-    // their behalf and their disk.
-    if (! haveAutoEnabledOne && ! available.empty())
-    {
-        choices[available.front().id].enabled = true;
-        haveAutoEnabledOne = true;
-    }
+    // Discovery is not consent. A newly seen camera stays off until the user
+    // deliberately enables it in the camera panel; otherwise a fresh launch
+    // can light the built-in camera and raise a privacy prompt before the user
+    // has asked SobStage to use video at all.
 }
 
 void CameraSelection::setEnabled (const std::string& id, bool enabled)
 {
     choices[id].enabled = enabled;
 
-    // A user who turns a camera on by hand has made the decision this flag
-    // exists to avoid making for them, so it must not be made again later.
-    if (enabled)
-        haveAutoEnabledOne = true;
 }
 
 bool CameraSelection::isEnabled (const std::string& id) const

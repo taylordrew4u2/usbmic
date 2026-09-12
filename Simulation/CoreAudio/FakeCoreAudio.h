@@ -51,6 +51,13 @@ struct DeviceSpec
     /// already runs at the requested rate.
     bool allowRateChange = true;
 
+    /// Number of nominal-rate reads that keep returning the old value after a
+    /// successful property write. CoreAudio applies this property
+    /// asynchronously on real hardware. Zero is immediate; a deliberately huge
+    /// value models a driver that acknowledges the write but never settles
+    /// within the backend's bounded confirmation window.
+    int rateChangeDelayReads = 0;
+
     /// false models a device that will not grant exclusive use -- Bluetooth
     /// output, or a card another process has hogged.
     bool allowHogMode = true;

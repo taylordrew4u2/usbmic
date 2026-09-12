@@ -12,8 +12,14 @@ std::vector<HelpTopic> HelpTopics::all()
 {
     return {
         { "The recording is silent, or the skull never fills",
-          "On a mixer or interface the sound has to reach the USB cable before "
-          "this app can hear it. Check these, in this order:\n"
+          "SobStage lists only directly attached external microphone hardware. "
+          "It intentionally leaves out the computer's microphone, known phone "
+          "or Continuity inputs, Bluetooth/AirPlay and software or aggregate "
+          "inputs. Hardware that identifies itself as generic external USB "
+          "audio can still appear, whatever its physical form. On a Mac, "
+          "eligible hardware uses USB, FireWire or Thunderbolt. On a mixer or "
+          "interface the sound has to reach "
+          "the cable before this app can hear it. Check these, in this order:\n"
           "1. The microphone has a skull on the main screen. If it does not, "
           "open Settings and tick its box, and the socket under it.\n"
           "2. This app is allowed to use the microphone: System Settings > "
@@ -80,9 +86,12 @@ std::vector<HelpTopic> HelpTopics::all()
 
         { "Still stuck",
           "Settings > Export diagnostics bundles the log, the list of devices "
-          "the system reported and recent session details, never audio, into "
-          "one file. Send it with a sentence on what you expected and what "
-          "happened instead." },
+          "the system reported, local destination paths and recent session "
+          "details into one file. The zip never includes audio, but it can "
+          "include device names and identifiers, file paths and session names, "
+          "so review it before posting publicly. Report the problem at "
+          "https://github.com/taylordrew4u2/usbmic/issues/new with a sentence "
+          "on what you expected and what happened instead." },
     };
 }
 

@@ -35,6 +35,10 @@ struct Device
     int hogOwner = -1;
 
     std::vector<IoProcRegistration> procs;
+
+    bool rateChangePending = false;
+    double pendingRate = 0.0;
+    int rateReadsRemaining = 0;
 };
 
 struct Listener
@@ -281,6 +285,17 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
 
         case kAudioDevicePropertyNominalSampleRate:
         {
+            if (device->rateChangePending)
+            {
+                if (device->rateReadsRemaining > 0)
+                    --device->rateReadsRemaining;
+                else
+                {
+                    device->spec.currentRate = device->pendingRate;
+                    device->rateChangePending = false;
+                }
+            }
+
             const Float64 rate = device->spec.currentRate;
             return deliver (&rate, sizeof (rate), ioSize, outData);
         }
@@ -338,7 +353,18 @@ OSStatus AudioObjectSetPropertyData (AudioObjectID object,
             if (! supported)
                 return kAudioHardwareUnspecifiedError;
 
-            device->spec.currentRate = requested;
+            if (device->spec.rateChangeDelayReads > 0)
+            {
+                device->rateChangePending = true;
+                device->pendingRate = requested;
+                device->rateReadsRemaining = device->spec.rateChangeDelayReads;
+            }
+            else
+            {
+                device->spec.currentRate = requested;
+                device->rateChangePending = false;
+            }
+
             return noErr;
         }
 

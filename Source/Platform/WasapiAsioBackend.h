@@ -13,10 +13,11 @@ namespace mma {
 /// out of this header.
 struct WasapiStream;
 
-/// Windows implementation of IAudioBackend. Prefers ASIO drivers when
-/// present (lowest, most predictable latency, and JUCE's AudioIODeviceType
-/// "ASIO" wraps driver enumeration for us); falls back to WASAPI in
-/// EXCLUSIVE mode only. §5.4: shared-mode WASAPI is explicitly disqualified
+/// Windows implementation of IAudioBackend using WASAPI in EXCLUSIVE mode.
+/// ASIO support remains a separate, explicitly unimplemented virtual-device
+/// backend; merely finding an unrelated ASIO driver on the machine must never
+/// bypass the capability checks for the WASAPI streams this class opens.
+/// §5.4: shared-mode WASAPI is explicitly disqualified
 /// for the monitor path regardless of which app-facing backend (§7) is
 /// active -- it is never selected here even as a last resort, because a
 /// silent 40-100ms mix is worse than telling the user why low-latency
@@ -27,7 +28,7 @@ public:
     WasapiAsioBackend();
     ~WasapiAsioBackend() override;
 
-    std::string getBackendName() const override { return preferAsio ? "ASIO" : "WASAPI (exclusive)"; }
+    std::string getBackendName() const override { return "WASAPI (exclusive)"; }
 
     std::vector<AudioDeviceDescriptor> enumerateInputDevices() override;
     std::vector<AudioDeviceDescriptor> enumerateOutputDevices() override;
@@ -59,7 +60,11 @@ private:
     /// §0.1: where the worker threads leave a stream that stopped on its own.
     StreamFailureSink streamFailures;
 
-    bool preferAsio = false;
+    /// CoInitializeEx can report RPC_E_CHANGED_MODE when JUCE already owns the
+    /// message thread's apartment. Only a successful call earns a matching
+    /// CoUninitialize; otherwise tearing down this backend would pop JUCE's
+    /// COM initialisation instead of our own.
+    bool ownsComInitialisation = false;
     DeviceChangeCallback deviceChangeCallback;
 
     // Opaque IMMNotificationClient registration handle; the concrete COM
@@ -73,9 +78,7 @@ private:
     /// call when none is registered.
     void unregisterNotificationClient();
 
-    bool hasAnyAsioDriverInstalled() const;
     std::vector<AudioDeviceDescriptor> enumerateWasapiDevices (bool wantInput) const;
-    std::vector<AudioDeviceDescriptor> enumerateAsioDevices() const;
 
     /// Opens a WASAPI stream in AUDCLNT_SHAREMODE_EXCLUSIVE. Never opens
     /// shared mode for the monitor path -- see class doc.

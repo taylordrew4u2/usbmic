@@ -16,6 +16,7 @@
 #include <mutex>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -419,6 +420,125 @@ void enumerationReportsNamesAndSeparatesDirections()
     check (! inputs.empty() && inputs.front().isMicrophone, "inputs are marked as microphones");
 }
 
+/// A capture endpoint being active does not make it an eligible SobStage mic.
+/// The physical filter behind it must be directly attached external hardware;
+/// laptop, phone, Bluetooth, and software inputs stay out of the recording.
+void onlyDirectlyAttachedHardwareEnumeratesAsInput()
+{
+    std::printf ("\nOnly directly attached hardware appears as a microphone\n");
+    fakewasapi::reset();
+
+    const auto addInput = [] (const char* id, const char* name,
+                              std::vector<fakewasapi::DeviceNodeSpec> chain)
+    {
+        auto spec = microphone (id, name, { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.physicalInstanceId = chain.empty() ? std::string() : chain.front().instanceId;
+        spec.deviceNodeChain = std::move (chain);
+        fakewasapi::addEndpoint (spec);
+    };
+
+    // The audio function is commonly not marked removable; Windows marks the
+    // top-most physical parent instead. Both positive properties must be on the
+    // same node so a fixed internal USB function cannot borrow one bit from an
+    // unrelated ancestor.
+    addInput ("usb", "USB interface",
+              { { "USB\\VID_1234&PID_5678&MI_00", false, false, true },
+                { "USB\\VID_1234&PID_5678", true, true, true } });
+    addInput ("firewire", "FireWire interface",
+              { { "1394\\VENDOR&MODEL", true, true, true } });
+    addInput ("thunderbolt", "Thunderbolt interface",
+              { { "HDAUDIO\\FUNC_01&VEN_EXT", false, false, true },
+                { "PCI\\VEN_EXT&DEV_AUDIO", false, false, true },
+                { "PCI\\VEN_TBT&DEV_BRIDGE", true, true, true } });
+
+    addInput ("usb-built-in", "Internal webcam microphone",
+              { { "USB\\VID_INTERNAL&PID_CAMERA", false, false, true } });
+    addInput ("usb-phone", "Phone USB audio",
+              { { "USB\\VID_PHONE&PID_AUDIO", false, false, true } });
+    addInput ("generic-removable-uac", "Generic removable USB audio",
+              { { "USB\\VID_GENERIC&PID_UAC", true, true, true } });
+    addInput ("split-proof", "Malformed removable USB audio",
+              { { "USB\\VID_SPLIT&PID_AUDIO", true, false, true },
+                { "USB\\VID_SPLIT", false, true, true } });
+    addInput ("built-in", "Laptop microphone",
+              { { "HDAUDIO\\FUNC_01&VEN_1234", false, false, true },
+                { "PCI\\VEN_INTERNAL&DEV_AUDIO", false, false, true } });
+    addInput ("bluetooth", "Bluetooth headset",
+              { { "BTHHFENUM\\BTHHFPAUDIO", true, true, true } });
+    addInput ("software", "Virtual cable",
+              { { "SWD\\MMDEVAPI\\VIRTUAL", true, true, true } });
+    addInput ("phone", "Continuity phone microphone",
+              { { "ROOT\\CONTINUITY_AUDIO", true, true, true } });
+    addInput ("unknown", "Unknown input",
+              { { "", true, true, true } });
+
+    auto speakers = headphones ("speakers", "Laptop speakers",
+                                { fakewasapi::Format::pcm (2, 24, 48000.0) });
+    speakers.deviceNodeChain = {
+        { "HDAUDIO\\FUNC_01&VEN_SPEAKER", false, false, true },
+        { "PCI\\VEN_INTERNAL&DEV_SPEAKER", false, false, true }
+    };
+    fakewasapi::addEndpoint (speakers);
+
+    mma::WasapiAsioBackend backend;
+    const auto inputs = backend.enumerateInputDevices();
+    const auto outputs = backend.enumerateOutputDevices();
+
+    check (inputs.size() == 4,
+           "fixed/malformed USB, built-in, known phone, Bluetooth, software, and unknown inputs are excluded");
+
+    bool usb = false, firewire = false, thunderbolt = false;
+    bool genericRemovableUac = false, unexpected = false;
+    for (const auto& device : inputs)
+    {
+        std::printf ("    accepted input: %s\n", device.usbLocationId.c_str());
+        usb |= device.usbLocationId == "usb";
+        firewire |= device.usbLocationId == "firewire";
+        thunderbolt |= device.usbLocationId == "thunderbolt";
+        genericRemovableUac |= device.usbLocationId == "generic-removable-uac";
+        unexpected |= device.usbLocationId != "usb"
+                   && device.usbLocationId != "firewire"
+                   && device.usbLocationId != "thunderbolt"
+                   && device.usbLocationId != "generic-removable-uac";
+    }
+
+    check (usb && firewire && thunderbolt && ! unexpected,
+           "removable USB, FireWire, and Thunderbolt inputs remain available");
+    check (genericRemovableUac,
+           "generic removable USB Audio has no form-factor signal (documented release limitation)");
+    check (outputs.size() == 1 && outputs.front().usbLocationId == "speakers",
+           "the recording-input policy does not hide built-in monitor outputs");
+}
+
+/// Every leg of Windows' identity proof can fail in the real world: an old
+/// driver may expose no topology, a filter may omit its instance id, or the PnP
+/// tree may have malformed properties. None may turn into a name-based fallback.
+void missingExternalEvidenceFailsClosed()
+{
+    std::printf ("\nMissing Windows external-device evidence fails closed\n");
+    fakewasapi::reset();
+
+    const auto addFailure = [] (const char* id, auto mutate)
+    {
+        auto spec = microphone (id, id, { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.deviceNodeChain = { { std::string ("USB\\") + id, true, true, true } };
+        mutate (spec);
+        fakewasapi::addEndpoint (spec);
+    };
+
+    addFailure ("no-topology", [] (auto& s) { s.topologyAvailable = false; });
+    addFailure ("no-connector", [] (auto& s) { s.connectorAvailable = false; });
+    addFailure ("no-connected-id", [] (auto& s) { s.connectedDeviceIdAvailable = false; });
+    addFailure ("no-store", [] (auto& s) { s.propertyStoreAvailable = false; });
+    addFailure ("no-instance-id", [] (auto& s) { s.instanceIdPropertyAvailable = false; });
+    addFailure ("no-devnode", [] (auto& s) { s.devNodeLookupAvailable = false; });
+    addFailure ("bad-properties", [] (auto& s) { s.deviceNodeChain.front().propertiesReadable = false; });
+
+    mma::WasapiAsioBackend backend;
+    check (backend.enumerateInputDevices().empty(),
+           "topology, property, devnode, and removal-proof failures expose no inputs");
+}
+
 /// Eight microphones, the §1 ceiling, each on its own worker thread and each in
 /// a different wire format. This is where a shared-state or channel-indexing
 /// error surfaces that two devices would hide.
@@ -629,6 +749,8 @@ int main()
     std::printf ("=======================================================\n");
 
     enumerationPreservesEveryInputAndSupportedRate();
+    onlyDirectlyAttachedHardwareEnumeratesAsInput();
+    missingExternalEvidenceFailsClosed();
     a24BitOnlyMicrophoneOpensAndDeliversAudio();
     a16BitMicrophoneRoundTripsWithinItsQuantisation();
     aFloatCapableDeviceStillGetsFloat();

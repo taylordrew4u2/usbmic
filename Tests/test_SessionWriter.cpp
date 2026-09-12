@@ -33,7 +33,31 @@ uint32_t readU32LE (std::ifstream& f, std::streampos pos)
          | (static_cast<uint32_t> (b[2]) << 16) | (static_cast<uint32_t> (b[3]) << 24);
 }
 
+uint64_t readU64LE (std::ifstream& f, std::streampos pos)
+{
+    f.seekg (pos);
+    unsigned char bytes[8] {};
+    f.read (reinterpret_cast<char*> (bytes), 8);
+
+    uint64_t value = 0;
+    for (int i = 0; i < 8; ++i)
+        value |= static_cast<uint64_t> (bytes[i]) << (8 * i);
+    return value;
+}
+
 } // namespace
+
+namespace mma {
+
+struct SessionWriterTestAccess
+{
+    static void useSplitSize (SessionWriter& writer, uint64_t bytes)
+    {
+        writer.setAutoSplitBytesForTesting (bytes);
+    }
+};
+
+} // namespace mma
 
 TEST_CASE (SessionWriter_WritesReadableRiffWaveHeader)
 {
@@ -93,16 +117,47 @@ TEST_CASE (SessionWriter_AutoSplitsAtConfiguredThreshold)
 {
     std::string path = tempBasePath ("mma_test_split");
     SessionWriter writer;
-    // Mono 16-bit: 2 bytes/frame. Force a tiny split threshold isn't exposed
-    // directly, so instead we verify the *first* file's naming convention and
-    // that split index starts at 0 (no suffix) -- full 3.9GB split behavior is
-    // covered by code review since writing 3.9GB in a unit test isn't practical.
+    // The detailed rollover behavior is exercised with a tiny private test
+    // threshold below. Keep this check for the production-facing initial name:
+    // the first file is deliberately unsuffixed and the first continuation is
+    // `_001`.
     writer.open (path, 48000.0, 1, 16, "2026-08-26T14:32:00Z");
     REQUIRE (writer.getSplitFileCount() == 0);
     REQUIRE (writer.getCurrentFilePath() == path + ".wav");
     writer.close();
 
     std::remove (writer.getCurrentFilePath().c_str());
+}
+
+TEST_CASE (SessionWriter_SplitFilesCarryTheirPositionFromTheSessionOrigin)
+{
+    const auto path = tempBasePath ("mma_test_split_reference");
+    SessionWriter writer;
+    SessionWriterTestAccess::useSplitSize (writer, 4); // mono 16-bit: two frames per file
+    REQUIRE (writer.open (path, 48000.0, 1, 16, "2026-09-12T12:00:00Z"));
+
+    const float frames[5] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f };
+    REQUIRE (writer.writeInterleaved (frames, 5));
+    REQUIRE (writer.close());
+    REQUIRE (writer.getSplitFileCount() == 2);
+
+    // RIFF/WAVE (12), fmt chunk (24), bext tag+size (8), then byte 338
+    // inside the bext body.
+    const std::streampos kTimeReference = 12 + 24 + 8 + 338;
+
+    std::ifstream first (path + ".wav", std::ios::binary);
+    std::ifstream second (path + "_001.wav", std::ios::binary);
+    std::ifstream third (path + "_002.wav", std::ios::binary);
+    REQUIRE (readU64LE (first, kTimeReference) == 0);
+    REQUIRE (readU64LE (second, kTimeReference) == 2);
+    REQUIRE (readU64LE (third, kTimeReference) == 4);
+
+    first.close();
+    second.close();
+    third.close();
+    std::remove ((path + ".wav").c_str());
+    std::remove ((path + "_001.wav").c_str());
+    std::remove ((path + "_002.wav").c_str());
 }
 
 TEST_CASE (SessionWriter_HeaderRewriteTickUpdatesSizesPeriodically)

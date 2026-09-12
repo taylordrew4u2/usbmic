@@ -172,6 +172,7 @@ struct PROPVARIANT
     LPWSTR pwszVal;
 };
 
+constexpr unsigned short VT_LPWSTR = 31;
 constexpr DWORD STGM_READ = 0;
 
 void PropVariantInit (PROPVARIANT* v);

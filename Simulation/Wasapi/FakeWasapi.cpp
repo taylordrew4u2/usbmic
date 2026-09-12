@@ -2,8 +2,11 @@
 
 #include <windows.h>
 #include <mmdeviceapi.h>
+#include <devicetopology.h>
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <cfgmgr32.h>
+#include <devpkey.h>
 #include <avrt.h>
 
 #include "../../Source/Core/SampleFormat.h"
@@ -66,6 +69,9 @@ struct World
     std::mutex mutex;
     std::map<std::string, Endpoint*> endpoints;
     std::vector<std::string> order;
+    std::map<std::wstring, DEVINST> deviceNodeByInstanceId;
+    std::map<DEVINST, std::pair<Endpoint*, size_t>> deviceNodes;
+    DEVINST nextDeviceNode = 1;
     std::vector<IMMNotificationClient*> notificationClients;
     bool asioInstalled = false;
     bool allowNotificationRegistration = true;
@@ -158,19 +164,84 @@ struct RefCounted : Interface
 struct FakePropertyStore : RefCounted<IPropertyStore>
 {
     std::wstring name;
-    std::wstring storage;
+    std::wstring instanceId;
+    bool instanceIdAvailable = true;
 
     HRESULT STDMETHODCALLTYPE GetValue (const PROPERTYKEY& key, PROPVARIANT* value) override
     {
         if (value == nullptr)
             return E_POINTER;
 
-        if (! (key == PKEY_Device_FriendlyName))
+        const std::wstring* source = nullptr;
+        if (key == PKEY_Device_FriendlyName)
+            source = &name;
+        else if (key == PKEY_Device_InstanceId && instanceIdAvailable)
+            source = &instanceId;
+        else
             return E_FAIL;
 
-        storage = name;
-        value->vt = 31; // VT_LPWSTR
-        value->pwszVal = const_cast<LPWSTR> (storage.c_str());
+        const auto bytes = (source->size() + 1) * sizeof (wchar_t);
+        auto* copy = static_cast<wchar_t*> (CoTaskMemAlloc (bytes));
+        if (copy == nullptr)
+            return E_OUTOFMEMORY;
+
+        std::memcpy (copy, source->c_str(), bytes);
+        value->vt = VT_LPWSTR;
+        value->pwszVal = copy;
+        return S_OK;
+    }
+};
+
+struct FakeConnector : RefCounted<IConnector>
+{
+    std::string endpointId;
+
+    HRESULT STDMETHODCALLTYPE GetDeviceIdConnectedTo (LPWSTR* out) override
+    {
+        if (out == nullptr)
+            return E_POINTER;
+
+        auto* endpoint = findEndpoint (endpointId);
+        if (endpoint == nullptr || ! endpoint->spec.connectedDeviceIdAvailable)
+        {
+            *out = nullptr;
+            return E_FAIL;
+        }
+
+        const auto wide = toWide (endpointId);
+        const auto bytes = (wide.size() + 1) * sizeof (wchar_t);
+        auto* copy = static_cast<wchar_t*> (CoTaskMemAlloc (bytes));
+        if (copy == nullptr)
+            return E_OUTOFMEMORY;
+
+        std::memcpy (copy, wide.c_str(), bytes);
+        *out = copy;
+        return S_OK;
+    }
+};
+
+struct FakeDeviceTopology : RefCounted<IDeviceTopology>
+{
+    std::string endpointId;
+
+    HRESULT STDMETHODCALLTYPE GetConnector (UINT index, IConnector** out) override
+    {
+        if (out == nullptr)
+            return E_POINTER;
+
+        if (index != 0)
+            return E_INVALIDARG;
+
+        auto* endpoint = findEndpoint (endpointId);
+        if (endpoint == nullptr || ! endpoint->spec.connectorAvailable)
+        {
+            *out = nullptr;
+            return E_FAIL;
+        }
+
+        auto* connector = new FakeConnector();
+        connector->endpointId = endpointId;
+        *out = connector;
         return S_OK;
     }
 };
@@ -467,7 +538,27 @@ struct FakeDevice : RefCounted<IMMDevice>
 
         auto* endpoint = findEndpoint (id);
 
-        if (endpoint == nullptr || ! endpoint->spec.allowActivate || riid != __uuidof (IAudioClient))
+        if (endpoint == nullptr)
+        {
+            *out = nullptr;
+            return E_FAIL;
+        }
+
+        if (riid == __uuidof (IDeviceTopology))
+        {
+            if (! endpoint->spec.topologyAvailable)
+            {
+                *out = nullptr;
+                return E_FAIL;
+            }
+
+            auto* topology = new FakeDeviceTopology();
+            topology->endpointId = id;
+            *out = static_cast<IDeviceTopology*> (topology);
+            return S_OK;
+        }
+
+        if (! endpoint->spec.allowActivate || riid != __uuidof (IAudioClient))
         {
             *out = nullptr;
             return E_FAIL;
@@ -485,11 +576,13 @@ struct FakeDevice : RefCounted<IMMDevice>
             return E_POINTER;
 
         auto* endpoint = findEndpoint (id);
-        if (endpoint == nullptr)
+        if (endpoint == nullptr || ! endpoint->spec.propertyStoreAvailable)
             return E_FAIL;
 
         auto* store = new FakePropertyStore();
         store->name = toWide (endpoint->spec.friendlyName);
+        store->instanceId = toWide (endpoint->spec.physicalInstanceId);
+        store->instanceIdAvailable = endpoint->spec.instanceIdPropertyAvailable;
         *out = store;
         return S_OK;
     }
@@ -807,9 +900,101 @@ void PropVariantInit (PROPVARIANT* v)
 HRESULT PropVariantClear (PROPVARIANT* v)
 {
     if (v != nullptr)
+    {
+        if (v->vt == VT_LPWSTR)
+            CoTaskMemFree (v->pwszVal);
+
         *v = PROPVARIANT { 0, nullptr };
+    }
 
     return S_OK;
+}
+
+CONFIGRET CM_Locate_DevNodeW (PDEVINST node, DEVINSTID_W deviceId, ULONG)
+{
+    if (node == nullptr || deviceId == nullptr)
+        return CR_FAILURE;
+
+    std::lock_guard<std::mutex> lock (world().mutex);
+    const auto found = world().deviceNodeByInstanceId.find (deviceId);
+    if (found == world().deviceNodeByInstanceId.end())
+        return CR_NO_SUCH_DEVNODE;
+
+    const auto nodeRecord = world().deviceNodes.find (found->second);
+    if (nodeRecord == world().deviceNodes.end()
+        || nodeRecord->second.first == nullptr
+        || ! nodeRecord->second.first->spec.devNodeLookupAvailable)
+        return CR_NO_SUCH_DEVNODE;
+
+    *node = found->second;
+    return CR_SUCCESS;
+}
+
+CONFIGRET CM_Get_Parent (PDEVINST parent, DEVINST node, ULONG)
+{
+    if (parent == nullptr)
+        return CR_FAILURE;
+
+    std::lock_guard<std::mutex> lock (world().mutex);
+    const auto found = world().deviceNodes.find (node);
+    if (found == world().deviceNodes.end() || found->second.first == nullptr)
+        return CR_NO_SUCH_DEVNODE;
+
+    const auto* endpoint = found->second.first;
+    const auto parentIndex = found->second.second + 1;
+    if (parentIndex >= endpoint->spec.deviceNodeChain.size())
+        return CR_NO_SUCH_DEVNODE;
+
+    const auto parentNode = std::find_if (
+        world().deviceNodes.begin(), world().deviceNodes.end(),
+        [endpoint, parentIndex] (const auto& candidate)
+        {
+            return candidate.second.first == endpoint
+                && candidate.second.second == parentIndex;
+        });
+
+    if (parentNode == world().deviceNodes.end())
+        return CR_NO_SUCH_DEVNODE;
+
+    *parent = parentNode->first;
+    return CR_SUCCESS;
+}
+
+CONFIGRET CM_Get_DevNode_PropertyW (DEVINST node, const DEVPROPKEY* key,
+                                    DEVPROPTYPE* type, PBYTE buffer,
+                                    PULONG bufferSize, ULONG)
+{
+    if (key == nullptr || type == nullptr || buffer == nullptr || bufferSize == nullptr
+        || *bufferSize < sizeof (ULONG))
+        return CR_FAILURE;
+
+    std::lock_guard<std::mutex> lock (world().mutex);
+    const auto found = world().deviceNodes.find (node);
+    if (found == world().deviceNodes.end() || found->second.first == nullptr)
+        return CR_NO_SUCH_DEVNODE;
+
+    const auto* endpoint = found->second.first;
+    const auto index = found->second.second;
+    if (index >= endpoint->spec.deviceNodeChain.size())
+        return CR_NO_SUCH_DEVNODE;
+
+    const auto& spec = endpoint->spec.deviceNodeChain[index];
+    if (! spec.propertiesReadable)
+        return CR_FAILURE;
+
+    ULONG value = 0;
+    if (*key == DEVPKEY_Device_Capabilities)
+        value = spec.removable ? CM_DEVCAP_REMOVABLE : 0;
+    else if (*key == DEVPKEY_Device_RemovalPolicy)
+        value = spec.removalExpected ? CM_REMOVAL_POLICY_EXPECT_SURPRISE_REMOVAL
+                                     : CM_REMOVAL_POLICY_EXPECT_NO_REMOVAL;
+    else
+        return CR_FAILURE;
+
+    std::memcpy (buffer, &value, sizeof (value));
+    *bufferSize = sizeof (value);
+    *type = DEVPROP_TYPE_INT32;
+    return CR_SUCCESS;
 }
 
 HANDLE AvSetMmThreadCharacteristicsW (LPCWSTR, DWORD* taskIndex)
@@ -835,6 +1020,9 @@ void reset()
 
     world().endpoints.clear();
     world().order.clear();
+    world().deviceNodeByInstanceId.clear();
+    world().deviceNodes.clear();
+    world().nextDeviceNode = 1;
     world().notificationClients.clear();
     world().asioInstalled = false;
     world().allowNotificationRegistration = true;
@@ -853,9 +1041,29 @@ void addEndpoint (const EndpointSpec& spec)
 
         auto* endpoint = new Endpoint();
         endpoint->spec = spec;
+        if (endpoint->spec.deviceNodeChain.empty())
+        {
+            endpoint->spec.deviceNodeChain.push_back (
+                { endpoint->spec.physicalInstanceId, true, true, true });
+        }
+        else
+        {
+            if (endpoint->spec.deviceNodeChain.front().instanceId.empty())
+                endpoint->spec.deviceNodeChain.front().instanceId = endpoint->spec.physicalInstanceId;
+
+            endpoint->spec.physicalInstanceId = endpoint->spec.deviceNodeChain.front().instanceId;
+        }
+
         endpoint->bufferFrames = spec.bufferFrames;
         world().endpoints[spec.id] = endpoint;
         world().order.push_back (spec.id);
+
+        for (size_t i = 0; i < endpoint->spec.deviceNodeChain.size(); ++i)
+        {
+            const auto deviceNode = world().nextDeviceNode++;
+            world().deviceNodeByInstanceId[toWide (endpoint->spec.deviceNodeChain[i].instanceId)] = deviceNode;
+            world().deviceNodes[deviceNode] = { endpoint, i };
+        }
     }
 
     fireDeviceAdded (spec.id);
@@ -869,6 +1077,26 @@ void removeEndpoint (const std::string& id)
 
         if (it != world().endpoints.end())
         {
+            auto* endpoint = it->second;
+            for (auto node = world().deviceNodes.begin(); node != world().deviceNodes.end();)
+            {
+                if (node->second.first == endpoint)
+                {
+                    const auto& nodeSpec = endpoint->spec.deviceNodeChain[node->second.second];
+                    const auto instanceId = toWide (nodeSpec.instanceId);
+                    const auto idRecord = world().deviceNodeByInstanceId.find (instanceId);
+                    if (idRecord != world().deviceNodeByInstanceId.end()
+                        && idRecord->second == node->first)
+                        world().deviceNodeByInstanceId.erase (idRecord);
+
+                    node = world().deviceNodes.erase (node);
+                }
+                else
+                {
+                    ++node;
+                }
+            }
+
             delete it->second;
             world().endpoints.erase (it);
         }

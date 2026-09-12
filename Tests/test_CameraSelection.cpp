@@ -12,16 +12,15 @@ std::vector<CameraDeviceInfo> twoCameras()
 
 } // namespace
 
-TEST_CASE (CameraSelection_firstCameraIsOnAndTheRestAreNot)
+TEST_CASE (CameraSelection_newCamerasStayOffUntilTheUserEnablesOne)
 {
     CameraSelection selection;
     selection.setAvailableCameras (twoCameras());
 
-    // §10.1's spirit without §10.1's cost: one camera works with no setup, and
-    // a second one does not quietly double the bytes hitting the card.
-    REQUIRE (selection.isEnabled ("cam-a"));
+    // Merely launching or plugging a camera in is not consent to open it.
+    REQUIRE_FALSE (selection.isEnabled ("cam-a"));
     REQUIRE_FALSE (selection.isEnabled ("cam-b"));
-    REQUIRE (selection.getEnabledCount() == 1);
+    REQUIRE (selection.getEnabledCount() == 0);
 }
 
 TEST_CASE (CameraSelection_noCamerasEnablesNothing)
@@ -39,8 +38,8 @@ TEST_CASE (CameraSelection_aCameraPluggedInLaterIsNotSwitchedOnBehindTheUser)
     selection.setAvailableCameras ({ { "cam-a", "Logitech C920" } });
     selection.setEnabled ("cam-a", false);
 
-    // The auto-enable is a first-run convenience, not a rule. Once the user has
-    // switched everything off, plugging a camera in must not switch one back on.
+    // Discovery is never an enable action. Plugging another camera in must not
+    // switch it -- or any previously seen camera -- on behind the user.
     selection.setAvailableCameras (twoCameras());
 
     REQUIRE (selection.getEnabledCount() == 0);
@@ -50,6 +49,7 @@ TEST_CASE (CameraSelection_choicesSurviveAnUnplug)
 {
     CameraSelection selection;
     selection.setAvailableCameras (twoCameras());
+    selection.setEnabled ("cam-a", true);
     selection.setEnabled ("cam-b", true);
     selection.setAssignedName ("cam-b", "Wide shot");
 
@@ -67,6 +67,7 @@ TEST_CASE (CameraSelection_planNamesFollowTheSessionNamingRules)
 {
     CameraSelection selection;
     selection.setAvailableCameras (twoCameras());
+    selection.setEnabled ("cam-a", true);
     selection.setEnabled ("cam-b", true);
     selection.setAssignedName ("cam-a", "Kitchen / Wide!!");
 
@@ -101,8 +102,9 @@ TEST_CASE (CameraSelection_videoCountsAgainstRemainingTime)
     REQUIRE (selection.getEstimatedBytesPerSecond() == (int64_t) 0);
 
     selection.setAvailableCameras (twoCameras());
-    REQUIRE (selection.getEstimatedBytesPerSecond() == CameraSelection::kEstimatedVideoBytesPerSecond);
+    REQUIRE (selection.getEstimatedBytesPerSecond() == 0);
 
+    selection.setEnabled ("cam-a", true);
     selection.setEnabled ("cam-b", true);
     REQUIRE (selection.getEstimatedBytesPerSecond() == 2 * CameraSelection::kEstimatedVideoBytesPerSecond);
 }

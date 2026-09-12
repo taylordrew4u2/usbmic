@@ -1,14 +1,99 @@
 # Changelog
 
-## Unreleased
+## v1.12.0 -- 2026-09-12 (release candidate)
 
-### Changed -- macOS records only directly attached external inputs
+This candidate concentrates on making failures visible, keeping the record of a
+take durable, tightening device discovery and making the release artifacts
+auditable. It is not a general-release claim: code signing/notarization and the
+physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 
-The Mac's own microphone and iPhone/Continuity microphones no longer appear in
-SobStage. Recording input enumeration now admits only USB, FireWire, and
-Thunderbolt hardware. Bluetooth, AirPlay, network, aggregate, virtual, PCI, and
-unknown input transports are excluded conservatively; monitor-output choices
-are unchanged.
+### Changed
+
+- Recording inputs are restricted to directly attached external hardware and
+  fail closed when identity is unknown. macOS admits USB, FireWire and
+  Thunderbolt transports; Windows follows an endpoint into its Plug and Play
+  tree and requires both an eligible wired branch and positive removable-device
+  evidence on one node; Linux requires a kernel ALSA card whose sysfs ancestry
+  says it is removable. Built-in computer, known phone/Continuity transports,
+  Bluetooth/AirPlay, network, aggregate, virtual, internal and unknown inputs
+  are omitted. Generic removable USB Audio Class hardware is admitted without
+  name or vendor-ID guesses, so a phone or wireless receiver presenting exactly
+  like an interface cannot be categorically excluded. Monitor-output choices
+  are unaffected, and Linux's virtual fixture is enabled only in a separately
+  compiled test binary.
+- Cameras now start off. Merely launching SobStage, opening the Cameras panel or
+  connecting a camera does not enable it; the user must switch it on.
+- Linux now asks an ALSA device how many channels it can actually open, then
+  falls back to mono with an explicit warning instead of advertising silent
+  phantom stems. The end-to-end verifier requires signal on every expected stem.
+- Mid-take alerts distinguish urgent audio loss, warnings, recovery and ordinary
+  news by severity; overflow is counted instead of silently dropping a fifth
+  event.
+- The initial recording destination prefers a writable removable volume when one
+  is present, falling back to `~/RECORDINGS`.
+- Loudness advice now says “turn down” when true-peak headroom makes the computed
+  gain negative and explains when a steadier next take is needed.
+
+### Added
+
+- `ActivityJournal` records starts, stops, failures and recoveries without
+  letting repeated noise evict an unseen failure. The history appears in
+  Advanced, `activity.log` in both copies of a take, and the application log.
+- Microphone, output and camera arrivals and departures are announced by name,
+  including swaps where the total device count does not change.
+- Backend health reaches the UI and logs: failed hot-plug registration, stalled
+  or unrecoverable streams, output loss, dropped backend frames, open failures,
+  mirror failures and post-take combine failures are reported.
+- The camera simulator now executes enumeration, stable identity, arrival and
+  removal rather than only type-checking the camera source.
+- Release packaging validates version/tag identity, pins third-party actions and
+  JUCE by commit, builds a universal macOS 13+ app, verifies the app again after
+  ZIP and DMG round trips, publishes SHA-256 checksums and ships corrected
+  SobStage DMG artwork.
+- Public support, privacy and release-checklist documents state what diagnostic
+  exports contain, what is still unverified and how to roll back safely.
+
+### Fixed
+
+- `session.json` now records whether the mirror actually ran, so the end-to-end
+  gate really compares every mirrored file. First-run save-location handling in
+  that gate is also exercised.
+- Durable text writes are verified after the write, preserve line endings and
+  report failure. This covers settings, session metadata, activity logs,
+  diagnostics inventory and recovered-take metadata, including a drive that
+  fills during a take.
+- Preflight throughput windows flush through the operating-system cache before
+  their rates are accepted, and the final partial window participates, so page
+  cache speed cannot masquerade as card speed.
+- `activity.log` receives the recording stop and is updated during the take, so
+  a crash or card loss does not leave a blank history. Global logs receive the
+  same distinct events without repeat floods, in chronological order.
+- Diagnostics and session metadata carry the real application version instead
+  of the literal token `JUCE_APP_VERSION`.
+- Corrupt or truncated settings and session metadata are detected and reported;
+  mirrored interrupted takes are deduplicated in recovery.
+- A full or unreadable destination is no longer silently collapsed into an
+  “unknown” state. A running take keeps its Stop control available, and its
+  destination cannot be changed underneath it.
+- CoreAudio rate changes wait up to a bounded 500 ms for the asynchronous HAL
+  update instead of rejecting a change on the first stale read-back.
+- Windows COM teardown now occurs only when SobStage owns the initialization,
+  and an installed ASIO driver no longer bypasses WASAPI exclusive-mode checks
+  when no ASIO capture path exists.
+- WASAPI enumeration reports real channel/rate capabilities and backend tests
+  cover PCM formats, hot-plug and external-input policy.
+- WAV recovery bounds corrupt chunk sizes and handles RIFF padding. Periodic WAV
+  header rewrites are flushed through the operating-system cache to storage,
+  and split BWF files carry their sample offset from the session origin.
+- Modal cards form a keyboard-focus boundary, preventing Tab or Shift-Tab from
+  reaching recording controls behind a dialog.
+
+### Verification baseline
+
+The candidate contains 498 unit tests, 62 CoreAudio simulator checks and 67
+WASAPI simulator checks, plus the camera, capture, refusal and end-to-end
+harnesses. These numbers describe automated coverage, not physical-hardware
+certification.
 
 ## v1.11.0 -- 2026-09-08
 
@@ -597,9 +682,12 @@ status line beside it said "Saved to ...".
 
 ## v1.0.0 — 2026-09-03
 
-The first stable release. No code changes from v0.9.4: this marks the point
-at which the camera work was confirmed on real hardware, which is what the
-0.9.x line was waiting on.
+The first stable release. No code changes from v0.9.4.
+
+> **Correction, 12 September 2026:** the original note said the camera work had
+> been confirmed on real hardware. The available evidence confirms that the app
+> was opened on a Mac, not that a real camera completed preview and recording.
+> That hardware gate remains outstanding for the v1.12.0 candidate.
 
 ### What 1.0 claims
 
@@ -611,14 +699,18 @@ harnesses that run on every commit.
 
 ### What 1.0 does not claim
 
-Three things remain unproven against real hardware, and 1.0 does not pretend
+Four things remain unproven against real hardware, and 1.0 does not pretend
 otherwise -- see the platform table in README.md:
 
 - **No recording has been made from a physical microphone.** The CoreAudio
   and WASAPI device layers are exercised every commit against simulated
   hosts that reproduce the awkward shapes real devices take, but a real
   driver's timing and firmware quirks are not something a simulation
-  reproduces. Linux is the exception: it is verified against live ALSA.
+  reproduces. Linux exercises the real ALSA API with virtual PCMs, not a
+  physical sound card.
+- **No real camera has completed preview and recording.** Camera discovery and
+  selection now run in simulation, but open, preview and capture still require
+  the macOS/Windows hardware matrix.
 - **The ffmpeg muxing has never run.** Combining picture and sound is built
   and tested as a command, not as an execution. It needs ffmpeg installed
   (on a Mac: brew install ffmpeg).
