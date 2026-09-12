@@ -40,7 +40,7 @@ CameraPanel::CameraPanel()
 
     // Said out loud, because it is the question this toggle raises and the
     // wrong answer would make someone record a worse take to save some CPU.
-    qualityNote.setText ("Recording is always at the camera's best quality. This only "
+    qualityNote.setText ("Recording asks the camera for high-quality video. This only "
                          "changes the picture on this screen.", juce::dontSendNotification);
     qualityNote.setFont (juce::Font (12.0f));
     qualityNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
@@ -85,10 +85,24 @@ void CameraPanel::setRecording (bool isRecording)
 
     recording = isRecording;
 
+    // Recording state changes the unavailable-row copy below. Force the next
+    // setCameras() call in the owner's same refresh pass to rebuild those rows
+    // even when their ids/topology have not changed.
+    lastCameraIds.clear();
+
     // §9.3: never colour alone. The heading says it as well as showing it.
     heading.setText (recording ? "Cameras -- recording" : "Cameras", juce::dontSendNotification);
     heading.setColour (juce::Label::textColourId,
                        recording ? AppLookAndFeel::danger : AppLookAndFeel::bone);
+
+    // The camera roster and filenames are frozen when the take begins. Keep
+    // the live pictures visible, but do not offer controls which would imply a
+    // camera can be added, removed, or renamed halfway through its movie.
+    for (auto& row : rows)
+    {
+        row.enabledToggle->setEnabled (! recording);
+        row.nameEditor->setEnabled (! recording);
+    }
 }
 
 void CameraPanel::setUnavailableReason (const juce::String& reason)
@@ -125,21 +139,33 @@ void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
     // real cost, so it happens only when the set or its state has moved.
     std::vector<std::string> ids;
     std::vector<char> enabled;
+    std::vector<char> available;
+    std::vector<char> discoveryPending;
     juce::StringArray fileNames;
+    std::vector<uint64_t> viewerRevisions;
 
     for (const auto& camera : cameras)
     {
         ids.push_back (camera.id);
         enabled.push_back (camera.enabled ? 1 : 0);
+        available.push_back (camera.available ? 1 : 0);
+        discoveryPending.push_back (camera.discoveryPending ? 1 : 0);
         fileNames.add (camera.fileName);
+        viewerRevisions.push_back (camera.viewerRevision);
     }
 
-    if (ids == lastCameraIds && enabled == lastEnabled && fileNames == lastFileNames)
+    if (ids == lastCameraIds && enabled == lastEnabled && available == lastAvailable
+        && discoveryPending == lastDiscoveryPending
+        && fileNames == lastFileNames
+        && viewerRevisions == lastViewerRevisions)
         return;
 
     lastCameraIds = std::move (ids);
     lastEnabled = std::move (enabled);
+    lastAvailable = std::move (available);
+    lastDiscoveryPending = std::move (discoveryPending);
     lastFileNames = std::move (fileNames);
+    lastViewerRevisions = std::move (viewerRevisions);
     rebuildRows (cameras);
 }
 
@@ -154,6 +180,7 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
 
         row.enabledToggle = std::make_unique<juce::ToggleButton> ("Record this camera");
         row.enabledToggle->setToggleState (camera.enabled, juce::dontSendNotification);
+        row.enabledToggle->setEnabled (! recording);
         row.enabledToggle->onClick = [this, id = camera.id, button = row.enabledToggle.get()] {
             if (onCameraEnabledChanged)
                 onCameraEnabledChanged (id, button->getToggleState());
@@ -167,6 +194,7 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         row.nameEditor->setTextToShowWhenEmpty ("Name this camera", AppLookAndFeel::tertiary);
         row.nameEditor->setTitle ("Name " + camera.displayName);
         row.nameEditor->setDescription ("This name is used in the camera recording's filename.");
+        row.nameEditor->setEnabled (! recording);
         row.nameEditor->onFocusLost = [this, id = camera.id, editor = row.nameEditor.get()] {
             if (onCameraRenamed)
                 onCameraRenamed (id, editor->getText());
@@ -183,12 +211,16 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         row.fileName = std::make_unique<juce::Label>();
         row.fileName->setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
         row.fileName->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
-        row.fileName->setText (camera.enabled ? "Writes " + camera.fileName
-                                              : "Not in the recording",
+        row.fileName->setText (camera.discoveryPending ? "Checking the system for this camera..."
+                              : ! camera.available && recording
+                                  ? "Out for this take -- checked again when it ends"
+                              : ! camera.available ? "Unavailable -- not in the next recording"
+                              : camera.enabled ? "Writes " + camera.fileName
+                                               : "Not in the recording",
                                juce::dontSendNotification);
         addAndMakeVisible (*row.fileName);
 
-        if (camera.enabled && makeViewer)
+        if (camera.enabled && camera.available && makeViewer)
             row.viewer = makeViewer (camera.id);
 
         if (row.viewer != nullptr)
@@ -200,7 +232,13 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
             // A camera that is off, or one that would not open, gets a well
             // that says which -- never an empty rectangle.
             row.placeholder = std::make_unique<juce::Label>();
-            row.placeholder->setText (camera.enabled
+            row.placeholder->setText (camera.discoveryPending
+                                          ? "Still checking for this camera. Sound can record now; video waits for the next take."
+                                      : ! camera.available && recording
+                                          ? "Out for this take. SobStage will check and reopen it for the next take."
+                                      : ! camera.available
+                                          ? "Not available to the system. Reconnect it; SobStage will rescan automatically."
+                                      : camera.enabled
                                           ? "This camera didn't open. Check that nothing else is using it."
                                           : "Switched off. Turn it on to see it live.",
                                       juce::dontSendNotification);

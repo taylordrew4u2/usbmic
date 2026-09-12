@@ -409,24 +409,36 @@ void MainScreen::setCameraScale (int step)
 void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
 {
     std::vector<std::string> ids;
+    std::vector<std::string> displayNames;
+    std::vector<uint64_t> viewerRevisions;
     ids.reserve (tiles.size());
+    displayNames.reserve (tiles.size());
+    viewerRevisions.reserve (tiles.size());
     for (const auto& tile : tiles)
+    {
         ids.push_back (tile.id);
+        displayNames.push_back (tile.displayName.toStdString());
+        viewerRevisions.push_back (tile.viewerRevision);
+    }
 
     // Called from the UI tick, so it must be free to run every frame. Only an
     // actual change to the set of switched-on cameras rebuilds anything --
     // tearing a viewer down and remaking it 60 times a second would flicker and
     // churn the device for no reason.
-    if (ids == lastTileIds)
+    if (ids == lastTileIds && displayNames == lastTileDisplayNames
+        && viewerRevisions == lastTileViewerRevisions)
         return;
 
     lastTileIds = std::move (ids);
+    lastTileDisplayNames = std::move (displayNames);
+    lastTileViewerRevisions = std::move (viewerRevisions);
     cameraViews.clear();
 
     for (const auto& tile : tiles)
     {
         CameraView view;
         view.id = tile.id;
+        view.displayName = tile.displayName;
 
         if (makeViewer)
             view.viewer = makeViewer (tile.id);
@@ -452,10 +464,13 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
         // §14.6 solves for microphones, and the answer is the same: put the
         // name on the thing.
         view.caption = std::make_unique<juce::Label>();
-        view.caption->setText (tile.displayName, juce::dontSendNotification);
+        view.caption->setText (recording ? "REC: " + tile.displayName : tile.displayName,
+                               juce::dontSendNotification);
         view.caption->setJustificationType (juce::Justification::centred);
         view.caption->setFont (juce::Font (12.0f));
-        view.caption->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+        view.caption->setColour (juce::Label::textColourId,
+                                 recording ? AppLookAndFeel::danger
+                                           : AppLookAndFeel::secondary);
         addAndMakeVisible (*view.caption);
 
         cameraViews.push_back (std::move (view));
@@ -474,6 +489,8 @@ void MainScreen::releaseCameraViews()
     // Cleared too, so the next setCameraTiles() rebuilds rather than deciding
     // nothing has changed and leaving the row empty.
     lastTileIds.clear();
+    lastTileDisplayNames.clear();
+    lastTileViewerRevisions.clear();
     resized();
 }
 
@@ -581,7 +598,22 @@ void MainScreen::setRecording (bool isRecording)
     // label kept the empty bounds resized() gave it in the idle layout, and
     // "Recording for 4m 12s" was set on a label nobody could see.
     if (changed)
+    {
+        // Camera previews on macOS are native NSViews and always cover JUCE
+        // painting which overlaps them. Put the per-camera recording proof in
+        // the non-overlapping caption band beneath each preview instead.
+        for (auto& view : cameraViews)
+            if (view.caption != nullptr)
+            {
+                view.caption->setText (recording ? "REC: " + view.displayName : view.displayName,
+                                       juce::dontSendNotification);
+                view.caption->setColour (juce::Label::textColourId,
+                                         recording ? AppLookAndFeel::danger
+                                                   : AppLookAndFeel::secondary);
+            }
+
         resized();
+    }
 }
 
 void MainScreen::setHighlightedMic (int index)
@@ -654,22 +686,6 @@ void MainScreen::paint (juce::Graphics& g)
         const int y = brandMarkBounds.getBottom() + 10;
         g.fillRect (16, y, getWidth() - 32, 1);
     }
-
-    // §9.3: the picture says it is recording in a word, not only in a colour.
-    // A red dot alone is the one indicator a colour-blind user cannot read, and
-    // it is the one that matters most.
-    for (const auto& badge : cameraRecBadges)
-    {
-        g.setColour (AppLookAndFeel::background.withAlpha (0.72f));
-        g.fillRoundedRectangle (badge.toFloat(), 4.0f);
-
-        auto dot = badge.toFloat().removeFromLeft (16.0f);
-        g.setColour (AppLookAndFeel::danger);
-        g.fillEllipse (dot.withSizeKeepingCentre (7.0f, 7.0f));
-
-        g.setFont (juce::Font (10.0f, juce::Font::bold));
-        g.drawText ("REC", badge.withTrimmedLeft (16), juce::Justification::centredLeft);
-    }
 }
 
 void MainScreen::setDoorsOpen (bool settingsOpen, bool helpOpen)
@@ -681,7 +697,6 @@ void MainScreen::setDoorsOpen (bool settingsOpen, bool helpOpen)
 void MainScreen::resized()
 {
     auto area = getLocalBounds().reduced (16);
-    cameraRecBadges.clear();
 
     // The masthead: the mark, the name, the tagline, and the one door out.
     // Settings moved up here from the foot of the screen because it is a
@@ -794,14 +809,6 @@ void MainScreen::resized()
                 view.viewer->setBounds (tile);
             else if (view.placeholder != nullptr)
                 view.placeholder->setBounds (tile);
-
-            // Over the top-left of the picture while a take is running, where a
-            // camera's own tally light sits. paint() draws it; the viewer is a
-            // child component, so a badge drawn under it would be invisible --
-            // this is why it is a rectangle collected here rather than a
-            // component added to the tile.
-            if (recording)
-                cameraRecBadges.push_back (tile.reduced (8).removeFromTop (18).removeFromLeft (54));
 
             ++index;
         }

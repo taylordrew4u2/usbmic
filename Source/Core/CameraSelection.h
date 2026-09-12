@@ -18,12 +18,12 @@ struct CameraDeviceInfo
 
 /// The live view and the recorded file answer two different questions.
 ///
-/// The file is always the best the camera can give -- that is not negotiable,
-/// and nothing on screen may cost it. The view only has to be good enough to
-/// aim by, and drawing a 4K frame sixty times a second to check someone is in
-/// shot is exactly the CPU §6.6 warns about spending before it starts dropping
-/// audio. So this picks how big the picture is *drawn*, never how big it is
-/// captured or written.
+/// The file requests the platform's high-quality capture mode; the OS/driver
+/// ultimately chooses its format, and nothing on screen may lower that request.
+/// The view only has to be good enough to aim by, and drawing a 4K frame sixty
+/// times a second to check someone is in shot is exactly the CPU §6.6 warns
+/// about spending before it starts dropping audio. So this picks how big the
+/// picture is *drawn*, never how big it is captured or written.
 enum class PreviewQuality
 {
     Low,  // small, cheap, always on
@@ -56,7 +56,7 @@ struct CameraPlan
 class CameraSelection
 {
 public:
-    /// A rough figure for how much disk a camera at its best quality eats, used
+    /// A rough figure for how much disk a high-quality camera stream can eat, used
     /// only to keep the §6.4 remaining-time estimate honest once video is in
     /// the take. Deliberately pessimistic: telling someone they have less room
     /// than they do costs them nothing, and the reverse costs them the end of
@@ -69,18 +69,38 @@ public:
     void setAvailableCameras (std::vector<CameraDeviceInfo> cameras);
     const std::vector<CameraDeviceInfo>& getAvailableCameras() const { return available; }
 
+    /// Remembered, enabled cameras which the OS is not currently listing.
+    /// These remain visible in the Cameras panel so an unplugged capture card
+    /// cannot silently disappear from the rig the user thinks is armed.
+    std::vector<CameraDeviceInfo> getUnavailableEnabledCameras() const;
+
+    /// Every camera with remembered state, connected or not. Settings use
+    /// this instead of copying an old persisted row back verbatim, so turning
+    /// off a currently disconnected capture card is saved correctly.
+    std::vector<CameraDeviceInfo> getKnownCameras() const;
+
     /// Cameras are opt-in. Enumeration alone must not open a camera, illuminate
     /// its privacy light, raise a permission prompt, or add gigabytes to a take.
     void setEnabled (const std::string& id, bool enabled);
     bool isEnabled (const std::string& id) const;
+    /// Enabled cameras in the latest completed OS snapshot. Remembered missing
+    /// cameras stay armed and visible through getUnavailableEnabledCameras(),
+    /// but are not counted as files the next take can actually create.
     int getEnabledCount() const;
 
     /// The name that goes on the picture's file, like §14.6 for microphones.
     void setAssignedName (const std::string& id, const std::string& name);
     std::string getDisplayName (const std::string& id) const;
 
-    /// The enabled cameras, numbered and named, in the order the OS lists them.
+    /// Enabled cameras the OS is currently listing, numbered and named. This
+    /// is the honest pre-take file promise shown in the save-location card.
     std::vector<CameraPlan> buildPlans() const;
+
+    /// The complete armed roster at the instant a take starts. Available
+    /// cameras come first in OS order; remembered missing cameras follow. The
+    /// controller freezes this broader list for the watchdog, but it must not
+    /// be presented as a promise that every listed file will exist.
+    std::vector<CameraPlan> buildIntendedPlans() const;
 
     /// What a take with this many cameras adds to the bytes-per-second the
     /// §6.4 remaining-time figure is worked out from.
@@ -93,6 +113,7 @@ private:
     {
         bool enabled = false;
         std::string assignedName;
+        std::string lastDisplayName;
     };
 
     std::vector<CameraDeviceInfo> available;

@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-528%20passing-brightgreen" alt="528 tests passing">
+  <img src="https://img.shields.io/badge/tests-532%20passing-brightgreen" alt="532 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ four-hour 44.1/48 kHz soaks, against a 1 ms ceiling — more than a 23× margin.
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-528 unit tests, an end-to-end take and an end-to-end refusal through the real
+532 unit tests, an end-to-end take and an end-to-end refusal through the real
 app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
 checks run in CI.
 
@@ -330,14 +330,14 @@ sources before distributing a binary or considering a proprietary build.
 ## What to expect on your platform
 
 This is the **v1.12.0 release candidate**. The recording engine is covered by
-528 unit tests plus capture and platform harnesses. What differs by platform is
+532 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. The simulator covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. Camera capture is also unverified on hardware. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. The simulator covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.12.0 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other
@@ -528,12 +528,15 @@ this feature works out for you.
   reports, and you explicitly switch each one on. USB webcams, built-in and
   Continuity cameras, and capture cards may appear. Camera selection is separate
   from the macOS audio-input policy.
-- **You see it live** after you switch that camera on in the panel. Name each
-  camera and the name goes on its file.
-- **Recording is always at the camera's best quality.** The preview toggle
-  changes how big the picture is drawn on screen and nothing else — the live
-  view is small by default so that drawing it never competes with the audio
-  (§6.6). It cannot make your recording worse.
+- After you switch a camera on, SobStage opens it and is designed to show its
+  live preview. That choice is remembered, so the camera reopens on later
+  launches until you switch it off. Name each camera and the name goes on its
+  file. For this release candidate, confirm a capture card's preview is visibly
+  non-black and its test recording plays before relying on it for a take.
+- SobStage asks JUCE and the operating system for high-quality camera capture;
+  the exact format is selected by the platform and driver. The preview toggle
+  changes only how large the picture is drawn on screen; it does not deliberately
+  request a lower recording format.
 - **Picture and sound are separate files.** Each camera writes one video file
   into the same session folder as the audio, with no sound track of its own —
   the sound is the WAVs beside it, and `session.json` records the pairing and
@@ -561,9 +564,9 @@ this feature works out for you.
 - **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
   under its name, updating as you rename it. Renaming is the moment you want to
   know what the name does.
-- Cameras are never opened until you ask for them: nothing is opened at
-  launch, so no camera light comes on and no privacy prompt is spent before
-  you have opened the panel or armed a take with a camera switched on.
+- A newly discovered camera is never opened until you switch it on. That first
+  explicit choice is remembered, so enabled cameras reopen on later launches
+  to keep their main-screen previews live until you switch them off.
 - **macOS and Windows only.** JUCE implements camera capture on those two
   targets; the Linux build says so in one sentence instead of showing controls
   that cannot work. The sound recording works either way.
@@ -574,8 +577,9 @@ this feature works out for you.
 
 That shot is the Linux build, which is the one this container can render — so
 it is showing the sentence rather than the cameras. On macOS and Windows the
-same panel carries a row per camera: its name, a switch, the file it will
-write, and its picture, live.
+same panel carries a row per camera: its name, a switch, the file it will write,
+and a live-preview area. The final candidate's real capture-card picture and
+recording remain part of the physical-hardware gate.
 
 - **It remembers your rig.** Microphone names and trims, which mics are
   switched off, where recordings go, the backup setting, the combined-device
@@ -743,7 +747,7 @@ to JUCE 8.
 ### Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-528 unit tests passing in CI on Linux, macOS
+532 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
@@ -891,10 +895,12 @@ The full application builds and links in CI on Linux, macOS and Windows, so
   on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
   stand-in `juce_video`, via the `sim_camera` target. That simulator executes
   enumeration, selection, arrival/removal, open failure/retry, a list reorder
-  during open, and a recorded camera unplug/replug. It verifies that an
-  interrupted camera stays out for the rest of that take and its remembered
-  preview reopens only afterwards; real AVFoundation/DirectShow open, preview
-  and recording still need macOS or Windows hardware.
+  during open, native-viewer lifetime and reparenting, runtime-error recovery,
+  an enabled capture card missing from the OS list, and a recorded camera
+  unplug/replug. It verifies that an interrupted camera stays out for the rest
+  of that take and its remembered preview reopens only afterwards;
+  final-candidate AVFoundation/DirectShow open, visibly non-black preview and
+  recording still need macOS or Windows hardware.
 - `RecoveredTakesPanel` has been rendered against a real interrupted take:
   a session folder with no stop timestamp and four WAVs whose size fields were
   zeroed, as a SIGKILL leaves them. The app found it at launch, repaired all
@@ -909,11 +915,14 @@ saved-take panel listing every file that was written with its size. Pressing
 record a second time started immediately with no card, into a `_2` folder — so
 "asked once, then never again" is a checked claim rather than an intended one.
 
-What that does **not** cover: no physical camera has been opened. The simulator
-drives the `CameraDevice::openDevice` boundary, including failures and a
-hot-plug reorder, but the real AVFoundation/DirectShow path, live viewer and
-`startRecordingToFile` need a camera on a real macOS or Windows machine. See
-*Not yet validated against hardware*.
+What that does **not** cover is a successful physical-camera workflow. An older
+v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
+first-frame enqueue, but that run did not verify a visibly non-black SobStage
+preview or a completed recording. The simulator drives the
+`CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
+the final v1.12.0 AVFoundation/DirectShow viewer and `startRecordingToFile`
+paths still need the physical macOS and Windows matrix. See *Not yet validated
+against hardware*.
 
 ### Hardware signals and safeguards
 
@@ -993,10 +1002,14 @@ the matrix. In particular:
   the take, finalizing, and showing the alert are wired to that flag and each
   tested or exercised separately, but the four together need a real card to
   pull out.
-- **No physical camera has been opened.** `sim_camera` executes discovery,
-  selection, arrival/removal, open failure/retry, a topology reorder during
-  open, and the no-false-recovery policy for a mid-take unplug/replug, but real
-  device open, preview and recording remain untested.
+- **No physical camera has completed the candidate workflow.** `sim_camera`
+  executes discovery, selection, arrival/removal, open failure/retry, native
+  viewer lifetime/reparenting, runtime-error recovery, a topology reorder
+  during open, and the no-false-recovery policy for a mid-take unplug/replug.
+  Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
+  a first-frame enqueue; that did not verify a visible non-black preview or a
+  completed recording, and the final v1.12.0 artifacts remain untested with a
+  physical capture card.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file
   costs per second against the estimate the remaining-time figure uses
@@ -1047,7 +1060,8 @@ the matrix. In particular:
   is a judgment call against the spec's own principles rather than a
   requirement being met: opt-in per camera because §6.5's card-full failure is
   the one a novice cannot recover from and video is what fills a card; capture
-  always at full quality with only the *drawing* made cheap, because §6.6 is
+  requests JUCE's high-quality capture mode while only the *drawing* is made
+  cheap (the OS/driver still chooses the actual format), because §6.6 is
   about not spending CPU where it costs audio; picture and sound as separate
   files, because §6.1's whole premise is one clean track per person and a
   camera's own microphone would put a room mic into that. Nothing about the

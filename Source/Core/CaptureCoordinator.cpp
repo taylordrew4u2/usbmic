@@ -77,8 +77,34 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     for (const auto& ch : channels)
         trimGains.push_back (MonitorBus::trimDbToLinearGain (ch.trimDb));
 
+    // A headphone/capture-card output is never allowed to make the recording
+    // inputs unavailable. Enumeration can say an output supports a rate and
+    // the driver can still refuse the real exclusive open. Re-enter once with
+    // no output so every input is rebuilt cleanly under the software clock,
+    // then retain the output failure as a visible warning. The empty-output
+    // call cannot recurse back here.
+    const auto continueInputOnly = [this, &chans] (std::string outputProblem)
+    {
+        const bool inputsOpened = startMonitoring (chans, {});
+        const auto inputProblem = monitorProblem;
+
+        if (inputsOpened)
+        {
+            monitorProblem = std::move (outputProblem)
+                           + " Recording is available, but live headphone monitoring is off.";
+            return true;
+        }
+
+        monitorProblem = std::move (outputProblem);
+        if (! inputProblem.empty())
+            monitorProblem += " " + inputProblem;
+        return false;
+    };
+
     // §5.4: the monitor path must be exclusive-mode. If it is not available,
-    // say so and name the cause rather than silently delivering 40 ms.
+    // say so and name the cause rather than silently delivering 40 ms. The
+    // microphones still reopen input-only; monitoring failure is not recording
+    // failure.
     if (! outputDeviceId.empty())
     {
         const auto capability = backend.checkExclusiveModeCapability (outputDeviceId, sampleRate, bufferSize);
@@ -88,7 +114,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             monitorProblem = capability.unavailableReason.empty()
                 ? std::string ("Low-latency monitoring isn't available on this sound output.")
                 : capability.unavailableReason;
-            return false;
+            return continueInputOnly (monitorProblem);
         }
     }
 
@@ -169,7 +195,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             ? std::string ("Couldn't open your headphones for low-latency playback.")
             : backendReason;
         backend.closeAllStreams();
-        return false;
+        return continueInputOnly (monitorProblem);
     }
 
     // One stream per remaining DEVICE, not per channel.

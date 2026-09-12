@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -100,6 +101,7 @@ public:
     {
         std::string id;
         juce::String displayName;
+        uint64_t viewerRevision = 0;
     };
 
     /// §10.2: the picture belongs beside the levels, not behind a door.
@@ -196,16 +198,13 @@ private:
     /// Where the mark goes, set by resized() and read by paint().
     juce::Rectangle<int> brandMarkBounds;
 
-    /// The REC badge over a live picture, and the rectangles to draw it in --
-    /// one per camera tile, filled during layout.
-    std::vector<juce::Rectangle<int>> cameraRecBadges;
-
     juce::OwnedArray<SkullMeterComponent> skullMeters;
     MixBarComponent mixBar;
 
     struct CameraView
     {
         std::string id;
+        juce::String displayName;
         // Owned here and destroyed with the tile, per releaseCameraViews().
         std::unique_ptr<juce::Component> viewer;
         std::unique_ptr<juce::Label> caption;
@@ -254,6 +253,8 @@ private:
     // not changed. Rebuilding a viewer per frame would flicker and churn the
     // device.
     std::vector<std::string> lastTileIds;
+    std::vector<std::string> lastTileDisplayNames;
+    std::vector<uint64_t> lastTileViewerRevisions;
 
     /// The band the monitor-problem line needs, grown to fit its message.
     ///

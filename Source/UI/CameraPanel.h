@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -11,10 +12,10 @@ namespace mma {
 /// The camera door: what is connected, what it looks like right now, and what
 /// will be written.
 ///
-/// Live from the moment the panel opens, for the same reason §5.1 makes the
-/// sound live from launch: framing is something you fix before the take, and a
-/// picture you cannot see until you press record is a picture you aim at
-/// afterwards.
+/// Once a camera is explicitly enabled, its live view appears on the main
+/// screen and moves here while this panel is open. Framing is something you fix
+/// before the take, and a picture you cannot see until Record is a picture you
+/// aim afterwards.
 class CameraPanel : public juce::Component
 {
 public:
@@ -30,9 +31,12 @@ public:
         std::string id;
         juce::String displayName;
         bool enabled = false;
+        bool available = true;
+        bool discoveryPending = false;
         /// The file this camera will write, extension included. Empty when the
         /// camera is switched off and so will not write one.
         juce::String fileName;
+        uint64_t viewerRevision = 0;
     };
 
     /// The camera list and the state of each one. Rebuilds the rows -- and the
@@ -83,7 +87,10 @@ private:
     std::vector<Row> rows;
     std::vector<std::string> lastCameraIds;
     std::vector<char> lastEnabled;
+    std::vector<char> lastAvailable;
+    std::vector<char> lastDiscoveryPending;
     juce::StringArray lastFileNames;
+    std::vector<uint64_t> lastViewerRevisions;
     PreviewQuality previewQuality = PreviewQuality::Low;
     bool recording = false;
 

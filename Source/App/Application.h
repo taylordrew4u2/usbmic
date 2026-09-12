@@ -449,12 +449,10 @@ public:
     void setCameraName (const std::string& id, const juce::String& name);
     void setCameraPreviewQuality (PreviewQuality quality);
 
-    /// Opens the enabled cameras for viewing. Deliberately not done at launch:
-    /// a camera light coming on by itself the moment an audio recorder starts
-    /// is alarming, and on macOS it spends the privacy prompt before the user
-    /// has asked for anything. Called when the camera panel is opened, and
-    /// again at arm time so a camera switched on but never looked at still
-    /// records.
+    /// Opens cameras the user explicitly enabled. A newly discovered camera is
+    /// off, so it cannot raise a privacy prompt on its own; that choice is then
+    /// remembered and its main-screen preview may reopen on later launches.
+    /// Explicit retries happen from the camera panel and at arm time.
     void openEnabledCameras (bool retryFailures = false);
 
     /// §10.2: how large the main screen draws the camera pictures, as a step

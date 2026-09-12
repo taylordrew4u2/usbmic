@@ -17,6 +17,7 @@
 // that the controller has not kept up with fails the build.
 // -----------------------------------------------------------------------
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 
 namespace juce {
 
@@ -34,6 +35,8 @@ public:
                                      bool highQuality = true);
 
     const String& getName() const noexcept { return name; }
+
+    std::function<void (const String&)> onErrorOccurred;
 
     Component* createViewerComponent();
 
@@ -55,10 +58,14 @@ namespace fakecamera {
 /// What CameraDevice::getAvailableDevices() will report from now on.
 void setDevices (const juce::StringArray& names);
 void setOpenSucceeds (bool shouldSucceed);
+void setViewerSucceeds (bool shouldSucceed);
 void resetOpenCallCount();
 int getOpenCallCount();
+void resetViewerCreateCallCount();
+int getViewerCreateCallCount();
 int getLiveDeviceCount();
 juce::String getLastOpenedDeviceName();
+void emitRuntimeError (const juce::String& deviceName, const juce::String& message);
 bool wasLastEnumerationOnThisThread();
 void resetRecordingCallCounts();
 int getStartRecordingCallCount();

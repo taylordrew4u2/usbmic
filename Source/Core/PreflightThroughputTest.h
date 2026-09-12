@@ -31,7 +31,7 @@ public:
     /// same card alongside it.
     ///
     /// The video is not a rounding error next to the audio: eight microphones at
-    /// 24-bit/48k need about 4.6 MB/s, and one camera at its best quality can
+    /// 24-bit/48k need about 4.6 MB/s, and one high-quality camera stream can
     /// ask for as much again. A card benchmarked against the audio alone can
     /// therefore pass this gate and still fail the moment a camera starts --
     /// which is precisely the mid-take degradation §6.4 exists to refuse in

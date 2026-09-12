@@ -45,7 +45,21 @@ std::vector<OutputDeviceCandidate> OutputDeviceTracker::observe (
 
 bool OutputDeviceSelector::isEligible (const OutputDeviceCandidate& candidate)
 {
-    return ! candidate.isMicrophonePlaybackEndpoint && ! candidate.isAlsoSelectedInput;
+    return candidate.supportsRecordingSampleRate
+        && ! candidate.isMicrophonePlaybackEndpoint
+        && ! candidate.isAlsoSelectedInput;
+}
+
+bool OutputDeviceSelector::supportsRecordingRate (
+    uint32_t currentRate,
+    const std::vector<uint32_t>& supportedRates,
+    uint32_t recordingRate)
+{
+    return recordingRate == 0
+        || currentRate == recordingRate
+        || supportedRates.empty()
+        || std::find (supportedRates.begin(), supportedRates.end(), recordingRate)
+               != supportedRates.end();
 }
 
 OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCandidate>& candidates,
@@ -60,9 +74,20 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
 
     if (eligible.empty())
     {
+        const bool hasRateMismatch = std::any_of (
+            candidates.begin(), candidates.end(),
+            [] (const OutputDeviceCandidate& c)
+            {
+                return ! c.supportsRecordingSampleRate
+                    && ! c.isMicrophonePlaybackEndpoint
+                    && ! c.isAlsoSelectedInput;
+            });
+
         result.explanation = candidates.empty()
             ? "No headphones found. Plug headphones into the computer, or into a headphone amp connected to it."
-            : "The only sound outputs are the microphones themselves. Plug headphones into the computer or a headphone amp instead, or you'll hear yourself twice.";
+            : hasRateMismatch
+                ? "None of the safe sound outputs can run at this recording's sample rate. Connect a compatible headphone output or choose a recording rate it supports."
+                : "The only safe sound outputs are microphones or devices being recorded. Plug headphones into the computer or a headphone amp instead, or you'll hear yourself twice.";
         return result;
     }
 
@@ -119,8 +144,23 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
         return result;
     }
 
-    // Eligible devices exist but none matched a stated priority. Take the first
-    // rather than leaving the room without a monitor mix (§5.1: live from launch).
+    // The system default can itself be excluded because it is also a selected
+    // input. Prefer the computer's own output next. Falling straight to the
+    // enumeration-first USB endpoint selected HDMI capture-card audio on a rig
+    // pinned to 44.1 kHz; that unused 48 kHz output then prevented every input
+    // stream from opening and left a sample-rate warning on screen forever.
+    auto builtIn = std::find_if (eligible.begin(), eligible.end(),
+                                 [] (const OutputDeviceCandidate* c) { return c->isBuiltIn; });
+
+    if (builtIn != eligible.end())
+    {
+        pick (*builtIn, OutputSelectionReason::BuiltInOutput);
+        return result;
+    }
+
+    // Eligible devices exist but none matched a stated or safe fallback
+    // priority. Take the first rather than leaving the room without a monitor
+    // mix (§5.1: live from launch).
     pick (eligible.front(), OutputSelectionReason::SystemDefault);
     return result;
 }

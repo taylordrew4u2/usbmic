@@ -115,7 +115,7 @@ TEST_CASE (CaptureCoordinator_OpensOneOutputAndOneInputPerMic)
     REQUIRE (backend.inputStreamsOpened == 2);
 }
 
-TEST_CASE (CaptureCoordinator_RefusesWhenExclusiveModeIsUnavailable)
+TEST_CASE (CaptureCoordinator_OutputFailureFallsBackToInputOnlyRecording)
 {
     FakeBackend backend;
     backend.exclusiveAvailable = false;
@@ -125,10 +125,31 @@ TEST_CASE (CaptureCoordinator_RefusesWhenExclusiveModeIsUnavailable)
 
     c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
 
-    // §5.4: never ship a 40 ms mix silently -- refuse and name the cause.
-    REQUIRE_FALSE (c.startMonitoring (twoMics(), "out-device"));
-    REQUIRE_FALSE (c.isMonitoring());
+    // §5.4: never ship a 40 ms mix silently. Inputs stay live under the
+    // software clock, while the missing headphone path is named.
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.isMonitoring());
+    REQUIRE_FALSE (c.hasOutputStream());
+    REQUIRE (backend.inputStreamsOpened == 2);
     REQUIRE (c.getMonitorProblem().find ("exclusive control") != std::string::npos);
+    REQUIRE (c.getMonitorProblem().find ("Recording is available") != std::string::npos);
+
+    // Capability probes can lie: the runtime open is the final authority. A
+    // fixed-rate HDMI endpoint which fails there gets the same safe fallback.
+    FakeBackend runtimeBackend;
+    runtimeBackend.failOutputOpen = true;
+    runtimeBackend.inputOpenError = "This output stayed at 48 kHz and refused 44.1 kHz.";
+
+    CaptureCoordinator runtime (runtimeBackend, 44100.0, 64);
+    runtime.setSoftwareClockEnabled (false);
+
+    REQUIRE (runtime.startMonitoring (twoMics(), "hdmi-output"));
+    REQUIRE (runtime.isMonitoring());
+    REQUIRE_FALSE (runtime.hasOutputStream());
+    REQUIRE (runtimeBackend.inputStreamsOpened == 2);
+    REQUIRE (runtime.getMonitorProblem().find ("48 kHz") != std::string::npos);
+    REQUIRE (runtime.getMonitorProblem().find ("headphone monitoring is off")
+             != std::string::npos);
 }
 
 TEST_CASE (CaptureCoordinator_ClosesStreamsWhenAnInputFailsToOpen)

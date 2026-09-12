@@ -63,6 +63,56 @@ TEST_CASE (CameraSelection_choicesSurviveAnUnplug)
     REQUIRE (selection.getDisplayName ("cam-b") == std::string ("Wide shot"));
 }
 
+TEST_CASE (CameraSelection_anEnabledUnpluggedCameraRemainsVisibleAsUnavailable)
+{
+    CameraSelection selection;
+    selection.setAvailableCameras ({ { "USB2 Video", "USB2 Video" } });
+    selection.setEnabled ("USB2 Video", true);
+
+    selection.setAvailableCameras ({});
+
+    const auto missing = selection.getUnavailableEnabledCameras();
+    REQUIRE (missing.size() == 1);
+    REQUIRE (missing.front().id == std::string ("USB2 Video"));
+    REQUIRE (missing.front().displayName == std::string ("USB2 Video"));
+    REQUIRE (selection.getEnabledCount() == 0);
+    const auto plans = selection.buildPlans();
+    REQUIRE (plans.empty());
+
+    const auto intendedPlans = selection.buildIntendedPlans();
+    REQUIRE (intendedPlans.size() == 1);
+    REQUIRE (intendedPlans.front().deviceId == std::string ("USB2 Video"));
+    REQUIRE (intendedPlans.front().fileName == std::string ("V01_USB2-Video"));
+}
+
+TEST_CASE (CameraSelection_aRememberedNameLabelsAnUnavailableCamera)
+{
+    CameraSelection selection;
+    selection.setEnabled ("capture-card-id", true);
+    selection.setAssignedName ("capture-card-id", "Stage wide");
+
+    const auto missing = selection.getUnavailableEnabledCameras();
+    REQUIRE (missing.size() == 1);
+    REQUIRE (missing.front().displayName == std::string ("Stage wide"));
+}
+
+TEST_CASE (CameraSelection_disablingAnUnavailableCameraUpdatesRememberedState)
+{
+    CameraSelection selection;
+    selection.setEnabled ("USB2 Video", true);
+    selection.setAssignedName ("USB2 Video", "HDMI wide");
+    REQUIRE (selection.getUnavailableEnabledCameras().size() == 1);
+
+    selection.setEnabled ("USB2 Video", false);
+
+    REQUIRE (selection.getUnavailableEnabledCameras().empty());
+    const auto known = selection.getKnownCameras();
+    REQUIRE (known.size() == 1);
+    REQUIRE (known.front().id == std::string ("USB2 Video"));
+    REQUIRE (known.front().displayName == std::string ("HDMI wide"));
+    REQUIRE_FALSE (selection.isEnabled (known.front().id));
+}
+
 TEST_CASE (CameraSelection_planNamesFollowTheSessionNamingRules)
 {
     CameraSelection selection;

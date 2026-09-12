@@ -156,9 +156,10 @@ if (MMA_BUILD_APP)
         COMPANY_COPYRIGHT "Copyright (c) 2026 Taylor Drew Kozero"
         MICROPHONE_PERMISSION_ENABLED TRUE
         MICROPHONE_PERMISSION_TEXT "SobStage records from external USB, FireWire, and Thunderbolt microphones and audio interfaces you connect."
-        # The camera is opt-in and opened only when the user opens the camera
-        # panel, but macOS still wants the usage string declared up front, and
-        # §10.1 wants the reason to be the one the user would have guessed.
+        # A newly seen camera is opt-in; once enabled it is remembered and may
+        # reopen on later launches until switched off. macOS still wants the
+        # usage string declared up front, and §10.1 wants the reason to be the
+        # one the user would have guessed.
         CAMERA_PERMISSION_ENABLED TRUE
         CAMERA_PERMISSION_TEXT "SobStage records video from the cameras you switch on, alongside your microphone recordings."
         HARDENED_RUNTIME_ENABLED TRUE
@@ -238,9 +239,9 @@ if (MMA_BUILD_APP)
     # call fails the build on every platform rather than on the one machine
     # that happens to be a Mac.
     #
-    # An OBJECT library: compiling is the whole test. Running it would mean
-    # standing up JUCE's message manager and a Component on a headless box,
-    # which tests the harness rather than the controller.
+    # The runnable simulator below supplies a scoped JUCE message manager and
+    # lightweight Components, so it verifies native-viewer ownership and UI
+    # handoff as well as compiling the shipping controller surface.
     # -----------------------------------------------------------------------
     # A headless layout probe: MainScreen laid out with camera tiles, reporting
     # the sizes it actually produces. Component layout is arithmetic, so this
@@ -248,6 +249,7 @@ if (MMA_BUILD_APP)
     # machine where no camera can render.
     add_executable(layout_probe Tools/layout_probe.cpp
         Source/UI/MainScreen.cpp
+        Source/UI/CameraPanel.cpp
         Source/UI/SkullMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/AppLookAndFeel.cpp
@@ -264,8 +266,9 @@ if (MMA_BUILD_APP)
         # Runnable, not merely compiled. The stand-in camera layer takes a
         # settable device list, so arrival, removal, duplicate names and a list
         # reordering between discovery and open are driven without touching real
-        # camera hardware. The fake also drives open failure/retry policy without
-        # creating a viewer component. Windows needs COM linkage this portable
+        # camera hardware. The fake also creates lightweight viewer components
+        # to drive persistent-preview ownership and failure/retry policy. Windows
+        # needs COM linkage this portable
         # harness does not provide, so its normal app target covers the source.
         add_executable(sim_camera
             Tools/sim_camera.cpp

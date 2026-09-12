@@ -149,10 +149,36 @@ void aFailedOpenWaitsForAnExplicitRetry()
            "periodic selection refreshes do not retry the failed OS call");
     check (controller.getProblem().isNotEmpty(), "the explanation survives those refreshes");
 
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-busy", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a busy-camera take folder is available");
+    check (! controller.startRecording (takeFolder),
+           "a connected camera which failed to open is not claimed as recording");
+    check (controller.getTakePlans().size() == 1
+               && controller.getTakeVideoRecords().empty(),
+           "the watchdog retains it but the manifest invents no movie");
+
+    refreshNow (controller);
+    check (namesFrom (controller).size() == 1,
+           "a topology refresh keeps the connected failed camera listed during the take");
+    check (controller.getProblem().containsIgnoreCase ("Couldn't open Busy Camera")
+               && ! controller.getProblem().containsIgnoreCase ("system isn't listing"),
+           "its busy/privacy error is not replaced by a false disconnected diagnosis");
+
+    controller.stopRecording();
+
     fakecamera::setOpenSucceeds (true);
     controller.applySelection (true);
     check (fakecamera::getOpenCallCount() == 2, "an explicit action retries once");
-    check (controller.getProblem().isEmpty(), "a successful retry clears the explanation");
+    check (! controller.getProblem().containsIgnoreCase ("Couldn't open Busy Camera"),
+           "a successful retry clears the open failure while retaining the prior take result");
+    check (controller.startRecording (takeFolder),
+           "the recovered camera can join the next take");
+    check (controller.getProblem().isEmpty(),
+           "the successful next take replaces the prior failed-start result");
+    controller.stopRecording();
+
+    takeFolder.deleteRecursively();
 }
 
 /// JUCE accepts an array index, then enumerates the OS again inside openDevice.
@@ -232,6 +258,332 @@ void topologyConsumptionOwnsOpenDeviceReconciliation()
     check (fakecamera::getLiveDeviceCount() == 0, "controller teardown releases the reconnected device");
 }
 
+/// A capture card remembered as enabled must not disappear just because the
+/// latest OS snapshot omits it. The UI needs an unavailable row and a concrete
+/// reason before the user trusts a take that cannot contain that picture.
+void anEnabledMissingCaptureCardStaysVisibleAsAProblem()
+{
+    std::printf ("\nA remembered capture card missing from the OS list\n");
+
+    fakecamera::setDevices ({});
+    mma::CameraController controller;
+    controller.getSelection().setEnabled ("USB2 Video", true);
+    controller.getSelection().setAssignedName ("USB2 Video", "HDMI wide");
+    refreshNow (controller);
+
+    const auto missing = controller.getSelection().getUnavailableEnabledCameras();
+    check (missing.size() == 1, "the enabled missing camera remains in controller state");
+    check (! missing.empty() && missing.front().displayName == "HDMI wide",
+           "its remembered name remains available to the UI");
+    check (controller.getProblem().containsIgnoreCase ("system isn't listing HDMI wide"),
+           "the problem names the missing camera and the OS boundary");
+    check (controller.getProblem().containsIgnoreCase ("HDMI signal"),
+           "the recovery text covers a capture card's video source");
+    check (fakecamera::getLiveDeviceCount() == 0,
+           "a missing camera never creates a phantom open device");
+}
+
+/// Remembered choices are loaded synchronously but camera discovery is not.
+/// The empty pre-discovery state must not be presented as an unplug or allowed
+/// to become an empty frozen take plan.
+void aRememberedCameraWaitsForTheFirstSnapshot()
+{
+    std::printf ("\nA remembered camera before the first OS snapshot\n");
+
+    fakecamera::setDevices ({});
+    fakecamera::setOpenSucceeds (true);
+
+    mma::CameraController controller;
+    controller.getSelection().setEnabled ("USB2 Video", true);
+    controller.applySelection (true);
+
+    check (controller.isInitialDiscoveryPending(),
+           "the controller distinguishes pending discovery from an empty snapshot");
+    check (controller.getProblem().isEmpty(),
+           "a remembered camera is not falsely called missing before discovery");
+
+    refreshNow (controller);
+    check (! controller.isInitialDiscoveryPending(),
+           "the first completed OS snapshot ends the pending state");
+    check (controller.getProblem().containsIgnoreCase ("system isn't listing USB2 Video"),
+           "an actually empty snapshot reports the remembered camera as missing");
+}
+
+/// Audio recording must never wait forever on a platform camera enumeration.
+/// Starting before the first snapshot keeps the remembered camera in the
+/// frozen plan as missing, and a late first snapshot is held for the next take.
+void aTakeBeforeFirstDiscoveryKeepsTheCameraPlanHonest()
+{
+    std::printf ("\nA take starts before the first camera snapshot\n");
+
+    fakecamera::setDevices ({ "Slow HDMI" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    controller.getSelection().setEnabled ("Slow HDMI", true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-first-scan", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a pre-discovery take folder is available");
+    check (! controller.startRecording (takeFolder),
+           "the missing pre-snapshot writer is not claimed as recording");
+    check (controller.getTakePlans().size() == 1,
+           "the remembered camera is retained in the frozen take plan");
+    check (controller.getTakeVideoRecords().empty(),
+           "the take manifest cannot claim a movie which never started");
+    const auto states = controller.getTakeCameraStates();
+    check (states.size() == 1 && ! states.front().recording,
+           "the frozen roster reports the remembered camera as missing");
+
+    refreshNow (controller);
+    check (namesFrom (controller).empty()
+               && fakecamera::getOpenCallCount() == 0
+               && fakecamera::getStartRecordingCallCount() == 0,
+           "the late first snapshot cannot join the active take");
+
+    controller.stopRecording();
+    check (namesFrom (controller).size() == 1
+               && fakecamera::getOpenCallCount() == 1
+               && fakecamera::getLiveDeviceCount() == 1,
+           "the camera from the delayed snapshot opens immediately for the next take");
+
+    takeFolder.deleteRecursively();
+}
+
+/// A camera absent at t=0 is part of the intended/frozen roster, but JUCE
+/// cannot append it when it arrives later. Keep it unavailable for this take,
+/// record the missing writer, and open it only for the next one.
+void aCameraMissingAtTakeStartCannotJoinMidTake()
+{
+    std::printf ("\nA camera missing at take start arrives mid-take\n");
+
+    fakecamera::setDevices ({});
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    controller.getSelection().setEnabled ("Late HDMI", true);
+    refreshNow (controller);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-late-arrival", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a late-arrival take folder is available");
+    check (! controller.startRecording (takeFolder),
+           "the controller does not claim the missing camera started");
+    check (controller.getTakePlans().size() == 1,
+           "the missing enabled camera remains in the frozen take plan");
+    check (controller.getTakeVideoRecords().empty(),
+           "the missing camera is not written as a fictional movie in session metadata");
+
+    auto states = controller.getTakeCameraStates();
+    check (states.size() == 1 && ! states.front().recording,
+           "the watchdog sees the expected camera as not recording");
+
+    fakecamera::setDevices ({ "Late HDMI" });
+    refreshNow (controller);
+    check (namesFrom (controller).empty() && fakecamera::getLiveDeviceCount() == 0,
+           "a mid-take arrival is not advertised or opened as part of this take");
+    check (fakecamera::getStartRecordingCallCount() == 0,
+           "the late camera never creates a misleading partial writer");
+
+    controller.stopRecording();
+    check (namesFrom (controller).size() == 1
+               && fakecamera::getOpenCallCount() == 1
+               && fakecamera::getLiveDeviceCount() == 1,
+           "the remembered camera opens before an immediate next take");
+    check (controller.startRecording (takeFolder)
+               && fakecamera::getStartRecordingCallCount() == 1,
+           "an immediate second take records the camera without waiting for another scan");
+    controller.stopRecording();
+
+    takeFolder.deleteRecursively();
+}
+
+/// AVFoundation's preview layer is tied to the capture session which created
+/// it. Screen changes move one persistent layer between disposable hosts; they
+/// must never ask JUCE to create a second preview for the running session.
+void oneNativeViewerMovesBetweenScreens()
+{
+    std::printf ("\nOne native preview moves between UI hosts\n");
+
+    fakecamera::setDevices ({ "HDMI Capture" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::resetViewerCreateCallCount();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("HDMI Capture", true);
+    controller.applySelection (true);
+
+    check (fakecamera::getViewerCreateCallCount() == 1,
+           "opening creates the native preview exactly once");
+
+    auto mainHost = controller.createViewer ("HDMI Capture");
+    check (mainHost != nullptr && mainHost->getNumChildComponents() == 1,
+           "the first screen hosts that native preview");
+
+    auto panelHost = controller.createViewer ("HDMI Capture");
+    check (panelHost != nullptr && panelHost->getNumChildComponents() == 1,
+           "the next screen reparents the same preview");
+    check (mainHost != nullptr && mainHost->getNumChildComponents() == 0,
+           "the previous host no longer retains the preview");
+    check (fakecamera::getViewerCreateCallCount() == 1,
+           "moving screens never asks JUCE for another preview layer");
+}
+
+/// A CameraDevice pointer is not proof that a preview was created. A failed
+/// native layer must remain retryable, and its revision must invalidate the
+/// same-id placeholder cached by both camera screens.
+void aFailedViewerCanRecoverWithTheSameId()
+{
+    std::printf ("\nA failed native preview recovers under the same camera id\n");
+
+    fakecamera::setDevices ({ "Capture Card" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (false);
+    fakecamera::resetViewerCreateCallCount();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Capture Card", true);
+    controller.applySelection (true);
+
+    const auto failedRevision = controller.getViewerRevision ("Capture Card");
+    check (controller.createViewer ("Capture Card") == nullptr,
+           "a missing native preview is never treated as a usable camera");
+    check (controller.getProblem().isNotEmpty(), "the missing preview is explained");
+    check (fakecamera::getViewerCreateCallCount() == 1,
+           "the failed open made one native preview attempt");
+
+    fakecamera::setViewerSucceeds (true);
+    controller.applySelection (true);
+
+    check (controller.getViewerRevision ("Capture Card") > failedRevision,
+           "the successful same-id retry changes the UI cache revision");
+    check (controller.createViewer ("Capture Card") != nullptr,
+           "the retry now supplies a live preview host");
+    check (fakecamera::getViewerCreateCallCount() == 2,
+           "the explicit retry makes exactly one fresh native preview");
+    check (controller.getProblem().isEmpty(), "successful preview recovery clears the problem");
+}
+
+/// JUCE can return a non-null CameraDevice and only later report that its input
+/// or capture session failed. The callback is drained on the message-thread
+/// poll, invalidates the viewer, and leaves an explicit-retry failure behind.
+void aRuntimeCameraErrorInvalidatesThePreview()
+{
+    std::printf ("\nA runtime camera error invalidates its preview\n");
+
+    fakecamera::setDevices ({ "Flaky HDMI" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Flaky HDMI", true);
+    controller.applySelection (true);
+
+    const auto liveRevision = controller.getViewerRevision ("Flaky HDMI");
+    check (controller.createViewer ("Flaky HDMI") != nullptr,
+           "the non-null device initially has a live preview host");
+
+    fakecamera::emitRuntimeError ("Flaky HDMI", "capture input stopped");
+    check (controller.applyPendingCameraList(),
+           "the UI poll consumes a runtime error even without a topology update");
+    check (fakecamera::getLiveDeviceCount() == 0,
+           "the failed CameraDevice is closed instead of remaining black forever");
+    check (controller.createViewer ("Flaky HDMI") == nullptr,
+           "the invalid preview is no longer advertised as live");
+    check (controller.getViewerRevision ("Flaky HDMI") > liveRevision,
+           "runtime failure invalidates same-id UI caches");
+    check (controller.getProblem().containsIgnoreCase ("capture input stopped"),
+           "the platform's runtime reason is surfaced to the user");
+
+    controller.applySelection (true);
+    check (fakecamera::getLiveDeviceCount() == 1,
+           "an explicit action can reopen the camera after the runtime failure");
+}
+
+/// Selection changes are for the next take. Applying one while a writer is
+/// active must not finalize that movie early; the close happens immediately
+/// after the take ends instead.
+void switchingOffARecordingCameraWaitsForTheTakeToEnd()
+{
+    std::printf ("\nSwitching off a camera during a take is deferred\n");
+
+    fakecamera::setDevices ({ "HDMI Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("HDMI Camera", true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-frozen-roster", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a temporary take folder is available");
+    check (controller.startRecording (takeFolder), "the HDMI camera starts recording");
+
+    controller.getSelection().setEnabled ("HDMI Camera", false);
+    controller.applySelection (true);
+    check (fakecamera::getActiveRecordingCount() == 1
+               && fakecamera::getStopRecordingCallCount() == 0,
+           "a mid-take setting change does not truncate the movie");
+
+    controller.stopRecording();
+    check (fakecamera::getActiveRecordingCount() == 0
+               && fakecamera::getStopRecordingCallCount() == 1,
+           "the writer is finalized exactly once when the take ends");
+    check (fakecamera::getLiveDeviceCount() == 0,
+           "the deferred off setting is applied after finalization");
+
+    takeFolder.deleteRecursively();
+}
+
+/// Runtime failure suppresses same-take reopening, but once the take ends an
+/// enabled device which is still in the OS snapshot gets one fresh preview.
+void aRuntimeFailureRetriesAfterTheTakeEnds()
+{
+    std::printf ("\nA runtime camera failure retries after the take\n");
+
+    fakecamera::setDevices ({ "Recovering HDMI" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Recovering HDMI", true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-runtime-retry", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a runtime-retry take folder is available");
+    check (controller.startRecording (takeFolder), "the recovering camera starts recording");
+
+    fakecamera::emitRuntimeError ("Recovering HDMI", "capture input stopped");
+    check (controller.applyPendingCameraList(), "the in-take runtime error is consumed");
+    check (fakecamera::getLiveDeviceCount() == 0,
+           "the failed camera stays closed for the rest of the take");
+
+    controller.stopRecording();
+    check (fakecamera::getOpenCallCount() == 2 && fakecamera::getLiveDeviceCount() == 1,
+           "the same listed camera is reopened automatically for the next take");
+    check (controller.getProblem().isEmpty(),
+           "a successful post-take retry clears the runtime failure");
+
+    takeFolder.deleteRecursively();
+}
+
 /// JUCE cannot append a reconnected camera to the movie it finalized when the
 /// device vanished. Reopening that camera's preview during the same take would
 /// look like recovery while silently omitting every later frame. Keep the
@@ -263,6 +615,9 @@ void aRecordedCameraThatReconnectsWaitsForTheNextTake()
     check (takeFolder.createDirectory().wasOk(), "a temporary take folder is available");
 
     check (controller.startRecording (takeFolder), "the camera starts recording");
+    check (controller.getTakeVideoRecords().size() == 1
+               && ! controller.getTakeVideoRecords().front().fileName.empty(),
+           "session metadata receives the camera writer that actually started");
     check (fakecamera::getStartRecordingCallCount() == 1
                && fakecamera::getActiveRecordingCount() == 1,
            "one camera writer is active");
@@ -305,9 +660,8 @@ void aRecordedCameraThatReconnectsWaitsForTheNextTake()
            "even an explicit selection refresh cannot reopen it mid-take");
 
     controller.stopRecording();
-    refreshNow (controller);
     check (namesFrom (controller).size() == 1,
-           "the remembered camera is advertised again after the take ends");
+           "the remembered camera is advertised immediately after the take ends");
     check (fakecamera::getOpenCallCount() == 2 && fakecamera::getLiveDeviceCount() == 1,
            "its remembered preview reopens for the next take");
     check (fakecamera::getStartRecordingCallCount() == 1
@@ -395,6 +749,8 @@ void aChangingSameNameGroupIsDeferredTogether()
 
 int main()
 {
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
     std::printf ("CameraController, driven against a virtual camera layer\n");
     std::printf ("======================================================\n");
 
@@ -404,6 +760,15 @@ int main()
     aFailedOpenWaitsForAnExplicitRetry();
     aReorderedListCannotOpenTheWrongCamera();
     topologyConsumptionOwnsOpenDeviceReconciliation();
+    anEnabledMissingCaptureCardStaysVisibleAsAProblem();
+    aRememberedCameraWaitsForTheFirstSnapshot();
+    aTakeBeforeFirstDiscoveryKeepsTheCameraPlanHonest();
+    aCameraMissingAtTakeStartCannotJoinMidTake();
+    oneNativeViewerMovesBetweenScreens();
+    aFailedViewerCanRecoverWithTheSameId();
+    aRuntimeCameraErrorInvalidatesThePreview();
+    switchingOffARecordingCameraWaitsForTheTakeToEnd();
+    aRuntimeFailureRetriesAfterTheTakeEnds();
     aRecordedCameraThatReconnectsWaitsForTheNextTake();
     aChangingSameNameGroupIsDeferredTogether();
 

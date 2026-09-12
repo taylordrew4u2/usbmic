@@ -1,5 +1,7 @@
 #include "juce_video/juce_video.h"
+#include <algorithm>
 #include <thread>
+#include <vector>
 
 // The stub's bodies.
 //
@@ -26,10 +28,28 @@ bool& openSucceeds()
     return succeeds;
 }
 
+bool& viewerSucceeds()
+{
+    static bool succeeds = true;
+    return succeeds;
+}
+
 int& openCallCount()
 {
     static int count = 0;
     return count;
+}
+
+int& viewerCreateCallCount()
+{
+    static int count = 0;
+    return count;
+}
+
+std::vector<juce::CameraDevice*>& liveDevices()
+{
+    static std::vector<juce::CameraDevice*> devices;
+    return devices;
 }
 
 int& liveDeviceCount()
@@ -63,12 +83,15 @@ juce::String& lastOpenedDeviceName()
 }
 
 void setOpenSucceeds (bool shouldSucceed) { openSucceeds() = shouldSucceed; }
+void setViewerSucceeds (bool shouldSucceed) { viewerSucceeds() = shouldSucceed; }
 void resetOpenCallCount()
 {
     openCallCount() = 0;
     lastOpenedDeviceName().clear();
 }
 int getOpenCallCount() { return openCallCount(); }
+void resetViewerCreateCallCount() { viewerCreateCallCount() = 0; }
+int getViewerCreateCallCount() { return viewerCreateCallCount(); }
 int getLiveDeviceCount() { return liveDeviceCount(); }
 juce::String getLastOpenedDeviceName() { return lastOpenedDeviceName(); }
 void resetRecordingCallCounts()
@@ -80,6 +103,16 @@ void resetRecordingCallCounts()
 int getStartRecordingCallCount() { return startRecordingCallCount(); }
 int getStopRecordingCallCount() { return stopRecordingCallCount(); }
 int getActiveRecordingCount() { return activeRecordingCount(); }
+
+void emitRuntimeError (const juce::String& deviceName, const juce::String& message)
+{
+    // Copy because the callback may cause the controller to close the device
+    // when it next drains its mailbox.
+    const auto devices = liveDevices();
+    for (auto* device : devices)
+        if (device != nullptr && device->getName() == deviceName && device->onErrorOccurred)
+            device->onErrorOccurred (message);
+}
 
 std::thread::id& lastEnumerationThread()
 {
@@ -100,11 +133,14 @@ CameraDevice::CameraDevice (String deviceName)
     : name (std::move (deviceName))
 {
     ++fakecamera::liveDeviceCount();
+    fakecamera::liveDevices().push_back (this);
 }
 
 CameraDevice::~CameraDevice()
 {
     stopRecording();
+    auto& devices = fakecamera::liveDevices();
+    devices.erase (std::remove (devices.begin(), devices.end(), this), devices.end());
     --fakecamera::liveDeviceCount();
 }
 
@@ -126,7 +162,11 @@ CameraDevice* CameraDevice::openDevice (int index, int, int, int, int, bool)
     return new CameraDevice (devices[index]);
 }
 
-Component* CameraDevice::createViewerComponent() { return nullptr; }
+Component* CameraDevice::createViewerComponent()
+{
+    ++fakecamera::viewerCreateCallCount();
+    return fakecamera::viewerSucceeds() ? new Component() : nullptr;
+}
 
 void CameraDevice::startRecordingToFile (const File& file, int)
 {
