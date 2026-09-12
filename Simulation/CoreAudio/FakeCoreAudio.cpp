@@ -229,10 +229,7 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
     {
         case kAudioDevicePropertyTransportType:
         {
-            // Every simulated device stands in for an attached USB microphone,
-            // so nothing here reads as built in -- which is what the simulated
-            // rigs mean.
-            const UInt32 transport = kAudioDeviceTransportTypeUSB;
+            const UInt32 transport = device->spec.transportType;
             return deliver (&transport, sizeof (transport), ioSize, outData);
         }
 

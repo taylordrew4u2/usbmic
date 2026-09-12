@@ -68,12 +68,24 @@ constexpr AudioObjectPropertySelector kAudioObjectPropertyName = mmaFourCC ('l',
 constexpr AudioObjectPropertySelector kAudioHardwarePropertyDevices = mmaFourCC ('d', 'e', 'v', '#');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyDeviceUID = mmaFourCC ('u', 'i', 'd', ' ');
 
-// §3.1 built-in detection. The simulation's devices are all stand-ins for
-// attached USB microphones, so the fake reports the USB transport and nothing
-// is treated as built in -- which is what the simulated rigs mean.
+// Transport types used by the backend's external-input allow-list. Values
+// match Apple's four-character codes so the shipping source is exercised
+// unchanged by the simulation.
 constexpr AudioObjectPropertySelector kAudioDevicePropertyTransportType = mmaFourCC ('t', 'r', 'a', 'n');
-constexpr UInt32 kAudioDeviceTransportTypeBuiltIn = mmaFourCC ('b', 'l', 't', 'n');
-constexpr UInt32 kAudioDeviceTransportTypeUSB     = mmaFourCC ('u', 's', 'b', ' ');
+constexpr UInt32 kAudioDeviceTransportTypeBuiltIn                   = mmaFourCC ('b', 'l', 't', 'n');
+constexpr UInt32 kAudioDeviceTransportTypeAggregate                 = mmaFourCC ('g', 'r', 'u', 'p');
+constexpr UInt32 kAudioDeviceTransportTypeVirtual                   = mmaFourCC ('v', 'i', 'r', 't');
+constexpr UInt32 kAudioDeviceTransportTypePCI                       = mmaFourCC ('p', 'c', 'i', ' ');
+constexpr UInt32 kAudioDeviceTransportTypeUSB                       = mmaFourCC ('u', 's', 'b', ' ');
+constexpr UInt32 kAudioDeviceTransportTypeFireWire                  = mmaFourCC ('1', '3', '9', '4');
+constexpr UInt32 kAudioDeviceTransportTypeBluetooth                 = mmaFourCC ('b', 'l', 'u', 'e');
+constexpr UInt32 kAudioDeviceTransportTypeBluetoothLE               = mmaFourCC ('b', 'l', 'e', 'a');
+constexpr UInt32 kAudioDeviceTransportTypeAirPlay                   = mmaFourCC ('a', 'i', 'r', 'p');
+constexpr UInt32 kAudioDeviceTransportTypeAVB                       = mmaFourCC ('e', 'a', 'v', 'b');
+constexpr UInt32 kAudioDeviceTransportTypeThunderbolt               = mmaFourCC ('t', 'h', 'u', 'n');
+constexpr UInt32 kAudioDeviceTransportTypeContinuityCaptureWired    = mmaFourCC ('c', 'c', 'w', 'd');
+constexpr UInt32 kAudioDeviceTransportTypeContinuityCaptureWireless = mmaFourCC ('c', 'c', 'w', 'l');
+constexpr UInt32 kAudioDeviceTransportTypeContinuityCapture         = mmaFourCC ('c', 'c', 'a', 'p');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyStreamConfiguration = mmaFourCC ('s', 'l', 'a', 'y');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyNominalSampleRate = mmaFourCC ('n', 's', 'r', 't');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyAvailableNominalSampleRates = mmaFourCC ('n', 's', 'r', '#');

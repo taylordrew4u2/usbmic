@@ -119,6 +119,7 @@ if (MMA_BUILD_APP)
         PRODUCT_NAME "SobStage"
         COMPANY_NAME "SobStage"
         MICROPHONE_PERMISSION_ENABLED TRUE
+        MICROPHONE_PERMISSION_TEXT "SobStage records from external USB, FireWire, and Thunderbolt microphones and audio interfaces you connect."
         # The camera is opt-in and opened only when the user opens the camera
         # panel, but macOS still wants the usage string declared up front, and
         # §10.1 wants the reason to be the one the user would have guessed.

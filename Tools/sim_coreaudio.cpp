@@ -568,26 +568,69 @@ void eightMicrophonesEachKeepTheirOwnAudio()
 
 } // namespace
 
-void ourAggregateIsNeverARecordingSource()
+void onlyDirectlyAttachedHardwareEnumeratesAsInput()
 {
+    std::printf ("\nOnly directly attached hardware appears as a microphone\n");
     fakeca::reset();
-    fakeca::addDevice (microphone ("Renamed combined device", "com.multimicaggregator.combined", 4,
-                                   fakeca::BufferShape::interleaved));
-    fakeca::addDevice (microphone ("SobStage", "physical-mic", 1,
-                                   fakeca::BufferShape::oneChannelPerBuffer));
-    fakeca::addDevice (microphone ("User aggregate", "another-aggregate", 2,
-                                   fakeca::BufferShape::interleaved));
+
+    const auto addInput = [] (const char* name, const char* uid, UInt32 transport)
+    {
+        auto spec = microphone (name, uid, 1, fakeca::BufferShape::oneChannelPerBuffer);
+        spec.transportType = transport;
+        fakeca::addDevice (spec);
+    };
+
+    addInput ("USB interface", "usb", kAudioDeviceTransportTypeUSB);
+    addInput ("FireWire interface", "firewire", kAudioDeviceTransportTypeFireWire);
+    addInput ("Thunderbolt interface", "thunderbolt", kAudioDeviceTransportTypeThunderbolt);
+
+    addInput ("Mac microphone", "built-in", kAudioDeviceTransportTypeBuiltIn);
+    addInput ("iPhone wired", "phone-wired", kAudioDeviceTransportTypeContinuityCaptureWired);
+    addInput ("iPhone wireless", "phone-wireless", kAudioDeviceTransportTypeContinuityCaptureWireless);
+    addInput ("Older iPhone", "phone-legacy", kAudioDeviceTransportTypeContinuityCapture);
+    addInput ("Bluetooth microphone", "bluetooth", kAudioDeviceTransportTypeBluetooth);
+    addInput ("Bluetooth LE microphone", "bluetooth-le", kAudioDeviceTransportTypeBluetoothLE);
+    addInput ("AirPlay input", "airplay", kAudioDeviceTransportTypeAirPlay);
+    addInput ("Network microphone", "avb", kAudioDeviceTransportTypeAVB);
+    addInput ("Internal sound card", "pci", kAudioDeviceTransportTypePCI);
+    addInput ("Virtual cable", "virtual", kAudioDeviceTransportTypeVirtual);
+    addInput ("User aggregate", "aggregate", kAudioDeviceTransportTypeAggregate);
+    addInput ("Unknown source", "unknown", 0);
+    addInput ("SobStage aggregate", "com.multimicaggregator.combined",
+              kAudioDeviceTransportTypeAggregate);
+
     mma::CoreAudioBackend backend;
     const auto inputs = backend.enumerateInputDevices();
-    check (inputs.size() == 2, "only our own aggregate is excluded");
-    bool ours = false, physical = false, other = false;
+
+    check (inputs.size() == 3, "built-in, phone, wireless, virtual, and unknown inputs are excluded");
+
+    bool usb = false, firewire = false, thunderbolt = false, unexpected = false;
     for (const auto& d : inputs)
     {
-        ours |= d.usbLocationId == "com.multimicaggregator.combined";
-        physical |= d.usbLocationId == "physical-mic";
-        other |= d.usbLocationId == "another-aggregate";
+        usb |= d.usbLocationId == "usb";
+        firewire |= d.usbLocationId == "firewire";
+        thunderbolt |= d.usbLocationId == "thunderbolt";
+        unexpected |= d.usbLocationId != "usb"
+                   && d.usbLocationId != "firewire"
+                   && d.usbLocationId != "thunderbolt";
     }
-    check (! ours && physical && other, "filter uses stable UID, not the display name");
+
+    check (usb && firewire && thunderbolt && ! unexpected,
+           "USB, FireWire, and Thunderbolt inputs remain available");
+
+    auto speakers = headphones ("Mac speakers", "speakers", 2,
+                                fakeca::BufferShape::oneChannelPerBuffer);
+    speakers.transportType = kAudioDeviceTransportTypeBuiltIn;
+    fakeca::addDevice (speakers);
+
+    auto wirelessHeadphones = headphones ("Bluetooth headphones", "headphones", 2,
+                                          fakeca::BufferShape::interleaved);
+    wirelessHeadphones.transportType = kAudioDeviceTransportTypeBluetooth;
+    fakeca::addDevice (wirelessHeadphones);
+
+    const auto outputs = backend.enumerateOutputDevices();
+    check (outputs.size() == 2,
+           "the input policy does not hide built-in or wireless monitor outputs");
 }
 
 int main()
@@ -595,7 +638,7 @@ int main()
     std::printf ("CoreAudio backend, driven against a virtual HAL\n");
     std::printf ("===============================================\n");
 
-    ourAggregateIsNeverARecordingSource();
+    onlyDirectlyAttachedHardwareEnumeratesAsInput();
     interleavedStereoMicrophoneDeliversBothChannels();
     oneChannelPerBufferStillWorks();
     interleavedOutputCarriesTheMonitorMix();

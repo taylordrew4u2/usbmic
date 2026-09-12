@@ -34,6 +34,11 @@ struct DeviceSpec
     int outputChannels = 0;
     BufferShape shape = BufferShape::oneChannelPerBuffer;
 
+    /// How CoreAudio says this device is connected. Most scenarios are USB;
+    /// enumeration tests override it to model built-in, Continuity, wireless,
+    /// aggregate, and other non-hardware inputs.
+    UInt32 transportType = kAudioDeviceTransportTypeUSB;
+
     /// Rates the device reports. A discrete rate is a range whose ends are
     /// equal; a continuous range has them different, which is what a device
     /// with a sample-rate converter advertises.

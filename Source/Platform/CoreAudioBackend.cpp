@@ -160,10 +160,10 @@ OSStatus deviceListChanged (AudioObjectID, UInt32, const AudioObjectPropertyAddr
     return noErr;
 }
 
-/// The device's transport, used only to tell a built-in microphone from an
-/// attached one. Unknown transports read as "not built in", which is the safe
-/// answer: a device wrongly treated as attachable can still be chosen as the
-/// timebase, whereas wrongly excluding one could leave a rig with no master.
+/// The device's transport is the reliable distinction between an audio box
+/// connected to this Mac and an input supplied by the Mac, an iPhone, or
+/// software. Names are deliberately not involved: they are localised, mutable,
+/// and routinely reused by drivers.
 UInt32 readTransportType (AudioObjectID device)
 {
     AudioObjectPropertyAddress address { kAudioDevicePropertyTransportType,
@@ -176,6 +176,17 @@ UInt32 readTransportType (AudioObjectID device)
         return 0;
 
     return transport;
+}
+
+/// SobStage records only directly attached external hardware. Keep this as a
+/// positive allow-list so a new virtual, wireless, or Continuity transport does
+/// not silently become a recording source. A phone connected by cable still
+/// reports a Continuity transport, not USB, and is therefore excluded.
+bool isDirectlyAttachedInputTransport (UInt32 transport)
+{
+    return transport == kAudioDeviceTransportTypeUSB
+        || transport == kAudioDeviceTransportTypeFireWire
+        || transport == kAudioDeviceTransportTypeThunderbolt;
 }
 
 /// Resolves a device UID (the stable identifier §2.4 stores) to a live
@@ -493,12 +504,17 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         if (d.usbLocationId == kOurAggregateUid)
             continue;
 
-        // §3.1 needs to tell the machine's own microphone apart from one the
-        // user plugged in. CoreAudio enumerates the built-in first, so without
-        // this it wins clock-master selection on enumeration order and the
-        // Advanced panel reads "clock master: <the computer>" no matter how
-        // many USB mics are attached.
-        d.isBuiltIn = (readTransportType (deviceId) == kAudioDeviceTransportTypeBuiltIn);
+        const auto transport = readTransportType (deviceId);
+
+        // §2 is an external-hardware recorder. The Mac's microphone, iPhone
+        // Continuity inputs (wired or wireless), Bluetooth/AirPlay sources,
+        // and aggregate/virtual devices never belong in its microphone list.
+        // Outputs are intentionally unaffected: built-in speakers and
+        // Bluetooth headphones can still be monitor destinations.
+        if (wantInput && ! isDirectlyAttachedInputTransport (transport))
+            continue;
+
+        d.isBuiltIn = (transport == kAudioDeviceTransportTypeBuiltIn);
         d.maxInputChannels = wantInput ? channels : 0;
         d.supportedSampleRates = querySupportedSampleRates (deviceId);
         d.currentSampleRate = static_cast<uint32_t> (getNominalSampleRate (deviceId) + 0.5);

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed -- macOS records only directly attached external inputs
+
+The Mac's own microphone and iPhone/Continuity microphones no longer appear in
+SobStage. Recording input enumeration now admits only USB, FireWire, and
+Thunderbolt hardware. Bluetooth, AirPlay, network, aggregate, virtual, PCI, and
+unknown input transports are excluded conservatively; monitor-output choices
+are unchanged.
+
 ## v1.11.0 -- 2026-09-08
 
 ### Added -- the take must prove itself on disk, or it stops
