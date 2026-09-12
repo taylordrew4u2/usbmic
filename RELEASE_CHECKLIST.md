@@ -20,7 +20,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **498 unit tests**; if tests change, record the final discovered count here.
+  is **503 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_coreaudio` and `sim_wasapi` pass. The baseline before final hardening
   is **62 CoreAudio checks** and **67 WASAPI checks**; record final counts from
   the candidate run rather than copying these numbers blindly.

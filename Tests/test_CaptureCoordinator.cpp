@@ -221,7 +221,7 @@ TEST_CASE (CaptureCoordinator_AMixerThatIsAlsoTheOutputStillRecordsBothMics)
     REQUIRE (anyOutput);
 }
 
-TEST_CASE (CaptureCoordinator_ASliceLargerThanTheNominalBufferIsStillRecorded)
+TEST_CASE (CaptureCoordinator_ASliceOverTwiceTheNominalBufferIsStillRecorded)
 {
     // CoreAudio is allowed to hand the callback more frames than the buffer
     // size that was asked for, and CoreAudioBackend sizes its own scratch for
@@ -236,20 +236,21 @@ TEST_CASE (CaptureCoordinator_ASliceLargerThanTheNominalBufferIsStillRecorded)
 
     REQUIRE (backend.inputCallbacks.size() == 2);
 
-    std::vector<float> loud (128, 0.80f), quiet (128, 0.05f);
+    constexpr int callbackFrames = 193;
+    std::vector<float> loud (callbackFrames, 0.80f), quiet (callbackFrames, 0.05f);
     const float* loudIn[] = { loud.data() };
     const float* quietIn[] = { quiet.data() };
 
-    std::vector<float> out (128, 0.0f);
+    std::vector<float> out (callbackFrames, 0.0f);
     float* outs[] = { out.data() };
 
-    // 128 frames against a 64-frame nominal buffer: double, which is what the
-    // HAL's own headroom allows for.
+    // 193 frames against a 64-frame nominal buffer: more than the scratch's
+    // two-block headroom. The callback must be sliced rather than discarded.
     for (int i = 0; i < 16; ++i)
     {
-        backend.inputCallbacks[0] (loudIn, 1, nullptr, 0, 128);
-        backend.inputCallbacks[1] (quietIn, 1, nullptr, 0, 128);
-        c.processOutputBlock (outs, 1, 128);
+        backend.inputCallbacks[0] (loudIn, 1, nullptr, 0, callbackFrames);
+        backend.inputCallbacks[1] (quietIn, 1, nullptr, 0, callbackFrames);
+        c.processOutputBlock (outs, 1, callbackFrames);
     }
 
     for (int i = 0; i < 60; ++i)
@@ -262,6 +263,8 @@ TEST_CASE (CaptureCoordinator_ASliceLargerThanTheNominalBufferIsStillRecorded)
     REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() > Metering::kMinDb + 6.0f);
     REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb()
              > c.getChannelMetering (1)->getDisplayedLevelDb() + 6.0f);
+    REQUIRE (out.back() != 0.0f);
+    REQUIRE (c.getFramesMissedByLayout() == 0u);
 }
 
 TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
@@ -933,27 +936,27 @@ void pushStereo (FakeBackend& backend, int device,
 
 } // namespace
 
-TEST_CASE (CaptureCoordinator_RecordsTheLiveSideOfARightWiredMicrophone)
+TEST_CASE (CaptureCoordinator_DoesNotSubstituteAnUnselectedPhysicalInput)
 {
-    // §2.1: "many USB mics present as stereo with one silent side". Which side
-    // is silent is not fixed, and the capture path used to take channel 0 no
-    // matter what -- so a microphone with its capsule on the right recorded
-    // pure silence. Nothing warned: the meter sat at the floor and the stem was
-    // empty, which is §0.1's failure with a working device attached.
+    // The take selected physical input 0 only. Input 1 can carry unrelated
+    // audio from a disabled socket, so its being louder must not make it part
+    // of the recording. The old one-route stereo special case inspected both
+    // pointers and substituted input 1 when input 0 was silent.
     FakeBackend backend;
     CaptureCoordinator c (backend, 48000.0, 64);
     c.setSoftwareClockEnabled (false); // simulated time; see the software-clock tests below
-    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    CaptureChannel selected { "device", "Selected input", "01_Selected", 0.0f };
+    selected.deviceChannel = 0;
+    REQUIRE (c.startMonitoring ({ selected }, "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
 
     const std::vector<float> silent (512, 0.0f);
     const std::vector<float> signal (512, 0.4f);
 
-    // Device 0 is wired to the right, device 1 to the left.
+    // Only the right/unselected socket carries signal.
     pushStereo (backend, 0, silent, signal);
-    pushStereo (backend, 1, signal, silent);
-
-    REQUIRE (c.getChannelLayoutSource (0) == 1);
-    REQUIRE (c.getChannelLayoutSource (1) == 0);
+    REQUIRE (c.getChannelLayoutSource (0) == -1);
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Pending);
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
@@ -962,12 +965,41 @@ TEST_CASE (CaptureCoordinator_RecordsTheLiveSideOfARightWiredMicrophone)
     for (int i = 0; i < 10; ++i)
     {
         c.getChannelMetering (0)->tick (1.0 / 60.0);
-        c.getChannelMetering (1)->tick (1.0 / 60.0);
     }
 
-    // Both channels carry the microphone's audio, whichever side it arrived on.
-    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() > Metering::kMinDb + 20.0f);
-    REQUIRE (c.getChannelMetering (1)->getDisplayedLevelDb() > Metering::kMinDb + 20.0f);
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() == Metering::kMinDb);
+    for (const auto sample : out)
+        REQUIRE (sample == 0.0f);
+}
+
+TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
+{
+    // A persisted analyzer verdict distinguishes this known stereo-presenting
+    // microphone from an interface with an unselected adjacent socket. Only
+    // that explicit bit authorizes looking at both physical inputs.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    CaptureChannel mic { "device", "Stereo USB mic", "01_Stereo-USB-mic", 0.0f };
+    mic.deviceChannel = 0;
+    mic.collapseStereoPair = true;
+    REQUIRE (c.startMonitoring ({ mic }, "out-device"));
+
+    const std::vector<float> silent (512, 0.0f);
+    const std::vector<float> signal (512, 0.4f);
+    pushStereo (backend, 0, silent, signal);
+
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    c.processOutputBlock (outs, 1, 64);
+
+    bool heardSignal = false;
+    for (const auto sample : out)
+        heardSignal = heardSignal || sample != 0.0f;
+    REQUIRE (heardSignal);
 }
 
 TEST_CASE (CaptureCoordinator_MonoDeviceIsUntouchedByChannelLayout)
@@ -1015,7 +1047,8 @@ TEST_CASE (CaptureCoordinator_ChannelSideNeverMovesOnceRecording)
     // Opens in a quiet room: nothing heard from either side yet, so the side is
     // still the default and §2.1 has not decided. This is deliberately the
     // state in which the side is most free to move.
-    pushStereo (backend, 0, silent, silent);
+    const float* quietPair[] = { silent.data(), silent.data() };
+    c.pushDeviceBlockMultiChannel (0, quietPair, 2, static_cast<int> (silent.size()));
     REQUIRE (c.getChannelLayoutSource (0) == 0);
     REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Pending);
 
@@ -1025,8 +1058,9 @@ TEST_CASE (CaptureCoordinator_ChannelSideNeverMovesOnceRecording)
     // the exact evidence that would move the side, arriving after the take has
     // begun. It must not move: the freeze has to be checked before the side is
     // recomputed, or the first block of the take still adopts the new one.
+    const float* rightPair[] = { silent.data(), signal.data() };
     for (int i = 0; i < 400; ++i)
-        pushStereo (backend, 0, silent, signal);
+        c.pushDeviceBlockMultiChannel (0, rightPair, 2, static_cast<int> (silent.size()));
 
     REQUIRE (c.getChannelLayoutSource (0) == 0);
 

@@ -1,6 +1,8 @@
 #include "TestFramework.h"
 #include "Core/DeviceInputStream.h"
+#include <atomic>
 #include <cmath>
+#include <thread>
 #include <vector>
 
 using namespace mma;
@@ -208,6 +210,63 @@ TEST_CASE (DeviceInputStream_SustainedExcessDriftIsFlagged)
         s.tickDriftReporting (1.0);
 
     REQUIRE (s.hasSustainedExcessDrift());
+}
+
+TEST_CASE (DeviceInputStream_ReconnectDoesNotKeepPreGapDriftCredit)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    runClockRatio (s, 128, 64, 60000);
+    s.tickDriftReporting (9.0);
+    REQUIRE_FALSE (s.hasSustainedExcessDrift());
+
+    // Reconnection resets the audio-thread compensator. Its reporting-thread
+    // sustain window must reset as well; otherwise the first two seconds of a
+    // new connection combine with nine seconds from the old device instance.
+    s.setLive (false);
+    s.setLive (true);
+    std::vector<float> out (64, 0.0f);
+    s.pull (out.data(), 64); // consumes restartPending on the audio side
+    runClockRatio (s, 128, 64, 60000);
+
+    s.tickDriftReporting (0.0); // consume the audio thread's reset epoch
+    s.tickDriftReporting (2.0);
+    REQUIRE_FALSE (s.hasSustainedExcessDrift());
+}
+
+TEST_CASE (DeviceInputStream_DriftReportingCanRunWhileAudioIsPulled)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    std::atomic<bool> start { false };
+    const std::vector<float> input (64, 0.25f);
+
+    std::thread producer ([&] {
+        while (! start.load (std::memory_order_acquire)) {}
+        for (int i = 0; i < 5000; ++i)
+            s.pushBlock (input.data(), static_cast<int> (input.size()));
+    });
+
+    std::thread consumer ([&] {
+        std::vector<float> output (64, 0.0f);
+        while (! start.load (std::memory_order_acquire)) {}
+        for (int i = 0; i < 5000; ++i)
+            s.pull (output.data(), static_cast<int> (output.size()));
+    });
+
+    std::thread reporter ([&] {
+        while (! start.load (std::memory_order_acquire)) {}
+        for (int i = 0; i < 5000; ++i)
+            s.tickDriftReporting (0.001);
+    });
+
+    start.store (true, std::memory_order_release);
+    producer.join();
+    consumer.join();
+    reporter.join();
+
+    REQUIRE (std::isfinite (s.getDriftPpm()));
 }
 
 TEST_CASE (DeviceInputStream_UnderrunCountNeverExceedsWhatWasAskedFor)

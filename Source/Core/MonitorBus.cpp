@@ -4,6 +4,13 @@
 
 namespace mma {
 
+static_assert (std::atomic<bool>::is_always_lock_free,
+               "MonitorBus requires lock-free bool atomics on the audio thread");
+static_assert (std::atomic<float>::is_always_lock_free,
+               "MonitorBus requires lock-free float atomics on the audio thread");
+static_assert (std::atomic<double>::is_always_lock_free,
+               "MonitorBus requires lock-free double atomics on the audio thread");
+
 MonitorBus::MonitorBus (double sampleRateIn) noexcept
     : sampleRate (sampleRateIn),
       ceilingLinear (std::pow (10.0f, kLimiterCeilingDb / 20.0f)),
@@ -30,6 +37,16 @@ float MonitorBus::trimDbToLinearGain (float trimDb) noexcept
 
 float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) noexcept
 {
+    // manuallyUnmute() is called from the message thread. Reset the remaining
+    // limiter state here so those non-atomic counters stay audio-thread-owned.
+    if (limiterResetRequested.load (std::memory_order_acquire)
+        && limiterResetRequested.exchange (false, std::memory_order_acq_rel))
+    {
+        limiterEngagedSeconds = 0.0;
+        limiterReleasedSeconds = 0.0;
+        limiterEngaged = false;
+    }
+
     if (isMuted())
         return 0.0f;
 
@@ -59,7 +76,7 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
         limiterEngagedSeconds += sampleSeconds;
 
         if (limiterEngagedSeconds >= kRunawayCutSeconds)
-            runawayMuted = true;
+            runawayMuted.store (true, std::memory_order_release);
     }
     else if (limiterEngaged)
     {
@@ -85,7 +102,7 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
         }
     }
 
-    if (runawayMuted)
+    if (isRunawayMuted())
         return 0.0f;
 
     return output;
@@ -93,24 +110,25 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
 
 void MonitorBus::setMasterVolume (double volume0to100) noexcept
 {
-    masterVolume = std::max (0.0, std::min (100.0, volume0to100));
+    const auto clamped = std::max (0.0, std::min (100.0, volume0to100));
+    masterVolume.store (clamped, std::memory_order_relaxed);
 
     // One aligned float store the callback picks up on its next sample, instead
     // of a std::pow per sample inside applyMasterVolume.
-    masterGain = monitorVolumeToLinearGain (masterVolume);
+    masterGain.store (monitorVolumeToLinearGain (clamped), std::memory_order_release);
 }
 
 float MonitorBus::applyMasterVolume (float busSample) const noexcept
 {
-    return busSample * masterGain;
+    return busSample * masterGain.load (std::memory_order_acquire);
 }
 
 void MonitorBus::manuallyUnmute() noexcept
 {
-    runawayMuted = false;
-    limiterEngagedSeconds = 0.0;
-    limiterReleasedSeconds = 0.0;
-    limiterEngaged = false;
+    // The counters are owned by the audio callback. Ask it to reset them on
+    // its next sample instead of racing it from the message thread.
+    limiterResetRequested.store (true, std::memory_order_release);
+    runawayMuted.store (false, std::memory_order_release);
 }
 
 bool MonitorBus::processFeedbackCandidate (double bandLevelDb, double broadbandPeakDb, double blockSeconds) noexcept
@@ -135,7 +153,7 @@ bool MonitorBus::processFeedbackCandidate (double bandLevelDb, double broadbandP
 
         if (grew)
         {
-            runawayMuted = true; // mute the monitor bus with a visible reason (UI layer names it)
+            runawayMuted.store (true, std::memory_order_release); // visible reason is supplied by the UI layer
             return true;
         }
     }

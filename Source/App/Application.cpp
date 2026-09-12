@@ -396,6 +396,7 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         CaptureChannel c;
         c.deviceId = planned.deviceKey;
         c.deviceChannel = planned.deviceChannel;
+        c.collapseStereoPair = planned.collapseStereoPair;
         c.displayName = planned.displayName;
 
         // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name,

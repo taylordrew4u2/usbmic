@@ -4,6 +4,9 @@
 
 namespace mma {
 
+static_assert (std::atomic<double>::is_always_lock_free,
+               "DeviceInputStream requires lock-free double atomics on the audio thread");
+
 DeviceInputStream::DeviceInputStream (double sampleRate) noexcept
     : ring (static_cast<size_t> (kRingBlocks) * 64), compensator (sampleRate)
 {
@@ -29,6 +32,9 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
 
     driftPpm.store (0.0, std::memory_order_relaxed);
     excessDrift.store (false, std::memory_order_relaxed);
+    driftReportingResetEpoch.store (0, std::memory_order_relaxed);
+    excessDriftSeconds = 0.0;
+    observedDriftReportingResetEpoch = 0;
     underruns.store (0, std::memory_order_relaxed);
 
     // Reset with its siblings. It was the one counter here that was not, so it
@@ -101,6 +107,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
 
         driftPpm.store (0.0, std::memory_order_relaxed);
         excessDrift.store (false, std::memory_order_relaxed);
+        driftReportingResetEpoch.fetch_add (1, std::memory_order_release);
     }
 
     // Pre-roll. The output clock starts before any device has delivered, so
@@ -202,8 +209,32 @@ void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double refere
     // stream. Passing the master's own correction as the reference is what
     // keeps a skewed *output* device from flagging every microphone at once:
     // that skew lands in every channel's PPM equally and subtracts out here.
-    compensator.updateSustainedDriftFlag (elapsedSeconds, referencePpm);
-    excessDrift.store (compensator.isSustainedExcessDrift(), std::memory_order_relaxed);
+    // The compensator belongs exclusively to the audio thread. Read its
+    // published PPM snapshot instead of mutating it here from the message
+    // thread, which used to create a data race with pull().
+    const auto resetEpoch = driftReportingResetEpoch.load (std::memory_order_acquire);
+    if (! channelLive.load (std::memory_order_relaxed)
+        || resetEpoch != observedDriftReportingResetEpoch)
+    {
+        observedDriftReportingResetEpoch = resetEpoch;
+        excessDriftSeconds = 0.0;
+        excessDrift.store (false, std::memory_order_relaxed);
+        return;
+    }
+
+    const double relativePpm = driftPpm.load (std::memory_order_relaxed) - referencePpm;
+
+    if (std::abs (relativePpm) > kExcessDriftThresholdPpm)
+    {
+        excessDriftSeconds += std::max (0.0, elapsedSeconds);
+        if (excessDriftSeconds >= kExcessDriftSustainSeconds)
+            excessDrift.store (true, std::memory_order_relaxed);
+    }
+    else
+    {
+        excessDriftSeconds = 0.0;
+        excessDrift.store (false, std::memory_order_relaxed);
+    }
 }
 
 } // namespace mma
