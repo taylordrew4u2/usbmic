@@ -13,6 +13,7 @@
 #include <thread>
 #include <atomic>
 #include <cstring>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 
@@ -177,7 +178,7 @@ WAVEFORMATEXTENSIBLE makeFloat32Format (double sampleRate, int channels)
     format.Format.cbSize = sizeof (WAVEFORMATEXTENSIBLE) - sizeof (WAVEFORMATEX);
     format.Samples.wValidBitsPerSample = 32;
     format.dwChannelMask = channels == 1 ? SPEAKER_FRONT_CENTER
-                                         : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+                                         : channels == 2 ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT) : 0;
     format.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
     return format;
 }
@@ -197,9 +198,28 @@ WAVEFORMATEXTENSIBLE makePcmFormat (double sampleRate, int channels, int contain
     format.Format.cbSize = sizeof (WAVEFORMATEXTENSIBLE) - sizeof (WAVEFORMATEX);
     format.Samples.wValidBitsPerSample = static_cast<WORD> (validBits);
     format.dwChannelMask = channels == 1 ? SPEAKER_FRONT_CENTER
-                                         : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+                                         : channels == 2 ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT) : 0;
     format.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
     return format;
+}
+
+// Use the same layouts for capability discovery and stream opening.
+bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
+                          WAVEFORMATEXTENSIBLE& format)
+{
+    const int layouts[][2] = { { 32, 0 }, { 32, 32 }, { 32, 24 }, { 24, 24 }, { 16, 16 } };
+    for (const auto& layout : layouts)
+    {
+        const auto candidate = layout[1] == 0 ? makeFloat32Format (rate, channels)
+                                             : makePcmFormat (rate, channels, layout[0], layout[1]);
+        if (client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                      &candidate.Format, nullptr) == S_OK)
+        {
+            format = candidate;
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Called when the capture side has failed often enough to be called dead.
@@ -493,6 +513,37 @@ std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateWasapiDevices (bo
         d.usbLocationId = id; // WASAPI endpoint IDs are stable per-port identifiers already
         d.isMicrophone = wantInput;
         d.hasPhysicalHeadphoneJack = ! wantInput; // refined by jack-presence property when available
+        ComPtr<IAudioClient> client;
+        if (SUCCEEDED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
+                                         reinterpret_cast<void**> (client.GetAddressOf()))))
+        {
+            WAVEFORMATEX* mix = nullptr;
+            if (SUCCEEDED (client->GetMixFormat (&mix)) && mix != nullptr)
+            {
+                const int channels = mix->nChannels;
+                d.maxInputChannels = wantInput ? channels : 0;
+                // WASAPI exposes the shared engine rate, not the hardware clock.
+                d.currentSampleRate = mix->nSamplesPerSec;
+                CoTaskMemFree (mix);
+                std::vector<uint32_t> rates { 8000, 11025, 16000, 22050, 32000,
+                                             44100, 48000, 88200, 96000, 176400, 192000 };
+                if (d.currentSampleRate != 0)
+                    rates.push_back (d.currentSampleRate);
+                std::sort (rates.begin(), rates.end());
+                rates.erase (std::unique (rates.begin(), rates.end()), rates.end());
+                for (const auto rate : rates)
+                {
+                    WAVEFORMATEXTENSIBLE format {};
+                    if (channels > 0 && findExclusiveFormat (client.Get(), rate, channels, format))
+                        d.supportedSampleRates.push_back (rate);
+                }
+                // A shared mixer can run at a rate the exclusive stream
+                // cannot use. Do not let that rate override the probed list.
+                if (std::find (d.supportedSampleRates.begin(), d.supportedSampleRates.end(),
+                               d.currentSampleRate) == d.supportedSampleRates.end())
+                    d.currentSampleRate = 0;
+            }
+        }
         result.push_back (d);
     }
 
@@ -684,45 +735,24 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
     int numChannelCandidates = 2;
 
-    // The device's own mix format names the channel count it prefers; if it is
-    // neither 1 nor 2 it would otherwise never be tried.
+    // Input streams must open every advertised socket, even when the driver
+    // also accepts mono. A mono fallback would silently omit the other tracks.
+    WAVEFORMATEX* mixFormat = nullptr;
+    if (SUCCEEDED (stream->client->GetMixFormat (&mixFormat)) && mixFormat != nullptr)
     {
-        WAVEFORMATEX* mixFormat = nullptr;
-
-        if (SUCCEEDED (stream->client->GetMixFormat (&mixFormat)) && mixFormat != nullptr)
+        const int mixChannels = mixFormat->nChannels;
+        if (mixChannels > 0 && isInput)
         {
-            const int mixChannels = static_cast<int> (mixFormat->nChannels);
-
-            if (mixChannels > 0 && mixChannels != channelCandidates[0] && mixChannels != channelCandidates[1])
-                channelCandidates[numChannelCandidates++] = mixChannels;
-
-            CoTaskMemFree (mixFormat);
+            channelCandidates[0] = mixChannels;
+            numChannelCandidates = 1;
         }
+        else if (mixChannels > 0 && mixChannels != channelCandidates[0] && mixChannels != channelCandidates[1])
+            channelCandidates[numChannelCandidates++] = mixChannels;
+        CoTaskMemFree (mixFormat);
     }
 
     for (int c = 0; c < numChannelCandidates && ! formatFound; ++c)
-    {
-        const int channels = channelCandidates[c];
-
-        // Container bits, valid bits; 0 valid bits marks the float candidate.
-        const int layouts[5][2] = { { 32, 0 }, { 32, 32 }, { 32, 24 }, { 24, 24 }, { 16, 16 } };
-
-        for (const auto& layout : layouts)
-        {
-            const auto candidate = layout[1] == 0
-                ? makeFloat32Format (sampleRate, channels)
-                : makePcmFormat (sampleRate, channels, layout[0], layout[1]);
-
-            if (SUCCEEDED (stream->client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                                              reinterpret_cast<const WAVEFORMATEX*> (&candidate),
-                                                              nullptr)))
-            {
-                format = candidate;
-                formatFound = true;
-                break;
-            }
-        }
-    }
+        formatFound = findExclusiveFormat (stream->client.Get(), sampleRate, channelCandidates[c], format);
 
     if (! formatFound)
     {
