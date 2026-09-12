@@ -21,6 +21,20 @@ std::vector<PlannedChannel> planChannels (const std::vector<ChannelPlanDevice>& 
     for (const auto& d : devices)
     {
         const int inputs = takeChannelsForDevice (d.inputChannelCount, d.knownDuplicateStereo);
+        const auto inputIsDisabled = [&d] (int input)
+        {
+            return std::find (d.disabledInputs.begin(), d.disabledInputs.end(), input)
+                   != d.disabledInputs.end();
+        };
+
+        // Analysis is allowed to observe only a complete physical pair. If a
+        // socket is switched off, inspecting it would make an unselected input
+        // influence the verdict and could collapse away the selected one on
+        // the next rebuild. A remembered Stereo answer is final, too.
+        const bool needsStereoAnalysis = d.inputChannelCount == 2
+                                      && ! d.hasChannelLayoutDecision
+                                      && ! inputIsDisabled (0)
+                                      && ! inputIsDisabled (1);
 
         // The name the user gave this port wins over the product string --
         // otherwise the strip says "Blue Yeti" while the files say "Kitchen".
@@ -31,8 +45,7 @@ std::vector<PlannedChannel> planChannels (const std::vector<ChannelPlanDevice>& 
             // A socket switched off in Settings is not recorded at all. The
             // ones left keep their physical numbers -- input 2 is still the
             // socket labelled 2 on the box, whatever happened to input 1.
-            if (std::find (d.disabledInputs.begin(), d.disabledInputs.end(), input)
-                != d.disabledInputs.end())
+            if (inputIsDisabled (input))
                 continue;
 
             PlannedChannel c;
@@ -40,6 +53,8 @@ std::vector<PlannedChannel> planChannels (const std::vector<ChannelPlanDevice>& 
             c.deviceChannel = input;
             c.collapseStereoPair = d.inputChannelCount == 2
                                 && d.knownDuplicateStereo;
+            c.analyzeStereoPair = needsStereoAnalysis && input == 0;
+            c.monoSourceChannel = d.monoSourceChannel == 1 ? 1 : 0;
 
             // A name given to this input names the person on it, and needs no
             // socket number to be told apart.

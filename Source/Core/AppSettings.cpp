@@ -29,6 +29,8 @@ JsonValue AppSettings::toJson() const
         pv["trimDb"] = JsonValue (static_cast<double> (p.settings.trimDb));
         pv["channelLayoutIsMono"] = JsonValue (p.settings.channelLayoutIsMono);
         pv["hasChannelLayoutDecision"] = JsonValue (p.settings.hasChannelLayoutDecision);
+        pv["channelLayoutMonoSource"] = JsonValue (
+            static_cast<double> (p.settings.channelLayoutMonoSource));
 
         JsonValue disabledInputs = JsonValue::makeArray();
         for (int input : p.settings.disabledInputs)
@@ -107,6 +109,11 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
             if (auto* n = pv.find ("trimDb")) port.settings.trimDb = static_cast<float> (n->asDouble());
             if (auto* n = pv.find ("channelLayoutIsMono")) port.settings.channelLayoutIsMono = n->asBool (true);
             if (auto* n = pv.find ("hasChannelLayoutDecision")) port.settings.hasChannelLayoutDecision = n->asBool (false);
+            if (auto* n = pv.find ("channelLayoutMonoSource"))
+            {
+                const int source = static_cast<int> (n->asDouble (0.0));
+                port.settings.channelLayoutMonoSource = source == 1 ? 1 : 0;
+            }
 
             if (auto* n = pv.find ("disabledInputs"))
                 for (const auto& iv : n->asArray())

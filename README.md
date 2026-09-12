@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-503%20passing-brightgreen" alt="503 tests passing">
+  <img src="https://img.shields.io/badge/tests-513%20passing-brightgreen" alt="513 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ against a 1 ms ceiling — a 47× margin.**
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-503 unit tests, an end-to-end take and an end-to-end refusal through the real
+513 unit tests, an end-to-end take and an end-to-end refusal through the real
 app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
 checks run in CI.
 
@@ -305,7 +305,7 @@ sources before distributing a binary or considering a proprietary build.
 ## What to expect on your platform
 
 This is the **v1.12.0 release candidate**. The recording engine is covered by
-503 unit tests plus capture and platform harnesses. What differs by platform is
+513 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
@@ -709,7 +709,7 @@ to JUCE 8.
 ### Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-503 unit tests passing in CI on Linux, macOS
+513 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
@@ -728,7 +728,7 @@ and Windows. The table below lists the largest areas rather than every file:
 | `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 10 |
 | `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 14 |
 | `PolarPatternDetector` — non-cardioid detection | §14.4 | 5 |
-| `ChannelLayoutAnalyzer` — mono collapse rules, 60 s timeout | §2.1 | 9 |
+| `ChannelLayoutAnalyzer` — mono collapse rules, 60 s timeout | §2.1 | 12 |
 | `DeadChannelDetector` — silence against an active reference channel | §8.1 | 4 |
 | `SessionMetadata` + JSON | §6.2 | 6 |
 
@@ -806,7 +806,7 @@ never what failed:
 | Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
 | Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
 
-The current baseline is 62 CoreAudio checks and 67 WASAPI checks, run by `ctest`
+The current baseline is 68 CoreAudio checks and 67 WASAPI checks, run by `ctest`
 on Linux, macOS and Windows alike. The WASAPI backend's worker thread is a real
 thread doing a real event handshake, so that path is exercised rather than
 reasoned about. Both simulators run under AddressSanitizer and

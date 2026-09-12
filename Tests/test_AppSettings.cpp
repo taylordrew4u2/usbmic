@@ -63,6 +63,33 @@ TEST_CASE (AppSettings_aMicrophoneKeepsItsNameAndTrimAcrossLaunches)
     REQUIRE (restored.findPort ("usb-nothing-here") == nullptr);
 }
 
+TEST_CASE (AppSettings_AMonoMicrophoneKeepsThePhysicalSideWithItsVerdict)
+{
+    AppSettings settings;
+    PersistedPort port;
+    port.key = "usb-right-wired";
+    port.settings.hasChannelLayoutDecision = true;
+    port.settings.channelLayoutIsMono = true;
+    port.settings.channelLayoutMonoSource = 1;
+    settings.ports.push_back (port);
+
+    const auto restored = AppSettings::fromJsonString (settings.toJsonString());
+    const auto* remembered = restored.findPort (port.key);
+
+    REQUIRE (remembered != nullptr);
+    REQUIRE (remembered->settings.hasChannelLayoutDecision);
+    REQUIRE (remembered->settings.channelLayoutIsMono);
+    REQUIRE (remembered->settings.channelLayoutMonoSource == 1);
+
+    // Settings written before the source field existed remain valid and use
+    // the historical left-side default rather than an unchecked value.
+    const auto legacy = AppSettings::fromJsonString (
+        "{\"ports\":[{\"key\":\"old\",\"hasChannelLayoutDecision\":true,"
+        "\"channelLayoutIsMono\":true}]}"
+    );
+    REQUIRE (legacy.findPort ("old")->settings.channelLayoutMonoSource == 0);
+}
+
 TEST_CASE (AppSettings_switchedOffMicrophonesAreKeyedByPortNotName)
 {
     const auto restored = AppSettings::fromJsonString (populated().toJsonString());

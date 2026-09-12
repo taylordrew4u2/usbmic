@@ -39,6 +39,41 @@ TEST_CASE (ChannelLayoutAnalyzer_DefaultsToMonoOnTimeoutWithNoSignal)
         analyzer.processBlock (-70.0f, -70.0f, 0.0f, 0.0f, 0.01);
 
     REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Mono);
+    REQUIRE_FALSE (analyzer.isDecisionPersistable());
+}
+
+TEST_CASE (ChannelLayoutAnalyzer_TimeoutMonoReopensWhenStereoSignalArrives)
+{
+    ChannelLayoutAnalyzer analyzer (48000.0);
+    for (int i = 0; i < 6100; ++i)
+        analyzer.processBlock (-200.0f, -200.0f, 0.0f, 0.0f, 0.01);
+
+    REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Mono);
+    REQUIRE_FALSE (analyzer.isDecisionPersistable());
+
+    for (int i = 0; i < 300; ++i)
+        analyzer.processBlock (-12.0f, -18.0f, 0.2f, 6.0f, 0.01);
+
+    REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Stereo);
+    REQUIRE (analyzer.isDecisionPersistable());
+}
+
+TEST_CASE (ChannelLayoutAnalyzer_FinalMatchingBlockCannotEraseAWindowOfStereo)
+{
+    ChannelLayoutAnalyzer analyzer (1000.0);
+
+    // Nearly the entire window is equal-energy but uncorrelated stereo.
+    for (int i = 0; i < 299; ++i)
+        analyzer.processBlockEnergies (-12.0f, -12.0f,
+                                       10.0, 10.0, 0.0, 10, 0.01);
+
+    // Only the callback that crosses three seconds is duplicated. The old
+    // implementation used this block alone and permanently chose Mono.
+    analyzer.processBlockEnergies (-12.0f, -12.0f,
+                                   10.0, 10.0, 10.0, 10, 0.01);
+
+    REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Stereo);
+    REQUIRE (analyzer.isDecisionPersistable());
 }
 
 TEST_CASE (ChannelLayoutAnalyzer_PendingBeforeWindowCompletes)
@@ -109,6 +144,7 @@ TEST_CASE (ChannelLayoutAnalyzer_AnswersTheSideBeforeItHasDecided)
 
     REQUIRE (analyzer.getDecision() == ChannelLayoutDecision::Pending);
     REQUIRE (analyzer.getMonoSourceChannel() == 1);
+    REQUIRE (analyzer.hasMonoSourceEvidence());
 }
 
 TEST_CASE (ChannelLayoutAnalyzer_SilenceOnBothSidesStaysOnTheLeft)
@@ -121,5 +157,20 @@ TEST_CASE (ChannelLayoutAnalyzer_SilenceOnBothSidesStaysOnTheLeft)
     for (int i = 0; i < 50; ++i)
         analyzer.processBlock (-200.0f, -200.0f, 0.0f, 0.0f, 0.01);
 
+    REQUIRE (analyzer.getMonoSourceChannel() == 0);
+    REQUIRE_FALSE (analyzer.hasMonoSourceEvidence());
+}
+
+TEST_CASE (ChannelLayoutAnalyzer_SilenceKeepsEvidenceButAnOppositeLiveSideCanCorrectIt)
+{
+    ChannelLayoutAnalyzer analyzer (48000.0);
+
+    analyzer.processBlock (-200.0f, -10.0f, 0.0f, 100.0f, 0.01);
+    REQUIRE (analyzer.getMonoSourceChannel() == 1);
+
+    analyzer.processBlock (-200.0f, -200.0f, 0.0f, 0.0f, 0.01);
+    REQUIRE (analyzer.getMonoSourceChannel() == 1);
+
+    analyzer.processBlock (-10.0f, -200.0f, 0.0f, 100.0f, 0.01);
     REQUIRE (analyzer.getMonoSourceChannel() == 0);
 }

@@ -391,6 +391,16 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
                 // block with nothing anywhere recording that it had.
                 stream->framesDropped.fetch_add (static_cast<uint64_t> (framesHere),
                                                  std::memory_order_relaxed);
+
+                // Keep the physical channel positions occupied even though
+                // this buffer cannot be unpacked. Otherwise a later buffer in
+                // the same AudioBufferList slides into these slots and can be
+                // mistaken for a selected input channel.
+                const int slotsToReserve = std::min (channelsHere,
+                                                     CoreAudioStream::kMaxChannels - numInputChannels);
+                for (int ch = 0; ch < slotsToReserve; ++ch)
+                    stream->inputPointers[numInputChannels++] = nullptr;
+
                 continue;
             }
 

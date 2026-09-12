@@ -362,12 +362,14 @@ std::vector<ChannelPlanDevice> Application::planDevices() const
             p.assignedName = persisted->assignedName;
             p.disabledInputs = persisted->disabledInputs;
             p.inputNames = persisted->inputNames;
+            p.hasChannelLayoutDecision = persisted->hasChannelLayoutDecision;
 
             // §2.4 remembers §2.1's verdict per port. Only a decision that was
             // actually made collapses a two-input device; the default of "no
             // decision yet" keeps both sides.
             p.knownDuplicateStereo = persisted->hasChannelLayoutDecision
                                   && persisted->channelLayoutIsMono;
+            p.monoSourceChannel = persisted->channelLayoutMonoSource;
         }
 
         out.push_back (std::move (p));
@@ -397,6 +399,8 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         c.deviceId = planned.deviceKey;
         c.deviceChannel = planned.deviceChannel;
         c.collapseStereoPair = planned.collapseStereoPair;
+        c.analyzeStereoPair = planned.analyzeStereoPair;
+        c.monoSourceChannel = planned.monoSourceChannel;
         c.displayName = planned.displayName;
 
         // §6.2: "01_Yeti-Kitchen" -- ordinal prefix plus the sanitized name,
@@ -414,6 +418,83 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
     }
 
     return channels;
+}
+
+void Application::applyChannelLayoutDecisions()
+{
+    if (capture == nullptr || capture->isRecording())
+        return;
+
+    bool changed = false;
+    const auto& captureChannels = capture->getChannels();
+
+    for (size_t i = 0; i < captureChannels.size(); ++i)
+    {
+        const auto& channel = captureChannels[i];
+        const bool learningLayout = channel.analyzeStereoPair;
+        const bool refreshingCollapsedSource = channel.collapseStereoPair;
+        if (! learningLayout && ! refreshingCollapsedSource)
+            continue;
+
+        // The sixty-second all-silent Mono fallback is intentionally not a
+        // port classification. Persisting it would permanently hide input 2
+        // of an interface that merely opened in a quiet room.
+        if (! capture->isChannelLayoutDecisionPersistable (static_cast<int> (i)))
+            continue;
+
+        const auto decision = capture->getChannelLayoutDecision (static_cast<int> (i));
+
+        for (const auto& device : deviceManager.getDevices())
+        {
+            if (device.identity.key() != channel.deviceId)
+                continue;
+
+            auto settings = portIdentityStore.get (device.identity).value_or (
+                PersistedDeviceSettings {});
+
+            if (learningLayout && ! settings.hasChannelLayoutDecision)
+            {
+                // Another UI action may already have saved a verdict between
+                // the callback publishing it and this slow tick. Never
+                // overwrite an explicit answer with a stale observation.
+                settings.hasChannelLayoutDecision = true;
+                settings.channelLayoutIsMono = decision == ChannelLayoutDecision::Mono;
+                const int source = capture->getChannelLayoutSource (static_cast<int> (i));
+                settings.channelLayoutMonoSource = decision == ChannelLayoutDecision::Mono
+                                                 && source == 1 ? 1 : 0;
+                portIdentityStore.put (device.identity, settings);
+                changed = true;
+            }
+            else if (refreshingCollapsedSource
+                     && settings.hasChannelLayoutDecision
+                     && settings.channelLayoutIsMono
+                     && decision == ChannelLayoutDecision::Mono)
+            {
+                // A known mono device can reveal that its live capsule is on
+                // the opposite side this connection. Keep that valid idle
+                // re-evaluation across the next launch as well as the next
+                // take; silence alone never reaches this persistable branch.
+                const int source = capture->getChannelLayoutSource (static_cast<int> (i)) == 1
+                                     ? 1 : 0;
+                if (settings.channelLayoutMonoSource != source)
+                {
+                    settings.channelLayoutMonoSource = source;
+                    portIdentityStore.put (device.identity, settings);
+                    changed = true;
+                }
+            }
+
+            break;
+        }
+    }
+
+    if (! changed)
+        return;
+
+    // Disk I/O and stream reconstruction stay on the message thread. The
+    // analyzer callback itself performs only arithmetic and atomic stores.
+    saveSettings();
+    restartCapture();
 }
 
 void Application::restartCapture()
@@ -2897,6 +2978,12 @@ juce::StringArray Application::getRecentActivityLines (int limit) const
 
 juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 {
+    // A fresh two-channel device is monitored as two exact physical inputs
+    // until its analyzer reaches a verdict. Applying that answer here keeps
+    // persistence and stream rebuilding off the audio thread; the helper also
+    // refuses to do either while a take is running.
+    applyChannelLayoutDecisions();
+
     // Cleared first, not inside the tap block: a capacity or performance
     // warning returns early below, and a stale index would leave one skull
     // lit indefinitely.

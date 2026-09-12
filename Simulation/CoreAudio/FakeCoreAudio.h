@@ -96,6 +96,19 @@ int bufferFrameSize (AudioObjectID device);
 /// IOProc is running on the device.
 bool pumpInput (AudioObjectID device, const std::vector<std::vector<float>>& channels);
 
+/// Delivers one input callback with an explicit AudioBufferList layout. Each
+/// entry is one interleaved buffer whose first value is its channel count and
+/// whose second value is its sample storage. This exposes mixed layouts (for
+/// example, an interleaved stereo buffer followed by a mono buffer) that real
+/// HALs may provide but DeviceSpec::shape cannot describe.
+struct InputBuffer
+{
+    int channels = 0;
+    std::vector<float> samples;
+};
+
+bool pumpInputBuffers (AudioObjectID device, const std::vector<InputBuffer>& buffers);
+
 /// Runs one output callback for `frames` and returns what the backend wrote,
 /// de-interleaved back into per-channel vectors. This is the mirror of
 /// pumpInput: it proves the backend's playback packing is right, not just that

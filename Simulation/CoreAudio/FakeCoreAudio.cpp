@@ -605,6 +605,46 @@ bool pumpInput (AudioObjectID device, const std::vector<std::vector<float>>& cha
     return delivered;
 }
 
+bool pumpInputBuffers (AudioObjectID device, const std::vector<InputBuffer>& buffers)
+{
+    auto* d = find (device);
+    if (d == nullptr || buffers.empty())
+        return false;
+
+    BufferListStorage storage;
+    storage.listBytes.assign (sizeof (AudioBufferList)
+                              + sizeof (AudioBuffer) * (buffers.size() - 1), 0);
+    storage.blocks.reserve (buffers.size());
+
+    auto* list = reinterpret_cast<AudioBufferList*> (storage.listBytes.data());
+    list->mNumberBuffers = static_cast<UInt32> (buffers.size());
+
+    for (size_t i = 0; i < buffers.size(); ++i)
+    {
+        if (buffers[i].channels <= 0
+            || buffers[i].samples.size() % static_cast<size_t> (buffers[i].channels) != 0)
+            return false;
+
+        storage.blocks.push_back (buffers[i].samples);
+        list->mBuffers[i].mNumberChannels = static_cast<UInt32> (buffers[i].channels);
+        list->mBuffers[i].mDataByteSize =
+            static_cast<UInt32> (storage.blocks[i].size() * sizeof (float));
+        list->mBuffers[i].mData = storage.blocks[i].data();
+    }
+
+    AudioTimeStamp now {};
+    bool delivered = false;
+
+    for (auto& r : d->procs)
+        if (r.running)
+        {
+            r.proc (device, &now, list, &now, nullptr, &now, r.clientData);
+            delivered = true;
+        }
+
+    return delivered;
+}
+
 bool pumpOutput (AudioObjectID device, int frames, std::vector<std::vector<float>>& out)
 {
     auto* d = find (device);

@@ -61,7 +61,8 @@ struct Capture
             lastBlock.assign (static_cast<size_t> (numInputs), {});
 
             for (int ch = 0; ch < numInputs; ++ch)
-                lastBlock[static_cast<size_t> (ch)].assign (inputs[ch], inputs[ch] + numSamples);
+                if (inputs[ch] != nullptr)
+                    lastBlock[static_cast<size_t> (ch)].assign (inputs[ch], inputs[ch] + numSamples);
         };
     }
 };
@@ -569,6 +570,45 @@ void aLargerThanRequestedCallbackIsStillDelivered()
     backend.closeAllStreams();
 }
 
+/// If one interleaved buffer is too large for the preallocated scratch, the
+/// backend must not let a later valid buffer impersonate one of its channels.
+void anOversizedBufferKeepsItsPhysicalChannelSlots()
+{
+    std::printf ("\nAn oversized interleaved buffer followed by a valid mono buffer\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Mixed Buffer Mic", "uid-mixed-big", 3,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.bufferFrameSize = 256;
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("uid-mixed-big", 48000.0, 256, capture.callback()),
+           "the mixed-layout stream opens");
+
+    constexpr int frames = 4097; // one beyond the backend's fixed scratch capacity
+    std::vector<float> oversizedStereo (static_cast<size_t> (frames) * 2, 0.5f);
+    std::vector<float> trailingMono (static_cast<size_t> (frames), 0.75f);
+
+    check (fakeca::pumpInputBuffers (id, { { 2, std::move (oversizedStereo) },
+                                           { 1, trailingMono } }),
+           "the virtual HAL delivers the mixed AudioBufferList");
+    check (capture.lastChannelCount == 3,
+           "the dropped stereo buffer still occupies its two physical slots");
+    check (capture.lastBlock.size() == 3
+           && capture.lastBlock[0].empty()
+           && capture.lastBlock[1].empty(),
+           "the oversized channels are explicit null placeholders");
+    check (capture.lastBlock.size() == 3
+           && capture.lastBlock[2] == trailingMono,
+           "the later mono buffer remains physical channel three");
+    check (backend.getFramesDroppedByBackend() == frames,
+           "the oversized buffer is still reported as dropped");
+    backend.closeAllStreams();
+}
+
 /// Eight microphones is the §1 ceiling, and the shape most likely to expose a
 /// scratch-sizing or channel-indexing error that two devices would not.
 void eightMicrophonesEachKeepTheirOwnAudio()
@@ -710,6 +750,7 @@ int main()
     aMacThatWillNotWatchTheRigSaysSo();
     aMicrophoneThatGoesQuietAfterOpeningIsReported();
     aLargerThanRequestedCallbackIsStillDelivered();
+    anOversizedBufferKeepsItsPhysicalChannelSlots();
     eightMicrophonesEachKeepTheirOwnAudio();
 
     // Tear the last scenario down so a leak check sees only what the
