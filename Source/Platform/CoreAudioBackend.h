@@ -18,7 +18,10 @@ struct CoreAudioStream;
 /// macOS implementation of IAudioBackend using CoreAudio directly (not JUCE's
 /// generic AudioIODeviceType) so we get exclusive/hog-mode control and raw
 /// AudioObjectID-level device change notifications per §5.4/§11. Every USB
-/// mic on macOS is a HAL AudioObjectID; hotplug arrives via
+/// mic on macOS is a HAL AudioObjectID. Input enumeration admits only directly
+/// attached USB, FireWire, and Thunderbolt hardware; built-in, phone/
+/// Continuity, wireless, aggregate, and virtual inputs are not recording
+/// sources. Hotplug arrives via
 /// kAudioHardwarePropertyDevices property listeners, never a timer (§2).
 class CoreAudioBackend : public IAudioBackend
 {

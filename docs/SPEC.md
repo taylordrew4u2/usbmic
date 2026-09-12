@@ -28,6 +28,7 @@ Reference hardware: Blue Yeti (standard model). Section 14 is written against it
 ---
 ## 2. Device aggregation
 - Enumerate all USB audio input devices at launch and continuously after, polling on OS device-change notification, never on a timer.
+- On macOS, a recording input must report a directly attached hardware transport: USB, FireWire, or Thunderbolt. Never list the Mac's built-in microphone, iPhone/Continuity audio (wired or wireless), Bluetooth/AirPlay, network, aggregate, virtual, PCI, or unknown inputs as microphones. This restriction applies only to recording inputs; monitor outputs keep §5.3's full selection policy.
 - Every detected microphone is included automatically. Inclusion is opt-out, not opt-in.
 - Hot-plug without restart, without dialogs, without interrupting an active recording. See §6.5.
 ### 2.1 Channel layout normalization
