@@ -430,7 +430,8 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 
     if (channels.empty())
     {
-        recordingProblem = "There are no microphones to record. Plug one in and try again.";
+        recordingProblem = "There are no external microphones to record. Plug in a USB microphone "
+                           "or audio interface and try again.";
         return false;
     }
 

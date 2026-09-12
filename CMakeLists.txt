@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
-project(SobStage VERSION 1.11.0 LANGUAGES CXX)
+
+# This must be set before project() enables the compiler or CMake will inherit
+# the runner SDK's deployment floor. Keep it a cache default so packagers can
+# deliberately override it while ordinary macOS builds remain compatible with
+# the minimum version in docs/SPEC.md.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
+    "Minimum macOS version supported by SobStage")
+
+project(SobStage VERSION 1.12.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,6 +15,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MMA_BUILD_APP "Build the JUCE GUI application (requires network fetch of JUCE)" OFF)
 option(MMA_BUILD_TESTS "Build the headless Core/ unit test target" ON)
+option(MMA_ALLOW_TEST_INPUTS
+    "Allow virtual ALSA recording inputs in test-only binaries" OFF)
 
 # ---------------------------------------------------------------------------
 # Core: platform-independent, no-JUCE-dependency logic library.
@@ -59,8 +69,13 @@ add_library(mma_core STATIC
     Source/Core/FfmpegLocator.cpp
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
+    Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
+
+if (MMA_ALLOW_TEST_INPUTS)
+    target_compile_definitions(mma_core PRIVATE MMA_ALLOW_TEST_INPUTS=1)
+endif()
 # ALSA on Linux: the backend is part of mma_core rather than the app target so
 # the headless harnesses can drive a REAL OS audio API. It is guarded on
 # __linux__, so on macOS and Windows the translation unit is empty.
@@ -96,8 +111,8 @@ if (MMA_BUILD_APP)
     FetchContent_Declare(
         JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-        GIT_TAG        7.0.12
-        GIT_SHALLOW    TRUE
+        # Immutable commit behind the upstream 7.0.12 tag.
+        GIT_TAG        4f43011b96eb0636104cb3e433894cda98243626
     )
     # Populated and added manually rather than via MakeAvailable so JUCE's own
     # install() rules stay out of our install tree. MakeAvailable would put
@@ -118,6 +133,8 @@ if (MMA_BUILD_APP)
     juce_add_gui_app(SobStage
         PRODUCT_NAME "SobStage"
         COMPANY_NAME "SobStage"
+        BUNDLE_ID "com.taylordrew.sobstage"
+        COMPANY_COPYRIGHT "Copyright (c) 2026 Taylor Drew Kozero"
         MICROPHONE_PERMISSION_ENABLED TRUE
         MICROPHONE_PERMISSION_TEXT "SobStage records from external USB, FireWire, and Thunderbolt microphones and audio interfaces you connect."
         # The camera is opt-in and opened only when the user opens the camera
@@ -209,11 +226,15 @@ if (MMA_BUILD_APP)
         Source/UI/MainScreen.cpp
         Source/UI/SkullMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
-        Source/UI/AppLookAndFeel.cpp)
+        Source/UI/AppLookAndFeel.cpp
+        Source/UI/ModalCard.cpp)
     target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_STANDALONE_APPLICATION=1)
     target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
     target_link_libraries(layout_probe PRIVATE mma_core juce::juce_gui_basics)
+    if (MMA_BUILD_TESTS)
+        add_test (NAME layout_probe COMMAND layout_probe)
+    endif()
 
     if (NOT APPLE AND NOT WIN32)
         # Runnable, not merely compiled. The stand-in camera layer takes a
@@ -242,7 +263,7 @@ if (MMA_BUILD_APP)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
         # worker. Without it the OS will not wake a small exclusive-mode buffer
         # reliably enough to hold the §5.4 latency budget.
-        target_link_libraries(SobStage PRIVATE avrt)
+        target_link_libraries(SobStage PRIVATE avrt cfgmgr32)
     endif()
 
     # -----------------------------------------------------------------------
@@ -268,6 +289,9 @@ if (MMA_BUILD_APP)
         "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
         "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
         "${CMAKE_CURRENT_SOURCE_DIR}/LICENSING.md"
+        "${CMAKE_CURRENT_SOURCE_DIR}/SUPPORT.md"
+        "${CMAKE_CURRENT_SOURCE_DIR}/PRIVACY.md"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RELEASE_CHECKLIST.md"
         DESTINATION .)
 
     set(CPACK_PACKAGE_NAME "SobStage")

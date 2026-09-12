@@ -76,6 +76,7 @@ private:
     std::string writeProblem;
     uint64_t dataBytesWrittenToCurrentFile = 0;
     uint64_t totalFramesWritten = 0;
+    uint64_t autoSplitBytes = kAutoSplitBytes;
     double secondsSinceLastHeaderRewrite = 0.0;
 
     // Byte offsets of header fields we rewrite in place.
@@ -87,7 +88,15 @@ private:
     void writeHeaderPlaceholder();
     /// False when the seek/write/flush behind the header patch failed.
     bool rewriteHeaderSizes();
+    bool syncCurrentFileToStorage();
     int bytesPerSample() const { return bitDepth / 8; }
+
+    /// Makes the multi-file boundary reachable without writing 3.9 GB in a
+    /// unit test. Production code never calls this and always keeps the public
+    /// kAutoSplitBytes limit.
+    void setAutoSplitBytesForTesting (uint64_t bytes) { autoSplitBytes = bytes; }
+
+    friend struct SessionWriterTestAccess;
 };
 
 } // namespace mma

@@ -18,11 +18,56 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  prepare:
+    name: Validate release identity
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release_identity.outputs.version }}
+      release_tag: ${{ steps.release_identity.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Match the release tag to the application version
+        id: release_identity
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          version="$(sed -nE 's/^project\(SobStage VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES CXX\)$/\1/p' CMakeLists.txt)"
+          test -n "$version" \
+            || { echo "::error::Could not read the SobStage version from CMakeLists.txt"; exit 1; }
+
+          expected_tag="v${version}"
+          release_tag=""
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            release_tag="$PUSHED_TAG"
+          elif [[ -n "$REQUESTED_RELEASE_TAG" ]]; then
+            release_tag="$REQUESTED_RELEASE_TAG"
+          fi
+
+          if [[ -n "$release_tag" && "$release_tag" != "$expected_tag" ]]; then
+            echo "::error::Release tag '$release_tag' does not match project version '$expected_tag'"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          if [[ -n "$release_tag" ]]; then
+            echo "Validated release $release_tag"
+          else
+            echo "Validated build-only run for SobStage $version"
+          fi
+
   build:
     name: ${{ matrix.label }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -41,7 +86,7 @@ jobs:
             artifact: SobStage-Linux
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -49,15 +94,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libx11-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev \
-            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev
+            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev \
+            alsa-utils xvfb xdotool imagemagick
 
       - name: Cache JUCE
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build/_deps
-          key: juce-7.0.12-${{ runner.os }}
+          key: juce-4f43011b96eb0636104cb3e433894cda98243626-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Configure macOS universal build
+        if: runner.os == 'macOS'
+        run: >-
+          cmake -B build -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
 
       - name: Configure
+        if: runner.os != 'macOS'
         run: cmake -B build -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
@@ -68,6 +122,47 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+      # The production Linux build rejects virtual inputs. Build a separate,
+      # compile-time test binary for the file-backed ALSA fixture; never put this
+      # opt-in binary in out/ or any downloadable artifact.
+      - name: Build the Linux end-to-end test application
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -B build-app \
+            -DMMA_BUILD_APP=ON \
+            -DMMA_ALLOW_TEST_INPUTS=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DFETCHCONTENT_SOURCE_DIR_JUCE=${GITHUB_WORKSPACE}/build/_deps/juce-src"
+          cmake --build build-app --config Release --target SobStage -j 4
+
+      - name: End-to-end recording gates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Both legacy E2E scripts discover their app from known build paths.
+          # Hide the production binary for this step so they deterministically
+          # exercise build-app, then restore it before install packages build/.
+          shipping_app="build/SobStage_artefacts/Release/SobStage"
+          test_app="build-app/SobStage_artefacts/Release/SobStage"
+          test -x "$shipping_app"
+          test -x "$test_app"
+          held_app="${shipping_app}.release-gate-hold"
+          mv "$shipping_app" "$held_app"
+          restore_shipping_app() {
+            mv "$held_app" "$shipping_app"
+          }
+          trap restore_shipping_app EXIT
+
+          bash Tools/e2e_app_take.sh 15
+          bash Tools/e2e_refusal.sh
+
+          restore_shipping_app
+          trap - EXIT
+
       # The install tree IS the deliverable, so packaging exercises the same
       # install() rules a local `cmake --install` uses rather than a second,
       # parallel copy step that could drift away from them.
@@ -77,33 +172,63 @@ jobs:
       - name: Check the artifact is not empty
         shell: bash
         run: |
+          set -euo pipefail
           ls -R out
           test -n "$(find out -type f)"
+          for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
+            test -f "out/$document" \
+              || { echo "::error::$document missing from install tree"; exit 1; }
+          done
+          case "${{ runner.os }}" in
+            macOS)
+              test -d out/SobStage.app \
+                || { echo "::error::macOS app missing from install tree"; exit 1; }
+              ;;
+            Windows)
+              test -f out/bin/SobStage.exe \
+                || { echo "::error::Windows executable missing from install tree"; exit 1; }
+              ;;
+            Linux)
+              test -x out/bin/SobStage \
+                || { echo "::error::Linux executable missing or not executable"; exit 1; }
+              ;;
+          esac
 
-      # macOS only, and the step that makes this downloadable rather than merely
-      # built: a .dmg is how macOS expects to hand someone an app. hdiutil ships
-      # only on macOS, so this cannot be deferred to the Linux release job.
-      #
-      # The image is NOT signed or notarized -- that needs an Apple Developer ID,
-      # which is an account and a certificate rather than anything the source can
-      # produce. Gatekeeper will therefore refuse the first launch until the user
-      # right-clicks -> Open; the README says so in the same words.
-      # macOS only, and the step that makes this downloadable rather than merely
-      # built: a .dmg is how macOS expects to hand someone an app. hdiutil ships
-      # only on macOS, so this cannot be deferred to the Linux release job.
-      #
-      # The image is NOT signed with a Developer ID -- that needs an Apple
-      # account and a certificate, not anything the source can produce. It IS
-      # ad-hoc signed, which is a different and mandatory thing: see below.
-      # macOS only, and the step that makes this downloadable rather than merely
-      # built. hdiutil and codesign ship only on macOS, so this cannot be
-      # deferred to the Linux release job.
-      - name: Sign and package the macOS disk image
+      # Create the Linux container before artifact transport. Uploading the
+      # install tree as loose files normalizes its Unix modes; zipping it later
+      # on another runner therefore produced a download whose app needed a
+      # manual chmod. The native ZIP is opaque in every later job.
+      - name: Package and verify the Linux application
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          staging="${RUNNER_TEMP}/linux-zip/SobStage-Linux"
+          verify="${RUNNER_TEMP}/linux-zip-verify"
+          rm -rf "${RUNNER_TEMP}/linux-zip" "$verify"
+          mkdir -p "$staging" "$verify"
+          cp -a out/. "$staging/"
+          (cd "${RUNNER_TEMP}/linux-zip" && zip -r -9 "${GITHUB_WORKSPACE}/SobStage-Linux.zip" SobStage-Linux)
+
+          unzip -q SobStage-Linux.zip -d "$verify"
+          test -x "$verify/SobStage-Linux/bin/SobStage" \
+            || { echo "::error::Linux ZIP lost its executable permission"; exit 1; }
+          for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
+            test -f "$verify/SobStage-Linux/$document" \
+              || { echo "::error::$document missing from Linux ZIP"; exit 1; }
+          done
+
+      # Create both macOS containers on macOS. In particular, the .app must be
+      # placed into its .zip by ditto before Actions transports it; uploading an
+      # unpacked bundle and re-zipping it on Linux drops its executable bit.
+      - name: Verify and package the macOS application
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
 
+          version="${{ needs.prepare.outputs.version }}"
           app="$(find out -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app"
           appname="$(basename "$app")"
@@ -119,18 +244,31 @@ jobs:
           # people off re-downloading a file that was never the problem. And
           # unlike an unsigned-but-intact app, Control-click -> Open does not get
           # past it. So re-sign here, after the install, where it sticks.
-          # The icon is generated by juceaide from Resources/AppIcon.png, and
-          # only on macOS and Windows -- the Linux build has no icon branch at
-          # all, so a broken ICON_BIG cannot be caught before this point. Assert
-          # it rather than discover a generic-document icon after shipping.
-          test -f "$app/Contents/Resources/Icon.icns" \
-            || { echo "::error::Icon.icns missing -- ICON_BIG did not take"; exit 1; }
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" \
-            "$app/Contents/Info.plist" \
-            || { echo "::error::CFBundleIconFile not set in Info.plist"; exit 1; }
-
           codesign --force --sign - --timestamp=none "$app"
-          codesign --verify --strict --verbose=2 "$app"
+          bash Tools/verify_macos_release.sh "$app" "$version" 13.0
+
+          zip_staging="${RUNNER_TEMP}/zip/SobStage-macOS"
+          rm -rf "${RUNNER_TEMP}/zip"
+          mkdir -p "$zip_staging"
+          ditto "$app" "$zip_staging/$appname"
+          cp out/README.md out/LICENSE out/LICENSING.md \
+            out/SUPPORT.md out/PRIVACY.md out/RELEASE_CHECKLIST.md \
+            "$zip_staging/"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$zip_staging" "SobStage-macOS.zip"
+
+          # Extract and inspect the final ZIP, not its source directory. This is
+          # the regression check for the previously non-executable download.
+          zip_verify="${RUNNER_TEMP}/zip-verify"
+          rm -rf "$zip_verify"
+          mkdir -p "$zip_verify"
+          ditto -x -k "SobStage-macOS.zip" "$zip_verify"
+          bash Tools/verify_macos_release.sh \
+            "$zip_verify/SobStage-macOS/$appname" "$version" 13.0
+          for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
+            test -f "$zip_verify/SobStage-macOS/$document" \
+              || { echo "::error::$document missing from macOS ZIP"; exit 1; }
+          done
 
           staging="${RUNNER_TEMP}/dmg/SobStage"
           rm -rf "${RUNNER_TEMP}/dmg"
@@ -140,7 +278,9 @@ jobs:
           # attributes and the signature; cp -R is what broke the signature the
           # first time this shipped.
           ditto "$app" "$staging/$appname"
-          cp out/README.md out/LICENSE out/LICENSING.md "$staging/"
+          cp out/README.md out/LICENSE out/LICENSING.md \
+            out/SUPPORT.md out/PRIVACY.md out/RELEASE_CHECKLIST.md \
+            "$staging/"
           cp Resources/DmgBackground.png "$staging/.background/background.png"
           ln -s /Applications "$staging/Applications"
 
@@ -211,8 +351,12 @@ jobs:
           rm -rf "$verify"; mkdir -p "$verify"
           hdiutil attach "SobStage-macOS.dmg" \
             -mountpoint "$verify" -nobrowse -readonly
-          codesign --verify --strict --verbose=2 "$verify/$appname"
+          bash Tools/verify_macos_release.sh "$verify/$appname" "$version" 13.0
           test -f "$verify/.background/background.png"
+          for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
+            test -f "$verify/$document" \
+              || { echo "::error::$document missing from macOS disk image"; exit 1; }
+          done
 
           # Report what is actually true. The previous version printed
           # "window layout verified" unconditionally, while only checking that
@@ -228,52 +372,149 @@ jobs:
 
           hdiutil detach "$verify"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload the Windows install tree
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: out/
           if-no-files-found: error
 
+      - name: Upload the Linux ZIP
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SobStage-Linux-zip
+          path: SobStage-Linux.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload the macOS ZIP
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SobStage-macOS-zip
+          path: SobStage-macOS.zip
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Upload the disk image
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: SobStage-macOS-dmg
           path: SobStage-macOS.dmg
           if-no-files-found: error
+          compression-level: 0
 
-  release:
-    name: Attach to release
-    needs: build
+  package:
+    name: Assemble release candidate
+    needs: [prepare, build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { path: artifacts }
 
-      - name: Archive each platform
+      - name: Assemble release assets and checksums
+        shell: bash
         run: |
+          set -euo pipefail
+
+          mkdir release-assets
           cd artifacts
+          shopt -s nullglob
           for d in */; do
             name="${d%/}"
+            packaged=("$d"/*.zip "$d"/*.dmg)
 
-            # A .dmg is already a distributable container. Zipping it would only
-            # make people unpack something before they can mount it.
-            if compgen -G "$d"/*.dmg > /dev/null; then
-              cp "$d"/*.dmg ../
+            # Native containers were already verified on their build runners.
+            # Copy them as opaque files so this Linux job cannot alter bundle
+            # metadata or executable permissions inside.
+            if (( ${#packaged[@]} > 0 )); then
+              cp "${packaged[@]}" ../release-assets/
               continue
             fi
 
-            zip -r "../$name.zip" "$d"
+            zip -r "../release-assets/$name.zip" "$d"
           done
 
-      # On a tag push, tag_name is empty and the action uses the ref. On a
-      # dispatch with release_tag set, the action creates that tag at the
-      # commit this workflow built and tested.
-      - uses: softprops/action-gh-release@v2
+          cd ../release-assets
+          test -f SobStage-Linux.zip
+          test -f SobStage-macOS.dmg
+          test -f SobStage-macOS.zip
+          test -f SobStage-Windows.zip
+          assets=(*.zip *.dmg)
+          (( ${#assets[@]} == 4 )) \
+            || { echo "::error::Expected exactly four release containers, found ${#assets[@]}"; exit 1; }
+          sha256sum \
+            SobStage-Linux.zip \
+            SobStage-macOS.dmg \
+            SobStage-macOS.zip \
+            SobStage-Windows.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+          # Prove the macOS ZIP retained its executable mode through the
+          # Actions upload/download boundary before this exact file is promoted.
+          zip_verify="$(mktemp -d)"
+          unzip -q SobStage-macOS.zip -d "$zip_verify"
+          mac_executable="$(find "$zip_verify" -path '*/SobStage.app/Contents/MacOS/SobStage' -print -quit)"
+          test -n "$mac_executable"
+          test -x "$mac_executable" \
+            || { echo "::error::macOS ZIP lost its executable permission"; exit 1; }
+
+          linux_verify="$(mktemp -d)"
+          unzip -q SobStage-Linux.zip -d "$linux_verify"
+          test -x "$linux_verify/SobStage-Linux/bin/SobStage" \
+            || { echo "::error::Linux ZIP lost its executable permission"; exit 1; }
+
+          windows_verify="$(mktemp -d)"
+          unzip -q SobStage-Windows.zip -d "$windows_verify"
+          test -f "$windows_verify/SobStage-Windows/bin/SobStage.exe" \
+            || { echo "::error::Windows ZIP is missing SobStage.exe"; exit 1; }
+
+          for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
+            test -f "$linux_verify/SobStage-Linux/$document" \
+              || { echo "::error::$document missing from final Linux ZIP"; exit 1; }
+            test -f "$windows_verify/SobStage-Windows/$document" \
+              || { echo "::error::$document missing from final Windows ZIP"; exit 1; }
+          done
+
+      - name: Upload the complete release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          tag_name: ${{ inputs.release_tag }}
+          name: SobStage-release-candidate
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Attach to release
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    if: needs.prepare.outputs.release_tag != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: SobStage-release-candidate
+          path: release-assets
+
+      - name: Verify the promoted release candidate
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check SHA256SUMS
+
+      # On a dispatch, the action creates the already-validated version tag at
+      # the exact commit whose already-packaged artifacts passed every check.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
           files: |
-            *.zip
-            *.dmg
+            release-assets/*.zip
+            release-assets/*.dmg
+            release-assets/SHA256SUMS
           generate_release_notes: true
+          fail_on_unmatched_files: true

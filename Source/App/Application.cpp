@@ -1368,10 +1368,24 @@ void Application::setDestinationByPath (const juce::String& path)
 void Application::chooseInitialDestination()
 {
     // §10.1: destination defaults to a connected external card; falls back to
-    // ~/RECORDINGS, stated in one line. Real removable-volume enumeration is
-    // platform-specific (DiskArbitration on macOS, WM_DEVICECHANGE volume
-    // notifications on Windows) and lives in the backend; here we fall
-    // through to the always-available default so the app never blocks.
+    // ~/RECORDINGS, stated in one line. getStorageVolumes() already performs
+    // the platform-specific root discovery and JUCE's removable-drive check;
+    // use that same list so the first-run choice and the Settings picker cannot
+    // disagree about whether a writable card is present.
+    for (const auto& volume : getStorageVolumes())
+    {
+        if (! volume.isRemovable)
+            continue;
+
+        const juce::File recordings (volume.path);
+        if ((! recordings.exists() && recordings.createDirectory().wasOk())
+            || (recordings.isDirectory() && recordings.hasWriteAccess()))
+        {
+            destinationFolder = recordings.getFullPathName().toStdString();
+            return;
+        }
+    }
+
     destinationFolder = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
                             .getChildFile ("RECORDINGS")
                             .getFullPathName()
@@ -1959,7 +1973,7 @@ juce::String Application::getRecordDisabledReason() const
     //
     // Every reason below is about whether it is sensible to START. Applied
     // during a take they take the stop away: unplug every microphone mid-take
-    // and "Plug in a microphone first." disabled the one control that could
+    // and the no-microphone message disabled the one control that could
     // have ended the recording, leaving the clock running with no way out but
     // quitting the app. A user who cannot stop their own take has been failed
     // more completely than by any silence.
@@ -1967,7 +1981,7 @@ juce::String Application::getRecordDisabledReason() const
         return {};
 
     if (getIncludedMicCount() == 0)
-        return "Plug in a microphone first.";
+        return "Plug in a USB microphone or audio interface first.";
 
     // The microphones have to be OPEN, not merely plugged in. A rig whose
     // streams failed to open -- the output refused low-latency mode, a mic
@@ -2098,12 +2112,26 @@ void Application::runPreflight (const std::string& destination, int channelCount
                 written += kChunkBytes;
                 writtenThisWindow += kChunkBytes;
 
-                const auto elapsed = std::chrono::duration<double> (
+                const auto elapsedBeforeFlush = std::chrono::duration<double> (
                     std::chrono::steady_clock::now() - windowStart).count();
 
-                if (elapsed >= 1.0)
+                if (elapsedBeforeFlush >= 1.0)
                 {
-                    rollingWindows.push_back (static_cast<double> (writtenThisWindow) / elapsed);
+                    // FileOutputStream::flush() reaches the platform durability
+                    // primitive (fsync/FlushFileBuffers). Include that latency in
+                    // every rolling window so a large OS cache cannot make a slow
+                    // card look safe for a long recording.
+                    out.flush();
+
+                    if (out.getStatus().failed())
+                    {
+                        couldNotWrite = true;
+                        break;
+                    }
+
+                    const auto durableElapsed = std::chrono::duration<double> (
+                        std::chrono::steady_clock::now() - windowStart).count();
+                    rollingWindows.push_back (static_cast<double> (writtenThisWindow) / durableElapsed);
                     writtenThisWindow = 0;
                     windowStart = std::chrono::steady_clock::now();
                 }
@@ -2118,9 +2146,10 @@ void Application::runPreflight (const std::string& destination, int channelCount
             if (out.getStatus().failed())
                 couldNotWrite = true;
 
-            // A card fast enough to finish inside one window still needs a
-            // sample, or the gate would see no data and fail a good drive.
-            if (rollingWindows.empty() && writtenThisWindow > 0)
+            // Include the final partial window too. This gives a fast card its
+            // only sample and makes the last durability flush part of the
+            // sustained-floor verdict for every other card.
+            if (! couldNotWrite && writtenThisWindow > 0)
             {
                 const auto elapsed = std::chrono::duration<double> (
                     std::chrono::steady_clock::now() - windowStart).count();

@@ -1,11 +1,70 @@
 // Lays out the real MainScreen with camera tiles and reports what the picture
 // actually comes out as. No display needed: Component layout is arithmetic.
 #include "UI/MainScreen.h"
+#include "UI/ModalCard.h"
+#include <algorithm>
 #include <cstdio>
+#include <vector>
+
+namespace {
+
+class FocusProbeCard final : public mma::ModalCard
+{
+public:
+    FocusProbeCard()
+    {
+        first.setWantsKeyboardFocus (true);
+        second.setWantsKeyboardFocus (true);
+        addAndMakeVisible (first);
+        addAndMakeVisible (second);
+    }
+
+    juce::TextButton first { "First" };
+    juce::TextButton second { "Second" };
+
+private:
+    int getContentHeight() const override { return 40; }
+
+    void layOutContent (juce::Rectangle<int> area) override
+    {
+        first.setBounds (area.removeFromLeft (100));
+        second.setBounds (area.removeFromLeft (100));
+    }
+};
+
+} // namespace
 
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
+    int failures = 0;
+
+    std::printf ("-- modal keyboard focus containment --\n");
+
+    juce::Component window;
+    juce::TextButton controlBehindCard { "Record" };
+    FocusProbeCard card;
+    window.addAndMakeVisible (controlBehindCard);
+    window.addAndMakeVisible (card);
+
+    auto* focusRoot = card.first.findKeyboardFocusContainer();
+    const auto focusContainerIsCard = focusRoot == &card;
+    auto traverser = card.first.createKeyboardFocusTraverser();
+    const auto focusable = focusRoot != nullptr
+                         ? traverser->getAllComponents (focusRoot)
+                         : std::vector<juce::Component*> {};
+    const auto contains = [&focusable] (juce::Component* component)
+    {
+        return std::find (focusable.begin(), focusable.end(), component) != focusable.end();
+    };
+    const auto traversalStaysOnCard = contains (&card.first) && contains (&card.second)
+                                   && ! contains (&controlBehindCard);
+
+    std::printf ("focus container: %s\n", focusContainerIsCard ? "PASS" : "FAIL");
+    std::printf ("focus traversal stays on card: %s\n\n",
+                 traversalStaysOnCard ? "PASS" : "FAIL");
+    failures += focusContainerIsCard ? 0 : 1;
+    failures += traversalStaysOnCard ? 0 : 1;
 
     struct Case { int w, h, mics; const char* label; };
     const Case cases[] = {
@@ -128,5 +187,5 @@ int main()
                      s.getRequiredHeight() > grown ? "  OVERFLOWS WINDOW" : "");
     }
 
-    return 0;
+    return failures == 0 ? 0 : 1;
 }

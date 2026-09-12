@@ -39,6 +39,7 @@ add_executable(mma_core_tests
     test_CaptureCoordinator.cpp
     test_DeviceInputStream.cpp
     test_ChannelPlan.cpp
+    test_AlsaInputPolicy.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core)

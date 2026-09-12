@@ -69,11 +69,8 @@ public:
     void setAvailableCameras (std::vector<CameraDeviceInfo> cameras);
     const std::vector<CameraDeviceInfo>& getAvailableCameras() const { return available; }
 
-    /// §10.1 turns every microphone on without asking, because a microphone
-    /// nobody wanted costs one silent track. A camera nobody wanted costs
-    /// gigabytes and a card that fills mid-take, so only the first camera to
-    /// appear is switched on automatically; the rest are one click away and
-    /// listed where that click is.
+    /// Cameras are opt-in. Enumeration alone must not open a camera, illuminate
+    /// its privacy light, raise a permission prompt, or add gigabytes to a take.
     void setEnabled (const std::string& id, bool enabled);
     bool isEnabled (const std::string& id) const;
     int getEnabledCount() const;
@@ -100,7 +97,6 @@ private:
 
     std::vector<CameraDeviceInfo> available;
     std::map<std::string, Choice> choices; // by id, so unplugging forgets nothing
-    bool haveAutoEnabledOne = false;
 };
 
 } // namespace mma

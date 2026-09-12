@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <string>
 #include <cmath>
+#include <thread>
 #include <vector>
 
 namespace mma {
@@ -257,10 +258,30 @@ bool setNominalSampleRate (AudioObjectID device, double sampleRate)
     if (AudioObjectSetPropertyData (device, &address, 0, nullptr, sizeof (rate), &rate) != noErr)
         return false;
 
-    // The HAL applies the change asynchronously and may land on a neighbouring
-    // rate. Confirm rather than assume: the callers negotiate one common rate
-    // (§2.2) and a device quietly running at a different one is a drift source.
-    return std::abs (getNominalSampleRate (device) - sampleRate) < 1.0;
+    // The HAL applies this property asynchronously on real USB devices. An
+    // immediate read-back therefore turns a rate change that is still in flight
+    // into a false refusal. This runs only while opening a stream, before its
+    // IOProc exists, so a short sleep here can never block the real-time thread.
+    //
+    // Still keep the wait bounded: a driver that acknowledges the write but
+    // never applies it must not hang launch. Confirm the final value rather than
+    // assuming success, because landing on a neighbouring rate would make the
+    // device a permanent drift source.
+    constexpr auto settleTimeout = std::chrono::milliseconds (500);
+    constexpr auto pollInterval = std::chrono::milliseconds (10);
+    const auto deadline = std::chrono::steady_clock::now() + settleTimeout;
+
+    for (;;)
+    {
+        if (std::abs (getNominalSampleRate (device) - sampleRate) < 1.0)
+            return true;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+            return false;
+
+        std::this_thread::sleep_until (std::min (deadline, now + pollInterval));
+    }
 }
 
 int getBufferFrameSize (AudioObjectID device)

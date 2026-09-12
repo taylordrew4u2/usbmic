@@ -245,6 +245,60 @@ void aDeviceAlreadyAtTheRequestedRateStillOpens()
     backend.closeAllStreams();
 }
 
+/// CoreAudio acknowledges a nominal-rate write before the new value is always
+/// visible. The backend must wait for that asynchronous change rather than
+/// rejecting a device on the first stale read-back.
+void aDelayedRateChangeSettlesBeforeTheStreamOpens()
+{
+    std::printf ("\nA nominal-rate change that CoreAudio applies asynchronously\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Slow Rate Mic", "uid-slow-rate", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.currentRate = 44100.0;
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    spec.rateChangeDelayReads = 3;
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("uid-slow-rate", 48000.0, 256, capture.callback()),
+           "the stream waits for the delayed rate and opens");
+    check (fakeca::nominalRate (id) == 48000.0,
+           "the stream starts only after the requested rate is visible");
+    check (fakeca::isRunning (id), "the IOProc actually starts after confirmation");
+    backend.closeAllStreams();
+}
+
+/// A broken driver can acknowledge the property write without applying it.
+/// Waiting forever would hang launch, so the confirmation path has a 500 ms
+/// ceiling and still refuses to open at the wrong rate when that expires.
+void aRateChangeThatNeverSettlesTimesOut()
+{
+    std::printf ("\nA nominal-rate write that never becomes visible\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Never Settles", "uid-never-settles", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.currentRate = 44100.0;
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    spec.rateChangeDelayReads = 100000;
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    const auto started = std::chrono::steady_clock::now();
+    const bool opened = backend.openInputStream ("uid-never-settles", 48000.0, 256,
+                                                 capture.callback());
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    check (! opened, "the open is refused rather than using the stale rate");
+    check (! fakeca::isRunning (id), "no IOProc starts at the wrong rate");
+    check (elapsed < std::chrono::milliseconds (650),
+           "confirmation returns at its 500 ms bound instead of hanging launch");
+}
+
 /// The reported rig: an interface sitting at 44.1 kHz. The backend must say so,
 /// because §2.2's whole "stay put" rule is built on that one number.
 void aDeviceAt44100ReportsThatAsItsCurrentRate()
@@ -644,6 +698,8 @@ int main()
     interleavedOutputCarriesTheMonitorMix();
     continuousSampleRateRangeIsExpanded();
     aDeviceAlreadyAtTheRequestedRateStillOpens();
+    aDelayedRateChangeSettlesBeforeTheStreamOpens();
+    aRateChangeThatNeverSettlesTimesOut();
     aDeviceThatCannotReachTheRateIsRefused();
     aMicrophoneThatVanishedSaysSo();
     aDeviceAt44100ReportsThatAsItsCurrentRate();

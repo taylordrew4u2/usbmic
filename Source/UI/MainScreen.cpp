@@ -96,7 +96,8 @@ MainScreen::MainScreen()
     filesSavingLabel.setColour (juce::Label::textColourId, AppLookAndFeel::meterLow);
     addAndMakeVisible (filesSavingLabel);
 
-    noMicsLabel.setText ("Plug in a microphone to get started.", juce::dontSendNotification);
+    noMicsLabel.setText ("Plug in a USB microphone or audio interface to get started.",
+                         juce::dontSendNotification);
     noMicsLabel.setJustificationType (juce::Justification::centred);
     addChildComponent (noMicsLabel);
 

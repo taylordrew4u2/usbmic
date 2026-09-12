@@ -2,6 +2,8 @@
 
 #if defined(__linux__) && ! defined(MMA_NO_ALSA)
 
+#include "AlsaInputPolicy.h"
+
 #include <alsa/asoundlib.h>
 #include <sys/inotify.h>
 #include <cerrno>    // EBUSY, to tell "in use" from "not there"
@@ -16,6 +18,12 @@
 namespace mma {
 
 namespace {
+
+#if defined(MMA_ALLOW_TEST_INPUTS)
+constexpr bool kTestInputsCompiledIn = true;
+#else
+constexpr bool kTestInputsCompiledIn = false;
+#endif
 
 /// §11: the callback must not allocate, so every buffer a stream needs is
 /// sized once at open time and reused for the life of the stream.
@@ -235,6 +243,94 @@ unsigned int captureChannelsFor (const char* name)
     return most;
 }
 
+std::vector<AudioDeviceDescriptor> enumerateDirectExternalInputs()
+{
+    std::vector<AudioDeviceDescriptor> result;
+
+    // snd_card_next exposes kernel sound cards only. ALSA plugins such as
+    // PipeWire, PulseAudio, BlueALSA, loopback aliases and the file-backed CI
+    // fixture never enter this path because they are not hardware cards.
+    int card = -1;
+
+    while (snd_card_next (&card) == 0 && card >= 0)
+    {
+        // The kernel decides whether the hardware can physically be removed by
+        // the user. Fixed, unknown and missing sysfs evidence all fail closed.
+        if (! alsa_detail::isDirectExternalHardwareCard (card))
+            continue;
+
+        const std::string controlName = "hw:" + std::to_string (card);
+        snd_ctl_t* control = nullptr;
+
+        if (snd_ctl_open (&control, controlName.c_str(), SND_CTL_NONBLOCK) < 0)
+            continue;
+
+        snd_ctl_card_info_t* cardInfo = nullptr;
+        snd_ctl_card_info_alloca (&cardInfo);
+
+        if (snd_ctl_card_info (control, cardInfo) < 0)
+        {
+            snd_ctl_close (control);
+            continue;
+        }
+
+        const char* alsaCardId = snd_ctl_card_info_get_id (cardInfo);
+        const char* cardName = snd_ctl_card_info_get_name (cardInfo);
+
+        // ALSA card IDs are kernel-issued identifiers accepted by the hw PCM
+        // syntax. Unlike a numeric card index, they continue to address the
+        // same card when enumeration order changes after a replug.
+        if (alsaCardId == nullptr || *alsaCardId == '\0')
+        {
+            snd_ctl_close (control);
+            continue;
+        }
+
+        snd_pcm_info_t* pcmInfo = nullptr;
+        snd_pcm_info_alloca (&pcmInfo);
+
+        int device = -1;
+
+        while (snd_ctl_pcm_next_device (control, &device) == 0 && device >= 0)
+        {
+            snd_pcm_info_set_device (pcmInfo, static_cast<unsigned int> (device));
+            snd_pcm_info_set_subdevice (pcmInfo, 0);
+            snd_pcm_info_set_stream (pcmInfo, SND_PCM_STREAM_CAPTURE);
+
+            // Playback-only devices on an otherwise removable card are not
+            // recording inputs and therefore do not appear.
+            if (snd_ctl_pcm_info (control, pcmInfo) < 0)
+                continue;
+
+            AudioDeviceDescriptor descriptor;
+            const char* pcmName = snd_pcm_info_get_name (pcmInfo);
+
+            descriptor.name = (cardName != nullptr && *cardName != '\0')
+                ? std::string (cardName)
+                : std::string ("External audio input");
+
+            if (pcmName != nullptr && *pcmName != '\0'
+                && descriptor.name != pcmName)
+                descriptor.name += " - " + std::string (pcmName);
+
+            descriptor.usbLocationId = "hw:CARD=" + std::string (alsaCardId)
+                                     + ",DEV=" + std::to_string (device);
+            descriptor.isMicrophone = true;
+            descriptor.hasPhysicalHeadphoneJack = false;
+            descriptor.maxInputChannels = static_cast<int> (
+                captureChannelsFor (descriptor.usbLocationId.c_str()));
+            descriptor.supportedSampleRates = { 44100, 48000 };
+            descriptor.supportedBitDepths = { 16, 24, 32 };
+
+            result.push_back (std::move (descriptor));
+        }
+
+        snd_ctl_close (control);
+    }
+
+    return result;
+}
+
 } // namespace
 
 AlsaBackend::AlsaBackend() = default;
@@ -247,6 +343,13 @@ AlsaBackend::~AlsaBackend()
 
 std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
 {
+    // Shipping input enumeration is deliberately a positive allowlist based
+    // on ALSA kernel cards plus sysfs removability. The old hint path remains
+    // byte-for-byte available to outputs and to an explicitly compiled test
+    // binary so the file-backed Linux fixture can still exercise the stack.
+    if (! alsa_detail::shouldUseHintEnumeration (wantInput, kTestInputsCompiledIn))
+        return enumerateDirectExternalInputs();
+
     std::vector<AudioDeviceDescriptor> result;
 
     void** hints = nullptr;

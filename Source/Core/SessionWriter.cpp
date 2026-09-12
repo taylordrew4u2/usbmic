@@ -3,6 +3,16 @@
 #include <cstring>
 #include <cmath>
 
+#if defined (_WIN32)
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #include <windows.h>
+#else
+ #include <fcntl.h>
+ #include <unistd.h>
+#endif
+
 namespace mma {
 
 namespace {
@@ -120,7 +130,14 @@ void SessionWriter::writeHeaderPlaceholder()
         }
         std::memcpy (bext.data() + 320, date.data(), std::min<size_t> (date.size(), 10));
         std::memcpy (bext.data() + 330, time.data(), std::min<size_t> (time.size(), 8));
-        // TimeReferenceLow/High (offset 338/342) left at 0: this file's origin IS t=0.
+        // BWF TimeReferenceLow/High (offset 338/342) is the sample offset from
+        // the shared session origin. The first file starts at zero; a split
+        // continuation starts after every frame already written, so a DAW lays
+        // the pieces end to end instead of stacking every _NNN file at t=0.
+        const uint64_t timeReference = totalFramesWritten;
+        for (int byte = 0; byte < 8; ++byte)
+            bext[static_cast<size_t> (338 + byte)] =
+                static_cast<char> ((timeReference >> (byte * 8)) & 0xff);
         // Version (offset 346) = 1.
         bext[346] = 1;
         file.write (bext.data(), static_cast<std::streamsize> (bext.size()));
@@ -144,9 +161,15 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
     while (frameStart < numFrames)
     {
         // Auto-split at 3.9GB (§6.1) before writing would push us over.
-        if (dataBytesWrittenToCurrentFile + frameBytes > kAutoSplitBytes)
+        if (dataBytesWrittenToCurrentFile + frameBytes > autoSplitBytes)
         {
-            rewriteHeaderSizes();
+            if (! rewriteHeaderSizes())
+            {
+                writeProblem = "Couldn't finish " + currentFilePath
+                             + " before starting the next file. Recording has stopped to protect the take.";
+                return false;
+            }
+
             splitIndex = std::max (1, splitIndex + 1);
             splitSuffixActive = true;
 
@@ -222,7 +245,41 @@ bool SessionWriter::rewriteHeaderSizes()
     file.seekp (currentPos);
     file.flush();
 
-    return file.good();
+    return file.good() && syncCurrentFileToStorage();
+}
+
+bool SessionWriter::syncCurrentFileToStorage()
+{
+    // std::fstream::flush() only reaches the operating-system cache. §6.6's
+    // periodic header rewrite is specifically the crash/power-loss boundary,
+    // so ask the OS to push those bytes to the device as well. This function is
+    // called by the writer/timer path, never by an audio callback.
+#if defined (_WIN32)
+    const HANDLE handle = CreateFileA (currentFilePath.c_str(), GENERIC_WRITE,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+
+    const bool ok = FlushFileBuffers (handle) != 0;
+    CloseHandle (handle);
+    return ok;
+#else
+    const int descriptor = ::open (currentFilePath.c_str(), O_RDWR);
+    if (descriptor < 0)
+        return false;
+
+    bool ok = false;
+ #if defined (__APPLE__) && defined (F_FULLFSYNC)
+    ok = ::fcntl (descriptor, F_FULLFSYNC) == 0;
+    if (! ok)
+        ok = ::fsync (descriptor) == 0;
+ #else
+    ok = ::fsync (descriptor) == 0;
+ #endif
+    ::close (descriptor);
+    return ok;
+#endif
 }
 
 bool SessionWriter::tick (double dtSeconds)

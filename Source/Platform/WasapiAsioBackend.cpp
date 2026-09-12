@@ -6,13 +6,17 @@
 
 #include <windows.h>
 #include <mmdeviceapi.h>
+#include <devicetopology.h>
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <cfgmgr32.h>
+#include <devpkey.h>
 #include <wrl/client.h>
 #include <avrt.h>
 #include <thread>
 #include <atomic>
 #include <cstring>
+#include <cwctype>
 #include <algorithm>
 
 using Microsoft::WRL::ComPtr;
@@ -162,6 +166,126 @@ bool resolveDevice (const std::string& deviceId, ComPtr<IMMDevice>& out)
                          wide.data(), wideLength);
 
     return SUCCEEDED (enumerator->GetDevice (wide.c_str(), out.GetAddressOf()));
+}
+
+/// Follows a WASAPI endpoint through its device topology to the physical audio
+/// filter and reads that filter's Plug and Play instance id. Windows' endpoint
+/// ids themselves are opaque and cannot tell a built-in microphone from a USB
+/// interface; the physical id can (for example USB\\VID_... versus HDAUDIO\\...
+/// or BTHHFENUM\\...). This is the same OS relationship Device Manager uses.
+bool isDirectlyAttachedExternalInput (IMMDevice* endpoint,
+                                      IMMDeviceEnumerator* enumerator)
+{
+    if (endpoint == nullptr || enumerator == nullptr)
+        return false;
+
+    ComPtr<IDeviceTopology> topology;
+    if (FAILED (endpoint->Activate (__uuidof (IDeviceTopology), CLSCTX_ALL, nullptr,
+                                    reinterpret_cast<void**> (topology.GetAddressOf()))))
+        return false;
+
+    ComPtr<IConnector> connector;
+    if (FAILED (topology->GetConnector (0, connector.GetAddressOf())))
+        return false;
+
+    LPWSTR connectedDeviceId = nullptr;
+    const auto connectionStatus = connector->GetDeviceIdConnectedTo (&connectedDeviceId);
+    if (FAILED (connectionStatus) || connectedDeviceId == nullptr)
+    {
+        CoTaskMemFree (connectedDeviceId);
+        return false;
+    }
+
+    ComPtr<IMMDevice> physicalNode;
+    const auto resolveStatus = enumerator->GetDevice (connectedDeviceId,
+                                                       physicalNode.GetAddressOf());
+    CoTaskMemFree (connectedDeviceId);
+
+    if (FAILED (resolveStatus) || physicalNode == nullptr)
+        return false;
+
+    ComPtr<IPropertyStore> properties;
+    if (FAILED (physicalNode->OpenPropertyStore (STGM_READ, properties.GetAddressOf())))
+        return false;
+
+    PROPVARIANT instance;
+    PropVariantInit (&instance);
+    const auto propertyStatus = properties->GetValue (PKEY_Device_InstanceId, &instance);
+    const std::wstring instanceId = SUCCEEDED (propertyStatus)
+                                  && instance.vt == VT_LPWSTR
+                                  && instance.pwszVal != nullptr
+                                  ? std::wstring (instance.pwszVal) : std::wstring();
+    PropVariantClear (&instance);
+
+    if (instanceId.empty())
+        return false;
+
+    std::wstring upper = instanceId;
+    std::transform (upper.begin(), upper.end(), upper.begin(),
+                    [] (wchar_t c) { return static_cast<wchar_t> (std::towupper (c)); });
+
+    // The prefix is the PnP enumerator namespace, not a product-name guess. It
+    // excludes software and wireless endpoints before following any parents.
+    // PCI/HDAUDIO are considered only so a genuinely removable Thunderbolt
+    // branch can prove itself below; built-in instances fail that proof.
+    const bool eligibleTransport = upper.rfind (L"USB\\", 0) == 0
+                                || upper.rfind (L"1394\\", 0) == 0
+                                || upper.rfind (L"PCI\\", 0) == 0
+                                || upper.rfind (L"HDAUDIO\\", 0) == 0;
+    if (! eligibleTransport)
+        return false;
+
+    DEVINST node = 0;
+    if (CM_Locate_DevNodeW (&node, const_cast<DEVINSTID_W> (instanceId.c_str()),
+                            CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
+        return false;
+
+    // Windows marks the top-most removable node, not necessarily the audio
+    // function below it. Walk a bounded ancestor chain and require both the
+    // removable capability and a removal policy that expects actual removal.
+    // Missing/malformed properties and an unexpectedly deep/cyclic tree all
+    // fail closed. This runs only during enumeration, never on an audio thread.
+    constexpr int maxAncestorDepth = 32;
+    for (int depth = 0; depth < maxAncestorDepth; ++depth)
+    {
+        ULONG capabilities = 0;
+        ULONG capabilityBytes = sizeof (capabilities);
+        DEVPROPTYPE capabilityType = DEVPROP_TYPE_EMPTY;
+        const bool hasCapabilities =
+            CM_Get_DevNode_PropertyW (node, &DEVPKEY_Device_Capabilities,
+                                     &capabilityType,
+                                     reinterpret_cast<PBYTE> (&capabilities),
+                                     &capabilityBytes, 0) == CR_SUCCESS
+            && capabilityBytes == sizeof (capabilities)
+            && (capabilityType == DEVPROP_TYPE_INT32
+                || capabilityType == DEVPROP_TYPE_UINT32);
+
+        ULONG removalPolicy = 0;
+        ULONG removalPolicyBytes = sizeof (removalPolicy);
+        DEVPROPTYPE removalPolicyType = DEVPROP_TYPE_EMPTY;
+        const bool hasRemovalPolicy =
+            CM_Get_DevNode_PropertyW (node, &DEVPKEY_Device_RemovalPolicy,
+                                     &removalPolicyType,
+                                     reinterpret_cast<PBYTE> (&removalPolicy),
+                                     &removalPolicyBytes, 0) == CR_SUCCESS
+            && removalPolicyBytes == sizeof (removalPolicy)
+            && (removalPolicyType == DEVPROP_TYPE_INT32
+                || removalPolicyType == DEVPROP_TYPE_UINT32);
+
+        if (hasCapabilities && hasRemovalPolicy
+            && (capabilities & CM_DEVCAP_REMOVABLE) != 0
+            && (removalPolicy == CM_REMOVAL_POLICY_EXPECT_ORDERLY_REMOVAL
+                || removalPolicy == CM_REMOVAL_POLICY_EXPECT_SURPRISE_REMOVAL))
+            return true;
+
+        DEVINST parent = 0;
+        if (CM_Get_Parent (&parent, node, 0) != CR_SUCCESS || parent == node)
+            return false;
+
+        node = parent;
+    }
+
+    return false;
 }
 
 /// 32-bit float, the format the engine works in throughout. Exclusive mode
@@ -445,28 +569,15 @@ void runStreamThread (WasapiStream* stream)
 
 WasapiAsioBackend::WasapiAsioBackend()
 {
-    CoInitializeEx (nullptr, COINIT_MULTITHREADED);
-    preferAsio = hasAnyAsioDriverInstalled();
+    ownsComInitialisation = SUCCEEDED (CoInitializeEx (nullptr, COINIT_MULTITHREADED));
 }
 
 WasapiAsioBackend::~WasapiAsioBackend()
 {
     unregisterNotificationClient();
     closeAllStreams();
-    CoUninitialize();
-}
-
-bool WasapiAsioBackend::hasAnyAsioDriverInstalled() const
-{
-    // §7 backend B / ASIO preference: an ASIO driver is "installed" if it has
-    // a CLSID registered under HKEY_LOCAL_MACHINE\SOFTWARE\ASIO. JUCE's ASIO
-    // AudioIODeviceType already does this enumeration robustly; this is a
-    // lightweight presence check used only to decide ASIO-vs-WASAPI preference.
-    HKEY key;
-    const bool present = RegOpenKeyExA (HKEY_LOCAL_MACHINE, "SOFTWARE\\ASIO", 0, KEY_READ, &key) == ERROR_SUCCESS;
-    if (present)
-        RegCloseKey (key);
-    return present;
+    if (ownsComInitialisation)
+        CoUninitialize();
 }
 
 std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateWasapiDevices (bool wantInput) const
@@ -490,6 +601,9 @@ std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateWasapiDevices (bo
     {
         ComPtr<IMMDevice> device;
         if (FAILED (collection->Item (i, &device)))
+            continue;
+
+        if (wantInput && ! isDirectlyAttachedExternalInput (device.Get(), enumerator.Get()))
             continue;
 
         LPWSTR idWide = nullptr;
@@ -550,20 +664,9 @@ std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateWasapiDevices (bo
     return result;
 }
 
-std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateAsioDevices() const
-{
-    // TODO: delegate to juce::AudioIODeviceType("ASIO") for driver
-    // enumeration + channel/rate queries -- ASIO driver COM activation isn't
-    // reimplemented here, JUCE's ASIO wrapper already does this correctly.
-    return {};
-}
-
 std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateInputDevices()
 {
-    auto devices = enumerateWasapiDevices (true);
-    auto asioDevices = enumerateAsioDevices();
-    devices.insert (devices.end(), asioDevices.begin(), asioDevices.end());
-    return devices;
+    return enumerateWasapiDevices (true);
 }
 
 std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateOutputDevices()
@@ -634,13 +737,6 @@ ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const s
                                                                          double sampleRate, int bufferSizeSamples)
 {
     ExclusiveModeCapability cap;
-
-    if (preferAsio)
-    {
-        cap.exclusiveModeAvailable = true;
-        cap.measuredOrEstimatedLatencyMs = (bufferSizeSamples / 48000.0) * 1000.0 * 2.0;
-        return cap;
-    }
 
     // WASAPI: only AUDCLNT_SHAREMODE_EXCLUSIVE qualifies. IAudioClient::
     // IsFormatSupported against AUDCLNT_SHAREMODE_EXCLUSIVE would be the

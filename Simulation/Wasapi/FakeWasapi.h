@@ -13,6 +13,16 @@
 
 namespace fakewasapi {
 
+/// One node in the physical device's PnP ancestry, leaf first. Windows normally
+/// marks the top-most removable node rather than every child below it.
+struct DeviceNodeSpec
+{
+    std::string instanceId;
+    bool removable = false;
+    bool removalExpected = false;
+    bool propertiesReadable = true;
+};
+
 /// A format the endpoint will accept in exclusive mode. Exclusive mode performs
 /// no conversion, so this list is the whole of what the device can do.
 struct Format
@@ -31,6 +41,25 @@ struct EndpointSpec
     std::string id;            ///< the endpoint id string the backend stores (§2.4)
     std::string friendlyName;
     bool isCapture = true;
+
+    /// Plug and Play instance id of the physical audio filter behind this
+    /// endpoint. Eligibility additionally requires positive removable evidence
+    /// on this node or an ancestor.
+    std::string physicalInstanceId = "USB\\SIMULATED_AUDIO";
+
+    /// Leaf-to-root PnP ancestry. When empty, addEndpoint supplies one removable
+    /// node matching physicalInstanceId so older audio-format scenarios keep
+    /// modelling an ordinary plug-in USB interface.
+    std::vector<DeviceNodeSpec> deviceNodeChain;
+
+    /// Failure injection for the physical-identity path. Every failure must
+    /// hide an input rather than falling back to endpoint names or ids.
+    bool topologyAvailable = true;
+    bool connectorAvailable = true;
+    bool connectedDeviceIdAvailable = true;
+    bool propertyStoreAvailable = true;
+    bool instanceIdPropertyAvailable = true;
+    bool devNodeLookupAvailable = true;
 
     /// Everything this endpoint accepts exclusively. Empty means it accepts
     /// nothing, which is what a device already held by another process looks

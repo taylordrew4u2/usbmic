@@ -29,11 +29,14 @@ SS = 2
 def load_font(size, bold=False, mono=False):
     if mono:
         candidates = [
+            "/System/Library/Fonts/SFNSMono.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
         ]
     else:
         candidates = [
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold
+            else "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
             else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold

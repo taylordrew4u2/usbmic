@@ -42,6 +42,8 @@ TEST_CASE (HelpTopics_SilentMixerChecklistComesFirst)
     REQUIRE (first.body.find ("fader") != std::string::npos);
     REQUIRE (first.body.find ("muted") != std::string::npos);
     REQUIRE (first.body.find ("Privacy & Security") != std::string::npos);
+    REQUIRE (first.body.find ("USB, FireWire or Thunderbolt") != std::string::npos);
+    REQUIRE (first.body.find ("phone or Continuity") != std::string::npos);
 }
 
 TEST_CASE (HelpTopics_NamesTheCausesTheAppHasBeenBittenBy)
@@ -53,6 +55,8 @@ TEST_CASE (HelpTopics_NamesTheCausesTheAppHasBeenBittenBy)
     REQUIRE (anyTopicMentions ("phantom"));          // condenser on a mixer without 48 V
     REQUIRE (anyTopicMentions ("Export diagnostics"));
     REQUIRE (anyTopicMentions ("in use"));           // another app holding the device
+    REQUIRE (anyTopicMentions ("https://github.com/taylordrew4u2/usbmic/issues/new"));
+    REQUIRE (anyTopicMentions ("never includes audio"));
 }
 
 TEST_CASE (HelpTopics_ChecklistStepsAreNumberedInOrder)

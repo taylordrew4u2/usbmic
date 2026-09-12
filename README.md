@@ -9,15 +9,15 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-441%20passing-brightgreen" alt="441 tests passing">
+  <img src="https://img.shields.io/badge/tests-498%20passing-brightgreen" alt="498 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
 
-Cross-platform desktop application (macOS + Windows) that aggregates up to 8 USB
-microphones, records every microphone to discrete files plus one summed mix
-directly to an external card, and feeds one identical live low-latency monitor
-mix to everyone in the room.
+Desktop application for macOS and Windows, with a Linux build for testing and
+early use. It aggregates up to 8 external microphones, records every microphone
+to discrete files plus one summed mix directly to an external card, and feeds
+one identical live low-latency monitor mix to everyone in the room.
 
 The full build specification lives in [`docs/SPEC.md`](docs/SPEC.md) and is the
 source of truth for every constant and behavior in this codebase. Where the code
@@ -44,26 +44,26 @@ against a 1 ms ceiling — a 47× margin.**
 | **Real-time safety** | No allocation, no locking, no logging and no file I/O on any audio thread. Cross-thread handoff is SPSC lock-free ring buffers with acquire/release publication. |
 | **Loudness** | A from-scratch ITU-R BS.1770-4 implementation — K-weighting, 400 ms blocks at 75% overlap, −70 LUFS absolute and −10 LU relative gating, true peak by 4× oversampling. Verified against the standard's own reference tones to **within 0.02 LU** at 44.1, 48 and 96 kHz. |
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
-| **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This found five user-facing defects that were otherwise unreachable from any available machine. |
+| **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-441 unit tests, an end-to-end take and an end-to-end refusal through the real app, two long-running capture harnesses and two platform simulators
-run on macOS, Windows and Linux on every commit.
+498 unit tests, an end-to-end take and an end-to-end refusal through the real
+app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
+checks run in CI.
 
 ### Honest limits
 
 The section that is unusual, and deliberate: **[Current status](#current-status)**
 enumerates exactly what has been verified and what has not, at the granularity of
-"compiled" vs "executed" vs "run against real hardware". No recording has yet
-been made from a physical microphone on macOS or Windows. That is stated here,
-in the release notes, and in the platform table below — rather than left for
-someone to discover.
+"compiled" vs "executed" vs "run against real hardware". A PUPGSIS T12S has
+been detected on a real Mac at its fixed 44.1 kHz rate, but a completed take from
+physical microphones has not yet passed the release matrix on any platform.
+That is stated here, in the release checklist, and in the platform table below.
 
 > **Read [Current status](#current-status) before running this on anything you
-> care about.** The engine is complete and measured. The macOS and Windows audio
-> backends now execute on every commit against simulated CoreAudio and WASAPI
-> device layers, but have still never run against real hardware, because no
-> build environment here has an audio device. That distinction is stated
-> precisely below rather than glossed.
+> care about.** The engine is extensively tested, and the macOS and Windows
+> audio backends execute against simulated CoreAudio and WASAPI device layers.
+> Real-driver timing, multi-device hardware behavior and full-take validation
+> remain release gates. See [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ## How your rig becomes tracks
 
@@ -190,20 +190,20 @@ And when the take stops, the files themselves — named, with their sizes, and a
 button that opens the folder. This shot is the virtual-microphone rig, so the
 files really are empty and the card says so instead of calling it saved.
 
-> All five shots are of the v1.0.0 binary, rendered headless on a Linux
-> container by [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the
-> virtual ALSA microphones
+> The screenshots are historical UI checkpoints from several earlier binaries;
+> the version visible in each masthead identifies the build. They are retained
+> to show the implemented flows, not as proof of the v1.12.0 release candidate.
+> They were rendered headless on Linux by
+> [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
 > last three by driving an actual take from record to stop.
 >
-> **Why the meters read `-60.0` and the files come out empty.** §5.4 requires the
-> monitor output to be exclusive-mode, which on ALSA means a name beginning
-> `hw:` — a real card. This container has no kernel sound layer at all (no
-> `/proc/asound`), so no such device exists, and the app is honest about it in
-> the amber line. In the GUI the capture path is driven by that monitor
-> callback, so with no output to drive it the take records silence — and then
-> says so, which is what the warning on the "Saved." card is. §0.1 asks that
-> lost audio be *reported* rather than swallowed, and that card is the report.
+> **Why that historical shot reads `-60.0` and shows empty files.** The image
+> predates v1.10.0 and captured the old failure where a missing monitor callback
+> also stopped capture. The current app supplies a software clock when no output
+> is available, and the positive end-to-end gate requires real signal in every
+> expected stem. The shot is retained as an honest UI checkpoint, not as a
+> description of current recording behavior.
 >
 > The record path itself is not in question, and is not taken on trust:
 > [`Tools/live_capture.cpp`](Tools/live_capture.cpp) drives the same ALSA
@@ -227,16 +227,21 @@ files really are empty and the card says so instead of calling it saved.
 > On hardware with a real output the strips carry live levels and the files
 > carry audio.
 >
-> Screenshots in a README go stale silently, and a project whose pictures show a
-> different program than the one you download has told you something before you
-> run it. These are regenerated from the shipping binary, and the version in the
-> masthead is there so any drift is visible rather than assumed.
+> The release checklist requires a fresh screenshot pass before a general
+> release. Until then, treat the pictures as historical and the visible version
+> label as the boundary of what each one proves.
 
 ## Download
 
 **Latest release: [the Releases page](../../releases/latest).**
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
 missing.
+
+The source currently describes the **v1.12.0 release candidate**. It is not a
+general-release claim: signing, artifact inspection and physical-hardware gates
+are tracked in [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). For help, see
+[`SUPPORT.md`](SUPPORT.md); data handling is documented in
+[`PRIVACY.md`](PRIVACY.md).
 
 Builds for macOS, Windows and Linux are produced by the
 [Release workflow](.github/workflows/release.yml):
@@ -255,8 +260,8 @@ Builds for macOS, Windows and Linux are produced by the
   after 90 days, so prefer a release unless you specifically need an untagged
   commit.
 
-Each archive and the disk image contain the application, this README, `LICENSE`
-and `LICENSING.md`.
+Each archive and the disk image contain the application, this README, `LICENSE`,
+`LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist.
 
 The macOS disk image is **not signed with an Apple Developer ID or notarized**.
 That needs a paid Apple account and a certificate, not something the source can
@@ -265,8 +270,23 @@ produce. So after downloading you must clear the quarantine flag with one
 and skipping it produces a misleading *"is damaged"* message.
 [Installing → macOS](#macos) has the exact command.
 
-The Blue Yeti in the spec is reference hardware only: the code filters on
-nothing device-specific, so any standard USB audio class microphone works.
+The Blue Yeti in the spec is reference hardware only. Recording-input discovery
+uses a positive external-hardware rule and fails closed rather than guessing:
+
+- macOS admits directly attached USB, FireWire and Thunderbolt transports;
+- Windows admits USB, FireWire and Thunderbolt device-tree branches only when
+  Windows also marks the hardware or one of its ancestors removable;
+- Linux admits kernel ALSA cards whose sysfs ancestry says they are removable.
+
+The computer's own microphone, known phone/Continuity transports,
+Bluetooth/AirPlay, network, aggregate, virtual, internal and unknown inputs are
+deliberately omitted. There is one hard identity limit: a phone or wireless
+receiver that presents itself to the OS as generic removable USB Audio Class
+hardware is indistinguishable from a USB interface and may be admitted. The app
+does not guess from product names or vendor IDs. A categorical “never a phone”
+guarantee therefore remains unmet. Output choices are unaffected. The policy is
+covered by automated checks, but the physical-hardware matrix below is still
+required on every platform.
 
 §1 names macOS and Windows as the shipping targets. Linux now has a real ALSA
 backend too, so the Linux build finds and records from microphones rather than
@@ -277,45 +297,43 @@ Step-by-step setup is in [Installing](#installing) below.
 
 ### Licence
 
-**GPLv3** — see [`LICENSE`](LICENSE). Chosen because it is the one licence that
-works unconditionally with the JUCE dependency (free, no revenue limit).
-[`LICENSING.md`](LICENSING.md) explains the choice and the closed-source
-alternative JUCE's paid tiers would allow.
+**GPLv3** — see [`LICENSE`](LICENSE). The project uses JUCE 7 under an
+open-source distribution model. [`LICENSING.md`](LICENSING.md) links the
+official JUCE 7 terms and the current official licensing page; consult those
+sources before distributing a binary or considering a proprietary build.
 
 ## What to expect on your platform
 
-This is **v1.6.0**. The recording
-engine is mature — it is covered by 409
-automated tests plus three harnesses that run the real capture path and verify
-the resulting audio files, all on every commit. What differs by platform is how
-much of the *device* layer has been run against a live audio system.
+This is the **v1.12.0 release candidate**. The recording engine is covered by
+498 unit tests plus capture and platform harnesses. What differs by platform is
+how much of the *device* layer has been run against a live audio system and
+physical hardware.
 
 | Platform | Status | What this means for you |
 |---|---|---|
-| **Linux** | Device layer verified in CI | Enumeration, exclusive-mode selection, capture and hot-plug all execute against a live ALSA system on every commit. Expect it to work; report anything that does not. |
-| **macOS** | App and camera confirmed on hardware; audio device layer simulated in CI | The app has been run on a Mac and the live camera preview confirmed there. The CoreAudio code is executed on every commit against a simulated HAL that reproduces the awkward shapes real devices take — interleaved stereo buffers, continuous sample-rate ranges, refused hog mode, hotplug. What it has still not met is a physical microphone. Treat a first recording as a first run on real hardware. |
-| **Windows** | Device layer simulated in CI, not yet run on hardware | Same position as macOS, for WASAPI: exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake all execute each commit, under sanitizers as well. |
+| **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. The simulator covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. Camera capture is also unverified on hardware. |
+| **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
-The reason for the split is availability, not design: the automated build
-environment has a working Linux audio system, and no macOS or Windows host with
-a microphone attached.
+The automated environment can exercise ALSA through virtual PCMs and the other
+backends through simulators. It cannot substitute for a physical interface,
+headphone path, removable card or real camera.
 
-What the simulation cannot reproduce is a real driver: its timing, its
-firmware quirks and its scheduling. So what remains unproven on macOS and
-Windows is how a physical device behaves, not whether the code that talks to it
-is correct.
+What the simulation cannot reproduce is a real driver's timing, firmware quirks
+and scheduling. Those are release unknowns until the hardware checklist passes.
 
-**If you are on macOS or Windows and something misbehaves**, use *Settings →
-Export diagnostics*. It bundles the log, recent session metadata and your device
-inventory — never audio — which is exactly what is needed to diagnose it.
+**If something misbehaves**, use *Settings → Export diagnostics*. It creates a
+zip containing logs, recent session metadata, device names and stable IDs, and
+local destination paths — never audio. Review it before sharing, especially on
+a public issue, then follow [`SUPPORT.md`](SUPPORT.md).
 
 ## Installing
 
-No installer is needed on any platform — the app is self-contained. Neither
-the macOS nor the Windows build is code-signed (signing needs an Apple
-Developer account and an EV certificate respectively, neither obtainable from
-source code), so each OS asks for one extra confirmation on first launch.
-The steps below include it.
+No installer is needed on any platform — the app is self-contained. The current
+macOS and Windows packages are unsigned release-candidate builds. The manual
+launch workarounds below are acceptable for a private beta, but signing and
+macOS notarization are blockers for a general consumer release; see
+[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ### macOS
 
@@ -340,8 +358,10 @@ The steps below include it.
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable SobStage.
-5. Plug in your USB microphones and headphones. Monitoring is live from
-   launch; there is nothing to arm.
+5. Plug in directly attached USB, FireWire or Thunderbolt microphone hardware
+   and your headphones or headphone amplifier. The Mac's microphone,
+   iPhone/Continuity, Bluetooth/AirPlay and software inputs are intentionally
+   left out. Monitoring is live from launch; there is nothing to arm.
 
 #### Troubleshooting (macOS)
 
@@ -383,19 +403,22 @@ has this same step.
 1. Unzip `SobStage-Linux.zip`.
 2. From the unzipped folder, run it:
    ```sh
-   chmod +x "bin/SobStage"   # zip extraction can drop the execute bit
    "bin/SobStage"
    ```
-3. Microphones are found through ALSA. If none appear, check that your user is
-   in the `audio` group. For a machine with no sound hardware,
-   `Tools/setup_alsa_fixture.sh` creates virtual microphones to try it with.
+3. The production build lists only ALSA hardware whose Linux device ancestry
+   identifies it as removable. Built-in cards, PipeWire/PulseAudio aliases and
+   virtual PCMs are intentionally omitted. If a plugged-in interface does not
+   appear, check that your user can access ALSA devices (often through the
+   `audio` group) and report the hardware details. Developers can compile a
+   separate test-only build that admits the virtual fixture; release packages
+   never enable that option.
 
 ### Using it
 
 - **One device for other apps (macOS)** — the app publishes a combined input
-  device containing every connected microphone, created through CoreAudio's
-  public aggregate-device API: no driver, no signing. It appears in every
-  app's input list (Zoom, OBS, a DAW) under a name you set in **Settings →
+  device containing the eligible external inputs, created through CoreAudio's
+  public aggregate-device API: no driver, no signing. It is published as a
+  CoreAudio input choice (for example in Zoom, OBS or a DAW) under a name you set in **Settings →
   Combined device name**, with one channel per mic and the same §3.1 clock
   master the app itself uses. It tracks hot-plug and is removed when the app
   quits. On Windows this needs the §7 virtual-device driver — the Settings
@@ -466,13 +489,13 @@ this feature works out for you.
 
 ### Cameras
 
-- **Turn on any camera that's plugged in** from the **Cameras** button on the
-  main screen. USB webcam, built-in camera, a capture card presenting an HDMI
-  feed as a camera — the app takes whatever the OS lists and doesn't vet where
-  it came from. The first camera it finds is switched on for you; the rest are
-  one click away.
-- **You see it live** the moment you open the panel. Name each camera and the
-  name goes on its file.
+- **Turn on any camera you want to use** from the **Cameras** button on the main
+  screen. Cameras are off by default; opening the panel lists what the OS
+  reports, and you explicitly switch each one on. USB webcams, built-in and
+  Continuity cameras, and capture cards may appear. Camera selection is separate
+  from the macOS audio-input policy.
+- **You see it live** after you switch that camera on in the panel. Name each
+  camera and the name goes on its file.
 - **Recording is always at the camera's best quality.** The preview toggle
   changes how big the picture is drawn on screen and nothing else — the live
   view is small by default so that drawing it never competes with the audio
@@ -551,9 +574,9 @@ and this is what came up on the next launch.
 
 ### First run — where things go, on every platform
 
-- **Recordings** default to a `RECORDINGS` folder in your home directory.
-  Change the destination from **Settings → Save recordings to** — pointing it
-  at an external card is the intended setup, and the app benchmarks a new
+- **Recordings** default to `RECORDINGS` on the first writable removable volume
+  the app finds, or to `~/RECORDINGS` when none is available. Change the
+  destination from **Settings → Save recordings to**. The app benchmarks a new
   destination before enabling the record button (§6.4). The benchmark measures
   the card once; whether that is fast enough is decided fresh each time you
   reach for record, so switching a camera on can block arming a card that was
@@ -572,7 +595,8 @@ and this is what came up on the next launch.
 - **The log** lives at `SobStage/log.txt` under your user
   application-data directory (`~/Library` on macOS, `%APPDATA%` on Windows,
   `~/.config` on Linux). **Export diagnostics** in the Settings panel bundles
-  it with the last five sessions' metadata — never audio.
+  it with recent session metadata, device identifiers and local destination
+  paths — never audio. Read [`PRIVACY.md`](PRIVACY.md) before sharing the zip.
 
 ### Uninstalling
 
@@ -684,27 +708,29 @@ to JUCE 8.
 
 ### Implemented and verified
 
-All of `Source/Core`, covered by 260 unit tests passing in CI on Linux, macOS
+All of `Source/Core` plus the platform-neutral Linux input policy, covered by
+498 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
 |---|---|---|
-| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 15 |
+| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 18 |
 | `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 9 |
-| `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 9 |
+| `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 13 |
 | `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 8 |
-| `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 8 |
-| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 8 |
-| `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | live_capture |
-| `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 8 |
-| `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 7 |
+| `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 11 |
+| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 18 |
+| `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | `live_capture` |
+| `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 7 |
+| `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 28 |
+| `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 9 |
 | `Metering` — ballistics, peak hold, clip latch | §8.1 | 7 |
-| `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 5 |
-| `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 5 |
+| `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 10 |
+| `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 14 |
 | `PolarPatternDetector` — non-cardioid detection | §14.4 | 5 |
-| `ChannelLayoutAnalyzer` — mono collapse rules, 60 s timeout | §2.1 | 5 |
+| `ChannelLayoutAnalyzer` — mono collapse rules, 60 s timeout | §2.1 | 9 |
 | `DeadChannelDetector` — silence against an active reference channel | §8.1 | 4 |
-| `SessionMetadata` + JSON | §6.2 | 4 |
+| `SessionMetadata` + JSON | §6.2 | 6 |
 
 ### Executed, not just compiled
 
@@ -733,11 +759,12 @@ lost audio, and counting it made the §0.1 metric untrustworthy.
 ### Exercised against a real OS audio API
 
 `Source/Platform/AlsaBackend.cpp` is a real Linux backend on ALSA, and
-`Tools/live_capture` drives it: the OS enumerates the devices, ALSA opens them,
-libasound delivers the audio on threads the backend creates, and the harness
-checks what comes out. `Tools/setup_alsa_fixture.sh` builds file-backed virtual
-microphones carrying known tones, so this runs on a machine with no sound
-hardware — including in CI, on every commit.
+`Tools/live_capture` drives it: ALSA opens the devices, libasound delivers the
+audio on threads the backend creates, and the harness checks what comes out.
+`Tools/setup_alsa_fixture.sh` builds file-backed virtual microphones carrying
+known tones, so this runs on a machine with no sound hardware. The fixture is
+available only in a separately compiled test build; the production binary's
+positive hardware policy rejects virtual inputs.
 
 Measured, five runs identical: each device delivers its own tone at 0.2000
 magnitude with 0.0001 leakage of the other — a 2000:1 separation — and §5.4
@@ -779,12 +806,13 @@ never what failed:
 | Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
 | Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
 
-79 checks across both, run by `ctest` on Linux, macOS and Windows alike. The
-WASAPI backend's worker thread is a real thread doing a real event handshake, so
-that path is exercised rather than reasoned about; both run again under
-AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer on every
-commit, and are clean — no leak in the COM reference counting or the CFString
-handling, and no data race in the worker handshake.
+The current baseline is 62 CoreAudio checks and 67 WASAPI checks, run by `ctest`
+on Linux, macOS and Windows alike. The WASAPI backend's worker thread is a real
+thread doing a real event handshake, so that path is exercised rather than
+reasoned about. Both simulators run under AddressSanitizer and
+UndefinedBehaviorSanitizer; the WASAPI simulator also runs under ThreadSanitizer.
+The release checklist requires recording the final counts if the candidate gains
+another check during hardening.
 
 **Whether the simulation is worth anything was checked by breaking things.** Each
 of the five shipped defects was re-introduced, plus four more (a dropped
@@ -811,10 +839,10 @@ code came out positive and `FAILED()` read every WASAPI failure as success. The
 harness caught it as fifteen red checks rather than passing silently.
 
 **What this does not establish** is behaviour against a real driver — its
-timing, its firmware quirks, its scheduling. A simulation proves the code is
-correct against the API contract; it cannot prove the contract matches a
-particular piece of hardware. So the remaining unknown on macOS and Windows is
-the device, not the code that talks to it. See [What to expect on your
+timing, firmware quirks or scheduling. Simulation checks the backend against the
+API shapes represented by the fake; it cannot certify either an unmodelled OS
+behavior or a particular piece of hardware. Real-driver and device behavior on
+all three platforms remains in the physical matrix. See [What to expect on your
 platform](#what-to-expect-on-your-platform).
 
 ### Compiled and rendered
@@ -827,8 +855,9 @@ The full application builds and links in CI on Linux, macOS and Windows, so
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
 - `CameraController` compiles twice: once as it ships (camera path compiled out
   on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
-  stand-in `juce_video`, via the `sim_camera` target — so the code that only
-  macOS and Windows can link is still type-checked on every runner.
+  stand-in `juce_video`, via the `sim_camera` target. That simulator executes
+  enumeration, selection, arrival and removal; real device open, preview and
+  recording still need macOS or Windows hardware.
 - `RecoveredTakesPanel` has been rendered against a real interrupted take:
   a session folder with no stop timestamp and four WAVs whose size fields were
   zeroed, as a SIGKILL leaves them. The app found it at launch, repaired all
@@ -843,10 +872,10 @@ saved-take panel listing every file that was written with its size. Pressing
 record a second time started immediately with no card, into a `_2` folder — so
 "asked once, then never again" is a checked claim rather than an intended one.
 
-What that does **not** cover: no camera has been opened. `CameraDevice::openDevice`,
-the live viewer, and `startRecordingToFile` need a real camera on a real macOS or
-Windows machine, so the camera path is compiled and type-checked everywhere and
-executed nowhere. See *Not yet validated against hardware*.
+What that does **not** cover: no camera has been opened. Simulated discovery,
+selection, arrival and removal execute, but `CameraDevice::openDevice`, the live
+viewer and `startRecordingToFile` need a real camera on a real macOS or Windows
+machine. See *Not yet validated against hardware*.
 
 ### Wired but unreportable
 
@@ -867,7 +896,7 @@ Virtual device backends per §7 — with one carve-out that ships: on macOS the
 combined device needs no driver at all, because CoreAudio's public
 `AudioHardwareCreateAggregateDevice` API publishes a system-wide aggregate
 (`Source/Platform/MacSystemAggregateDevice.cpp`). Other apps see one named
-multi-channel input containing every mic, with per-sub-device drift
+multi-channel input containing the eligible external inputs, with per-sub-device drift
 compensation handled by the HAL. What remains stubbed is Windows, and the
 §7 "virtual cable carrying the summed mix" use case; each is gated on
 something that cannot be obtained from source code:
@@ -881,8 +910,8 @@ something that cannot be obtained from source code:
 
 ### Not code, and therefore not done
 
-Per §7 and §11, these are administrative and cannot be completed by writing
-software:
+These release gates require credentials, hardware or distribution operations
+outside the source tree:
 
 - Apple Developer ID signing and notarization of the macOS build.
 - Windows code-signing certificate and signed installer.
@@ -890,11 +919,14 @@ software:
   should start on day one because backends C and D are gated on it.
 - macOS `AudioServerPlugIn` bundle installation flow (the plugin itself is in
   scope for v1; the signed install is not until the certificate exists).
+- A production crash-reporting decision and implementation, and a supported
+  update path. They are goals in the spec, not capabilities of this candidate.
 
 ### Not yet validated against hardware
 
-The entire §12 validation matrix is outstanding. Nothing here has seen a real
-microphone. In particular:
+The entire §12 validation matrix is outstanding. A PUPGSIS T12S has enumerated
+on a real Mac at 44.1 kHz, but no completed physical-microphone take has passed
+the matrix. In particular:
 
 - **§3.4 passes against simulated clocks, and only those.** `Tools/soak_drift`
   runs four dissimilar clocks (0 / +100 / −80 / +45 PPM) for four hours and
@@ -917,8 +949,9 @@ microphone. In particular:
   the take, finalizing, and showing the alert are wired to that flag and each
   tested or exercised separately, but the four together need a real card to
   pull out.
-- **No camera has been opened.** The camera path is type-checked on every
-  runner (`sim_camera`) and executed on none. Outstanding on real hardware:
+- **No camera has been opened.** `sim_camera` executes discovery, selection,
+  arrival and removal, but device open, preview and recording remain untested.
+  Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file
   costs per second against the estimate the remaining-time figure uses
   (`CameraSelection::kEstimatedVideoBytesPerSecond`, deliberately pessimistic
@@ -987,4 +1020,4 @@ Per §13, and where this repository sits against it:
    unit-tested, gated on the §5.4 latency measurement**
 4. Metering — **written and unit-tested**
 5. Virtual device backends — **A implemented and compiled on all three platforms, B/C/D stubbed per above**
-6. UI and zero-knowledge setup flow — **builds in CI on all three platforms and runs headless; never used with real microphones**
+6. UI and zero-knowledge setup flow — **builds in CI on all three platforms and runs headless; T12S enumeration confirmed, completed hardware workflow outstanding**

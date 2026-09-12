@@ -9,6 +9,13 @@ ModalCard::ModalCard()
     // takes the keys too -- Return starts, Escape backs out, and neither should
     // reach the main screen's spacebar mute behind it.
     setWantsKeyboardFocus (true);
+    // Make this the root of keyboard traversal. JUCE's default traverser then
+    // wraps Tab and Shift-Tab among this card's focusable descendants instead
+    // of walking into the dimmed controls behind it. Mouse input is already
+    // swallowed by the full-window component below, and MainComponent already
+    // ignores its global shortcuts while a card is visible, so no scattered
+    // enable/disable state is needed in the owner.
+    setFocusContainerType (juce::Component::FocusContainerType::keyboardFocusContainer);
     setInterceptsMouseClicks (true, true);
 
     headingLabel.setFont (juce::Font (20.0f, juce::Font::bold));
