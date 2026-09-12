@@ -2,7 +2,12 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <map>
 #include <memory>
+#include <condition_variable>
+#include <cstdint>
+#include <mutex>
+#include <set>
 #include <string>
+#include <thread>
 #include "../Core/CameraSelection.h"
 #include "../Core/CombinedTakePlan.h"
 #include <vector>
@@ -29,6 +34,13 @@ namespace mma {
 class CameraController
 {
 public:
+    struct TakeCameraState
+    {
+        std::string id;
+        std::string displayName;
+        bool recording = false;
+    };
+
     CameraController();
     ~CameraController();
 
@@ -38,10 +50,18 @@ public:
     bool isSupported() const;
     juce::String getUnavailableReason() const;
 
-    /// Re-reads whatever the OS is offering. Called at launch and whenever the
-    /// user opens the camera panel -- cameras do not announce themselves the
-    /// way §2 audio devices do, so this is the refresh.
+    /// Requests a background re-read of whatever the OS is offering and
+    /// applies the previous completed result, if any. Device discovery can
+    /// enter AVFoundation/DirectShow and must not stall the message thread.
     void refreshCameras();
+
+    /// Applies a completed background discovery result on the message thread.
+    /// Returns true only when a new result was consumed.
+    bool applyPendingCameraList();
+
+    /// Used by the platform simulator to deterministically await the request
+    /// it just made. The shipping UI never waits; it polls applyPendingCameraList.
+    bool waitForCameraRefresh (int timeoutMilliseconds);
 
     CameraSelection& getSelection() { return selection; }
     const CameraSelection& getSelection() const { return selection; }
@@ -50,7 +70,11 @@ public:
     /// longer enabled. §5.1 makes the sound live from launch rather than from
     /// record, and a picture is worth even less after the fact: a camera you
     /// cannot see until you press record is a camera you aim afterwards.
-    void applySelection();
+    /// `retryFailures` is reserved for an explicit user action (opening the
+    /// camera panel, toggling a camera, or starting a take). Periodic UI
+    /// refreshes pass false so a camera held by another app is not reopened
+    /// twice a second forever on the message thread.
+    void applySelection (bool retryFailures = false);
 
     /// A live view of one open camera, or nullptr when it is not open. The
     /// caller owns what comes back.
@@ -69,6 +93,17 @@ public:
     bool startRecording (const juce::File& sessionFolder, double audioStartMs = 0.0);
     void stopRecording();
     bool isRecording() const { return recording; }
+
+    /// Frozen camera membership for the current/most recent take. A camera that
+    /// disappears remains here with recording=false, so the watchdog can report
+    /// the loss without mistaking a preview reopened later for resumed video.
+    std::vector<TakeCameraState> getTakeCameraStates() const;
+
+    /// The plan is retained through stopRecording(), because session metadata
+    /// and the optional combined file are assembled only after camera writers
+    /// have been finalized.
+    const std::vector<CameraPlan>& getTakePlans() const { return takePlans; }
+    juce::StringArray getTakePlannedFileNames() const;
 
     /// What each camera contributed to the take just finished: the file it
     /// wrote and how late it started. Empty when nothing recorded.
@@ -117,6 +152,7 @@ private:
         std::unique_ptr<juce::CameraDevice> device;
         int osIndex = -1;
         juce::File recordingFile;
+        bool recordingThisTake = false;
 
         /// Seconds after the audio's t=0 that this camera's first frame lands.
         double startOffsetSeconds = 0.0;
@@ -126,12 +162,47 @@ private:
     // an ordering -- the OS list reorders on a hot-plug and the choices must not
     // follow it onto a different camera.
     std::map<std::string, OpenCamera> open;
-    void openCamera (const std::string& id, int osIndex);
+    std::map<std::string, juce::String> openFailures;
+    std::set<std::string> topologyRetryIds;
+    std::set<std::string> camerasDeferredUntilTakeEnds;
+    void openCamera (const std::string& id, int osIndex,
+                     const juce::String& expectedDeviceName);
     void closeCamera (const std::string& id);
+    void requestDiscovery();
 #endif
+
+    struct TakeRecording
+    {
+        std::string deviceId;
+        std::string displayName;
+        std::string deviceName;
+        juce::File file;
+        double startOffsetSeconds = 0.0;
+    };
+
+    bool takeActive = false;
+    std::vector<CameraPlan> takePlans;
+    std::vector<TakeRecording> takeRecordings;
+    std::set<std::string> recordingCameraIds;
+    std::map<std::string, int> takeDeviceNameCounts;
+    std::set<std::string> ambiguousTakeDeviceNames;
 
     // The OS list index for each id, refreshed with the list itself.
     std::map<std::string, int> osIndexById;
+
+#if JUCE_USE_CAMERA
+    void runDiscoveryThread();
+    void applyDeviceNames (const juce::StringArray& names);
+
+    std::thread discoveryThread;
+    std::mutex discoveryMutex;
+    std::condition_variable discoveryCondition;
+    bool discoveryStopping = false;
+    uint64_t discoveryRequested = 0;
+    uint64_t discoveryCompleted = 0;
+    uint64_t discoveryApplied = 0;
+    juce::StringArray pendingDeviceNames;
+#endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CameraController)
 };

@@ -12,6 +12,10 @@ struct ProofReading
     double elapsedSeconds = 0.0;
     uint64_t framesAccepted = 0;
     uint64_t bytesOnDisk = 0;
+    /// False when the asynchronous filesystem probe has not produced a
+    /// snapshot for this take yet. That is unknown evidence, not evidence that
+    /// the files contain zero bytes, and must never trigger an automatic stop.
+    bool diskObservationAvailable = true;
     /// Loudest sample that reached the app since record was pressed, linear
     /// 0..1; negative when nothing has measured it yet.
     float peakArrived = -1.0f;

@@ -6,6 +6,8 @@
 
 #include <alsa/asoundlib.h>
 #include <sys/inotify.h>
+#include <sys/eventfd.h>
+#include <poll.h>
 #include <cerrno>    // EBUSY, to tell "in use" from "not there"
 #include <climits>   // NAME_MAX, for the inotify read buffer
 #include <unistd.h>
@@ -169,6 +171,7 @@ struct AlsaStream
 struct AlsaHotplugWatcher
 {
     int fd = -1;
+    int wakeFd = -1;
     std::thread worker;
     std::atomic<bool> running { false };
 
@@ -176,15 +179,23 @@ struct AlsaHotplugWatcher
     {
         running.store (false, std::memory_order_release);
 
-        // Closing the descriptor is what wakes the blocking read.
-        if (fd >= 0)
+        // Linux does not promise that close() in this thread interrupts a
+        // blocking read() of the same descriptor in another thread. An eventfd
+        // is an explicit poll wake-up, so teardown never hangs waiting for the
+        // next physical device change.
+        if (wakeFd >= 0)
         {
-            ::close (fd);
-            fd = -1;
+            const uint64_t wake = 1;
+            (void) ::write (wakeFd, &wake, sizeof (wake));
         }
 
         if (worker.joinable())
             worker.join();
+
+        if (fd >= 0)
+            ::close (fd);
+        if (wakeFd >= 0)
+            ::close (wakeFd);
     }
 };
 
@@ -411,8 +422,11 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerateOutputDevices() { retur
 
 void AlsaBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
 {
-    deviceChangeCallback = std::move (callback);
+    // Stop and join the old watcher before replacing the function it may be
+    // invoking. Assigning first races a live watcher reading the same
+    // std::function when the callback is changed or cleared.
     hotplug.reset();
+    deviceChangeCallback = std::move (callback);
 
     if (! deviceChangeCallback)
         return;
@@ -430,7 +444,7 @@ void AlsaBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
         "the list only updates when the app starts. Restart it after changing your rig.";
 
     auto watcher = std::make_unique<AlsaHotplugWatcher>();
-    watcher->fd = inotify_init1 (IN_CLOEXEC);
+    watcher->fd = inotify_init1 (IN_CLOEXEC | IN_NONBLOCK);
 
     if (watcher->fd < 0)
     {
@@ -438,10 +452,15 @@ void AlsaBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
         return;
     }
 
+    watcher->wakeFd = eventfd (0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (watcher->wakeFd < 0)
+    {
+        hotplugProblem = kNoWatch;
+        return;
+    }
+
     if (inotify_add_watch (watcher->fd, "/dev/snd", IN_CREATE | IN_DELETE) < 0)
     {
-        ::close (watcher->fd);
-        watcher->fd = -1;
         hotplugProblem = kNoWatch;
         return;
     }
@@ -454,14 +473,54 @@ void AlsaBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
         // Sized for the documented worst case: one event plus a NAME_MAX name.
         alignas (struct inotify_event) char buffer[sizeof (struct inotify_event) + NAME_MAX + 1];
 
+        pollfd descriptors[] = {
+            { raw->fd, POLLIN, 0 },
+            { raw->wakeFd, POLLIN, 0 }
+        };
+
         while (raw->running.load (std::memory_order_acquire))
         {
-            const auto bytes = ::read (raw->fd, buffer, sizeof (buffer));
+            descriptors[0].revents = 0;
+            descriptors[1].revents = 0;
+            const int result = ::poll (descriptors, 2, -1);
 
-            if (bytes <= 0)
-                break; // descriptor closed on teardown, or an unrecoverable error
+            if (result < 0)
+            {
+                if (errno == EINTR)
+                    continue;
+                break;
+            }
 
-            if (raw->running.load (std::memory_order_acquire) && deviceChangeCallback)
+            if ((descriptors[1].revents & (POLLIN | POLLERR | POLLHUP)) != 0
+                || ! raw->running.load (std::memory_order_acquire))
+                break;
+
+            if ((descriptors[0].revents & POLLIN) == 0)
+            {
+                if ((descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+                    break;
+                continue;
+            }
+
+            bool sawChange = false;
+            for (;;)
+            {
+                const auto bytes = ::read (raw->fd, buffer, sizeof (buffer));
+                if (bytes > 0)
+                {
+                    sawChange = true;
+                    continue;
+                }
+
+                if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                    break;
+
+                // EOF or a real read error means the watch cannot recover.
+                return;
+            }
+
+            if (sawChange && raw->running.load (std::memory_order_acquire)
+                && deviceChangeCallback)
                 deviceChangeCallback();
         }
     });
@@ -771,6 +830,21 @@ bool AlsaBackend::openExclusiveOutputStream (const std::string& outputDeviceId, 
 bool AlsaBackend::openInputStream (const std::string& inputDeviceId, double sampleRate,
                                    int bufferSizeSamples, AudioCallback callback)
 {
+    // The list is not an authorization token. Re-apply the current shipping
+    // policy immediately before open so an arbitrary PCM name, or a card that
+    // changed after enumeration, cannot bypass the kernel-card/removable-
+    // ancestry gate. Test-only builds still revalidate against their explicitly
+    // compiled hint enumeration, which keeps the virtual ALSA fixture isolated
+    // from downloadable production binaries.
+    const auto currentlyEligible = enumerateInputDevices();
+    if (std::none_of (currentlyEligible.begin(), currentlyEligible.end(),
+                      [&] (const AudioDeviceDescriptor& candidate)
+                      { return candidate.usbLocationId == inputDeviceId; }))
+    {
+        lastOpenError = "SobStage only records from directly connected external audio hardware.";
+        return false;
+    }
+
     return openStream (inputDeviceId, sampleRate, bufferSizeSamples, true, std::move (callback));
 }
 

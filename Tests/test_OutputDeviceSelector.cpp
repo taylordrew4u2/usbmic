@@ -27,7 +27,65 @@ TEST_CASE (OutputDeviceSelector_PrefersTheRememberedDeviceWhenPresent)
 
     REQUIRE (result.found);
     REQUIRE (result.id == "remembered");
+    REQUIRE (result.displayName == "remembered");
     REQUIRE (result.reason == OutputSelectionReason::RememberedFromPreviousSession);
+}
+
+TEST_CASE (OutputDeviceTracker_DoesNotCallTheLaunchSnapshotNew)
+{
+    OutputDeviceTracker tracker;
+    const auto first = tracker.observe ({ makeDevice ("built-in"), makeDevice ("amp") });
+
+    REQUIRE_FALSE (first[0].appearedAfterLaunch);
+    REQUIRE_FALSE (first[1].appearedAfterLaunch);
+    REQUIRE (first[0].connectionOrder < first[1].connectionOrder);
+}
+
+TEST_CASE (OutputDeviceTracker_OnlyCallsAnActualArrivalNew)
+{
+    OutputDeviceTracker tracker;
+    tracker.observe ({ makeDevice ("built-in"), makeDevice ("amp") });
+
+    const auto unchanged = tracker.observe ({ makeDevice ("amp"), makeDevice ("built-in") });
+    REQUIRE_FALSE (unchanged[0].appearedAfterLaunch);
+    REQUIRE_FALSE (unchanged[1].appearedAfterLaunch);
+
+    const auto withDock = tracker.observe ({ makeDevice ("built-in"), makeDevice ("amp"),
+                                             makeDevice ("dock") });
+    REQUIRE_FALSE (withDock[0].appearedAfterLaunch);
+    REQUIRE_FALSE (withDock[1].appearedAfterLaunch);
+    REQUIRE (withDock[2].appearedAfterLaunch);
+}
+
+TEST_CASE (OutputDeviceTracker_KeepsAnArrivalNewUntilThatConnectionLeaves)
+{
+    OutputDeviceTracker tracker;
+    tracker.observe ({ makeDevice ("built-in") });
+
+    const auto arrived = tracker.observe ({ makeDevice ("built-in"), makeDevice ("dock") });
+    REQUIRE (arrived[1].appearedAfterLaunch);
+    const auto arrivalOrder = arrived[1].connectionOrder;
+
+    // An input-device notification can cause an identical output snapshot.
+    // The dock is still the most recently connected output and must retain
+    // priority two until it is physically removed.
+    const auto unchanged = tracker.observe ({ makeDevice ("dock"), makeDevice ("built-in") });
+    REQUIRE (unchanged[0].appearedAfterLaunch);
+    REQUIRE (unchanged[0].connectionOrder == arrivalOrder);
+
+    const auto selection = OutputDeviceSelector::select (unchanged, {});
+    REQUIRE (selection.id == std::string ("dock"));
+    REQUIRE (selection.reason == OutputSelectionReason::NewlyConnected);
+}
+
+TEST_CASE (OutputDeviceTracker_ReconnectedDeviceIsANewArrival)
+{
+    OutputDeviceTracker tracker;
+    tracker.observe ({ makeDevice ("amp") });
+    tracker.observe ({});
+
+    const auto reconnected = tracker.observe ({ makeDevice ("amp") });
+    REQUIRE (reconnected[0].appearedAfterLaunch);
 }
 
 TEST_CASE (OutputDeviceSelector_FallsPastARememberedDeviceThatIsAbsent)

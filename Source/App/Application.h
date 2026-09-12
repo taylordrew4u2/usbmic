@@ -28,6 +28,7 @@
 #include "../Core/CapacityMonitor.h"
 #include "../Core/TakeWatchdog.h"
 #include "../Core/RecordingProof.h"
+#include "../Core/FilesystemStatusProbe.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
@@ -122,7 +123,20 @@ public:
     /// §14.6 / §2.4: names a microphone. Persisted against the physical port so
     /// the name follows the mic across replug, shown on its skull, and used in
     /// its stem filename (§6.2).
+    struct MicRenameTarget
+    {
+        std::string deviceKey;
+        int deviceChannel = 0;
+
+        bool isValid() const noexcept { return ! deviceKey.empty(); }
+    };
+
+    /// Resolve the strip while the rename action begins. The dialog may remain
+    /// open across a hot-plug, so its callback must carry this physical target
+    /// rather than looking up the same (now possibly different) strip index.
+    MicRenameTarget getMicRenameTarget (int index) const;
     void setMicAssignedName (int index, const juce::String& name);
+    void setMicAssignedName (const MicRenameTarget& target, const juce::String& name);
 
     /// §6.2: the user's name for the next take -- "2026-08-27_1030_<name>".
     /// Empty falls back to "Session". Sanitized by SessionFolderNaming.
@@ -275,6 +289,11 @@ public:
     };
     std::vector<StorageVolume> getStorageVolumes() const;
 
+    /// The live take's directory snapshot, shared by the proof check and its
+    /// on-screen byte count. Both run in the same slow tick; caching that one
+    /// snapshot prevents a second per-file stat pass over the card.
+    std::vector<SavedFile> getCurrentSessionFiles (bool* snapshotAvailable = nullptr) const;
+
     /// Point the destination at one of the volumes above, by its path.
     void setDestinationByPath (const juce::String& path);
 
@@ -290,6 +309,7 @@ public:
     /// §5.3 output selection result for the Advanced panel, and the plain-language
     /// line to show when nothing could be selected.
     const std::string& getSelectedOutputDeviceId() const { return selectedOutputDeviceId; }
+    const std::string& getSelectedOutputDeviceName() const { return selectedOutputDeviceName; }
     const std::string& getOutputSelectionProblem() const { return outputSelectionProblem; }
 
     /// §6.5 capacity warnings. Returns a warning the first time each threshold is
@@ -435,7 +455,7 @@ public:
     /// has asked for anything. Called when the camera panel is opened, and
     /// again at arm time so a camera switched on but never looked at still
     /// records.
-    void openEnabledCameras();
+    void openEnabledCameras (bool retryFailures = false);
 
     /// §10.2: how large the main screen draws the camera pictures, as a step
     /// into MainScreen's size table. Remembered across launches -- it is a
@@ -527,7 +547,17 @@ private:
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
 
     // Lifetime token for callbacks marshalled from OS threads; see initialise().
+    // runPreflight can copy it while shutdown invalidates it, so every access
+    // goes through the mutex-backed helpers rather than touching the same
+    // shared_ptr object concurrently.
+    mutable std::mutex aliveTokenMutex;
     std::shared_ptr<int> aliveToken = std::make_shared<int> (0);
+    std::weak_ptr<int> getAliveToken() const;
+    void invalidateAliveToken();
+    // JUCE calls shutdown(), then destroying the owner calls our destructor,
+    // which calls shutdown() again. Guard the external teardown and invalidate
+    // queued callbacks on the first entry only.
+    bool shutdownStarted = false;
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
     juce::String sessionName;      // §6.2, set by the user before a take
     juce::String lastSessionFolder;
@@ -615,6 +645,7 @@ private:
     PortIdentityStore portIdentityStore;
 
     std::string selectedOutputDeviceId;
+    std::string selectedOutputDeviceName;
     std::string outputSelectionProblem;
 
     /// The last output problem written to the journal, so a session with no
@@ -622,11 +653,11 @@ private:
     std::string reportedOutputProblem;
     std::string rememberedOutputDeviceId;
     std::vector<std::string> outputDeviceNames; // §2: refreshed on device change only
+    std::map<std::string, std::string> outputDeviceIdByLabel;
+    OutputDeviceTracker outputDeviceTracker;
     CapacityMonitor capacityMonitor;
     BufferLadder bufferLadder;
     CpuPressureMonitor cpuPressureMonitor;
-    int outputConnectionCounter = 0;
-    bool haveEnumeratedOutputsOnce = false;
 
     double recordingStartMs = 0.0;
     double currentSampleRate = 48000.0;
@@ -637,6 +668,19 @@ private:
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
     mutable ActivityJournal activity;
+
+    // Free-space and per-file stat calls live on this worker; status getters
+    // submit an in-memory request and consume its latest snapshot only.
+    mutable FilesystemStatusProbe filesystemStatusProbe;
+    FilesystemStatusProbe::Request currentFilesystemProbeRequest() const;
+    int64_t getMirrorFreeBytes() const;
+
+    static std::vector<StorageVolume> scanStorageVolumes();
+    mutable std::mutex storageVolumeMutex;
+    mutable std::vector<StorageVolume> storageVolumeCache;
+    mutable double storageVolumeCacheAtMs = -1.0;
+    mutable std::atomic<bool> storageVolumeScanRunning { false };
+    mutable std::thread storageVolumeThread;
 
     /// What the last enumeration held, by identity key, with the name to call
     /// each one by. The diff against this is what makes an arrival or a

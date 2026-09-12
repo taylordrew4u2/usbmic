@@ -44,7 +44,7 @@ struct Device
 struct Listener
 {
     AudioObjectID object;
-    AudioObjectPropertySelector selector;
+    AudioObjectPropertyAddress address;
     AudioObjectPropertyListenerProc proc;
     void* clientData;
 };
@@ -132,8 +132,24 @@ void fireDeviceListListeners()
     const auto snapshot = state().listeners;
 
     for (const auto& l : snapshot)
-        if (l.object == kAudioObjectSystemObject && l.selector == kAudioHardwarePropertyDevices)
+        if (l.object == kAudioObjectSystemObject
+            && l.address.mSelector == kAudioHardwarePropertyDevices)
             l.proc (kAudioObjectSystemObject, 1, &address, l.clientData);
+}
+
+void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector selector)
+{
+    AudioObjectPropertyAddress address { selector,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+
+    // A listener may remove itself while it runs, so traverse a snapshot just
+    // like the system device-list notification path above.
+    const auto snapshot = state().listeners;
+
+    for (const auto& l : snapshot)
+        if (l.object == object && l.address.mSelector == selector)
+            l.proc (object, 1, &address, l.clientData);
 }
 
 } // namespace
@@ -300,6 +316,12 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
             return deliver (&rate, sizeof (rate), ioSize, outData);
         }
 
+        case kAudioDevicePropertyDeviceIsAlive:
+        {
+            const UInt32 alive = device->spec.isAlive ? 1u : 0u;
+            return deliver (&alive, sizeof (alive), ioSize, outData);
+        }
+
         case kAudioDevicePropertyBufferFrameSize:
         {
             const UInt32 frames = static_cast<UInt32> (device->spec.bufferFrameSize);
@@ -419,7 +441,7 @@ OSStatus AudioObjectAddPropertyListener (AudioObjectID object,
     if (! state().allowPropertyListeners)
         return kAudioHardwareUnspecifiedError;
 
-    state().listeners.push_back ({ object, address->mSelector, listener, clientData });
+    state().listeners.push_back ({ object, *address, listener, clientData });
     return noErr;
 }
 
@@ -436,7 +458,9 @@ OSStatus AudioObjectRemovePropertyListener (AudioObjectID object,
                                      [&] (const Listener& l)
                                      {
                                          return l.object == object
-                                             && l.selector == address->mSelector
+                                             && l.address.mSelector == address->mSelector
+                                             && l.address.mScope == address->mScope
+                                             && l.address.mElement == address->mElement
                                              && l.proc == listener
                                              && l.clientData == clientData;
                                      }),
@@ -533,6 +557,45 @@ void removeDevice (AudioObjectID device)
     auto& order = state().order;
     order.erase (std::remove (order.begin(), order.end(), device), order.end());
     fireDeviceListListeners();
+}
+
+bool setNominalRateExternally (AudioObjectID device, double sampleRate)
+{
+    auto* d = find (device);
+    if (d == nullptr)
+        return false;
+
+    d->spec.currentRate = sampleRate;
+    d->rateChangePending = false;
+    firePropertyListeners (device, kAudioDevicePropertyNominalSampleRate);
+    return true;
+}
+
+bool setDeviceAlive (AudioObjectID device, bool alive)
+{
+    auto* d = find (device);
+    if (d == nullptr)
+        return false;
+
+    d->spec.isAlive = alive;
+    firePropertyListeners (device, kAudioDevicePropertyDeviceIsAlive);
+    return true;
+}
+
+bool fireProcessorOverload (AudioObjectID device)
+{
+    if (find (device) == nullptr)
+        return false;
+
+    firePropertyListeners (device, kAudioDeviceProcessorOverload);
+    return true;
+}
+
+int propertyListenerCount (AudioObjectID device)
+{
+    return static_cast<int> (std::count_if (state().listeners.begin(), state().listeners.end(),
+                                            [device] (const Listener& listener)
+                                            { return listener.object == device; }));
 }
 
 bool isRunning (AudioObjectID device)

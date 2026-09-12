@@ -157,6 +157,7 @@ private:
     void layOutTrimRows();
     juce::Label outputDeviceLabel;
     juce::ComboBox outputDeviceCombo;
+    juce::String lastOutputSignature;
     juce::ComboBox sampleRateCombo;
     juce::String lastSampleRateSignature;
     juce::Label backendLabel, backendValue;

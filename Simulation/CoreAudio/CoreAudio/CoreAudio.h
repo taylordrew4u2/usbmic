@@ -87,8 +87,10 @@ constexpr UInt32 kAudioDeviceTransportTypeContinuityCaptureWired    = mmaFourCC 
 constexpr UInt32 kAudioDeviceTransportTypeContinuityCaptureWireless = mmaFourCC ('c', 'c', 'w', 'l');
 constexpr UInt32 kAudioDeviceTransportTypeContinuityCapture         = mmaFourCC ('c', 'c', 'a', 'p');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyStreamConfiguration = mmaFourCC ('s', 'l', 'a', 'y');
+constexpr AudioObjectPropertySelector kAudioDevicePropertyDeviceIsAlive = mmaFourCC ('l', 'i', 'v', 'n');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyNominalSampleRate = mmaFourCC ('n', 's', 'r', 't');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyAvailableNominalSampleRates = mmaFourCC ('n', 's', 'r', '#');
+constexpr AudioObjectPropertySelector kAudioDeviceProcessorOverload = mmaFourCC ('o', 'v', 'e', 'r');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyBufferFrameSize = mmaFourCC ('f', 's', 'i', 'z');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyHogMode = mmaFourCC ('o', 'i', 'n', 'k');
 

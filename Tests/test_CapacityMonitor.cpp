@@ -6,24 +6,27 @@ using namespace mma;
 TEST_CASE (CapacityMonitor_HealthyBelowTheWarningFill)
 {
     CapacityMonitor m;
-    REQUIRE (m.evaluateFill (0.49, true) == WritePipelineState::Healthy);
+    REQUIRE (m.evaluateFill (0.49) == WritePipelineState::Healthy);
 }
 
 TEST_CASE (CapacityMonitor_WarnsAtHalfFill)
 {
     CapacityMonitor m;
-    REQUIRE (m.evaluateFill (CapacityMonitor::kFillWarningFraction, true) == WritePipelineState::FillWarning);
+    REQUIRE (m.evaluateFill (CapacityMonitor::kFillWarningFraction) == WritePipelineState::FillWarning);
 }
 
-TEST_CASE (CapacityMonitor_DegradesOnlyWhenTheMirrorIsUnavailable)
+TEST_CASE (CapacityMonitor_DegradesAtNinetyPercentRegardlessOfMirrorState)
 {
     CapacityMonitor m;
 
-    // With a mirror there is a second copy of the stems, so keep writing them.
-    REQUIRE (m.evaluateFill (0.95, true) == WritePipelineState::FillWarning);
-
-    // Without one, the mix file is what must survive.
-    REQUIRE (m.evaluateFill (0.95, false) == WritePipelineState::DegradedToMixOnly);
+    // A mirror is downstream of the same ring and writer. Samples lost here
+    // disappear from both copies, so no mirror flag is accepted by this API and
+    // the mix-only safety step cannot accidentally be suppressed.
+    REQUIRE (m.evaluateFill (CapacityMonitor::kFillDegradeFraction - 0.01)
+             == WritePipelineState::FillWarning);
+    REQUIRE (m.evaluateFill (CapacityMonitor::kFillDegradeFraction)
+             == WritePipelineState::DegradedToMixOnly);
+    REQUIRE (m.evaluateFill (0.95) == WritePipelineState::DegradedToMixOnly);
 }
 
 TEST_CASE (CapacityMonitor_WarnsAtTenMinutesThenTwoMinutes)

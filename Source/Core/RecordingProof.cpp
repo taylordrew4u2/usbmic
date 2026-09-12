@@ -17,7 +17,7 @@ ProofVerdict RecordingProof::observe (const ProofReading& now)
     if (! watching)
         return ProofVerdict::TooEarly;
 
-    if (now.bytesOnDisk > lastBytes)
+    if (now.diskObservationAvailable && now.bytesOnDisk > lastBytes)
     {
         lastBytes = now.bytesOnDisk;
         lastGrowthSeconds = now.elapsedSeconds;
@@ -32,13 +32,15 @@ ProofVerdict RecordingProof::observe (const ProofReading& now)
     // The one that ruined a day: a "recording" that never wrote a byte. The
     // header alone does not count as growth -- the files must be larger than
     // they were the moment record was pressed by more than a header's worth.
-    if (! everGrew || now.bytesOnDisk <= bytesAtArm + 8192 * 4)
+    if (now.diskObservationAvailable
+        && (! everGrew || now.bytesOnDisk <= bytesAtArm + 8192 * 4))
     {
         if (now.framesAccepted == 0 || ! everGrew)
             return ProofVerdict::NothingWritten;
     }
 
-    if (now.elapsedSeconds - lastGrowthSeconds >= kStallSeconds)
+    if (now.diskObservationAvailable
+        && now.elapsedSeconds - lastGrowthSeconds >= kStallSeconds)
         return ProofVerdict::Stalled;
 
     // Sound is a separate question from bytes: a take can write silence

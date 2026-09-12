@@ -1,7 +1,9 @@
 #include "TestFramework.h"
 #include "Core/DeviceInputStream.h"
+#include <array>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -23,6 +25,108 @@ double runClockRatio (DeviceInputStream& s, int pushPerBlock, int pullPerBlock, 
     }
 
     return s.getDriftPpm();
+}
+
+struct AlignmentResult
+{
+    long long spreadSamples = std::numeric_limits<long long>::max();
+    uint64_t underrunSamples = 0;
+};
+
+AlignmentResult runStartupAlignment (double seconds, double rate)
+{
+    constexpr int block = 64;
+    constexpr std::array<double, 4> offsets { 40.0, 100.0, -80.0, 45.0 };
+
+    struct Clock
+    {
+        double ppm = 0.0;
+        DeviceInputStream stream { 48000.0 };
+        double sampleDebt = 0.0;
+        long long pushed = 0;
+        long long markerSourceIndex = -1;
+        long long markerOutputIndex = -1;
+        std::vector<float> input = std::vector<float> (block + 1, 0.0f);
+    };
+
+    std::array<Clock, offsets.size()> clocks;
+    for (size_t i = 0; i < clocks.size(); ++i)
+    {
+        clocks[i].ppm = offsets[i];
+        clocks[i].stream.prepare (rate, block);
+    }
+
+    const auto totalBlocks = static_cast<long long> (seconds * rate / block);
+    const auto markerBlock = totalBlocks - static_cast<long long> (30.0 * rate / block);
+    std::vector<float> output (block, 0.0f);
+    long long outputIndex = 0;
+
+    for (long long blockIndex = 0; blockIndex < totalBlocks; ++blockIndex)
+    {
+        for (auto& clock : clocks)
+        {
+            clock.sampleDebt += block * clock.ppm * 1.0e-6;
+            int inputSamples = block;
+
+            if (clock.sampleDebt >= 1.0)
+            {
+                ++inputSamples;
+                clock.sampleDebt -= 1.0;
+            }
+            else if (clock.sampleDebt <= -1.0)
+            {
+                --inputSamples;
+                clock.sampleDebt += 1.0;
+            }
+
+            std::fill (clock.input.begin(), clock.input.begin() + inputSamples, 0.0f);
+
+            if (blockIndex == markerBlock)
+            {
+                clock.input[0] = 1.0f;
+                clock.markerSourceIndex = clock.pushed;
+            }
+
+            clock.stream.pushBlock (clock.input.data(), inputSamples);
+            clock.pushed += inputSamples;
+        }
+
+        for (auto& clock : clocks)
+        {
+            clock.stream.pull (output.data(), block);
+
+            if (clock.markerSourceIndex >= 0 && clock.markerOutputIndex < 0)
+            {
+                for (int sample = 0; sample < block; ++sample)
+                {
+                    if (output[static_cast<size_t> (sample)] > 0.05f)
+                    {
+                        clock.markerOutputIndex = outputIndex + sample;
+                        break;
+                    }
+                }
+            }
+        }
+
+        outputIndex += block;
+    }
+
+    AlignmentResult result;
+    long long earliest = std::numeric_limits<long long>::max();
+    long long latest = std::numeric_limits<long long>::min();
+
+    for (const auto& clock : clocks)
+    {
+        if (clock.markerOutputIndex < 0)
+            return result;
+
+        earliest = std::min (earliest, clock.markerOutputIndex);
+        latest = std::max (latest, clock.markerOutputIndex);
+        result.underrunSamples += clock.stream.getUnderrunSamples();
+    }
+
+    result.spreadSamples = latest - earliest;
+    return result;
 }
 
 } // namespace
@@ -297,11 +401,13 @@ TEST_CASE (DeviceInputStream_UnderrunCountNeverExceedsWhatWasAskedFor)
     REQUIRE (s.getUnderrunSamples() <= requested);
 }
 
-TEST_CASE (DeviceInputStream_StarvedBlockHoldsRatherThanClicking)
+TEST_CASE (DeviceInputStream_StarvedBlockFallsToSilenceInsteadOfInventingDC)
 {
-    // The held-sample fill must cover the whole remainder of the block. A gap of
-    // stale or zeroed samples in the middle of an otherwise-held block is the
-    // click the hold exists to avoid.
+    // A dry input used to hold the final non-zero sample over every missing
+    // frame. That turns one captured value into a sustained DC offset in both
+    // the stem and the headphones. Missing audio is represented honestly as
+    // silence and by the underrun counter; it is never synthesized from stale
+    // state.
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
@@ -309,12 +415,26 @@ TEST_CASE (DeviceInputStream_StarvedBlockHoldsRatherThanClicking)
     s.pushBlock (in.data(), 128);
 
     std::vector<float> out (64, -99.0f);
-    s.pull (out.data(), 64);
-    s.pull (out.data(), 64);
-    s.pull (out.data(), 64);   // by here the ring is dry
 
-    for (float sample : out)
-        REQUIRE (std::abs (sample - 0.75f) < 1e-4f);
+    // Find the first partial block that reaches the end of the buffered audio.
+    // Its valid prefix may still contain captured samples; after it returns the
+    // ring and interpolator are both known to be dry.
+    for (int attempts = 0; attempts < 8 && s.getUnderrunSamples() == 0; ++attempts)
+        s.pull (out.data(), 64);
+
+    REQUIRE (s.getUnderrunSamples() > 0);
+
+    for (int dryBlock = 0; dryBlock < 2; ++dryBlock)
+    {
+        const auto before = s.getUnderrunSamples();
+        std::fill (out.begin(), out.end(), -99.0f);
+        s.pull (out.data(), 64);
+
+        for (float sample : out)
+            REQUIRE_NEAR (sample, 0.0f, 1e-9);
+
+        REQUIRE (s.getUnderrunSamples() - before == 64);
+    }
 }
 
 TEST_CASE (DeviceInputStream_DriftLoopIsDrivenByItsOwnRingNotByAnyOtherChannel)
@@ -408,6 +528,22 @@ TEST_CASE (DeviceInputStream_RingIsHeldAtTargetEvenAtAWideClockOffset)
     // Nowhere near the 0.875 the uncorrected channel used to reach.
     REQUIRE (s.getFillFraction() < 0.3);
     REQUIRE (s.getUnderrunSamples() == 0);
+}
+
+TEST_CASE (DeviceInputStream_WideClockOffsetsSettleWithinOneMillisecondBy72Seconds)
+{
+    // Regression for L3: with the original PI gains these same four deliberately
+    // wide offsets were still 57 samples (1.188 ms) apart at the 42-second
+    // marker in a 72-second run. That is startup phase debt, not long-term
+    // accumulation: the four-hour gate settled, but an ordinary short take did
+    // not yet meet the same alignment ceiling.
+    for (const double rate : { 44100.0, 48000.0 })
+    {
+        const auto result = runStartupAlignment (72.0, rate);
+
+        REQUIRE (result.underrunSamples == 0);
+        REQUIRE (static_cast<double> (result.spreadSamples) / rate * 1000.0 < 1.0);
+    }
 }
 
 TEST_CASE (DeviceInputStream_ReconnectedChannelReturnsToSilenceNotToAStuckSample)

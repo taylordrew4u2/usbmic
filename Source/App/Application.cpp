@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
+#include "../Platform/SystemThermalState.h"
 #include "../Core/ClockMasterResolver.h"
 #include "../Core/CombinedTakePlan.h"
 #include "../Core/LoudnessMeter.h"
@@ -67,6 +68,18 @@ Application::Application()
 }
 Application::~Application() { shutdown(); }
 
+std::weak_ptr<int> Application::getAliveToken() const
+{
+    const std::lock_guard<std::mutex> guard (aliveTokenMutex);
+    return aliveToken;
+}
+
+void Application::invalidateAliveToken()
+{
+    const std::lock_guard<std::mutex> guard (aliveTokenMutex);
+    aliveToken.reset();
+}
+
 std::unique_ptr<IAudioBackend> Application::createPlatformBackend()
 {
 #if JUCE_MAC
@@ -123,7 +136,7 @@ void Application::initialise()
         // meters, the coordinator) belongs to the message thread, so the
         // callback only queues the work. The token keeps a callback that is
         // already queued at quit time from firing into a destroyed Application.
-        std::weak_ptr<int> alive = aliveToken;
+        const auto alive = getAliveToken();
 
         audioBackend->setDeviceChangeCallback ([this, alive]
         {
@@ -158,6 +171,16 @@ void Application::initialise()
     // the home folder on every launch.
     if (destinationFolder.empty())
         chooseInitialDestination();
+
+    // A remembered destination bypasses chooseInitialDestination(), but the
+    // Settings panel will still need the volume list. Prime its one allowed
+    // synchronous snapshot during startup so opening Settings can never turn
+    // into the first mount/free-space scan on the message thread.
+    (void) getStorageVolumes();
+
+    // Start the filesystem worker before the window asks for its first status
+    // line. Submitting this request performs no filesystem work here.
+    filesystemStatusProbe.setRequest (currentFilesystemProbeRequest());
 
     // §6.4: benchmark before the user reaches for record, not at record time.
     beginPreflightForDestination();
@@ -318,9 +341,9 @@ juce::String Application::getLoudnessAdvice() const
     return juce::String (advice.summary);
 }
 
-void Application::openEnabledCameras()
+void Application::openEnabledCameras (bool retryFailures)
 {
-    cameraController.applySelection();
+    cameraController.applySelection (retryFailures);
 
     // CameraController has always set this string, and it was only ever
     // rendered by the camera panel -- which is a panel, so it is usually shut.
@@ -944,16 +967,12 @@ void Application::reselectOutputDevice()
     if (audioBackend == nullptr)
         return;
 
-    std::vector<OutputDeviceCandidate> candidates;
+    std::vector<OutputDeviceCandidate> snapshot;
     outputDeviceNames.clear();
+    outputDeviceIdByLabel.clear();
 
     for (const auto& d : audioBackend->enumerateOutputDevices())
     {
-        // §5.2: a mic's own playback endpoint is never offered as a monitor
-        // output, so it does not belong in the Advanced panel's list either.
-        if (! d.isMicrophone)
-            outputDeviceNames.push_back (d.name);
-
         OutputDeviceCandidate c;
         c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
         c.displayName = d.name;
@@ -967,15 +986,34 @@ void Application::reselectOutputDevice()
             if (mic.included && ! d.usbLocationId.empty() && mic.identity.locationId == d.usbLocationId)
                 c.isAlsoSelectedInput = true;
 
-        // Anything seen after the first enumeration is something the user just
-        // plugged in (§5.3 priority 2).
-        c.appearedAfterLaunch = haveEnumeratedOutputsOnce;
-        c.connectionOrder = ++outputConnectionCounter;
-
-        candidates.push_back (std::move (c));
+        snapshot.push_back (std::move (c));
     }
 
-    haveEnumeratedOutputsOnce = true;
+    // A later snapshot is not itself an arrival. The tracker remembers what
+    // was present before and marks only ids that actually appeared, preserving
+    // §5.3's newly-connected priority across unrelated device notifications.
+    auto candidates = outputDeviceTracker.observe (std::move (snapshot));
+
+    // Labels shown in Settings map back to stable ids without asking the OS to
+    // enumerate again on click. Duplicate product names are numbered rather
+    // than made indistinguishable in the picker.
+    std::map<std::string, int> nameTotals, nameOccurrence;
+    for (const auto& c : candidates)
+        if (OutputDeviceSelector::isEligible (c))
+            ++nameTotals[c.displayName];
+
+    for (const auto& c : candidates)
+    {
+        if (! OutputDeviceSelector::isEligible (c))
+            continue;
+
+        auto label = c.displayName;
+        if (nameTotals[c.displayName] > 1)
+            label += " (" + std::to_string (++nameOccurrence[c.displayName]) + ")";
+
+        outputDeviceNames.push_back (label);
+        outputDeviceIdByLabel[label] = c.id;
+    }
 
     // Headphones arriving or leaving is a change to the rig and was said only
     // when it left the user with nothing to listen on at all. A microphone's
@@ -994,6 +1032,15 @@ void Application::reselectOutputDevice()
 
     const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
+    selectedOutputDeviceName.clear();
+
+    for (const auto& [label, id] : outputDeviceIdByLabel)
+        if (id == selectedOutputDeviceId)
+        {
+            selectedOutputDeviceName = label;
+            break;
+        }
+
     outputSelectionProblem = selection.explanation;
 
     // Into the record, not just onto the screen. Having nothing to listen on
@@ -1008,7 +1055,7 @@ void Application::reselectOutputDevice()
         if (! outputSelectionProblem.empty())
             noteActivity (ActivityLevel::Warning, "Monitoring",
                           juce::String (outputSelectionProblem));
-        else if (haveEnumeratedOutputsOnce)
+        else
             noteActivity (ActivityLevel::Recovered, "Monitoring",
                           "You can hear yourself again.");
     }
@@ -1045,8 +1092,12 @@ ProofReading Application::snapshotProof() const
     }
 
     if (currentSessionFolder.isNotEmpty())
-        for (const auto& file : listSessionFiles (currentSessionFolder))
+    {
+        bool snapshotAvailable = false;
+        for (const auto& file : getCurrentSessionFiles (&snapshotAvailable))
             reading.bytesOnDisk += static_cast<uint64_t> (std::max<int64_t> (0, file.sizeBytes));
+        reading.diskObservationAvailable = snapshotAvailable;
+    }
 
     return reading;
 }
@@ -1059,13 +1110,11 @@ TakeHealth Application::snapshotTakeHealth() const
     for (int i = 0; i < micCount; ++i)
         health.mics.push_back ({ getMicDisplayName (i).toStdString(), isMicLive (i) });
 
-    // Only the cameras switched on are in the take, and a camera the OS has
-    // stopped listing is simply absent from this list -- the watchdog treats
-    // a name that was here and now is not as gone.
-    const auto& cameras = cameraController.getSelection();
-    for (const auto& camera : cameras.getAvailableCameras())
-        if (cameras.isEnabled (camera.id))
-            health.cameras.push_back ({ cameras.getDisplayName (camera.id), true });
+    // The controller freezes the cameras that actually began this take. An
+    // unplugged writer stays in that roster as absent; a preview cannot be
+    // reopened and mistaken for resumed recording during the same take.
+    for (const auto& camera : cameraController.getTakeCameraStates())
+        health.cameras.push_back ({ camera.displayName, camera.recording });
 
     health.cameraProblem = cameraController.getProblem().toStdString();
     health.monitorProblem = getMonitorProblem().toStdString();
@@ -1260,35 +1309,47 @@ juce::String Application::getMicDisplayName (int index) const
     return juce::String (plan[static_cast<size_t> (index)].displayName);
 }
 
-void Application::setMicAssignedName (int index, const juce::String& name)
+Application::MicRenameTarget Application::getMicRenameTarget (int index) const
 {
     // `index` is a strip, and a strip is one INPUT of a device -- resolved in
     // channel space, like every other strip accessor, rather than by walking
     // devices. Walking devices named the wrong port on any interface, and
     // could not name one input of it at all.
-    std::string deviceKey;
-    int deviceChannel = 0;
+    MicRenameTarget target;
 
     if (capture != nullptr && capture->isRecording())
     {
         const auto& channels = capture->getChannels();
         if (index < 0 || index >= static_cast<int> (channels.size()))
-            return;
-        deviceKey = channels[static_cast<size_t> (index)].deviceId;
-        deviceChannel = channels[static_cast<size_t> (index)].deviceChannel;
+            return target;
+        target.deviceKey = channels[static_cast<size_t> (index)].deviceId;
+        target.deviceChannel = channels[static_cast<size_t> (index)].deviceChannel;
     }
     else
     {
         const auto plan = planChannels (planDevices());
         if (index < 0 || index >= static_cast<int> (plan.size()))
-            return;
-        deviceKey = plan[static_cast<size_t> (index)].deviceKey;
-        deviceChannel = plan[static_cast<size_t> (index)].deviceChannel;
+            return target;
+        target.deviceKey = plan[static_cast<size_t> (index)].deviceKey;
+        target.deviceChannel = plan[static_cast<size_t> (index)].deviceChannel;
     }
+
+    return target;
+}
+
+void Application::setMicAssignedName (int index, const juce::String& name)
+{
+    setMicAssignedName (getMicRenameTarget (index), name);
+}
+
+void Application::setMicAssignedName (const MicRenameTarget& target, const juce::String& name)
+{
+    if (! target.isValid())
+        return;
 
     for (const auto& d : deviceManager.getDevices())
     {
-        if (d.identity.key() != deviceKey)
+        if (d.identity.key() != target.deviceKey)
             continue;
 
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
@@ -1300,8 +1361,8 @@ void Application::setMicAssignedName (int index, const juce::String& name)
         const bool knownDuplicateStereo = settings.hasChannelLayoutDecision && settings.channelLayoutIsMono;
         if (takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) > 1)
         {
-            if (clean.empty()) settings.inputNames.erase (deviceChannel);
-            else               settings.inputNames[deviceChannel] = clean;
+            if (clean.empty()) settings.inputNames.erase (target.deviceChannel);
+            else               settings.inputNames[target.deviceChannel] = clean;
         }
         else
         {
@@ -1332,7 +1393,7 @@ void Application::requestCaptureRestart()
     restartCapture();
 }
 
-std::vector<Application::StorageVolume> Application::getStorageVolumes() const
+std::vector<Application::StorageVolume> Application::scanStorageVolumes()
 {
     std::vector<StorageVolume> volumes;
     juce::StringArray seen;
@@ -1369,12 +1430,7 @@ std::vector<Application::StorageVolume> Application::getStorageVolumes() const
         // editor and what keeps a card usable for anything else.
         const auto destination = root.getChildFile ("RECORDINGS");
 
-        // destinationFolder is a std::string, so the comparison is made
-        // explicitly rather than left to an ambiguous mixed-type operator==.
-        const bool isCurrent =
-            destination.getFullPathName() == juce::String (destinationFolder);
-
-        volumes.push_back ({ label, destination.getFullPathName(), removable, isCurrent });
+        volumes.push_back ({ label, destination.getFullPathName(), removable, false });
     };
 
     // Mounted volumes. On macOS every attached card and disk appears under
@@ -1400,6 +1456,62 @@ std::vector<Application::StorageVolume> Application::getStorageVolumes() const
     add (juce::File::getSpecialLocation (juce::File::userHomeDirectory), false);
 
     return volumes;
+}
+
+std::vector<Application::StorageVolume> Application::getStorageVolumes() const
+{
+    constexpr double kRefreshIntervalMs = 2000.0;
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    bool needInitialScan = false;
+    bool startBackgroundScan = false;
+
+    {
+        const std::lock_guard<std::mutex> guard (storageVolumeMutex);
+        needInitialScan = storageVolumeCacheAtMs < 0.0;
+        startBackgroundScan = ! needInitialScan
+                           && now - storageVolumeCacheAtMs >= kRefreshIntervalMs
+                           && ! storageVolumeScanRunning.exchange (true);
+    }
+
+    // The first scan happens during Application::initialise(), before the
+    // window opens, because it is what chooses a connected removable card as
+    // the default. Every refresh after that stays off the message thread.
+    if (needInitialScan)
+    {
+        auto fresh = scanStorageVolumes();
+        const std::lock_guard<std::mutex> guard (storageVolumeMutex);
+        storageVolumeCache = std::move (fresh);
+        storageVolumeCacheAtMs = now;
+    }
+    else if (startBackgroundScan)
+    {
+        if (storageVolumeThread.joinable())
+            storageVolumeThread.join();
+
+        storageVolumeThread = std::thread ([this]
+        {
+            auto fresh = scanStorageVolumes();
+            {
+                const std::lock_guard<std::mutex> guard (storageVolumeMutex);
+                storageVolumeCache = std::move (fresh);
+                storageVolumeCacheAtMs = juce::Time::getMillisecondCounterHiRes();
+            }
+            storageVolumeScanRunning.store (false);
+        });
+    }
+
+    std::vector<StorageVolume> result;
+    {
+        const std::lock_guard<std::mutex> guard (storageVolumeMutex);
+        result = storageVolumeCache;
+    }
+
+    // The selected marker is cheap application state rather than part of the
+    // filesystem scan, so it remains current while the volume list is cached.
+    for (auto& volume : result)
+        volume.isCurrent = volume.path == juce::String (destinationFolder);
+
+    return result;
 }
 
 void Application::setDestinationByPath (const juce::String& path)
@@ -1562,7 +1674,7 @@ void Application::toggleRecording()
                 // The picture starts with the sound, into the same folder. A
                 // camera the user switched on but never looked at is opened
                 // here rather than being quietly left out of the take.
-                openEnabledCameras();
+                openEnabledCameras (true);
 
                 // recordingStartMs is the audio take's t=0. Handing it over is
                 // what lets each camera record how far into the take its own
@@ -1772,6 +1884,13 @@ void Application::toggleRecording()
             captureRestartDeferred = false;
             restartCapture();
         }
+
+        // A camera unplugged while recording is deliberately held absent for
+        // the rest of that take because JUCE cannot append its reconnect to the
+        // finalized movie. Discovery resumes only after metadata and the
+        // combined-take inputs have captured the finished take, so a remembered
+        // preview may safely return for the next one.
+        cameraController.refreshCameras();
     }
 }
 
@@ -1891,6 +2010,28 @@ std::vector<Application::SavedFile> Application::listSessionFiles (const juce::S
     return files;
 }
 
+std::vector<Application::SavedFile> Application::getCurrentSessionFiles (bool* snapshotAvailable) const
+{
+    if (snapshotAvailable != nullptr)
+        *snapshotAvailable = false;
+
+    const auto request = currentFilesystemProbeRequest();
+    filesystemStatusProbe.setRequest (request);
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    if (! snapshot.ready || snapshot.request != request || ! snapshot.filesObservationReady)
+        return {};
+
+    if (snapshotAvailable != nullptr)
+        *snapshotAvailable = true;
+
+    std::vector<SavedFile> files;
+    files.reserve (snapshot.files.size());
+    for (const auto& file : snapshot.files)
+        files.push_back ({ juce::String (file.name), file.sizeBytes });
+    return files;
+}
+
 bool Application::consumeCardRemovalNotice (CardRemovalNotice& out)
 {
     if (! cardRemovalPending)
@@ -1974,61 +2115,43 @@ double Application::bytesPerSecondOfRecording() const
          + static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond());
 }
 
+FilesystemStatusProbe::Request Application::currentFilesystemProbeRequest() const
+{
+    FilesystemStatusProbe::Request request;
+    const bool isRecording = recordingEngine.getState() == RecordingState::Recording;
+
+    // While a take is running, measure the folder actually being written, not
+    // a destination setting that may have changed for the next take.
+    request.destinationPath = (isRecording && currentSessionFolder.isNotEmpty()
+                                ? currentSessionFolder
+                                : juce::String (destinationFolder)).toStdString();
+    request.sessionFolder = isRecording ? currentSessionFolder.toStdString() : std::string {};
+    request.bytesPerSecond = bytesPerSecondOfRecording();
+
+    if (capture != nullptr && capture->isMirroring())
+        request.mirrorPath = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                 .getFullPathName().toStdString();
+
+    return request;
+}
+
+int64_t Application::getMirrorFreeBytes() const
+{
+    const auto request = currentFilesystemProbeRequest();
+    filesystemStatusProbe.setRequest (request);
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+    return snapshot.ready && snapshot.request == request ? snapshot.mirrorFreeBytes : -1;
+}
+
 double Application::getRemainingRecordingSeconds() const
 {
-    const double bytesPerSecond = bytesPerSecondOfRecording();
-
-    if (bytesPerSecond <= 0.0)
+    const auto request = currentFilesystemProbeRequest();
+    if (request.bytesPerSecond <= 0.0)
         return -1.0;
 
-    // While a take is running, the figure describes the folder the take is
-    // WRITING to, not the one the setting currently points at. Those are the
-    // same thing until someone opens Advanced mid-take and picks another
-    // volume -- and this number now stops takes and disables the button, so
-    // measuring the wrong drive would stop a healthy recording with "The drive
-    // is full" about a drive it was never touching, and would leave the drive
-    // it IS filling unwatched.
-    const juce::File destination (recordingEngine.getState() == RecordingState::Recording
-                                          && currentSessionFolder.isNotEmpty()
-                                      ? currentSessionFolder
-                                      : juce::String (destinationFolder));
-
-    // No walk up to the parent. It was there so a destination folder that did
-    // not exist yet still produced a figure, but it answers with whatever
-    // volume it lands on -- so a card that has been ejected mid-take climbed to
-    // the root and reported the SYSTEM disk's free space under the
-    // destination's name. Harmless while that was only a readout; not harmless
-    // now that the same figure stops takes and disables the record button,
-    // where it would announce a full drive about a drive the user is not
-    // recording to, or promise room on one that is gone.
-    //
-    // A destination that is not there cannot be measured, and saying so is the
-    // honest answer.
-    if (! destination.isDirectory())
-        return -1.0;
-
-    const auto freeBytes = destination.getBytesFreeOnVolume();
-
-    // A full drive and an unreadable one both used to come back as -1.0, the
-    // "could not be determined" sentinel -- and every consumer treats that as
-    // "say nothing". So the one condition this figure exists to catch was the
-    // one it could not express: on a genuinely full card the take was never
-    // stopped, no warning was ever shown, and the first anyone heard of it was
-    // a write failing, which arrives as "the card stopped accepting writes" --
-    // the right stop under the wrong sentence, after the loss instead of
-    // before it.
-    //
-    // JUCE returns 0 for both cases, so they are told apart by whether the
-    // volume is there to be asked at all: a directory that exists and reports
-    // nothing free is full; anything else is genuinely unknown.
-    // JUCE returns 0 both when the volume has nothing left and when it could not
-    // be read at all, and never a negative -- so zero is only trustworthy as
-    // "full" because the directory above is known to exist and resolve. That
-    // check is the whole discriminator; there is no negative case to test for.
-    if (freeBytes == 0)
-        return 0.0;
-
-    return static_cast<double> (freeBytes) / bytesPerSecond;
+    filesystemStatusProbe.setRequest (request);
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+    return snapshot.ready && snapshot.request == request ? snapshot.remainingSeconds : -1.0;
 }
 
 juce::String Application::formatDuration (double seconds)
@@ -2416,20 +2539,16 @@ void Application::setOutputDeviceByName (const juce::String& displayName)
     if (audioBackend == nullptr)
         return;
 
-    // A user action, not a timer, so enumerating here is what §2 allows -- and
-    // it is the only way to recover the device's stable id from its name.
-    for (const auto& d : audioBackend->enumerateOutputDevices())
-    {
-        if (juce::String (d.name) != displayName)
-            continue;
-
-        // §5.3: an explicit choice is remembered and outranks the automatic
-        // priority order from then on.
-        rememberedOutputDeviceId = d.usbLocationId.empty() ? d.name : d.usbLocationId;
-        reselectOutputDevice();
-        restartCapture();
+    const auto found = outputDeviceIdByLabel.find (displayName.toStdString());
+    if (found == outputDeviceIdByLabel.end())
         return;
-    }
+
+    // §5.3: an explicit choice is remembered and outranks the automatic
+    // priority order from then on, including after the app is relaunched.
+    rememberedOutputDeviceId = found->second;
+    saveSettings();
+    reselectOutputDevice();
+    restartCapture();
 }
 
 std::vector<Application::MicSelection> Application::getMicSelections() const
@@ -2637,8 +2756,8 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // is not in it -- the session origin every stem carries is what lines the
     // two up, so the fact that they are separate files has to be on the record.
     {
-        const auto videoNames = cameraController.getPlannedFileNames();
-        const auto plans = cameraController.getSelection().buildPlans();
+        const auto videoNames = cameraController.getTakePlannedFileNames();
+        const auto& plans = cameraController.getTakePlans();
 
         for (size_t i = 0; i < plans.size() && (int) i < videoNames.size(); ++i)
             meta.videos.push_back ({ plans[i].displayName, videoNames[(int) i].toStdString(), false });
@@ -2872,16 +2991,15 @@ void Application::announceCameraChanges() const
     for (const auto& cam : cameraController.getSelection().getAvailableCameras())
         current[cam.id] = cam.displayName;
 
-    // A camera that is IN a running take gets TakeWatchdog's own sentence when
-    // it goes -- that one says the sound carries on and the picture stops --
-    // so it is not also announced here. A camera nobody switched on, and every
-    // camera between takes, is announced like any other part of the rig.
+    // A camera that began the running take gets TakeWatchdog's own sentence
+    // when it goes, so it is not also announced here. Use the frozen take
+    // roster rather than the live OS list: the lost camera is absent from that
+    // list at exactly the moment duplicate suppression matters.
     std::set<std::string> saidByTheWatchdog;
 
     if (recordingEngine.getState() == RecordingState::Recording)
-        for (const auto& cam : cameraController.getSelection().getAvailableCameras())
-            if (cameraController.getSelection().isEnabled (cam.id))
-                saidByTheWatchdog.insert (cam.id);
+        for (const auto& cam : cameraController.getTakeCameraStates())
+            saidByTheWatchdog.insert (cam.id);
 
     announceArrivalsAndDepartures (current, knownCameraNames, haveAnnouncedCamerasOnce,
                                    saidByTheWatchdog);
@@ -2926,7 +3044,7 @@ void Application::flushActivityLogToTake() const
     // entry is already safely recorded and only the file write is deferred.
     if (! juce::MessageManager::existsAndIsCurrentThread())
     {
-        std::weak_ptr<int> alive = aliveToken;
+        const auto alive = getAliveToken();
 
         juce::MessageManager::callAsync ([this, alive]
         {
@@ -3158,6 +3276,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (audioBackend != nullptr)
     {
         juce::String firstFailure;
+        juce::String firstWarning;
 
         for (const auto& failure : audioBackend->takeStreamFailures())
         {
@@ -3176,16 +3295,42 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                         subject = juce::String (d.displayName);
             }
 
-            const auto line = subject + " " + juce::String (failure.reason);
+            auto line = subject + " " + juce::String (failure.reason);
+            const bool stopForSafety = streamFailureRequiresRecordingStop (failure.kind)
+                                    && recordingEngine.getState() == RecordingState::Recording;
 
-            noteActivity (ActivityLevel::Failed, subject, line);
+            if (stopForSafety)
+                line += " Recording stopped before its file format could become untrue.";
 
-            if (firstFailure.isEmpty())
-                firstFailure = line;
+            if (streamFailureIsWarning (failure.kind))
+            {
+                noteActivity (ActivityLevel::Warning, subject, line);
+                if (firstWarning.isEmpty())
+                    firstWarning = line;
+            }
+            else
+            {
+                // Journal the hardware failure while the take folder is still
+                // active, then use the ordinary stop/finalize path. This puts
+                // both the cause and the stop in activity.log and ensures a
+                // changed CoreAudio rate cannot leave a WAV header describing
+                // samples captured under another clock.
+                noteActivity (ActivityLevel::Failed, subject, line);
+                if (firstFailure.isEmpty())
+                    firstFailure = line;
+            }
+
+            if (stopForSafety)
+            {
+                stopReason = "an audio device changed sample rate";
+                toggleRecording();
+            }
         }
 
         if (firstFailure.isNotEmpty())
             return firstFailure;
+        if (firstWarning.isNotEmpty())
+            return firstWarning;
     }
 
     // §0.1: audio lost between the device and the app. Counted by the backends
@@ -3345,9 +3490,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // restarts within the same recording.
     if (capture != nullptr && capture->isMirroring())
     {
-        const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+        const auto freeBytes = getMirrorFreeBytes();
 
-        if (mirrorPolicy.evaluateDuringRecording (home.getBytesFreeOnVolume())
+        if (freeBytes >= 0 && mirrorPolicy.evaluateDuringRecording (freeBytes)
             == MirrorState::StoppedLowSpace)
         {
             capture->stopMirroring();
@@ -3377,7 +3522,10 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // what the app did.
     if (capture != nullptr && recordingEngine.getState() == RecordingState::Recording)
     {
-        switch (capacityMonitor.evaluateFill (capture->getRingFillFraction(), capture->isMirroring()))
+        // The mirror is fed by this same ring and writer thread. It protects a
+        // take from one destination failing, not from this queue overflowing,
+        // so its presence must never suppress the 90% mix-only safety step.
+        switch (capacityMonitor.evaluateFill (capture->getRingFillFraction()))
         {
             case WritePipelineState::DegradedToMixOnly:
                 if (! capture->isMixOnly())
@@ -3434,12 +3582,22 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // §6.6 next: warned before it causes dropouts, not after.
     const auto load = capture != nullptr ? capture->getAudioCallbackLoad() : 0.0;
 
-    switch (updatePerformance (load, false))
+    switch (updatePerformance (load, isSystemThermallyThrottled()))
     {
         case PerformanceWarning::ThermalThrottling:
-            return "This machine is overheating and is about to drop audio. Close other apps.";
+        {
+            const auto line = juce::String (
+                "This machine is overheating and is about to drop audio. Close other apps.");
+            noteActivity (ActivityLevel::Warning, "Performance", line);
+            return line;
+        }
         case PerformanceWarning::SustainedCpuPressure:
-            return "This machine is working hard. Close other apps before it starts dropping audio.";
+        {
+            const auto line = juce::String (
+                "This machine is working hard. Close other apps before it starts dropping audio.");
+            noteActivity (ActivityLevel::Warning, "Performance", line);
+            return line;
+        }
         case PerformanceWarning::None:
             break;
     }
@@ -3701,8 +3859,20 @@ void Application::loadSettings()
                         ? juce::String ("SobStage")
                         : juce::String (rememberedSettings.aggregateName);
     masterVolume = rememberedSettings.masterVolume;
+    rememberedOutputDeviceId = rememberedSettings.rememberedOutputDeviceId;
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
+
+    // Camera discovery now runs away from the message thread, so the first OS
+    // snapshot may land after initialise() has returned. Seed choices by id
+    // now; CameraSelection intentionally keeps choices for unavailable cameras
+    // and applies them when that id appears.
+    for (const auto& camera : rememberedSettings.cameras)
+    {
+        cameraController.getSelection().setEnabled (camera.id, camera.enabled);
+        if (! camera.assignedName.empty())
+            cameraController.getSelection().setAssignedName (camera.id, camera.assignedName);
+    }
     // The size table these index into roughly doubled at every step, because
     // the old top of the range -- 456px in a 760px window -- was not a picture
     // anyone could judge focus on. A settings file written before that carries
@@ -3819,6 +3989,7 @@ void Application::saveSettings()
     settings.mirrorEnabled = mirrorPolicy.isEnabledByUser();
     settings.aggregateName = aggregateName.toStdString();
     settings.masterVolume = masterVolume;
+    settings.rememberedOutputDeviceId = rememberedOutputDeviceId;
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
     settings.cameraTileScale = cameraTileScale;
     settings.combineVideoAndAudio = combineVideoAndAudio;
@@ -4164,6 +4335,45 @@ juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) con
 
 void Application::shutdown()
 {
+    if (shutdownStarted)
+        return;
+
+    shutdownStarted = true;
+
+    // A device/preflight callback may already be queued on the message thread.
+    // Make it harmless before any owned subsystem begins disappearing. This
+    // also covers the explicit JUCE shutdown followed by ~Application's second
+    // call into this function.
+    invalidateAliveToken();
+
+    // Finalize user media before *any* auxiliary teardown. The preflight,
+    // mounted-volume scan and filesystem-status probe all perform filesystem
+    // calls that the OS may hold inside a disappearing/network volume. Their
+    // stop flags wake condition-variable waits, but C++ cannot cancel a syscall
+    // already in progress. Those joins may therefore still wait on the OS;
+    // starting finalization first at least prevents a nonessential status scan
+    // from delaying it. Finalization itself also performs filesystem I/O and is
+    // not cancellable: force-terminating while either writer is blocked can
+    // still leave an incomplete file, which no in-process ordering can prevent.
+    // Camera first: CaptureCoordinator::stopRecording drains and joins a writer
+    // that may itself be stuck in removable-volume I/O. Putting the movie stop
+    // behind that join could leave its header open forever. JUCE camera teardown
+    // is message-thread-affine, so these two finalizers cannot safely be raced.
+    cameraController.stopRecording();
+
+    if (capture != nullptr)
+        capture->stopRecording();
+
+    // The writer is drained above while its callbacks still have a valid rig.
+    // Now stop the clock/streams that can enter those callbacks.
+    if (capture != nullptr)
+        capture->stopMonitoring();
+
+    if (recordingEngine.getState() == RecordingState::Recording)
+        recordingEngine.stop();
+    if (audioBackend != nullptr)
+        audioBackend->closeAllStreams();
+
     // Other apps must not be left holding a combined device whose owner is gone.
     if (systemAggregate != nullptr)
         systemAggregate->remove();
@@ -4173,24 +4383,13 @@ void Application::shutdown()
     if (preflightThread.joinable())
         preflightThread.join();
 
+    if (storageVolumeThread.joinable())
+        storageVolumeThread.join();
+
+    filesystemStatusProbe.stop();
+
     // The rig as the user is leaving it, so tomorrow starts where today ended.
     saveSettings();
-
-    // Finalised first: a half-written video file left open at quit is a file
-    // the OS may never close a header on.
-    cameraController.stopRecording();
-
-    // Ordered: drain the writer, then close the streams the callback runs on.
-    if (capture != nullptr)
-    {
-        capture->stopRecording();
-        capture->stopMonitoring();
-    }
-
-    if (recordingEngine.getState() == RecordingState::Recording)
-        recordingEngine.stop();
-    if (audioBackend != nullptr)
-        audioBackend->closeAllStreams();
 }
 
 } // namespace mma

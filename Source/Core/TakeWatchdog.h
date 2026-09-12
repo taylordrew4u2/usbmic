@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -106,6 +107,7 @@ private:
     bool warnedTwoMinutes = false;
     bool droppedReported = false;
     double droppedReportedAt = 0.0;
+    std::set<std::string> lostCamerasThisTake;
 };
 
 } // namespace mma

@@ -1,6 +1,10 @@
 # SobStage — multi-microphone aggregator, recorder, and monitor
 ## Build Specification — v3, self-contained
-Cross-platform desktop application (macOS + Windows). Aggregates multiple USB microphones into a single input device, records all channels directly to an external card, and outputs one shared live monitor mix to headphones. Must be operable by someone who has never configured audio hardware.
+Cross-platform desktop application (macOS + Windows). Records multiple external
+microphones as separate channels directly to a selected destination and outputs
+one shared live monitor mix to headphones. On macOS it also publishes a
+transient combined input while the app runs; Windows v1 is standalone. Must be
+operable by someone who has never configured audio hardware.
 Reference hardware: Blue Yeti (standard model). Section 14 is written against its measured behavior and constrains decisions elsewhere in this document.
 **Every value in this document is a specified default, not a placeholder.** Where a number appears, use it. Where a rule appears, follow it. Section 17 lists decisions that are closed and the reasoning behind them, so they are not reopened mid-build.
 ---
@@ -23,11 +27,15 @@ Reference hardware: Blue Yeti (standard model). Section 14 is written against it
 | Minimum RAM | 4 GB |
 | Minimum free internal disk | 2 GB, or the local mirror is disabled |
 | Languages at v1 | English only. All user-facing strings externalized for later localization. |
-**Single-microphone case.** With one mic the app is still a recorder and monitor. Drift compensation is bypassed (nothing to sync against). Nothing in the UI changes shape.
+**Single-microphone case.** With one mic the app is still a recorder and monitor.
+That input is corrected onto the monitor/output callback's clock like every
+other input; “master” is a reporting reference, not a resampling exemption.
+Nothing in the UI changes shape.
 **Zero-microphone case.** The app opens, shows an empty skull row, and displays one line: "Plug in a USB microphone or audio interface to get started." Monitoring and recording are unavailable but no error state is shown. This is a normal condition, not a failure.
 ---
 ## 2. Device aggregation
-- Enumerate all USB audio input devices at launch and continuously after, polling on OS device-change notification, never on a timer.
+- Enumerate eligible external audio input devices at launch and after OS
+  device-change notifications, never by polling on a timer.
 - A recording input must report directly attached external hardware. Never list the computer's built-in microphone, a phone/Continuity source, Bluetooth/AirPlay, a network source, an aggregate/virtual device, an internal sound card, or an unknown transport as a microphone. On macOS the positive allowlist is USB, FireWire, and Thunderbolt; on Windows an eligible USB, IEEE 1394, PCI, or HDAUDIO branch must also have one Plug and Play node that reports both removable capability and an orderly/surprise-removal policy (the PCI/HDAUDIO path permits a removable Thunderbolt ancestor while rejecting fixed internal hardware); on Linux it is an ALSA hardware device whose sysfs ancestry proves an external bus. This restriction applies only to recording inputs; monitor outputs keep §5.3's full selection policy.
 - **Identity limit:** reject every phone or wireless transport the OS identifies as such. A phone or receiver that deliberately exposes the same generic removable USB Audio Class identity as an audio interface provides no reliable form-factor signal to these APIs; the app cannot categorically distinguish it without a brittle name or VID/PID denylist that would also reject legitimate interfaces. This limitation must be stated in product and release documentation until the operating system exposes stronger identity evidence.
 - Every detected microphone is included automatically. Inclusion is opt-out, not opt-in.
@@ -40,7 +48,11 @@ Collapse to mono when **either** condition holds:
 Otherwise record true stereo.
 If the 3-second signal window is not reached within 60 seconds of connection, default to mono and re-evaluate if signal later appears. Never block on this and never ask a novice "mono or stereo?"
 ### 2.2 Sample rate negotiation
-Query supported rates for every device. Choose the highest rate common to all, capped at 48 kHz. If a device cannot reach the chosen rate, resample that device. **Never reject a microphone for rate reasons.**
+Query supported and current rates for every device. Automatic mode prefers the
+rate the rig already shares, capped at 48 kHz, and resamples independent clocks
+after opening. Do not force fixed-rate hardware to another rate. If the user
+explicitly pins an incompatible rate, refuse the take and name both rates rather
+than writing a file whose header does not describe the captured audio.
 ### 2.3 Bit depth
 Follows device capability per channel. Do not upconvert — it adds file size and no information. Where a device supports multiple depths, choose the highest, capped at 24-bit.
 ### 2.4 Port memory
@@ -57,7 +69,7 @@ Default master: the device with the lowest measured drift after 60 seconds of ru
 - **Every** input passes through an asynchronous sample rate converter locked to the clock that pulls it — the output device's callback in the in-app path (§5.2), the OS in the aggregate path. This includes the §3.1 master; see the note there for why exempting it corrupts the reference rather than protecting it.
 - Because the pulling clock's own skew lands in every channel's ratio identically, it cancels in any channel-to-channel comparison. §3.3's per-device figure is therefore reported as this channel's correction *minus the master's*, which is what makes "runs fast relative to the master" true of the number shown.
 - ASRC ratio is driven by a PI control loop on measured ring-buffer fill.
-  - Starting gains: Kp = 1e-6, Ki = 1e-8, per sample of fill error.
+  - Starting gains: Kp = 5e-6, Ki = 1e-8, per sample of fill error. At 5 PPM per fill sample, the proportional path reaches the ±200 PPM safety clamp within 40 samples of phase debt — under 1 ms even at 44.1 kHz — while the separate slew limiter below still prevents an instantaneous ratio change.
   - Maximum ratio deviation: ±200 PPM. Clamp there.
   - Maximum ratio slew: 5 PPM per second. **Never correct instantaneously** — that produces audible pitch artifacts.
 - **Drift slack is capped by the monitor latency budget, not chosen freely.** Size it to 1 ms and tighten the loop to compensate. Drift safety and low latency pull against each other; latency wins, the loop absorbs the difference.
@@ -114,7 +126,11 @@ Zero latency is not achievable in a software monitor path. The requirement is a 
 | Sum + limiter | < 0.1 ms |
 | Output buffer, 32–64 samples | 0.7–1.3 ms |
 Requirements this imposes:
-- **Exclusive-mode audio only on the monitor path.** CoreAudio direct on macOS; ASIO or WASAPI exclusive on Windows. **Shared-mode WASAPI is disqualified** regardless of which app-facing backend is active — it delivers 40–100 ms, which makes the product unusable.
+- **Exclusive-mode audio only on the monitor path.** CoreAudio direct on macOS;
+  WASAPI exclusive on Windows v1. **Shared-mode WASAPI is disqualified** — it
+  delivers 40–100 ms, which makes the product unusable. ASIO remains post-v1
+  and becomes a supported alternative only when a real capture/monitor path,
+  packaging and hardware validation ship together.
 - If neither exclusive path is available, say so and name the cause. Never ship a 40 ms mix silently.
 - **Nothing on the monitor bus but summing, trim, and the safety limiter.** No EQ, no filtering, no lookahead, no processing. A lookahead limiter is disqualified; use a zero-lookahead design and accept its distortion, which only engages in a fault.
 **Buffer ladder.** Start at 64 samples. Step up through 128, 256, 512 on trigger. Trigger: 3 or more callback overruns within any 30-second window. Never step down automatically during a recording; re-evaluate only on next launch or on device change. Log every step in `session.json`.
@@ -172,7 +188,7 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 | Clock master unplugged | Failover per §3.3. Recording continues. |
 | **Target card removed** | Stop immediately, finalize every open file, alert loudly. If the mirror is running, state that a complete copy survives locally and give its path. |
 | Card full | Stop at the last complete buffer block, finalize, report that available time was exhausted. Warn at 10 minutes and 2 minutes remaining. |
-| Sustained buffer overrun | Warn visually at 50% ring fill. Never silently drop. At 90% fill with the mirror unavailable, fall back to writing the mix file only and log the exact sample position of degradation. |
+| Sustained buffer overrun | Warn visually at 50% ring fill. Never silently drop. At 90% fill, fall back to writing the mix file only on both destinations and log the exact sample position of degradation. A mirror shares the same upstream ring and cannot make overflowing stems safe. |
 | Output device disappears | Monitoring stops, recording continues uninterrupted. Re-select per §5.3 and resume monitoring automatically. |
 ### 6.6 Crash and power loss
 - Update WAV headers every 5 seconds so an interrupted file remains playable to within 5 seconds of the cut.
@@ -181,20 +197,30 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 - **Inhibit system sleep, screensaver, and display sleep for the duration of a recording.** A laptop sleeping mid-take is a common and total failure.
 - Monitor for thermal throttling and sustained CPU pressure above 80% for 30 seconds; warn before it causes dropouts.
 ---
-## 7. Virtual device strategy — Windows is the whole problem
-**macOS:** `AudioServerPlugIn`. User-space CoreAudio HAL plugin, no kernel extension, Developer ID and notarization only. Ship in v1.
-**Windows:** kernel-mode WDM/KS is the only native path to a system-visible audio endpoint, and Microsoft is the sole signer of production kernel drivers. Cross-signing is dead and the April 2026 Windows update removed default trust for cross-signed kernel drivers. Keep a self-built driver off the v1 critical path.
-Implement the app-facing output as a swappable backend behind one interface:
+## 7. App-facing device strategy
+
+**v1 scope is closed:** macOS publishes a transient aggregate input through
+CoreAudio's public aggregate-device API while SobStage is running. Nothing is
+installed into the HAL. Windows v1 is the standalone recorder and monitor; it
+does not claim to create a system-visible input for another application.
+
+An installed macOS `AudioServerPlugIn` and every Windows virtual endpoint are
+post-v1 work. Windows kernel-mode WDM/KS is the native route to a system-visible
+audio endpoint and brings separate signing, installer and support obligations,
+so it is deliberately outside the recording release's critical path.
+
+Keep future app-facing outputs behind a swappable interface:
+
 | Backend | Reach | Cost |
 |---|---|---|
-| **A — none.** Standalone recorder + monitor. | n/a | Ships immediately. Must be saleable alone. |
-| **B — ASIO output.** User-mode DLL, COM registered, no Microsoft signing. | DAWs, OBS. Not browsers or conferencing. | Days. |
-| **C — licensed signed virtual cable** (VB-Audio, Virtual Audio Cable, Thesycon). Bundle their signed driver, write into their endpoint. | Every app. | Per-seat licensing. **Intended production path.** |
-| **D — own attestation-signed WDM driver.** | Every app. | Registered legal entity, EV certificate, Partner Center, CAB submission. Longest lead item; administrative, not technical. |
-- **Start the legal entity and EV certificate paperwork on day one** regardless of backend. Every path except A and B is gated on it.
+| **A — none.** Standalone recorder + monitor. | n/a | **Windows v1.** Complete without a driver. |
+| **B — ASIO output.** User-mode DLL, COM registered. | DAWs and production tools, not ordinary conferencing/browser inputs. | Post-v1 product work. |
+| **C — licensed signed virtual cable.** | System-wide endpoint, subject to the licensed product. | Post-v1 commercial dependency. |
+| **D — own signed WDM driver.** | System-wide endpoint. | Post-v1 legal, signing, installer and support program. |
 - The UI always shows which backend is active and names, in plain language, which applications can and cannot see the aggregate device.
-- Attestation-signed is not WHQL: it works on Windows 10/11 desktop but cannot be distributed via Windows Update, which requires full HLK certification. Windows Server ignores attestation entirely. Neither matters for this market.
-- macOS already aggregates natively via Audio MIDI Setup. Do not position aggregation as the macOS feature. macOS differentiation is automatic setup, direct-to-card recording, always-on shared monitoring, and drift telemetry.
+- Do not imply that an unavailable backend is installed, signed or working.
+- macOS differentiation is automatic setup, direct-to-card recording,
+  always-on shared monitoring and drift telemetry, not an installed driver.
 ---
 ## 8. Metering
 ### 8.1 Behavior
@@ -285,12 +311,17 @@ Novices fail on hardware, not software. Detect and explain, with the fix stated:
 Hand the app and a bag of microphones to someone who has never recorded audio. They must reach a finished recording on a card, with everyone hearing everyone, without asking a question or reading anything. **Every question they ask is a bug in the interface, not a gap in the documentation.**
 ---
 ## 11. Engineering constraints
-- Suggested stack: C++ with JUCE, or PortAudio/miniaudio. CoreAudio on macOS; WASAPI exclusive plus ASIO on Windows.
+- Suggested stack: C++ with JUCE, or PortAudio/miniaudio. CoreAudio on macOS;
+  WASAPI exclusive on Windows v1. Keep ASIO isolated as post-v1 work.
 - Real-time thread does no allocation, locking, logging, file I/O, or drawing. Ever.
-- Signed and notarized macOS build. Signed Windows installer.
+- Signed and notarized macOS build. Authenticode-signed Windows portable ZIP.
 - **Diagnostics export**: one button writes a zip containing app logs, the last five `session.json` files, and a device inventory. Never includes audio. This is how support requests are handled without screen-sharing.
-- Crash reporting on by default, opt-out in Advanced. **Never upload audio, file names, or session contents.** A recorder that phones home with content is unshippable.
-- Auto-update. If a bundled driver is present, updating requires elevation and possibly a reboot — design that flow before shipping backend C or D. Never auto-update while a recording is in progress.
+- **No automatic crash upload in v1.** Recovery, local logs and a user-initiated
+  diagnostics export are the supported failure path. Nothing leaves the
+  computer unless the user reviews and shares it.
+- **No automatic updater in v1.** Tagged releases and checksums are the
+  supported update channel. A user downloads and installs an update explicitly;
+  SobStage never changes itself during a recording.
 ---
 ## 12. Validation matrix
 Test before release, not after.
@@ -298,7 +329,9 @@ Test before release, not after.
 - **Counts:** 1, 2, 4, and 8 simultaneous microphones, plus a 9-mic case to confirm §1 behavior.
 - **Duration:** one 4-hour continuous take at maximum channel count, passing §3.4.
 - **Cards:** one fast card and one deliberately slow card that fails pre-flight.
-- **Latency:** measured loopback figure on macOS, Windows ASIO, and Windows WASAPI exclusive. Confirm the 10 ms ceiling holds on the slowest supported configuration.
+- **Latency:** measured loopback figure on macOS CoreAudio and Windows WASAPI
+  exclusive. Confirm the 10 ms ceiling holds on the slowest supported
+  configuration; add an ASIO result only if a real ASIO path later ships.
 - **Hostile events:** unplug a mic mid-take · reconnect it mid-take · unplug the clock master mid-take · pull the card mid-take · force-quit mid-take · cut power mid-take · exhaust bus power mid-take · disconnect the output device mid-take · fill the card mid-take.
 - **OS:** current and previous major versions of macOS and Windows 11, plus the §1 minimums.
 ---
@@ -307,9 +340,8 @@ Test before release, not after.
 2. Direct-to-card write pipeline with throughput benchmarking and the §12 hostile-event matrix.
 3. Shared monitor bus with limiter, mute, and feedback protection. Gated on the §5.4 latency ceiling.
 4. Metering.
-5. Virtual device backends — macOS first, Windows tiered.
+5. Transient macOS aggregate input; keep post-v1 virtual backends isolated.
 6. UI and the zero-knowledge setup flow.
-Legal entity registration and EV certificate procurement run in parallel from day one.
 ---
 ## 14. Hardware profile — Blue Yeti
 Verified: 16-bit / 48 kHz, 5 V / 150 mA, four polar patterns, 3.5 mm headphone jack with analog direct monitoring, hardware mute button, analog gain knob. Confirm on a bench unit; Yeti X and Yeti Nano differ from the standard Yeti.
@@ -351,6 +383,9 @@ Stated so they are not assumed:
 - Post-production editing, effects, or noise reduction.
 - Mobile.
 - Localization beyond English.
+- Automatic crash uploads and automatic updating. v1 is local-first and uses
+  reviewed diagnostics plus explicit, checksum-verified downloads.
+- An installed macOS HAL plugin or a Windows system-visible virtual input.
 - **More than one monitor mix.** Deliberate product decision, not a limitation to be fixed later.
 - **Zero-latency monitoring.** Physically unavailable given a single shared mix from USB microphones. The 10 ms ceiling in §5.4 is the commitment.
 ---

@@ -23,6 +23,7 @@ namespace juce {
 class CameraDevice
 {
 public:
+    explicit CameraDevice (String deviceName = {});
     virtual ~CameraDevice();
 
     static StringArray getAvailableDevices();
@@ -32,12 +33,18 @@ public:
                                      int maxWidth = 1024, int maxHeight = 768,
                                      bool highQuality = true);
 
+    const String& getName() const noexcept { return name; }
+
     Component* createViewerComponent();
 
     void startRecordingToFile (const File& file, int quality = 2);
     void stopRecording();
 
     static String getFileExtension();
+
+private:
+    String name;
+    bool recording = false;
 };
 
 } // namespace juce
@@ -47,5 +54,15 @@ namespace fakecamera {
 
 /// What CameraDevice::getAvailableDevices() will report from now on.
 void setDevices (const juce::StringArray& names);
+void setOpenSucceeds (bool shouldSucceed);
+void resetOpenCallCount();
+int getOpenCallCount();
+int getLiveDeviceCount();
+juce::String getLastOpenedDeviceName();
+bool wasLastEnumerationOnThisThread();
+void resetRecordingCallCounts();
+int getStartRecordingCallCount();
+int getStopRecordingCallCount();
+int getActiveRecordingCount();
 
 } // namespace fakecamera

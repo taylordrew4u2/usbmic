@@ -49,10 +49,11 @@ public:
     /// block, which is a dropout and must be reported (§0.1, §6.5).
     bool pushBlock (const float* const* channelData, int numChannels, int numSamples) noexcept;
 
-    /// §6.5: at 90% ring fill with no mirror to fall back on, the stems stop
-    /// and the mix keeps going. A complete mix is worth more than eight stems
-    /// that all have the same hole in them, and the ring draining at a fraction
-    /// of the byte rate is what stops the hole growing.
+    /// §6.5: at 90% ring fill, the stems stop on both destinations and the
+    /// mix keeps going. A mirror is fed from the same ring and writer thread, so
+    /// it cannot protect stems from a ring overflow. A complete mix is worth
+    /// more than eight stems that all have the same hole in them, and the ring
+    /// draining at a fraction of the byte rate is what stops the hole growing.
     ///
     /// Never restarts within a take, for the same reason the mirror does not
     /// (§6.3): stems that resume mid-file are worse than stems that stopped,

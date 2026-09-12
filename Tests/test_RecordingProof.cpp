@@ -13,6 +13,13 @@ ProofReading at (double seconds, uint64_t frames, uint64_t bytes, float peak = 0
     r.peakArrived = peak;
     return r;
 }
+
+ProofReading withoutDiskObservation (double seconds, uint64_t frames, float peak = 0.5f)
+{
+    auto reading = at (seconds, frames, 0, peak);
+    reading.diskObservationAvailable = false;
+    return reading;
+}
 constexpr uint64_t kHeaders = 7 * 650; // seven WAV headers, no audio
 } // namespace
 
@@ -35,6 +42,21 @@ TEST_CASE (RecordingProof_HeadersAloneDoNotCountAsGrowth)
     p.begin (at (0.0, 0, 0));
     p.observe (at (1.0, 0, kHeaders));
     REQUIRE (p.observe (at (3.5, 0, kHeaders)) == ProofVerdict::NothingWritten);
+}
+
+TEST_CASE (RecordingProof_AnUnavailableAsyncSnapshotIsNotZeroBytes)
+{
+    RecordingProof p;
+    p.begin (withoutDiskObservation (0.0, 0));
+
+    // A slow or disappearing card can keep the worker from returning past the
+    // three-second stop threshold. Missing evidence must not be turned into an
+    // empty take while the audio path is still accepting frames.
+    REQUIRE (p.observe (withoutDiskObservation (3.0, 144000)) == ProofVerdict::Healthy);
+    REQUIRE (p.observe (withoutDiskObservation (8.0, 384000)) == ProofVerdict::Healthy);
+
+    // Once a matching snapshot arrives, ordinary growth tracking resumes.
+    REQUIRE (p.observe (at (9.0, 432000, kHeaders + 432000)) == ProofVerdict::Healthy);
 }
 
 TEST_CASE (RecordingProof_AGrowingTakeIsHealthy)

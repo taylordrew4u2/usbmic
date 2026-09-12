@@ -64,6 +64,10 @@ struct DeviceSpec
 
     int bufferFrameSize = 256;
     bool allowBufferSizeChange = true;
+
+    /// kAudioDevicePropertyDeviceIsAlive. A false value means the object still
+    /// exists long enough to notify clients but is no longer usable.
+    bool isAlive = true;
 };
 
 /// Clears every device, listener and IOProc. Call between scenarios.
@@ -78,6 +82,20 @@ AudioObjectID addDevice (const DeviceSpec& spec);
 /// Removes a device and fires the system device-list listener, which is what an
 /// unplug looks like to the backend (§2: the OS tells us, we never poll).
 void removeDevice (AudioObjectID device);
+
+/// Changes a live device's nominal rate as another app or Audio MIDI Setup
+/// would, then fires the per-device CoreAudio property listener.
+bool setNominalRateExternally (AudioObjectID device, double sampleRate);
+
+/// Changes kAudioDevicePropertyDeviceIsAlive and notifies its listeners.
+bool setDeviceAlive (AudioObjectID device, bool alive);
+
+/// Fires one kAudioDeviceProcessorOverload event (one missed IO deadline).
+bool fireProcessorOverload (AudioObjectID device);
+
+/// Number of per-object property listeners still registered. Used to prove
+/// stream teardown leaves no callback pointing at freed client data.
+int propertyListenerCount (AudioObjectID device);
 
 /// True once the backend has called AudioDeviceStart on this device.
 bool isRunning (AudioObjectID device);

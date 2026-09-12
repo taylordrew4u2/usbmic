@@ -61,7 +61,8 @@ jobs:
           ./build-asan/sim_wasapi
 
           cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread"
-          cmake --build build-tsan --target sim_wasapi -j 4
+          cmake --build build-tsan --target sim_coreaudio sim_wasapi -j 4
+          ./build-tsan/sim_coreaudio
           ./build-tsan/sim_wasapi
 
   app:
@@ -102,3 +103,13 @@ jobs:
 
       - name: Build
         run: cmake --build build-app --config Release -j 4
+
+      # These targets depend on the JUCE app configuration and therefore do
+      # not exist in the headless Core job above. Execute them here instead of
+      # treating a successful compile as proof that camera hot-plug and the
+      # keyboard/layout regressions still behave correctly.
+      - name: App-integrated regression tests
+        run: >-
+          ctest --test-dir build-app --build-config Release
+          --tests-regex "^(layout_probe|sim_camera)$" --no-tests=error
+          --output-on-failure

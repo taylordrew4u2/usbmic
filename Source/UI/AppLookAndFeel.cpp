@@ -94,10 +94,14 @@ void AppLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& butt
 
     // A visible edge. A bright fill (the record button) gets a darker edge of
     // its own tone; a dark fill gets the shared control outline.
-    g.setColour (backgroundColour.getPerceivedBrightness() > 0.5f
-                     ? backgroundColour.darker (0.3f)
-                     : (shouldDrawButtonAsHighlighted ? secondary : controlOutline()));
-    g.drawRoundedRectangle (bounds, radius, 1.0f);
+    const bool keyboardFocus = button.hasKeyboardFocus (true);
+    g.setColour (keyboardFocus
+                     ? accent
+                     : (backgroundColour.getPerceivedBrightness() > 0.5f
+                            ? backgroundColour.darker (0.3f)
+                            : (shouldDrawButtonAsHighlighted ? secondary : controlOutline())));
+    g.drawRoundedRectangle (bounds.reduced (keyboardFocus ? 1.0f : 0.0f), radius,
+                            keyboardFocus ? 2.5f : 1.0f);
 }
 
 juce::Colour AppLookAndFeel::controlOutline()
@@ -118,6 +122,7 @@ void AppLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, boo
     auto bounds = juce::Rectangle<int> (0, 0, width, height).toFloat().reduced (0.5f);
     const float radius = 6.0f;
     const bool hovered = box.isMouseOver (true);
+    const bool keyboardFocus = box.hasKeyboardFocus (true);
 
     auto fill = box.findColour (juce::ComboBox::backgroundColourId);
     if (isButtonDown)  fill = fill.brighter (0.35f);
@@ -126,8 +131,9 @@ void AppLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, boo
     g.setColour (fill);
     g.fillRoundedRectangle (bounds, radius);
 
-    g.setColour (hovered ? secondary : controlOutline());
-    g.drawRoundedRectangle (bounds, radius, 1.0f);
+    g.setColour (keyboardFocus ? accent : (hovered ? secondary : controlOutline()));
+    g.drawRoundedRectangle (bounds.reduced (keyboardFocus ? 1.0f : 0.0f), radius,
+                            keyboardFocus ? 2.5f : 1.0f);
 
     // A chevron large enough to read as "this opens", rather than JUCE's
     // small triangle in the outline tone.
@@ -200,6 +206,12 @@ void AppLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int widt
     g.setColour (bone);
     g.fillEllipse (sliderPos - thumbRadius, centreY - thumbRadius,
                    thumbRadius * 2.0f, thumbRadius * 2.0f);
+
+    if (slider.hasKeyboardFocus (true))
+    {
+        g.setColour (accent);
+        g.drawRoundedRectangle (slider.getLocalBounds().toFloat().reduced (1.5f), 6.0f, 2.5f);
+    }
 }
 
 void AppLookAndFeel::drawScrollbar (juce::Graphics& g, juce::ScrollBar&,
@@ -258,6 +270,12 @@ void AppLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& bu
         g.setColour (background);
         g.strokePath (tick, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved,
                                                   juce::PathStrokeType::rounded));
+    }
+
+    if (button.hasKeyboardFocus (true))
+    {
+        g.setColour (accent);
+        g.drawRoundedRectangle (bounds.reduced (1.5f), 6.0f, 2.5f);
     }
 
     g.setColour (button.isEnabled() ? bone : tertiary);

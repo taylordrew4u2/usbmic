@@ -51,8 +51,34 @@ struct CoreAudioStream
     /// and let the message thread ask. Without it macOS was the one platform
     /// where a stream that stopped after opening produced nothing at all.
     std::string uid;
+    double expectedSampleRate = 0.0;
+    double startedSeconds = 0.0;
     std::atomic<double> lastCallbackSeconds { 0.0 };
     std::atomic<bool> reportedDead { false };
+
+    // CoreAudio can deliver all three property notifications from threads the
+    // app does not own. Processor-overload notifications in particular are
+    // normally sent from the device's IO thread, so the listener itself may do
+    // no allocation, locking, property reads, or logging. It only leaves these
+    // atomics for takeStreamFailures() on the message thread.
+    std::atomic<bool> nominalRateCheckPending { false };
+    std::atomic<bool> deviceAliveCheckPending { false };
+    std::atomic<uint64_t> processorOverloads { 0 };
+
+    // Message-thread reporting latches. A rate mismatch or dead device is said
+    // once until it recovers; overloads are reported whenever the count rises.
+    bool sampleRateMismatchReported = false;
+    bool deviceUnavailableReported = false;
+    uint64_t reportedProcessorOverloads = 0;
+    bool listenerProblemReported = false;
+
+    // AudioObjectRemovePropertyListener must use the exact registrations that
+    // succeeded. Some third-party drivers expose a property but refuse its
+    // listener, and removing a registration that never existed obscures the
+    // real teardown result.
+    bool nominalRateListenerInstalled = false;
+    bool deviceAliveListenerInstalled = false;
+    bool processorOverloadListenerInstalled = false;
 
     // The mirror of the above for playback. An interface that presents its
     // output as one interleaved buffer needs the callback's per-channel writes
@@ -159,6 +185,131 @@ OSStatus deviceListChanged (AudioObjectID, UInt32, const AudioObjectPropertyAddr
     if (callback && *callback)
         (*callback)();
     return noErr;
+}
+
+AudioObjectPropertyAddress nominalRateAddress()
+{
+    return { kAudioDevicePropertyNominalSampleRate,
+             kAudioObjectPropertyScopeGlobal,
+             kAudioObjectPropertyElementMain };
+}
+
+AudioObjectPropertyAddress deviceAliveAddress()
+{
+    return { kAudioDevicePropertyDeviceIsAlive,
+             kAudioObjectPropertyScopeGlobal,
+             kAudioObjectPropertyElementMain };
+}
+
+AudioObjectPropertyAddress processorOverloadAddress()
+{
+    return { kAudioDeviceProcessorOverload,
+             kAudioObjectPropertyScopeGlobal,
+             kAudioObjectPropertyElementMain };
+}
+
+// Per-device CoreAudio notification trampoline. kAudioDeviceProcessorOverload
+// is normally delivered synchronously from the device IO thread, so this code
+// deliberately does nothing beyond relaxed atomic stores/increments. Reading
+// the new rate/alive property and composing reports is deferred to the message
+// thread in takeStreamFailures().
+OSStatus streamPropertyChanged (AudioObjectID, UInt32 numAddresses,
+                                const AudioObjectPropertyAddress* addresses,
+                                void* clientData)
+{
+    auto* stream = static_cast<CoreAudioStream*> (clientData);
+
+    if (stream == nullptr || addresses == nullptr)
+        return noErr;
+
+    bool overloadSeen = false;
+
+    for (UInt32 i = 0; i < numAddresses; ++i)
+    {
+        switch (addresses[i].mSelector)
+        {
+            case kAudioDevicePropertyNominalSampleRate:
+                stream->nominalRateCheckPending.store (true, std::memory_order_relaxed);
+                break;
+
+            case kAudioDevicePropertyDeviceIsAlive:
+                stream->deviceAliveCheckPending.store (true, std::memory_order_relaxed);
+                break;
+
+            case kAudioDeviceProcessorOverload:
+                overloadSeen = true;
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    // A HAL callback may contain the same address more than once. One callback
+    // represents one missed deadline, so count it once rather than inflating
+    // the user-visible glitch total.
+    if (overloadSeen)
+        stream->processorOverloads.fetch_add (1, std::memory_order_relaxed);
+
+    return noErr;
+}
+
+void installStreamPropertyListeners (CoreAudioStream& stream)
+{
+    auto address = nominalRateAddress();
+    stream.nominalRateListenerInstalled =
+        AudioObjectAddPropertyListener (stream.deviceId, &address,
+                                        streamPropertyChanged, &stream) == noErr;
+
+    address = deviceAliveAddress();
+    stream.deviceAliveListenerInstalled =
+        AudioObjectAddPropertyListener (stream.deviceId, &address,
+                                        streamPropertyChanged, &stream) == noErr;
+
+    address = processorOverloadAddress();
+    stream.processorOverloadListenerInstalled =
+        AudioObjectAddPropertyListener (stream.deviceId, &address,
+                                        streamPropertyChanged, &stream) == noErr;
+}
+
+void removeStreamPropertyListeners (CoreAudioStream& stream)
+{
+    if (stream.nominalRateListenerInstalled)
+    {
+        auto address = nominalRateAddress();
+        AudioObjectRemovePropertyListener (stream.deviceId, &address,
+                                           streamPropertyChanged, &stream);
+        stream.nominalRateListenerInstalled = false;
+    }
+
+    if (stream.deviceAliveListenerInstalled)
+    {
+        auto address = deviceAliveAddress();
+        AudioObjectRemovePropertyListener (stream.deviceId, &address,
+                                           streamPropertyChanged, &stream);
+        stream.deviceAliveListenerInstalled = false;
+    }
+
+    if (stream.processorOverloadListenerInstalled)
+    {
+        auto address = processorOverloadAddress();
+        AudioObjectRemovePropertyListener (stream.deviceId, &address,
+                                           streamPropertyChanged, &stream);
+        stream.processorOverloadListenerInstalled = false;
+    }
+}
+
+bool readDeviceIsAlive (AudioObjectID device)
+{
+    auto address = deviceAliveAddress();
+    UInt32 alive = 0;
+    UInt32 size = sizeof (alive);
+
+    // Once an unplug has invalidated the AudioObjectID, the read itself fails.
+    // That is indistinguishable from (and just as actionable as) alive == 0.
+    return AudioObjectGetPropertyData (device, &address, 0, nullptr,
+                                       &size, &alive) == noErr
+        && alive != 0;
 }
 
 /// The device's transport is the reliable distinction between an audio box
@@ -518,6 +669,14 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
 
     for (auto deviceId : deviceIds)
     {
+        // DeviceIsAlive can fall to zero before the AudioObject disappears
+        // from kAudioHardwarePropertyDevices. Treating that dying object as
+        // present delays the existing mid-take unplug/silence path until a
+        // later device-list event; filtering it here lets the per-device alive
+        // listener drive the same reconciliation immediately.
+        if (! readDeviceIsAlive (deviceId))
+            continue;
+
         const int channels = countChannels (deviceId, wantInput);
         if (channels <= 0)
             continue;
@@ -643,6 +802,18 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
         return false;
     }
 
+    // Enumeration is not an authorization token. Re-check the live object at
+    // the point an input is opened so a stale/reused UID, or another internal
+    // call site that did not come through enumerateInputDevices(), cannot turn
+    // a built-in, Continuity, wireless, aggregate, virtual, or unknown source
+    // into a recording stream. Outputs keep their intentionally broader policy.
+    if (! isOutput && ! isDirectlyAttachedInputTransport (readTransportType (device)))
+    {
+        lastOpenError = "SobStage only records from a directly connected external USB, FireWire, "
+                        "or Thunderbolt microphone or audio interface.";
+        return false;
+    }
+
     // Match the negotiated rate (§2.2) before the IOProc starts, so the device
     // is not still converting when audio begins.
     if (! setNominalSampleRate (device, sampleRate))
@@ -676,6 +847,7 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     auto stream = std::make_unique<CoreAudioStream>();
     stream->deviceId = device;
     stream->uid = deviceId;
+    stream->expectedSampleRate = sampleRate;
     stream->callback = std::move (callback);
     stream->isOutput = isOutput;
 
@@ -700,8 +872,44 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
         return false;
     }
 
+    // Register after our own asynchronous nominal-rate write has settled, so
+    // opening at the requested rate cannot be mistaken for another app changing
+    // it. Register before Start so there is no unobserved running interval.
+    installStreamPropertyListeners (*stream);
+
+    // Close the small race between the successful rate/alive checks above and
+    // listener installation. If another app changes the rate, or the device
+    // begins disappearing, inside that window, never start an IOProc whose
+    // format is already stale. The listener flags alone are not enough here:
+    // they are intentionally consumed later on the message thread.
+    const double rateImmediatelyBeforeStart = getNominalSampleRate (device);
+    if (! readDeviceIsAlive (device)
+        || rateImmediatelyBeforeStart <= 0.0
+        || std::abs (rateImmediatelyBeforeStart - sampleRate) >= 1.0)
+    {
+        removeStreamPropertyListeners (*stream);
+        AudioDeviceDestroyIOProcID (device, stream->ioProcId);
+        stream->ioProcId = nullptr;
+
+        if (rateImmediatelyBeforeStart > 0.0
+            && std::abs (rateImmediatelyBeforeStart - sampleRate) >= 1.0)
+        {
+            lastOpenError = "This interface changed to " + formatRate (rateImmediatelyBeforeStart)
+                          + " while SobStage was opening it at " + formatRate (sampleRate)
+                          + ". Set both to the same rate, then try again.";
+        }
+        else
+        {
+            lastOpenError = "This interface disconnected while SobStage was opening it. Plug it "
+                            "back in, then try again.";
+        }
+
+        return false;
+    }
+
     if (AudioDeviceStart (device, stream->ioProcId) != noErr)
     {
+        removeStreamPropertyListeners (*stream);
         AudioDeviceDestroyIOProcID (device, stream->ioProcId);
 
         // The commonest cause by far, and the one with a fix the user can
@@ -712,6 +920,13 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
         return false;
     }
 
+    // The IOProc may never arrive even though AudioDeviceStart returned
+    // success. Remember when that successful start completed so the watchdog
+    // has a bounded first-callback grace period instead of skipping a zero
+    // lastCallbackSeconds value forever.
+    stream->startedSeconds = std::chrono::duration<double> (
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
     openStreams.push_back (std::move (stream));
     return true;
 }
@@ -719,6 +934,7 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
 std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
 {
     std::vector<StreamFailure> failures;
+    bool devicePropertiesChanged = false;
 
     // Reported once, and through the same channel as a dead stream, because it
     // is the same kind of news: something about the rig is not what the app
@@ -745,11 +961,105 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
         if (stream == nullptr || stream->ioProcId == nullptr)
             continue;
 
-        const double last = stream->lastCallbackSeconds.load (std::memory_order_relaxed);
+        // A listener installation failure is not allowed to masquerade as a
+        // fully watched stream. Keep the stream usable for unusual third-party
+        // drivers, but tell the user once that these safety signals are absent.
+        if (! stream->listenerProblemReported
+            && (! stream->nominalRateListenerInstalled
+                || ! stream->deviceAliveListenerInstalled
+                || ! stream->processorOverloadListenerInstalled))
+        {
+            stream->listenerProblemReported = true;
+            failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
+                                  "can't report every sample-rate, disconnect, or audio-overload "
+                                  "change from this device. Keep Audio MIDI Setup closed while "
+                                  "recording, and restart SobStage after changing the rig.",
+                                  stream->isOutput ? "Your sound output" : std::string(),
+                                  StreamFailureKind::safetyMonitoringUnavailable });
+        }
 
-        // Never called at all is not yet a failure: the stream may have been
-        // opened moments ago and the first callback not have landed.
-        if (last <= 0.0 || now - last < kSilentSecondsBeforeGivingUp)
+        if (stream->deviceAliveCheckPending.exchange (false, std::memory_order_relaxed))
+        {
+            devicePropertiesChanged = true;
+            const bool alive = readDeviceIsAlive (stream->deviceId);
+
+            if (! alive)
+            {
+                if (! stream->deviceUnavailableReported)
+                {
+                    stream->deviceUnavailableReported = true;
+                    failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
+                                          stream->isOutput
+                                              ? "is no longer available, so you can't hear through "
+                                                "it. Choose another output."
+                                              : "is no longer available and has stopped sending "
+                                                "audio. Unplug it and plug it back in.",
+                                          stream->isOutput ? "Your sound output" : std::string(),
+                                          StreamFailureKind::deviceUnavailable });
+                }
+            }
+            else
+            {
+                // A driver can revive the same AudioObjectID. Let either a
+                // later alive=false event or the callback watchdog report a
+                // subsequent failure rather than keeping the old latch forever.
+                stream->deviceUnavailableReported = false;
+                stream->reportedDead.store (false, std::memory_order_relaxed);
+            }
+        }
+
+        if (stream->nominalRateCheckPending.exchange (false, std::memory_order_relaxed))
+        {
+            devicePropertiesChanged = true;
+            const double actualRate = getNominalSampleRate (stream->deviceId);
+            const bool mismatched = actualRate > 0.0
+                                 && std::abs (actualRate - stream->expectedSampleRate) >= 1.0;
+
+            if (mismatched && ! stream->sampleRateMismatchReported)
+            {
+                stream->sampleRateMismatchReported = true;
+                failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
+                                      "changed to " + formatRate (actualRate)
+                                      + " while SobStage is using "
+                                      + formatRate (stream->expectedSampleRate)
+                                      + ". Set the interface back to "
+                                      + formatRate (stream->expectedSampleRate)
+                                      + ", then start a new take.",
+                                      stream->isOutput ? "Your sound output" : std::string(),
+                                      StreamFailureKind::sampleRateChanged });
+            }
+            else if (! mismatched)
+            {
+                // A later mismatch is new information once the device has
+                // returned to the rate this stream was opened for.
+                stream->sampleRateMismatchReported = false;
+            }
+        }
+
+        const auto overloads = stream->processorOverloads.load (std::memory_order_relaxed);
+
+        if (! stream->isOutput && overloads > stream->reportedProcessorOverloads)
+        {
+            stream->reportedProcessorOverloads = overloads;
+            failures.push_back ({ stream->uid,
+                                  "missed an audio processing deadline, so part of the recording "
+                                  "may not have reached the app. Close other apps using audio and "
+                                  "try a larger buffer size.",
+                                  {}, StreamFailureKind::processorOverload });
+        }
+
+        // DeviceIsAlive already supplied the immediate, typed report. The
+        // five-second callback watchdog is a fallback for devices/drivers that
+        // stop silently; emitting it as well would describe one unplug twice.
+        if (stream->deviceUnavailableReported)
+            continue;
+
+        const double last = stream->lastCallbackSeconds.load (std::memory_order_relaxed);
+        const double silenceBegan = last > 0.0 ? last : stream->startedSeconds;
+
+        // Before the first callback, measure from the successful Start call.
+        // Afterward, measure from the most recent callback as before.
+        if (silenceBegan <= 0.0 || now - silenceBegan < kSilentSecondsBeforeGivingUp)
             continue;
 
         // Once per stream. The condition stays true for as long as the device
@@ -764,6 +1074,13 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                                   : "stopped sending audio. Unplug it and plug it back in." });
     }
 
+    // Re-enumeration is useful for both a rate change and a device becoming
+    // alive/dead, but invoking the app callback from the CoreAudio listener
+    // itself would allocate from a HAL-owned thread. This method is message-
+    // thread-only, so it is the safe bridge back into the normal hotplug path.
+    if (devicePropertiesChanged && deviceChangeCallback)
+        deviceChangeCallback();
+
     return failures;
 }
 
@@ -774,6 +1091,17 @@ uint64_t CoreAudioBackend::getFramesDroppedByBackend() const
     for (const auto& stream : openStreams)
         if (stream != nullptr)
             total += stream->framesDropped.load (std::memory_order_relaxed);
+
+    return total;
+}
+
+uint64_t CoreAudioBackend::getOutputGlitchCount() const
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : openStreams)
+        if (stream != nullptr && stream->isOutput)
+            total += stream->processorOverloads.load (std::memory_order_relaxed);
 
     return total;
 }
@@ -839,8 +1167,13 @@ void CoreAudioBackend::closeAllStreams()
         if (stream->ioProcId != nullptr)
         {
             AudioDeviceStop (stream->deviceId, stream->ioProcId);
+            removeStreamPropertyListeners (*stream);
             AudioDeviceDestroyIOProcID (stream->deviceId, stream->ioProcId);
             stream->ioProcId = nullptr;
+        }
+        else
+        {
+            removeStreamPropertyListeners (*stream);
         }
     }
 

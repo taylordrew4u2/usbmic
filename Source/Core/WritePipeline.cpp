@@ -448,9 +448,14 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         if (mirrorActiveForThisPass)
         {
-            for (auto& w : mirrorStemWriters)
-                if (! w->tick (elapsed))
-                    mirrorWriteFailed.store (true, std::memory_order_release);
+            // Once pressure has forced mix-only, the mirror's stems stop too.
+            // Continuing their periodic durable header rewrites would retain
+            // avoidable I/O precisely when the emergency mode is trying to shed
+            // it. They are finalized normally at stop().
+            if (writeStems)
+                for (auto& w : mirrorStemWriters)
+                    if (! w->tick (elapsed))
+                        mirrorWriteFailed.store (true, std::memory_order_release);
 
             if (mirrorMixWriter != nullptr && ! mirrorMixWriter->tick (elapsed))
                 mirrorWriteFailed.store (true, std::memory_order_release);

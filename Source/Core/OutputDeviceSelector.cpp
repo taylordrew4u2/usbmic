@@ -1,7 +1,47 @@
 #include "OutputDeviceSelector.h"
 #include <algorithm>
+#include <unordered_set>
 
 namespace mma {
+
+std::vector<OutputDeviceCandidate> OutputDeviceTracker::observe (
+    std::vector<OutputDeviceCandidate> snapshot)
+{
+    std::unordered_set<std::string> present;
+    present.reserve (snapshot.size());
+
+    for (auto& candidate : snapshot)
+    {
+        present.insert (candidate.id);
+
+        const auto existing = connected.find (candidate.id);
+        if (existing != connected.end())
+        {
+            // "Newly connected" describes this connection, not just the one
+            // enumeration pass that first saw it. Keep the priority until the
+            // device is removed; an unrelated input notification on the next
+            // tick must not demote the headphones the user just plugged in.
+            candidate.appearedAfterLaunch = existing->second.appearedAfterLaunch;
+            candidate.connectionOrder = existing->second.order;
+            continue;
+        }
+
+        const int order = ++nextConnectionOrder;
+        const bool appearedAfterLaunch = haveBaseline;
+        connected[candidate.id] = { order, appearedAfterLaunch };
+        candidate.appearedAfterLaunch = appearedAfterLaunch;
+        candidate.connectionOrder = order;
+    }
+
+    for (auto it = connected.begin(); it != connected.end();)
+        if (present.count (it->first) == 0)
+            it = connected.erase (it);
+        else
+            ++it;
+
+    haveBaseline = true;
+    return snapshot;
+}
 
 bool OutputDeviceSelector::isEligible (const OutputDeviceCandidate& candidate)
 {
@@ -30,6 +70,7 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     {
         result.found = true;
         result.id = c->id;
+        result.displayName = c->displayName;
         result.reason = reason;
     };
 

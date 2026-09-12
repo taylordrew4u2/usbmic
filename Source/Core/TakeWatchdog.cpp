@@ -10,12 +10,14 @@ void TakeWatchdog::beginTake (const TakeHealth& baseline)
     warnedTwoMinutes = false;
     droppedReported = false;
     droppedReportedAt = 0.0;
+    lostCamerasThisTake.clear();
 }
 
 void TakeWatchdog::endTake()
 {
     watching = false;
     last = {};
+    lostCamerasThisTake.clear();
 }
 
 std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
@@ -43,8 +45,10 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
 
     // Cameras, matched by name: a camera that is no longer enumerated has
     // been unplugged or switched off, and its file stops growing. One that
-    // has dropped out of the list altogether is carried forward as absent,
-    // so it is reported once and can be reported back.
+    // has dropped out of the list altogether is carried forward as absent.
+    // CameraController cannot append a reconnect to the interrupted movie, so
+    // a loss is latched for this take even if a later OS snapshot lists the
+    // same name again.
     auto cameras = now.cameras;
 
     for (const auto& old : last.cameras)
@@ -63,13 +67,24 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
         for (const auto& old : last.cameras)
             if (old.name == cam.name) { wasPresent = old.present; break; }
 
+        if (lostCamerasThisTake.count (cam.name) > 0)
+            continue;
+
         if (wasPresent && ! cam.present)
+        {
+            lostCamerasThisTake.insert (cam.name);
             alerts.push_back ({ TakeAlert::Kind::CameraLost,
                                 "Camera " + cam.name + " has gone away -- unplugged or switched off. "
-                                "The sound carries on; the picture stops here unless it comes back.", false });
+                                "The sound carries on; this camera stays out for the rest of this take "
+                                "and can be used again on the next take.", false });
+        }
         else if (! wasPresent && cam.present)
             alerts.push_back ({ TakeAlert::Kind::CameraBack, "Camera " + cam.name + " is back.", true });
     }
+
+    for (auto& cam : cameras)
+        if (lostCamerasThisTake.count (cam.name) > 0)
+            cam.present = false;
 
     if (! now.cameraProblem.empty() && now.cameraProblem != last.cameraProblem)
         alerts.push_back ({ TakeAlert::Kind::CameraTrouble, now.cameraProblem, false });

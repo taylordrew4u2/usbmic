@@ -96,11 +96,16 @@ TEST_CASE (TakeWatchdog_ACameraGoingAwayIsNamed)
     REQUIRE (alerts.size() == 1);
     REQUIRE (alerts[0].kind == TakeAlert::Kind::CameraLost);
     REQUIRE (alerts[0].message.find ("FaceTime") != std::string::npos);
+    REQUIRE (alerts[0].message.find ("rest of this take") != std::string::npos);
+    REQUIRE (alerts[0].message.find ("next take") != std::string::npos);
     REQUIRE (w.observe (now).empty());
 
     const auto back = w.observe (healthyRig());
-    REQUIRE (back.size() == 1);
-    REQUIRE (back[0].kind == TakeAlert::Kind::CameraBack);
+    REQUIRE (back.empty());
+
+    w.endTake();
+    w.beginTake (healthyRig());
+    REQUIRE (w.observe (healthyRig()).empty());
 }
 
 TEST_CASE (TakeWatchdog_ACameraThatVanishesFromTheListIsGoneToo)
@@ -119,8 +124,7 @@ TEST_CASE (TakeWatchdog_ACameraThatVanishesFromTheListIsGoneToo)
     REQUIRE (w.observe (now).empty());
 
     const auto back = w.observe (healthyRig());
-    REQUIRE (back.size() == 1);
-    REQUIRE (back[0].kind == TakeAlert::Kind::CameraBack);
+    REQUIRE (back.empty());
 }
 
 TEST_CASE (TakeWatchdog_DroppedAudioIsSaidOnceThenAtMostOnceAMinute)

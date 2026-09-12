@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
+# The Windows download is a portable ZIP, not an installer that can arrange a
+# separate Visual C++ runtime. Select MSVC's static runtime before any target
+# (including JUCE) is created so a clean Windows machine does not need
+# MSVCP140/VCRUNTIME140 DLLs that are absent from the package.
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING
+    "MSVC runtime linked into SobStage's portable binaries")
+
 # This must be set before project() enables the compiler or CMake will inherit
 # the runner SDK's deployment floor. Keep it a cache default so packagers can
 # deliberately override it while ordinary macOS builds remain compatible with
@@ -67,6 +75,7 @@ add_library(mma_core STATIC
     Source/Core/CombinedTakePlan.cpp
     Source/Core/FfmpegCommand.cpp
     Source/Core/FfmpegLocator.cpp
+    Source/Core/FilesystemStatusProbe.cpp
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
     Source/Platform/AlsaInputPolicy.cpp
@@ -108,6 +117,16 @@ endif()
 # ---------------------------------------------------------------------------
 if (MMA_BUILD_APP)
     include(FetchContent)
+
+    # Official release source bundles carry the exact pinned JUCE tree here so
+    # their corresponding source builds without relying on a mutable network
+    # download. A normal repository checkout continues to fetch the immutable
+    # commit below.
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/JUCE/CMakeLists.txt")
+        set(FETCHCONTENT_SOURCE_DIR_JUCE
+            "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/JUCE")
+    endif()
+
     FetchContent_Declare(
         JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
@@ -142,6 +161,10 @@ if (MMA_BUILD_APP)
         # §10.1 wants the reason to be the one the user would have guessed.
         CAMERA_PERMISSION_ENABLED TRUE
         CAMERA_PERMISSION_TEXT "SobStage records video from the cameras you switch on, alongside your microphone recordings."
+        HARDENED_RUNTIME_ENABLED TRUE
+        HARDENED_RUNTIME_OPTIONS
+            com.apple.security.device.audio-input
+            com.apple.security.device.camera
         ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon.png"
     )
 
@@ -152,6 +175,7 @@ if (MMA_BUILD_APP)
         Source/Platform/MacSystemAggregateDevice.cpp
         Source/Platform/NullSystemAggregateDevice.cpp
         Source/Platform/ReducedMotion.cpp
+        Source/Platform/SystemThermalState.cpp
         Source/Platform/AsioOutputBackend.cpp
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp
@@ -236,12 +260,13 @@ if (MMA_BUILD_APP)
         add_test (NAME layout_probe COMMAND layout_probe)
     endif()
 
-    if (NOT APPLE AND NOT WIN32)
+    if (NOT WIN32)
         # Runnable, not merely compiled. The stand-in camera layer takes a
-        # settable device list, so the enumeration path -- a camera arriving, a
-        # camera going away, two of the same model staying apart -- is driven
-        # for real on a machine that has no camera at all. Opening a device is
-        # still out of reach: a viewer component needs a message manager.
+        # settable device list, so arrival, removal, duplicate names and a list
+        # reordering between discovery and open are driven without touching real
+        # camera hardware. The fake also drives open failure/retry policy without
+        # creating a viewer component. Windows needs COM linkage this portable
+        # harness does not provide, so its normal app target covers the source.
         add_executable(sim_camera
             Tools/sim_camera.cpp
             Source/App/CameraController.cpp

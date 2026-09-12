@@ -19,8 +19,9 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   are omitted. Generic removable USB Audio Class hardware is admitted without
   name or vendor-ID guesses, so a phone or wireless receiver presenting exactly
   like an interface cannot be categorically excluded. Monitor-output choices
-  are unaffected, and Linux's virtual fixture is enabled only in a separately
-  compiled test binary.
+  are unaffected. Every backend now repeats the eligibility check immediately
+  before opening an input stream, and Linux's virtual fixture is enabled only
+  in a separately compiled test binary.
 - Cameras now start off. Merely launching SobStage, opening the Cameras panel or
   connecting a camera does not enable it; the user must switch it on.
 - Linux now asks an ALSA device how many channels it can actually open, then
@@ -44,12 +45,24 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 - Backend health reaches the UI and logs: failed hot-plug registration, stalled
   or unrecoverable streams, output loss, dropped backend frames, open failures,
   mirror failures and post-take combine failures are reported.
-- The camera simulator now executes enumeration, stable identity, arrival and
-  removal rather than only type-checking the camera source.
-- Release packaging validates version/tag identity, pins third-party actions and
-  JUCE by commit, builds a universal macOS 13+ app, verifies the app again after
-  ZIP and DMG round trips, publishes SHA-256 checksums and ships corrected
-  SobStage DMG artwork.
+- The camera simulator now executes enumeration, stable identity,
+  arrival/removal, open failure/retry, a device-list reorder during open, and
+  mid-take unplug/replug continuity rather than only type-checking the camera
+  source. A camera whose movie was interrupted stays absent for that take and
+  its remembered preview returns only for the next one.
+- Release packaging validates version/tag identity against the exact tip of
+  `main`, pins third-party actions and JUCE by commit, and builds a universal
+  macOS 13+ app. A tagged release fails closed without Developer ID/notary and
+  Authenticode credentials, signs the outer DMG as well as the app, preserves
+  hardened-runtime microphone/camera entitlements, and launches every opaque
+  downloaded container again on a second runner before promotion.
+- The portable Windows executable links its Visual C++ runtime statically, and
+  the release gate inspects its PE imports so a clean machine is not surprised
+  by an unbundled MSVC runtime DLL.
+- Publication is staged as a private draft, downloads and verifies the remote
+  checksums, and refuses to overwrite an existing release. Each candidate also
+  carries a versioned, offline-buildable corresponding-source bundle containing
+  the exact SobStage and JUCE revisions.
 - Public support, privacy and release-checklist documents state what diagnostic
   exports contain, what is still unverified and how to roll back safely.
 
@@ -77,6 +90,11 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   destination cannot be changed underneath it.
 - CoreAudio rate changes wait up to a bounded 500 ms for the asynchronous HAL
   update instead of rejecting a change on the first stale read-back.
+- Open CoreAudio devices now watch nominal-rate, alive and processor-overload
+  events individually. Listener callbacks remain real-time-safe; the message
+  thread reports typed failures, omits an immediately dead device, and
+  automatically finalizes a recording if its live sample rate changes rather
+  than continuing under an untrue WAV format.
 - Windows COM teardown now occurs only when SobStage owns the initialization,
   and an installed ASIO driver no longer bypasses WASAPI exclusive-mode checks
   when no ASIO capture path exists.
@@ -109,13 +127,32 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   and split BWF files carry their sample offset from the session origin.
 - Modal cards form a keyboard-focus boundary, preventing Tab or Shift-Tab from
   reaching recording controls behind a dialog.
+- A writer ring reaching 90% now sheds both card and mirror stems together
+  while preserving both MIX files; the mirror can no longer suppress the
+  safety transition. A starved input span becomes counted silence instead of a
+  held last sample that invented a DC signal.
+- Linux hot-plug shutdown uses an explicit `eventfd` wake-up instead of relying
+  on another thread's `close()` to interrupt `read()`. Repeated filesystem
+  probes and camera enumeration now run on workers, and a failed camera open is
+  retried only by an explicit user action.
+- Output arrivals retain their true connection order, explicit output choices
+  persist by stable ID, duplicate display names remain selectable, and the
+  Settings picker no longer blanks during its refresh. Meter bindings rebuild
+  only when capture changes instead of 60 times per second.
+- Microphone meters now expose names, levels, clipping and actions to assistive
+  technology, show visible keyboard focus, and open rename from the keyboard.
+  The rename callback keeps the physical port/input target even if the rig
+  changes while the dialog is open.
+- macOS serious/critical thermal pressure now reaches the existing performance
+  warning and activity journal; other systems remain explicitly unknown rather
+  than guessed.
 
 ### Verification baseline
 
-The candidate contains 513 unit tests, 68 CoreAudio simulator checks and 67
-WASAPI simulator checks, plus the camera, capture, refusal and end-to-end
-harnesses. These numbers describe automated coverage, not physical-hardware
-certification.
+The candidate contains 528 unit tests, 115 CoreAudio simulator checks, 70
+WASAPI simulator checks and 85 camera simulator checks, plus the capture,
+refusal and end-to-end harnesses. These numbers describe automated coverage,
+not physical-hardware certification.
 
 ## v1.11.0 -- 2026-09-08
 
@@ -1527,10 +1564,10 @@ existed. See the [Releases page](../../releases) for what each contained.
 
 ## Known limitations
 
-- The macOS build is **not signed with an Apple Developer ID and not notarized**.
-  That requires a paid Apple account and a certificate, which cannot be produced
-  from source. Clearing the quarantine flag after download remains necessary;
-  see Troubleshooting in the README.
+- Untagged macOS rehearsal artifacts use an ad-hoc signature and may require the
+  quarantine-removal step in the README. Tagged public releases now fail closed
+  unless the app and disk image are Developer ID signed, notarized and stapled;
+  the required owner credentials are still an open v1.12.0 release gate.
 - The §12 hardware validation matrix is still outstanding. v0.5.0 fixes the
   first four faults a real session found, but the matrix itself has not been
   worked through.
