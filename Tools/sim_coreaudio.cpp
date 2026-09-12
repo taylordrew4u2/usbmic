@@ -568,11 +568,34 @@ void eightMicrophonesEachKeepTheirOwnAudio()
 
 } // namespace
 
+void ourAggregateIsNeverARecordingSource()
+{
+    fakeca::reset();
+    fakeca::addDevice (microphone ("Renamed combined device", "com.multimicaggregator.combined", 4,
+                                   fakeca::BufferShape::interleaved));
+    fakeca::addDevice (microphone ("SobStage", "physical-mic", 1,
+                                   fakeca::BufferShape::oneChannelPerBuffer));
+    fakeca::addDevice (microphone ("User aggregate", "another-aggregate", 2,
+                                   fakeca::BufferShape::interleaved));
+    mma::CoreAudioBackend backend;
+    const auto inputs = backend.enumerateInputDevices();
+    check (inputs.size() == 2, "only our own aggregate is excluded");
+    bool ours = false, physical = false, other = false;
+    for (const auto& d : inputs)
+    {
+        ours |= d.usbLocationId == "com.multimicaggregator.combined";
+        physical |= d.usbLocationId == "physical-mic";
+        other |= d.usbLocationId == "another-aggregate";
+    }
+    check (! ours && physical && other, "filter uses stable UID, not the display name");
+}
+
 int main()
 {
     std::printf ("CoreAudio backend, driven against a virtual HAL\n");
     std::printf ("===============================================\n");
 
+    ourAggregateIsNeverARecordingSource();
     interleavedStereoMicrophoneDeliversBothChannels();
     oneChannelPerBufferStillWorks();
     interleavedOutputCarriesTheMonitorMix();
