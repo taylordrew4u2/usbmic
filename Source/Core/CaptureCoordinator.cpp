@@ -358,21 +358,25 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
         return;
     }
 
-    // §2.1's stereo collapse applies to a device the take takes ONE channel
-    // from: a USB mic presenting the same voice on both sides, or with one side
-    // silent. Where the take wants more than one channel from this device, the
-    // sides are different microphones and collapsing them would throw a person
-    // away -- which is §2.1's "otherwise record true stereo", finally honoured.
-    if (routing.size() == 1 && routing[0].first == 0)
+    // Route only the physical inputs the take explicitly selected. A one-entry
+    // route for input 0 used to inspect input 1 as well and, when input 0 was
+    // silent, substitute input 1. That made a disabled/unselected socket part
+    // of the recording despite the fixed channel plan. A stereo device still
+    // records both sides when both appear in `routing`; the ordinary loop below
+    // sends each selected physical input to its own take channel. The sole
+    // exception requires the channel plan's persisted, explicit verdict that
+    // the pair is one stereo-presenting microphone rather than an interface.
+    if (routing.size() == 1)
     {
-        const int channel = routing[0].second;
-
-        if (numInputs >= 2)
-            pushDeviceBlockMultiChannel (channel, inputs, numInputs, numSamples);
-        else
-            pushDeviceBlock (channel, inputs[0], numSamples);
-
-        return;
+        const int takeChannel = routing[0].second;
+        if (takeChannel >= 0
+            && takeChannel < static_cast<int> (channels.size())
+            && channels[static_cast<size_t> (takeChannel)].collapseStereoPair
+            && numInputs >= 2)
+        {
+            pushDeviceBlockMultiChannel (takeChannel, inputs, numInputs, numSamples);
+            return;
+        }
     }
 
     // One block, one count. Adding per missing channel inflated the figure by
@@ -714,26 +718,61 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
     const auto callbackStart = std::chrono::steady_clock::now();
 
     const int channelCount = static_cast<int> (deviceStreams.size());
-    const size_t block = static_cast<size_t> (numSamples);
-
-    // Sized at startMonitoring(); never grow here (§11).
-    if (deviceScratch.size() < static_cast<size_t> (channelCount) * block
-        || devicePointers.size() < static_cast<size_t> (channelCount))
-        return noteCallbackLoad (callbackStart, numSamples);
-
-    // §3.2: every device is pulled onto this callback's timebase here. This is
-    // the single point where the independent USB clocks become one aligned
-    // frame, and every channel is corrected onto it -- including the one §3.1
-    // names as clock master, whose crystal is no more this clock than any
-    // other mic's is.
-    for (int ch = 0; ch < channelCount; ++ch)
+    if (channelCount <= 0)
     {
-        float* destination = deviceScratch.data() + static_cast<size_t> (ch) * block;
-        deviceStreams[static_cast<size_t> (ch)]->pull (destination, numSamples);
-        devicePointers[static_cast<size_t> (ch)] = destination;
+        for (int ch = 0; ch < numOutputs; ++ch)
+            if (outputs != nullptr && outputs[ch] != nullptr)
+                std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+
+        return noteCallbackLoad (callbackStart, numSamples);
     }
 
-    mixAndPublish (devicePointers.data(), channelCount, outputs, numOutputs, numSamples);
+    // Sized at startMonitoring(); never grow here (§11). Should that invariant
+    // ever fail, count the whole callback and silence the output rather than
+    // returning with stale headphones and no record that audio was lost.
+    if (devicePointers.size() < static_cast<size_t> (channelCount)
+        || deviceScratch.size() < static_cast<size_t> (channelCount))
+    {
+        framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
+                                        std::memory_order_relaxed);
+
+        for (int ch = 0; ch < numOutputs; ++ch)
+            if (outputs != nullptr && outputs[ch] != nullptr)
+                std::fill (outputs[ch], outputs[ch] + numSamples, 0.0f);
+
+        return noteCallbackLoad (callbackStart, numSamples);
+    }
+
+    // The scratch has bounded, pre-allocated headroom. CoreAudio can legally
+    // deliver a callback larger than that bound, so consume it in slices that
+    // fit rather than returning and silently losing the entire callback. This
+    // stays real-time safe: each slice reuses the same storage and the output
+    // offset points at the corresponding part of the caller's buffers.
+    const size_t framesPerSlice = deviceScratch.size() / static_cast<size_t> (channelCount);
+    int frameOffset = 0;
+
+    while (frameOffset < numSamples)
+    {
+        const int frames = static_cast<int> (std::min (
+            framesPerSlice, static_cast<size_t> (numSamples - frameOffset)));
+
+        // §3.2: every device is pulled onto this callback's timebase here. This
+        // is the single point where the independent USB clocks become one aligned
+        // frame, and every channel is corrected onto it -- including the one §3.1
+        // names as clock master, whose crystal is no more this clock than any
+        // other mic's is.
+        for (int ch = 0; ch < channelCount; ++ch)
+        {
+            float* destination = deviceScratch.data() + static_cast<size_t> (ch) * frames;
+            deviceStreams[static_cast<size_t> (ch)]->pull (destination, frames);
+            devicePointers[static_cast<size_t> (ch)] = destination;
+        }
+
+        mixAndPublish (devicePointers.data(), channelCount, outputs, numOutputs,
+                       frames, frameOffset);
+        frameOffset += frames;
+    }
+
     noteCallbackLoad (callbackStart, numSamples);
 }
 
@@ -752,13 +791,13 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     // straight to the mixer without passing through the per-device rings.
     const int channelCount = std::min (numInputs, static_cast<int> (channels.size()));
 
-    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples);
+    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0);
     noteCallbackLoad (callbackStart, numSamples);
 }
 
 void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelCount,
                                         float* const* outputs, int numOutputs,
-                                        int numSamples) noexcept
+                                        int numSamples, int outputFrameOffset) noexcept
 {
     if (inputs == nullptr || channelCount <= 0)
         return;
@@ -868,7 +907,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // §5.2: the same mix to every output channel -- no per-listener variation.
     for (int ch = 0; ch < numOutputs; ++ch)
         if (outputs[ch] != nullptr)
-            std::copy (mixScratch.begin(), mixScratch.begin() + numSamples, outputs[ch]);
+            std::copy (mixScratch.begin(), mixScratch.begin() + numSamples,
+                       outputs[ch] + outputFrameOffset);
 }
 
 void CaptureCoordinator::measurePolarPattern (const float* const* inputs, int channelCount,

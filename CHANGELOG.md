@@ -82,6 +82,19 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   when no ASIO capture path exists.
 - WASAPI enumeration reports real channel/rate capabilities and backend tests
   cover PCM formats, hot-plug and external-input policy.
+- Windows packages now instantiate the device-property keys used by the
+  removable-hardware proof, fixing a real-app link failure that the simulated
+  backend could not expose.
+- A take channel reads only its explicitly selected physical interface input;
+  an adjacent disabled socket can no longer be substituted when the selected
+  socket is silent. A known stereo-presenting USB microphone may inspect both
+  sides only after a persisted analyzer verdict identifies it as one source.
+- Oversized audio callbacks are processed in bounded, allocation-free slices
+  instead of being silently dropped when they exceed the coordinator's scratch
+  headroom. Any impossible scratch-layout failure is counted and silenced.
+- Monitor controls and drift reporting no longer race the audio callback.
+  Manual limiter resets cannot erase a newer feedback trip, and reconnecting a
+  device cannot inherit sustained-drift time from its previous connection.
 - WAV recovery bounds corrupt chunk sizes and handles RIFF padding. Periodic WAV
   header rewrites are flushed through the operating-system cache to storage,
   and split BWF files carry their sample offset from the session origin.
@@ -90,7 +103,7 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 
 ### Verification baseline
 
-The candidate contains 498 unit tests, 62 CoreAudio simulator checks and 67
+The candidate contains 503 unit tests, 62 CoreAudio simulator checks and 67
 WASAPI simulator checks, plus the camera, capture, refusal and end-to-end
 harnesses. These numbers describe automated coverage, not physical-hardware
 certification.

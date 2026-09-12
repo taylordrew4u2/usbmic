@@ -38,6 +38,8 @@ std::vector<PlannedChannel> planChannels (const std::vector<ChannelPlanDevice>& 
             PlannedChannel c;
             c.deviceKey = d.deviceKey;
             c.deviceChannel = input;
+            c.collapseStereoPair = d.inputChannelCount == 2
+                                && d.knownDuplicateStereo;
 
             // A name given to this input names the person on it, and needs no
             // socket number to be told apart.

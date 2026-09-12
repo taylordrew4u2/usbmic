@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <vector>
 #include <cstddef>
 
@@ -40,7 +41,7 @@ public:
     /// §5.1 master monitor volume, 0-100, default 70. Affects only what reaches
     /// the headphones; recorded files are written from a separate path.
     void setMasterVolume (double volume0to100) noexcept;
-    double getMasterVolume() const noexcept { return masterVolume; }
+    double getMasterVolume() const noexcept { return masterVolume.load (std::memory_order_relaxed); }
 
     /// Output-stage gain, applied to the bus result on the way to the headphone
     /// device. Deliberately NOT part of processSample: §5.4 puts nothing on the
@@ -52,14 +53,14 @@ public:
     static float trimDbToLinearGain (float trimDb) noexcept;
 
     /// True once the runaway cut has engaged; stays true until manuallyUnmute() is called.
-    bool isRunawayMuted() const noexcept { return runawayMuted; }
+    bool isRunawayMuted() const noexcept { return runawayMuted.load (std::memory_order_acquire); }
     void manuallyUnmute() noexcept;
 
     /// Global instantaneous mute (spacebar), independent of runaway cut.
-    void setGlobalMute (bool shouldMute) noexcept { globallyMuted = shouldMute; }
-    bool isGloballyMuted() const noexcept { return globallyMuted; }
+    void setGlobalMute (bool shouldMute) noexcept { globallyMuted.store (shouldMute, std::memory_order_release); }
+    bool isGloballyMuted() const noexcept { return globallyMuted.load (std::memory_order_acquire); }
 
-    bool isMuted() const noexcept { return globallyMuted || runawayMuted; }
+    bool isMuted() const noexcept { return isGloballyMuted() || isRunawayMuted(); }
 
     /// Feed a 1/3-octave-band analysis result (done outside the RT audio callback's
     /// hot path if it needs FFT work -- the detector here just tracks the growth
@@ -77,15 +78,19 @@ private:
     // what §5 means by "500 ms continuous".
     double limiterReleasedSeconds = 0.0;
 
-    bool runawayMuted = false;
-    bool globallyMuted = false;
-    double masterVolume = kDefaultMonitorVolume;
+    // These values cross between the message thread and the audio callback.
+    // Atomics keep UI changes lock-free and prevent undefined behaviour in the
+    // callback. Limiter bookkeeping below remains audio-thread-owned.
+    std::atomic<bool> runawayMuted { false };
+    std::atomic<bool> globallyMuted { false };
+    std::atomic<bool> limiterResetRequested { false };
+    std::atomic<double> masterVolume { kDefaultMonitorVolume };
 
     // Precomputed so the audio callback never calls std::pow. processSample and
     // applyMasterVolume both run once per sample per block, and a transcendental
     // in there is time taken directly out of the callback's deadline (§11).
     float ceilingLinear;
-    float masterGain;
+    std::atomic<float> masterGain;
 
     // Feedback detector state: level at the start of the current growth window.
     double feedbackWindowStartDb = -200.0;

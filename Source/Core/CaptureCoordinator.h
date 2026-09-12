@@ -36,6 +36,11 @@ struct CaptureChannel
     /// duplicated, "otherwise record true stereo". The otherwise was never
     /// implemented.
     int deviceChannel = 0;
+
+    /// A persisted §2.1 verdict that this is one stereo-presenting USB mic,
+    /// not a multi-input interface. Only this explicit evidence permits the
+    /// coordinator to inspect both physical inputs for one take channel.
+    bool collapseStereoPair = false;
 };
 
 /// Opens the audio streams and routes their callbacks. This is the piece that
@@ -436,9 +441,12 @@ private:
     double getMasterDriftPpm() const noexcept;
 
     /// Shared by both capture paths: sum, meter, record and publish one already
-    /// time-aligned frame block. Real-time safe.
+    /// time-aligned frame block. outputFrameOffset selects the destination
+    /// range when a larger callback is processed in bounded slices. Real-time
+    /// safe.
     void mixAndPublish (const float* const* inputs, int channelCount,
-                        float* const* outputs, int numOutputs, int numSamples) noexcept;
+                        float* const* outputs, int numOutputs, int numSamples,
+                        int outputFrameOffset) noexcept;
 };
 
 } // namespace mma

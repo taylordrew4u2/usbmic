@@ -68,6 +68,7 @@ TEST_CASE (ChannelPlan_StereoMicCollapsesOnlyOnceTheAnalyzerHasSaidSo)
     REQUIRE (plan.size() == 1);
     // Collapsed to one channel, so there is nothing to tell apart and no number.
     REQUIRE (plan[0].displayName == "Stereo USB");
+    REQUIRE (plan[0].collapseStereoPair);
 }
 
 TEST_CASE (ChannelPlan_ChannelsRunInDeviceOrderAcrossARig)

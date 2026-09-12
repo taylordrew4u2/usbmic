@@ -78,6 +78,13 @@ public:
             restartPending.store (true, std::memory_order_release);
         else
             channelLive.store (live, std::memory_order_relaxed);
+
+        if (! live)
+        {
+            driftPpm.store (0.0, std::memory_order_relaxed);
+            excessDrift.store (false, std::memory_order_relaxed);
+            driftReportingResetEpoch.fetch_add (1, std::memory_order_release);
+        }
     }
 
     bool isLive() const noexcept { return channelLive.load (std::memory_order_relaxed); }
@@ -123,7 +130,16 @@ private:
     std::atomic<bool> restartPending { false };
     std::atomic<double> driftPpm { 0.0 };
     std::atomic<bool> excessDrift { false };
+    std::atomic<uint64_t> driftReportingResetEpoch { 0 };
     std::atomic<uint64_t> underruns { 0 };
+
+    // Reporting-thread-owned state. The audio thread publishes driftPpm
+    // atomically; it never touches this accumulator.
+    double excessDriftSeconds = 0.0;
+    uint64_t observedDriftReportingResetEpoch = 0;
+
+    static constexpr double kExcessDriftThresholdPpm = 100.0;
+    static constexpr double kExcessDriftSustainSeconds = 10.0;
 
     // Linear-interpolation resampler state. Two samples and a phase is all a
     // ratio this close to 1.0 needs, and it costs no allocation in the callback.

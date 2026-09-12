@@ -1,6 +1,8 @@
 #include "TestFramework.h"
 #include "Core/MonitorBus.h"
+#include <atomic>
 #include <cmath>
+#include <thread>
 
 using namespace mma;
 
@@ -109,6 +111,50 @@ TEST_CASE (MonitorBus_FeedbackDetectionDoesNotTriggerWhenFarFromBroadbandPeak)
 
     REQUIRE_FALSE (triggered);
     REQUIRE_FALSE (bus.isRunawayMuted());
+}
+
+TEST_CASE (MonitorBus_AnOlderManualResetCannotClearANewerFeedbackTrip)
+{
+    MonitorBus bus (48000.0);
+
+    // Establish and trip one feedback window, then acknowledge it. That posts
+    // the limiter-counter reset the audio thread will consume next.
+    bus.processFeedbackCandidate (-40.0, -40.0, 0.0);
+    REQUIRE (bus.processFeedbackCandidate (-20.0, -20.0, 0.5));
+    bus.manuallyUnmute();
+    REQUIRE_FALSE (bus.isRunawayMuted());
+
+    // A new detector trip can arrive before the next audio sample. Consuming
+    // the older counter-reset request must not erase this newer safety event.
+    REQUIRE (bus.processFeedbackCandidate (-5.0, -5.0, 0.5));
+    REQUIRE (bus.isRunawayMuted());
+    REQUIRE (bus.processSample ({ 0.0f }) == 0.0f);
+    REQUIRE (bus.isRunawayMuted());
+}
+
+TEST_CASE (MonitorBus_ControlsCanChangeWhileTheAudioThreadRuns)
+{
+    MonitorBus bus (48000.0);
+    std::atomic<bool> start { false };
+    float lastOutput = 0.0f;
+
+    std::thread audio ([&] {
+        while (! start.load (std::memory_order_acquire)) {}
+        for (int i = 0; i < 20000; ++i)
+            lastOutput = bus.applyMasterVolume (bus.processSample ({ 0.1f }));
+    });
+
+    start.store (true, std::memory_order_release);
+    for (int i = 0; i < 2000; ++i)
+    {
+        bus.setMasterVolume (static_cast<double> (i % 101));
+        bus.setGlobalMute ((i % 7) == 0);
+        if ((i % 31) == 0)
+            bus.manuallyUnmute();
+    }
+
+    audio.join();
+    REQUIRE (std::isfinite (lastOutput));
 }
 
 TEST_CASE (MonitorBus_DefaultMasterVolumeIsSeventy)

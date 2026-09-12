@@ -5,12 +5,18 @@
 #include "../Core/SampleFormat.h"
 
 #include <windows.h>
+// devpkey.h declares DEVPROPKEY values unless one translation unit includes
+// initguid.h first. The full Windows app uses these keys directly, so provide
+// their definitions here instead of relying on a coincidental SDK library.
+#if defined (_WIN32) && ! defined (MMA_SIMULATE_WINDOWS)
+#include <initguid.h>
+#endif
+#include <devpkey.h>
 #include <mmdeviceapi.h>
 #include <devicetopology.h>
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <cfgmgr32.h>
-#include <devpkey.h>
 #include <wrl/client.h>
 #include <avrt.h>
 #include <thread>

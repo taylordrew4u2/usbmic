@@ -35,6 +35,12 @@ struct PlannedChannel
     std::string deviceKey;
     int deviceChannel = 0;
     std::string displayName;
+
+    /// True only for a two-channel USB microphone whose two sides were
+    /// previously confirmed to be one source. Interfaces and manually
+    /// disabled sockets never set this: their physical-input routing must stay
+    /// exact.
+    bool collapseStereoPair = false;
 };
 
 /// The name one input of a device is known by, on screen and in its filename.
