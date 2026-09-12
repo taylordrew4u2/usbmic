@@ -769,6 +769,12 @@ private:
     std::vector<ChannelPlanDevice> planDevices() const;
 
     std::vector<CaptureChannel> buildCaptureChannels() const;
+
+    /// Collects completed §2.1 decisions from the audio callback, remembers
+    /// them per physical port, and rebuilds the channel plan. Called on the
+    /// message thread and deliberately does nothing during a take, so a
+    /// verdict can never change an in-progress file layout.
+    void applyChannelLayoutDecisions();
     /// §6.2 folder name for a take started at `now` under `name`, including the
     /// collision suffix. Resolves against the disk but creates nothing, so the
     /// pre-record prompt and the take itself agree on the answer.

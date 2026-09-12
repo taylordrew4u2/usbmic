@@ -32,6 +32,12 @@ struct PersistedDeviceSettings
     bool channelLayoutIsMono = true;
     bool hasChannelLayoutDecision = false;
 
+    /// Which physical side supplies a collapsed mono microphone. This matters
+    /// for devices whose capsule is wired to input 1: after rebuilding from a
+    /// Mono verdict, recording may start before the new analyzer sees signal,
+    /// so defaulting back to input 0 would make that take silent.
+    int channelLayoutMonoSource = 0;
+
     /// Inputs of an interface that are switched off. An eight-input box with
     /// two microphones on it recorded six files of silence and reported room
     /// for a fraction of the take it could have held; the unused sockets are

@@ -41,6 +41,17 @@ struct CaptureChannel
     /// not a multi-input interface. Only this explicit evidence permits the
     /// coordinator to inspect both physical inputs for one take channel.
     bool collapseStereoPair = false;
+
+    /// This is input 0 of a fresh, fully selected two-channel device whose
+    /// layout has no persisted verdict yet. The callback may observe both
+    /// inputs for §2.1, but it must continue routing each physical input to its
+    /// own channel until Application persists the verdict and rebuilds while
+    /// idle.
+    bool analyzeStereoPair = false;
+
+    /// Persisted side for a collapsed microphone, so a take started before
+    /// this connection's analyzer hears signal still records the live side.
+    int monoSourceChannel = 0;
 };
 
 /// Opens the audio streams and routes their callbacks. This is the piece that
@@ -261,6 +272,7 @@ public:
     /// the analyzer concluded. -1 for a device that presented only one channel.
     int getChannelLayoutSource (int index) const noexcept;
     ChannelLayoutDecision getChannelLayoutDecision (int index) const noexcept;
+    bool isChannelLayoutDecisionPersistable (int index) const noexcept;
 
     /// The output device's callback, which is the clock everything else is
     /// pulled onto (§3.1). Sums the drift-corrected mics, meters them, feeds the
@@ -356,10 +368,19 @@ private:
         ChannelLayoutAnalyzer analyzer { 48000.0 };
         std::atomic<int> source { -1 };
         std::atomic<int> decision { static_cast<int> (ChannelLayoutDecision::Pending) };
+        std::atomic<bool> decisionPersistable { false };
         bool frozen = false;
     };
 
     std::vector<std::unique_ptr<ChannelLayout>> channelLayouts;
+
+    /// Updates one preallocated analyzer from a physical stereo pair. It does
+    /// not route audio, allocate, or lock. `freezeDuringRecording` is true for
+    /// an already-collapsed microphone, whose selected side must not move in a
+    /// take; false for bootstrap observation, which cannot alter either of the
+    /// two independently routed channels.
+    void analyzeStereoPair (int channelIndex, const float* left, const float* right,
+                            int numSamples, bool freezeDuringRecording) noexcept;
     int masterChannel = -1;
     Metering mixMeter;
 

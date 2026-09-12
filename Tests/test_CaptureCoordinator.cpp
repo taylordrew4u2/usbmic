@@ -972,6 +972,114 @@ TEST_CASE (CaptureCoordinator_DoesNotSubstituteAnUnselectedPhysicalInput)
         REQUIRE (sample == 0.0f);
 }
 
+TEST_CASE (CaptureCoordinator_FreshStereoPairIsAnalyzedWithoutCollapsingEitherInput)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 512);
+    c.setSoftwareClockEnabled (false);
+
+    CaptureChannel left { "device", "Fresh USB 1", "01_Fresh-USB-1", 0.0f };
+    left.deviceChannel = 0;
+    left.analyzeStereoPair = true;
+    CaptureChannel right { "device", "Fresh USB 2", "02_Fresh-USB-2", 0.0f };
+    right.deviceChannel = 1;
+
+    REQUIRE (c.startMonitoring ({ left, right }, "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    const std::vector<float> silent (512, 0.0f);
+    const std::vector<float> signal (512, 0.4f);
+    std::vector<float> out (512, 0.0f);
+    float* outs[] = { out.data() };
+
+    // Three seconds with one live side is §2.1's Mono verdict. Pull every
+    // block so the per-channel rings and meters show what was actually routed.
+    for (int block = 0; block < 282; ++block)
+    {
+        pushStereo (backend, 0, silent, signal);
+        c.processOutputBlock (outs, 1, 512);
+    }
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE (c.getChannelLayoutDecision (1) == ChannelLayoutDecision::Pending);
+
+    // The verdict is evidence for the NEXT rebuilt plan. Until then this live
+    // capture still owns both exact physical channels: the silent left remains
+    // silent and the right remains audible rather than being folded together.
+    for (int i = 0; i < 10; ++i)
+    {
+        c.getChannelMetering (0)->tick (1.0 / 60.0);
+        c.getChannelMetering (1)->tick (1.0 / 60.0);
+    }
+
+    REQUIRE (c.getChannelMetering (0)->getDisplayedLevelDb() == Metering::kMinDb);
+    REQUIRE (c.getChannelMetering (1)->getDisplayedLevelDb() > Metering::kMinDb + 20.0f);
+    REQUIRE (c.getChannels().size() == 2);
+    REQUIRE_FALSE (c.getChannels()[0].collapseStereoPair);
+    REQUIRE_FALSE (c.getChannels()[1].collapseStereoPair);
+}
+
+TEST_CASE (CaptureCoordinator_SilentTimeoutCannotPermanentlyCollapseATrueStereoPair)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 100.0, 10);
+    c.setSoftwareClockEnabled (false);
+
+    CaptureChannel left { "device", "Fresh USB 1", "01_Fresh-USB-1", 0.0f };
+    left.deviceChannel = 0;
+    left.analyzeStereoPair = true;
+    CaptureChannel right { "device", "Fresh USB 2", "02_Fresh-USB-2", 0.0f };
+    right.deviceChannel = 1;
+    REQUIRE (c.startMonitoring ({ left, right }, "out-device"));
+
+    const std::vector<float> silence (6000, 0.0f);
+    pushStereo (backend, 0, silence, silence);
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
+    REQUIRE_FALSE (c.isChannelLayoutDecisionPersistable (0));
+    REQUIRE (c.getChannels().size() == 2);
+
+    const std::vector<float> stereoLeft (10, 0.4f);
+    const std::vector<float> stereoRight { 0.2f, -0.2f, 0.2f, -0.2f, 0.2f,
+                                          -0.2f, 0.2f, -0.2f, 0.2f, -0.2f };
+    for (int block = 0; block < 30; ++block)
+        pushStereo (backend, 0, stereoLeft, stereoRight);
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Stereo);
+    REQUIRE (c.isChannelLayoutDecisionPersistable (0));
+    REQUIRE (c.getChannels().size() == 2);
+    REQUIRE_FALSE (c.getChannels()[0].collapseStereoPair);
+    REQUIRE_FALSE (c.getChannels()[1].collapseStereoPair);
+}
+
+TEST_CASE (CaptureCoordinator_OneDuplicatedFinalBlockCannotCollapseMostlyStereoAudio)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 1000.0, 10);
+    c.setSoftwareClockEnabled (false);
+
+    CaptureChannel left { "device", "Fresh USB 1", "01_Fresh-USB-1", 0.0f };
+    left.deviceChannel = 0;
+    left.analyzeStereoPair = true;
+    CaptureChannel right { "device", "Fresh USB 2", "02_Fresh-USB-2", 0.0f };
+    right.deviceChannel = 1;
+    REQUIRE (c.startMonitoring ({ left, right }, "out-device"));
+
+    const std::vector<float> stereoLeft (10, 0.4f);
+    const std::vector<float> stereoRight { 0.4f, -0.4f, 0.4f, -0.4f, 0.4f,
+                                          -0.4f, 0.4f, -0.4f, 0.4f, -0.4f };
+    for (int block = 0; block < 299; ++block)
+        pushStereo (backend, 0, stereoLeft, stereoRight);
+
+    // A coincidentally duplicated last callback must contribute its fraction
+    // of the evidence, not replace the preceding 2.99 seconds.
+    pushStereo (backend, 0, stereoLeft, stereoLeft);
+
+    REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Stereo);
+    REQUIRE (c.isChannelLayoutDecisionPersistable (0));
+    REQUIRE (c.getChannels().size() == 2);
+}
+
 TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
 {
     // A persisted analyzer verdict distinguishes this known stereo-presenting
@@ -1000,6 +1108,72 @@ TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
     for (const auto sample : out)
         heardSignal = heardSignal || sample != 0.0f;
     REQUIRE (heardSignal);
+}
+
+TEST_CASE (CaptureCoordinator_PersistedRightSideSurvivesAnImmediateRecording)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    CaptureChannel mic { "device", "Right-wired USB mic", "01_Right-wired", 0.0f };
+    mic.collapseStereoPair = true;
+    mic.monoSourceChannel = 1;
+    REQUIRE (c.startMonitoring ({ mic }, "out-device"));
+
+    // No monitoring callback has arrived yet. The remembered side must already
+    // be live before the record button can freeze this take's selection.
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+
+    const std::vector<float> quiet (64, 0.0f);
+    pushStereo (backend, 0, quiet, quiet);
+
+    // Silence is not evidence for changing a remembered side. This was the
+    // real failure: the ordinary idle callback reset it to left before the
+    // user had a chance to press record.
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+    REQUIRE (c.startRecording (tempDir(), 16, "2026-09-01T00:00:00Z"));
+
+    // Fill the rest of the eight-block input ring without overrunning it; the
+    // initial quiet block stays ahead of this signal exactly as a real idle
+    // callback would.
+    const std::vector<float> silent (448, 0.0f);
+    const std::vector<float> signal (448, 0.4f);
+    pushStereo (backend, 0, silent, signal);
+
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
+
+    std::vector<float> out (64, 0.0f);
+    float* outs[] = { out.data() };
+    bool heardSignal = false;
+    for (int block = 0; block < 20; ++block)
+    {
+        std::fill (out.begin(), out.end(), 0.0f);
+        c.processOutputBlock (outs, 1, 64);
+        for (const auto sample : out)
+            heardSignal = heardSignal || sample != 0.0f;
+    }
+
+    REQUIRE (heardSignal);
+    c.stopRecording();
+
+    std::ifstream stem (tempDir() + "/01_Right-wired.wav", std::ios::binary);
+    REQUIRE (stem.is_open());
+    const auto dataBytes = readU32LE (stem, kDataSizeOffset);
+    REQUIRE (dataBytes > 0);
+
+    stem.seekg (kAudioDataOffset);
+    bool wroteSignal = false;
+    for (uint32_t i = 0; i + 1 < dataBytes; i += 2)
+    {
+        unsigned char lo = 0, hi = 0;
+        stem.read (reinterpret_cast<char*> (&lo), 1);
+        stem.read (reinterpret_cast<char*> (&hi), 1);
+        const int16_t sample = static_cast<int16_t> (
+            static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+        wroteSignal = wroteSignal || sample > 1000;
+    }
+    REQUIRE (wroteSignal);
 }
 
 TEST_CASE (CaptureCoordinator_MonoDeviceIsUntouchedByChannelLayout)
@@ -1065,6 +1239,12 @@ TEST_CASE (CaptureCoordinator_ChannelSideNeverMovesOnceRecording)
     REQUIRE (c.getChannelLayoutSource (0) == 0);
 
     c.stopRecording();
+
+    // The take was fixed, not the rest of the monitoring session. Once the
+    // writer is gone, the evidence gathered during it may select the live side
+    // for the next take.
+    c.pushDeviceBlockMultiChannel (0, rightPair, 2, static_cast<int> (silent.size()));
+    REQUIRE (c.getChannelLayoutSource (0) == 1);
 }
 
 namespace {

@@ -16,9 +16,16 @@ struct ChannelPlanDevice
     /// §2.4's remembered name for this port. Empty when the user has not named it.
     std::string assignedName;
     int inputChannelCount = 1;
+    /// Whether §2.1 has already made any decision for this port. A remembered
+    /// Stereo verdict is just as final as a Mono one: without this separate
+    /// bit, Stereo looks identical to a device that has never been observed
+    /// and is analysed again on every launch.
+    bool hasChannelLayoutDecision = false;
     /// §2.4's remembered §2.1 verdict: true only once the analyzer has decided
     /// the two sides carry the same source.
     bool knownDuplicateStereo = false;
+    /// The analyzer-selected physical side for a remembered Mono verdict.
+    int monoSourceChannel = 0;
 
     /// Physical inputs switched off in Settings. Not recorded, no strip, no
     /// file; the remaining inputs keep their socket numbers.
@@ -41,6 +48,16 @@ struct PlannedChannel
     /// disabled sockets never set this: their physical-input routing must stay
     /// exact.
     bool collapseStereoPair = false;
+
+    /// The first physical input of a fresh, fully enabled two-channel device
+    /// owns §2.1's analyzer. Both planned channels continue to route exactly
+    /// as selected while it observes the pair; only a later, persisted Mono
+    /// verdict is allowed to collapse them on a rebuilt capture.
+    bool analyzeStereoPair = false;
+
+    /// Restored source for `collapseStereoPair`. Ignored unless that flag is
+    /// true, and clamped again when the coordinator opens its streams.
+    int monoSourceChannel = 0;
 };
 
 /// The name one input of a device is known by, on screen and in its filename.

@@ -48,6 +48,9 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         // timeout is measured from the moment the device is seen.
         auto layout = std::make_unique<ChannelLayout>();
         layout->analyzer = ChannelLayoutAnalyzer (sampleRate);
+        if (channels[i].collapseStereoPair)
+            layout->source.store (channels[i].monoSourceChannel == 1 ? 1 : 0,
+                                  std::memory_order_relaxed);
         channelLayouts.push_back (std::move (layout));
     }
 
@@ -358,6 +361,32 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
         return;
     }
 
+    // A fresh two-channel device has to be heard before §2.1 can tell whether
+    // it is one stereo-presenting microphone or two independent interface
+    // sockets. Observe only the exact, fully selected physical pair. Routing
+    // still falls through to the ordinary loop below, preserving both inputs
+    // until Application persists the verdict and rebuilds the idle capture.
+    if (routing.size() == 2 && numInputs >= 2 && inputs[0] != nullptr && inputs[1] != nullptr)
+    {
+        int analyzerChannel = -1;
+        bool hasPhysicalInput0 = false;
+        bool hasPhysicalInput1 = false;
+
+        for (const auto& [deviceInput, takeChannel] : routing)
+        {
+            hasPhysicalInput0 = hasPhysicalInput0 || deviceInput == 0;
+            hasPhysicalInput1 = hasPhysicalInput1 || deviceInput == 1;
+
+            if (takeChannel >= 0
+                && takeChannel < static_cast<int> (channels.size())
+                && channels[static_cast<size_t> (takeChannel)].analyzeStereoPair)
+                analyzerChannel = takeChannel;
+        }
+
+        if (analyzerChannel >= 0 && hasPhysicalInput0 && hasPhysicalInput1)
+            analyzeStereoPair (analyzerChannel, inputs[0], inputs[1], numSamples, false);
+    }
+
     // Route only the physical inputs the take explicitly selected. A one-entry
     // route for input 0 used to inspect input 1 as well and, when input 0 was
     // silent, substitute input 1. That made a disabled/unselected socket part
@@ -594,8 +623,6 @@ void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const flo
         return;
     }
 
-    auto& layout = *channelLayouts[static_cast<size_t> (deviceIndex)];
-
     const float* left = inputs[0];
     const float* right = inputs[1];
 
@@ -615,6 +642,26 @@ void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const flo
 
         return pushDeviceBlock (deviceIndex, left, numSamples);
     }
+
+    analyzeStereoPair (deviceIndex, left, right, numSamples, true);
+
+    const int side = channelLayouts[static_cast<size_t> (deviceIndex)]->source.load (
+        std::memory_order_relaxed);
+
+    // By pointer: collapsing to mono is choosing which channel to read, not
+    // copying one.
+    pushDeviceBlock (deviceIndex, side == 1 ? right : left, numSamples);
+}
+
+void CaptureCoordinator::analyzeStereoPair (int channelIndex, const float* left,
+                                            const float* right, int numSamples,
+                                            bool freezeDuringRecording) noexcept
+{
+    if (channelIndex < 0 || channelIndex >= static_cast<int> (channelLayouts.size())
+        || left == nullptr || right == nullptr || numSamples <= 0)
+        return;
+
+    auto& layout = *channelLayouts[static_cast<size_t> (channelIndex)];
 
     // §11: two passes over the block, no allocation, no locking. §2.1 wants a
     // peak per channel, their correlation, and the difference in their RMS.
@@ -641,56 +688,55 @@ void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const flo
         return linear > 1.0e-10f ? 20.0f * std::log10 (linear) : -200.0f;
     };
 
-    const double rmsLeft = std::sqrt (sumLL / static_cast<double> (numSamples));
-    const double rmsRight = std::sqrt (sumRR / static_cast<double> (numSamples));
-
-    // Pearson correlation over the block. Zero when either side is silent,
-    // which is the honest answer: nothing to be correlated with.
-    const double denominator = std::sqrt (sumLL) * std::sqrt (sumRR);
-    const float correlation = denominator > 1.0e-12
-                                  ? static_cast<float> (sumLR / denominator)
-                                  : 0.0f;
-
-    const float rmsDiffDb = std::abs (toDb (static_cast<float> (rmsLeft))
-                                      - toDb (static_cast<float> (rmsRight)));
-
     const double blockSeconds = sampleRate > 0.0
                                     ? static_cast<double> (numSamples) / sampleRate
                                     : 0.0;
 
-    layout.analyzer.processBlock (toDb (peakLeft), toDb (peakRight),
-                                  correlation, rmsDiffDb, blockSeconds);
+    layout.analyzer.processBlockEnergies (toDb (peakLeft), toDb (peakRight),
+                                          sumLL, sumRR, sumLR, numSamples,
+                                          blockSeconds);
 
-    // The side is free to move only until §2.1 has decided, and never once a
-    // take is running: swapping which channel feeds a stem mid-file would put a
-    // discontinuity in the middle of the recording, which is a worse failure
-    // than the one this fixes (§6.5 fixes the take's shape for its duration).
+    // For an already-collapsed microphone, the side is free to move only until
+    // §2.1 has decided and never once a take is running: swapping which input
+    // feeds a stem mid-file would put a discontinuity in the recording. A fresh
+    // pair may finish observing during a take because both inputs keep their
+    // independent routing; its verdict cannot affect shape until the idle
+    // Application rebuild (§6.5).
     if (! layout.frozen)
     {
         // Checked before the store, not after. Reversing these leaves a
         // one-block window in which a take that has just started still adopts a
         // new side -- which is exactly the discontinuity the freeze exists to
         // prevent, made rarer and therefore harder to find.
-        if (activePipeline.load (std::memory_order_acquire) != nullptr)
-        {
-            layout.frozen = true;
-        }
-        else
-        {
-            layout.source.store (layout.analyzer.getMonoSourceChannel(), std::memory_order_relaxed);
-            layout.decision.store (static_cast<int> (layout.analyzer.getDecision()),
-                                   std::memory_order_relaxed);
+        const bool recordingFreezesSource = freezeDuringRecording
+            && activePipeline.load (std::memory_order_acquire) != nullptr;
 
-            if (layout.analyzer.getDecision() != ChannelLayoutDecision::Pending)
+        // Do not publish a side change into a running stem, but do not
+        // permanently freeze the analyzer either. It may finish gathering
+        // valid evidence during this take; the first callback after stop can
+        // safely apply that answer for the next one.
+        if (! recordingFreezesSource)
+        {
+            // A remembered right-side source survives ordinary silence. Only
+            // actual one-sided signal may replace it; a fresh analyzer still
+            // gets the historical left default until it hears evidence.
+            if (layout.source.load (std::memory_order_relaxed) < 0
+                || layout.analyzer.hasMonoSourceEvidence())
+                layout.source.store (layout.analyzer.getMonoSourceChannel(),
+                                     std::memory_order_relaxed);
+
+            layout.decision.store (static_cast<int> (layout.analyzer.getDecision()),
+                                   std::memory_order_release);
+            // This release publishes both the decision and its selected source
+            // to the message thread. A provisional timeout remains false and
+            // can therefore never reach disk or trigger a capture rebuild.
+            layout.decisionPersistable.store (layout.analyzer.isDecisionPersistable(),
+                                              std::memory_order_release);
+
+            if (layout.analyzer.isDecisionPersistable())
                 layout.frozen = true;
         }
     }
-
-    const int side = layout.source.load (std::memory_order_relaxed);
-
-    // By pointer: collapsing to mono is choosing which channel to read, not
-    // copying one.
-    pushDeviceBlock (deviceIndex, side == 1 ? right : left, numSamples);
 }
 
 int CaptureCoordinator::getChannelLayoutSource (int index) const noexcept
@@ -707,7 +753,16 @@ ChannelLayoutDecision CaptureCoordinator::getChannelLayoutDecision (int index) c
         return ChannelLayoutDecision::Pending;
 
     return static_cast<ChannelLayoutDecision> (
-        channelLayouts[static_cast<size_t> (index)]->decision.load (std::memory_order_relaxed));
+        channelLayouts[static_cast<size_t> (index)]->decision.load (std::memory_order_acquire));
+}
+
+bool CaptureCoordinator::isChannelLayoutDecisionPersistable (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (channelLayouts.size()))
+        return false;
+
+    return channelLayouts[static_cast<size_t> (index)]->decisionPersistable.load (
+        std::memory_order_acquire);
 }
 
 void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept

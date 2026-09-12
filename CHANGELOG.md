@@ -91,7 +91,16 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   sides only after a persisted analyzer verdict identifies it as one source.
 - Oversized audio callbacks are processed in bounded, allocation-free slices
   instead of being silently dropped when they exceed the coordinator's scratch
-  headroom. Any impossible scratch-layout failure is counted and silenced.
+  headroom. Any impossible scratch-layout failure is counted and silenced, and
+  an oversized CoreAudio buffer keeps its physical channel slots so a later
+  input can never be recorded under the wrong microphone's name.
+- Fresh two-channel devices are now analyzed while both physical sockets remain
+  independently routed. Mono/stereo verdicts and the live side of a collapsed
+  microphone persist per port, so an immediate take cannot fall back to a
+  silent side; a disabled socket never participates in the decision. The
+  classifier uses the full three-second signal window rather than its final
+  callback, and the 60-second all-silent fallback remains provisional so a
+  quiet interface can still prove that it has two independent inputs later.
 - Monitor controls and drift reporting no longer race the audio callback.
   Manual limiter resets cannot erase a newer feedback trip, and reconnecting a
   device cannot inherit sustained-drift time from its previous connection.
@@ -103,7 +112,7 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 
 ### Verification baseline
 
-The candidate contains 503 unit tests, 62 CoreAudio simulator checks and 67
+The candidate contains 513 unit tests, 68 CoreAudio simulator checks and 67
 WASAPI simulator checks, plus the camera, capture, refusal and end-to-end
 harnesses. These numbers describe automated coverage, not physical-hardware
 certification.

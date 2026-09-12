@@ -59,16 +59,50 @@ TEST_CASE (ChannelPlan_TheNameTheUserGaveThePortWins)
 TEST_CASE (ChannelPlan_StereoMicCollapsesOnlyOnceTheAnalyzerHasSaidSo)
 {
     auto undecided = iface ("mic", "Stereo USB", 2);
-    REQUIRE (planChannels ({ undecided }).size() == 2);
+    const auto freshPlan = planChannels ({ undecided });
+    REQUIRE (freshPlan.size() == 2);
+    REQUIRE (freshPlan[0].analyzeStereoPair);
+    REQUIRE_FALSE (freshPlan[1].analyzeStereoPair);
 
     auto decided = undecided;
+    decided.hasChannelLayoutDecision = true;
     decided.knownDuplicateStereo = true;
+    decided.monoSourceChannel = 1;
     const auto plan = planChannels ({ decided });
 
     REQUIRE (plan.size() == 1);
     // Collapsed to one channel, so there is nothing to tell apart and no number.
     REQUIRE (plan[0].displayName == "Stereo USB");
     REQUIRE (plan[0].collapseStereoPair);
+    REQUIRE_FALSE (plan[0].analyzeStereoPair);
+    REQUIRE (plan[0].monoSourceChannel == 1);
+}
+
+TEST_CASE (ChannelPlan_PersistedStereoVerdictIsNotAnalyzedAgain)
+{
+    auto stereo = iface ("mic", "True Stereo USB", 2);
+    stereo.hasChannelLayoutDecision = true;
+
+    const auto plan = planChannels ({ stereo });
+
+    REQUIRE (plan.size() == 2);
+    REQUIRE_FALSE (plan[0].collapseStereoPair);
+    REQUIRE_FALSE (plan[1].collapseStereoPair);
+    REQUIRE_FALSE (plan[0].analyzeStereoPair);
+    REQUIRE_FALSE (plan[1].analyzeStereoPair);
+}
+
+TEST_CASE (ChannelPlan_ADisabledSocketCannotInfluenceFreshPairAnalysis)
+{
+    auto device = iface ("if", "Two-input interface", 2);
+    device.disabledInputs = { 1 };
+
+    const auto plan = planChannels ({ device });
+
+    REQUIRE (plan.size() == 1);
+    REQUIRE (plan[0].deviceChannel == 0);
+    REQUIRE_FALSE (plan[0].analyzeStereoPair);
+    REQUIRE_FALSE (plan[0].collapseStereoPair);
 }
 
 TEST_CASE (ChannelPlan_ChannelsRunInDeviceOrderAcrossARig)
@@ -100,6 +134,7 @@ TEST_CASE (ChannelPlan_ASwitchedOffInputIsNotRecordedAndTheRestKeepTheirNumbers)
     REQUIRE (plan.size() == 2);
     REQUIRE (plan[0].deviceChannel == 0);
     REQUIRE (plan[0].displayName == "Scarlett 18i8 1");
+    REQUIRE_FALSE (plan[0].analyzeStereoPair);
     REQUIRE (plan[1].deviceChannel == 2);
     REQUIRE (plan[1].displayName == "Scarlett 18i8 3");
 }

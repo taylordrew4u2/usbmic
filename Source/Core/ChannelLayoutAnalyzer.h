@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 namespace mma {
 
@@ -24,7 +25,22 @@ public:
                        float correlation, float rmsDiffDb,
                        double blockSeconds) noexcept;
 
+    /// Production path: accumulates the raw energy and cross-energy for the
+    /// entire signal window, then derives correlation and RMS difference once.
+    /// A verdict based on the last callback alone can permanently collapse a
+    /// true stereo source just because that one callback happened to match.
+    void processBlockEnergies (float leftPeakDb, float rightPeakDb,
+                               double sumLeftSquared, double sumRightSquared,
+                               double sumLeftRight, int sampleCount,
+                               double blockSeconds) noexcept;
+
     ChannelLayoutDecision getDecision() const noexcept { return decision; }
+
+    /// True only for a verdict backed by the three-second signal window. The
+    /// sixty-second no-signal Mono answer is deliberately provisional: it is
+    /// useful as a safe local fallback, but must not be persisted and hide the
+    /// second socket of a quiet interface forever.
+    bool isDecisionPersistable() const noexcept { return decisionPersistable; }
 
     /// True once either channel has crossed -50dBFS, starting the 3s measurement window.
     bool isWindowActive() const noexcept { return windowActive; }
@@ -37,16 +53,19 @@ public:
     /// right-wired microphone ends up recording silence, so the side has to be
     /// answered rather than assumed.
     ///
-    /// Left unless the left has never risen above the silence floor while the
-    /// right has crossed the signal trigger -- the same two thresholds §2.1
-    /// already uses. A tie, a duplicated source and ordinary stereo all give
-    /// left, so this only ever moves for the case it exists for.
+    /// Left until one callback carries clear one-sided evidence. Silence keeps
+    /// the last evidenced side, while a later live opposite side may correct
+    /// it before the verdict freezes. A tie, duplicated source and ordinary
+    /// stereo do not move it.
     int getMonoSourceChannel() const noexcept;
 
+    /// Whether a callback has carried one side above the signal trigger while
+    /// the other stayed below the silence floor. Silence on both sides is not
+    /// evidence for changing a remembered physical source.
+    bool hasMonoSourceEvidence() const noexcept;
+
     /// Highest peak either channel has reached since the device was seen, in
-    /// dBFS. Exposed because "this side has never made a sound" is the evidence
-    /// behind getMonoSourceChannel(), and a caller showing its working is worth
-    /// more than one asserting a verdict.
+    /// dBFS. Useful diagnostic evidence alongside the verdict.
     float getLoudestLeftDb() const noexcept { return loudestLeftDb; }
     float getLoudestRightDb() const noexcept { return loudestRightDb; }
 
@@ -57,6 +76,10 @@ private:
     bool windowActive = false;
     bool leftSilentWholeWindow = true;
     bool rightSilentWholeWindow = true;
+    double windowSumLeftSquared = 0.0;
+    double windowSumRightSquared = 0.0;
+    double windowSumLeftRight = 0.0;
+    uint64_t windowSampleCount = 0;
 
     // Tracked from the first block rather than only inside the measurement
     // window, so the side is answerable immediately. Waiting for the window
@@ -65,7 +88,9 @@ private:
     // quiet.
     float loudestLeftDb = -200.0f;
     float loudestRightDb = -200.0f;
+    int monoSourceEvidence = -1;
     ChannelLayoutDecision decision = ChannelLayoutDecision::Pending;
+    bool decisionPersistable = false;
 
     static constexpr float kSignalTriggerDb = -50.0f;
     static constexpr float kSilenceThresholdDb = -80.0f;
@@ -74,8 +99,7 @@ private:
     static constexpr double kWindowSeconds = 3.0;
     static constexpr double kTimeoutSeconds = 60.0;
 
-    void finalizeWindow (float leftPeakDb, float rightPeakDb,
-                         float correlation, float rmsDiffDb) noexcept;
+    void finalizeWindow() noexcept;
 };
 
 } // namespace mma
