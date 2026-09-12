@@ -14,10 +14,6 @@ CFStringRef makeCFString (const std::string& text)
     return CFStringCreateWithCString (kCFAllocatorDefault, text.c_str(), kCFStringEncodingUTF8);
 }
 
-/// One stable UID for our aggregate, so republishing replaces the device other
-/// apps already selected instead of stacking a second one beside it.
-constexpr const char* kOurAggregateUid = "com.multimicaggregator.combined";
-
 } // namespace
 
 class MacSystemAggregateDevice : public SystemAggregateDevice

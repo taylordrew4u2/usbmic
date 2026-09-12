@@ -5,6 +5,8 @@
 
 namespace mma {
 
+inline constexpr const char* kOurAggregateUid = "com.multimicaggregator.combined";
+
 /// The outward face of the rig: one combined, user-named input device that
 /// OTHER apps can record from, containing every connected microphone as its
 /// channels. This is what makes the aggregator feel like a single device

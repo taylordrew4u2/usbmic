@@ -160,8 +160,19 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
         if (! readTag (file, chunkTag) || ! readU32 (file, chunkSize))
             break;
 
+        const auto chunkStart = static_cast<uint64_t> (file.tellg());
+        const uint64_t paddedSize = static_cast<uint64_t> (chunkSize) + (chunkSize & 1u);
+        // The data size may be stale after a crash; other chunks must fit on
+        // disk. Widen before adding and seek absolutely so corrupt sizes can
+        // neither wrap nor send the parser backwards.
+        if (! tagIs (chunkTag, "data") && paddedSize > fileSize - chunkStart)
+            return result;
+
         if (tagIs (chunkTag, "fmt "))
         {
+            if (chunkSize < 16)
+                return result;
+
             std::array<char, 4> field {};
             file.read (field.data(), 2); // audio format, unused
             file.read (field.data(), 2);
@@ -176,7 +187,7 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
                           | (static_cast<uint32_t> (static_cast<unsigned char> (field[1])) << 8);
 
             // Skip any remainder of an extended fmt chunk.
-            file.seekg (static_cast<std::streamoff> (8 + chunkSize) - 24, std::ios::cur);
+            file.seekg (static_cast<std::streamoff> (chunkStart + paddedSize), std::ios::beg);
         }
         else if (tagIs (chunkTag, "data"))
         {
@@ -189,7 +200,7 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
         else
         {
             // Chunks are word-aligned, so an odd size carries a pad byte.
-            file.seekg (static_cast<std::streamoff> (chunkSize + (chunkSize & 1)), std::ios::cur);
+            file.seekg (static_cast<std::streamoff> (chunkStart + paddedSize), std::ios::beg);
         }
     }
 

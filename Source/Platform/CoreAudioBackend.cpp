@@ -1,6 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include "CoreAudioBackend.h"
+#include "SystemAggregateDevice.h"
 
 #if JUCE_MAC
 
@@ -487,6 +488,10 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         // stable CoreAudio UID string here as the practical stand-in since it
         // already encodes enough to distinguish ports across reconnects.
         d.usbLocationId = readStringProperty (deviceId, kAudioDevicePropertyDeviceUID);
+
+        // Never feed our published aggregate back into its own source list.
+        if (d.usbLocationId == kOurAggregateUid)
+            continue;
 
         // §3.1 needs to tell the machine's own microphone apart from one the
         // user plugged in. CoreAudio enumerates the built-in first, so without

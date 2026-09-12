@@ -81,6 +81,8 @@ fakewasapi::EndpointSpec microphone (const std::string& id, const std::string& n
     spec.friendlyName = name;
     spec.isCapture = true;
     spec.exclusiveFormats = std::move (formats);
+    if (! spec.exclusiveFormats.empty())
+        spec.mixFormat = spec.exclusiveFormats.front();
     return spec;
 }
 
@@ -92,6 +94,8 @@ fakewasapi::EndpointSpec headphones (const std::string& id, const std::string& n
     spec.friendlyName = name;
     spec.isCapture = false;
     spec.exclusiveFormats = std::move (formats);
+    if (! spec.exclusiveFormats.empty())
+        spec.mixFormat = spec.exclusiveFormats.front();
     return spec;
 }
 
@@ -574,11 +578,57 @@ void aSessionThatCannotWatchTheRigSaysSo()
     fakewasapi::setNotificationRegistrationAllowed (true);
 }
 
+void enumerationPreservesEveryInputAndSupportedRate()
+{
+    fakewasapi::reset();
+    auto spec = microphone ("four", "Four inputs",
+        { fakewasapi::Format::pcm (4, 24, 44100), fakewasapi::Format::pcm (4, 24, 96000),
+          fakewasapi::Format::pcm (1, 24, 44100) });
+    fakewasapi::addEndpoint (spec);
+    auto blocked = microphone ("blocked", "Unavailable", {});
+    blocked.allowActivate = false;
+    fakewasapi::addEndpoint (blocked);
+    mma::WasapiAsioBackend backend;
+    const auto devices = backend.enumerateInputDevices();
+    check (devices.size() == 2, "an unavailable device remains visible");
+    for (const auto& d : devices)
+    {
+        if (d.usbLocationId == "four")
+        {
+            check (d.maxInputChannels == 4, "enumeration preserves all four sockets");
+            check (d.currentSampleRate == 44100, "the current engine rate is reported");
+            check (d.supportedSampleRates == std::vector<uint32_t> ({ 44100, 96000 }),
+                   "only rates accepted in exclusive mode are advertised");
+        }
+        else
+            check (d.supportedSampleRates.empty(), "failed activation invents no rates");
+    }
+    auto converted = microphone ("converted", "Shared mixer resamples",
+                                  { fakewasapi::Format::pcm (1, 24, 44100) });
+    converted.mixFormat = fakewasapi::Format::floatFormat (1, 48000);
+    fakewasapi::addEndpoint (converted);
+    for (const auto& d : backend.enumerateInputDevices())
+        if (d.usbLocationId == "converted")
+            check (d.currentSampleRate == 0 && d.supportedSampleRates == std::vector<uint32_t> ({ 44100 }),
+                   "an unsupported shared-engine rate cannot win automatic negotiation");
+    Capture capture;
+    check (backend.openInputStream ("four", 44100, 256, capture.callback()), "four inputs open");
+    check (fakewasapi::negotiatedFormat ("four").channels == 4,
+           "a driver accepting mono still opens all four sockets");
+    check (fakewasapi::pushCapture ("four", { { .1f, .1f }, { .2f, .2f }, { .3f, .3f }, { .4f, .4f } }),
+           "four distinct inputs reach the callback");
+    const auto audio = capture.block();
+    check (audio.size() == 4 && audio[3].size() == 2 && std::fabs (audio[3][0] - .4f) < 1e-5f,
+           "the last socket retains its signal");
+    backend.closeAllStreams();
+}
+
 int main()
 {
     std::printf ("WASAPI backend, driven against a virtual endpoint layer\n");
     std::printf ("=======================================================\n");
 
+    enumerationPreservesEveryInputAndSupportedRate();
     a24BitOnlyMicrophoneOpensAndDeliversAudio();
     a16BitMicrophoneRoundTripsWithinItsQuantisation();
     aFloatCapableDeviceStillGetsFloat();

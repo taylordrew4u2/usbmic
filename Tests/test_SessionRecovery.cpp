@@ -220,3 +220,46 @@ TEST_CASE (SessionRecovery_AFileThatIsThereButUnreadableIsNotCalledEmpty)
 
     std::filesystem::remove (dir);
 }
+
+TEST_CASE (SessionRecovery_MalformedChunksCannotLoopOrReadOutsideTheirBounds)
+{
+    // Includes the exact overflow that used to seek back to the fmt header.
+    for (const uint32_t size : { 0xfffffff8u, 0xffffffffu, 0u, 15u, 100u })
+    {
+        const auto path = tmpPath ("bad-chunk.wav");
+        std::ofstream f (path, std::ios::binary);
+        const auto u32 = [&f] (uint32_t value) {
+            for (int i = 0; i < 4; ++i) f.put (static_cast<char> (value >> (8 * i)));
+        };
+        f.write ("RIFF", 4); u32 (28); f.write ("WAVEfmt ", 8); u32 (size);
+        const char body[16] = { 1, 0, 1, 0, char(0x80), char(0xbb), 0, 0,
+                               0, char(0x77), 1, 0, 2, 0, 16, 0 };
+        f.write (body, 16); f.close();
+        const auto before = std::filesystem::file_size (path);
+        const auto result = SessionRecovery::repairWavFile (path);
+        REQUIRE (result.frames == 0);
+        REQUIRE_FALSE (result.headerWasStale);
+        REQUIRE (std::filesystem::file_size (path) == before);
+        std::remove (path.c_str());
+    }
+}
+
+TEST_CASE (SessionRecovery_OddExtendedFmtAndUnknownChunksKeepTheirPadding)
+{
+    const auto path = tmpPath ("padded-chunks.wav");
+    std::ofstream f (path, std::ios::binary);
+    const auto u32 = [&f] (uint32_t value) {
+        for (int i = 0; i < 4; ++i) f.put (static_cast<char> (value >> (8 * i)));
+    };
+    f.write ("RIFF", 4); u32 (0); f.write ("WAVEJUNK", 8); u32 (1);
+    f.put ('x'); f.put (0);
+    f.write ("fmt ", 4); u32 (17);
+    const char body[16] = { 1, 0, 1, 0, 2, 0, 0, 0, 4, 0, 0, 0, 2, 0, 16, 0 };
+    f.write (body, 16); f.put (0); f.put (0);
+    f.write ("data", 4); u32 (0); f.write ("abcd", 4); f.close();
+    const auto result = SessionRecovery::repairWavFile (path);
+    REQUIRE (result.frames == 2);
+    REQUIRE (result.headerWasStale);
+    REQUIRE_FALSE (result.reportedEmpty);
+    std::remove (path.c_str());
+}
