@@ -33,9 +33,10 @@ struct AlignmentResult
     uint64_t underrunSamples = 0;
 };
 
+constexpr int kStartupAlignmentBlock = 64;
+
 AlignmentResult runStartupAlignment (double seconds, double rate)
 {
-    constexpr int block = 64;
     constexpr std::array<double, 4> offsets { 40.0, 100.0, -80.0, 45.0 };
 
     struct Clock
@@ -46,27 +47,28 @@ AlignmentResult runStartupAlignment (double seconds, double rate)
         long long pushed = 0;
         long long markerSourceIndex = -1;
         long long markerOutputIndex = -1;
-        std::vector<float> input = std::vector<float> (block + 1, 0.0f);
+        std::vector<float> input = std::vector<float> (kStartupAlignmentBlock + 1, 0.0f);
     };
 
     std::array<Clock, offsets.size()> clocks;
     for (size_t i = 0; i < clocks.size(); ++i)
     {
         clocks[i].ppm = offsets[i];
-        clocks[i].stream.prepare (rate, block);
+        clocks[i].stream.prepare (rate, kStartupAlignmentBlock);
     }
 
-    const auto totalBlocks = static_cast<long long> (seconds * rate / block);
-    const auto markerBlock = totalBlocks - static_cast<long long> (30.0 * rate / block);
-    std::vector<float> output (block, 0.0f);
+    const auto totalBlocks = static_cast<long long> (seconds * rate / kStartupAlignmentBlock);
+    const auto markerBlock = totalBlocks
+                           - static_cast<long long> (30.0 * rate / kStartupAlignmentBlock);
+    std::vector<float> output (kStartupAlignmentBlock, 0.0f);
     long long outputIndex = 0;
 
     for (long long blockIndex = 0; blockIndex < totalBlocks; ++blockIndex)
     {
         for (auto& clock : clocks)
         {
-            clock.sampleDebt += block * clock.ppm * 1.0e-6;
-            int inputSamples = block;
+            clock.sampleDebt += kStartupAlignmentBlock * clock.ppm * 1.0e-6;
+            int inputSamples = kStartupAlignmentBlock;
 
             if (clock.sampleDebt >= 1.0)
             {
@@ -93,11 +95,11 @@ AlignmentResult runStartupAlignment (double seconds, double rate)
 
         for (auto& clock : clocks)
         {
-            clock.stream.pull (output.data(), block);
+            clock.stream.pull (output.data(), kStartupAlignmentBlock);
 
             if (clock.markerSourceIndex >= 0 && clock.markerOutputIndex < 0)
             {
-                for (int sample = 0; sample < block; ++sample)
+                for (int sample = 0; sample < kStartupAlignmentBlock; ++sample)
                 {
                     if (output[static_cast<size_t> (sample)] > 0.05f)
                     {
@@ -108,7 +110,7 @@ AlignmentResult runStartupAlignment (double seconds, double rate)
             }
         }
 
-        outputIndex += block;
+        outputIndex += kStartupAlignmentBlock;
     }
 
     AlignmentResult result;
