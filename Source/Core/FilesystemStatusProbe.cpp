@@ -9,14 +9,88 @@ namespace mma {
 
 namespace fs = std::filesystem;
 
-FilesystemStatusProbe::FilesystemStatusProbe (std::chrono::milliseconds refreshInterval)
-    : interval (std::max (std::chrono::milliseconds (1), refreshInterval))
+struct FilesystemStatusProbe::State
 {
-    // Start only after every member has completed construction. Launching the
-    // thread from the member-initializer list let run() observe `stopping` and
-    // `hasRequest` while those later-declared fields were still being
-    // initialized; ThreadSanitizer caught that constructor-order race.
-    worker = std::thread ([this] { run(); });
+    State (std::chrono::milliseconds refreshInterval, Sampler sampleFunction,
+           Snapshot initialSnapshot = {})
+        : interval (std::max (std::chrono::milliseconds (1), refreshInterval)),
+          sampler (std::move (sampleFunction)),
+          latest (std::move (initialSnapshot))
+    {
+    }
+
+    const std::chrono::milliseconds interval;
+    const Sampler sampler;
+    mutable std::mutex mutex;
+    mutable std::condition_variable condition;
+    bool stopping = false;
+    bool hasRequest = false;
+    uint64_t requestGeneration = 0;
+    Request requested;
+    Snapshot latest;
+};
+
+FilesystemStatusProbe::FilesystemStatusProbe (std::chrono::milliseconds refreshInterval)
+    : FilesystemStatusProbe (refreshInterval, &FilesystemStatusProbe::sample)
+{
+}
+
+FilesystemStatusProbe::FilesystemStatusProbe (std::chrono::milliseconds refreshInterval,
+                                              Sampler sampler)
+    : state (std::make_shared<State> (refreshInterval, std::move (sampler)))
+{
+    launchWorker (state);
+}
+
+void FilesystemStatusProbe::launchWorker (const std::shared_ptr<State>& shared)
+{
+    // The OS may never return from a query against a disappearing removable or
+    // network volume. The detached worker therefore owns all state it can
+    // touch and never refers back to this object's lifetime. There is exactly
+    // one worker for each request target. Replacing the target retires this
+    // state and gives the new volume its own worker; ordinary refreshes and
+    // throughput-only changes keep using this one.
+    std::thread worker ([shared]
+    {
+        try
+        {
+            run (shared);
+        }
+        catch (...)
+        {
+            // Nothing may escape a detached thread. If bookkeeping itself
+            // unexpectedly fails, wake support/test waiters and retire this
+            // one-worker probe rather than terminating the process.
+            try
+            {
+                const std::lock_guard<std::mutex> guard (shared->mutex);
+                shared->stopping = true;
+                shared->condition.notify_all();
+            }
+            catch (...)
+            {
+            }
+        }
+    });
+
+    try
+    {
+        worker.detach();
+    }
+    catch (...)
+    {
+        // detach() should only fail for an invalid thread handle. If the
+        // thread remains joinable, it cannot yet be in a filesystem call: the
+        // constructor has not returned, so no request can have been supplied.
+        {
+            const std::lock_guard<std::mutex> guard (shared->mutex);
+            shared->stopping = true;
+        }
+        shared->condition.notify_all();
+        if (worker.joinable())
+            worker.join();
+        throw;
+    }
 }
 
 FilesystemStatusProbe::~FilesystemStatusProbe()
@@ -26,50 +100,137 @@ FilesystemStatusProbe::~FilesystemStatusProbe()
 
 void FilesystemStatusProbe::setRequest (Request request)
 {
+    std::shared_ptr<State> shared;
+    std::shared_ptr<State> retired;
+    bool notifyReplacement = false;
+
     {
-        const std::lock_guard<std::mutex> guard (mutex);
-        if (stopping || (hasRequest && request == requested))
+        const std::lock_guard<std::mutex> handleGuard (stateHandleMutex);
+        shared = state;
+
+        std::unique_lock<std::mutex> stateGuard (shared->mutex);
+        if (shared->stopping || (shared->hasRequest && request == shared->requested))
             return;
 
-        requested = std::move (request);
-        hasRequest = true;
-        ++requestGeneration;
+        const bool targetChanged = shared->hasRequest
+            && ! sameFilesystemTargets (request, shared->requested);
+
+        if (! targetChanged)
+        {
+            shared->requested = std::move (request);
+            shared->hasRequest = true;
+            ++shared->requestGeneration;
+        }
+        else
+        {
+            // A worker trapped on the previous volume cannot service the new
+            // take. Start a fresh state before retiring the old one. If the OS
+            // refuses the new thread, keep the old state alive and update its
+            // request; it may still catch up, and callers continue to see the
+            // honest "unknown" snapshot rather than a stale match.
+            const auto previousSnapshot = shared->latest;
+            const auto interval = shared->interval;
+            const auto sampler = shared->sampler;
+            const auto replacementGeneration = shared->requestGeneration + 1;
+            stateGuard.unlock();
+
+            std::shared_ptr<State> replacement;
+            try
+            {
+                replacement = std::make_shared<State> (interval, sampler, previousSnapshot);
+                launchWorker (replacement);
+            }
+            catch (...)
+            {
+                stateGuard.lock();
+                if (! shared->stopping)
+                {
+                    shared->requested = std::move (request);
+                    shared->hasRequest = true;
+                    ++shared->requestGeneration;
+                }
+                stateGuard.unlock();
+                shared->condition.notify_all();
+                return;
+            }
+
+            {
+                const std::lock_guard<std::mutex> replacementGuard (replacement->mutex);
+                replacement->requested = std::move (request);
+                replacement->hasRequest = true;
+                replacement->requestGeneration = replacementGeneration;
+            }
+
+            stateGuard.lock();
+            shared->stopping = true;
+            stateGuard.unlock();
+
+            retired = shared;
+            state = replacement;
+            shared = std::move (replacement);
+            notifyReplacement = true;
+        }
     }
 
-    condition.notify_all();
+    shared->condition.notify_all();
+    if (notifyReplacement && retired != nullptr)
+        retired->condition.notify_all();
 }
 
 FilesystemStatusProbe::Snapshot FilesystemStatusProbe::getSnapshot() const
 {
-    const std::lock_guard<std::mutex> guard (mutex);
-    return latest;
+    std::shared_ptr<State> shared;
+    {
+        const std::lock_guard<std::mutex> handleGuard (stateHandleMutex);
+        shared = state;
+    }
+    const std::lock_guard<std::mutex> guard (shared->mutex);
+    return shared->latest;
 }
 
 bool FilesystemStatusProbe::waitForRevisionAfter (uint64_t revision, Snapshot& result,
                                                    std::chrono::milliseconds timeout) const
 {
-    std::unique_lock<std::mutex> lock (mutex);
-    const bool changed = condition.wait_for (lock, timeout, [this, revision]
+    std::shared_ptr<State> shared;
     {
-        return stopping || latest.revision > revision;
+        const std::lock_guard<std::mutex> handleGuard (stateHandleMutex);
+        shared = state;
+    }
+    std::unique_lock<std::mutex> lock (shared->mutex);
+    const bool changed = shared->condition.wait_for (lock, timeout, [shared, revision]
+    {
+        return shared->stopping || shared->latest.revision > revision;
     });
 
-    result = latest;
+    result = shared->latest;
     return changed && result.revision > revision;
 }
 
 void FilesystemStatusProbe::stop()
 {
+    std::shared_ptr<State> shared;
+
     {
-        const std::lock_guard<std::mutex> guard (mutex);
-        if (stopping)
+        const std::lock_guard<std::mutex> handleGuard (stateHandleMutex);
+        shared = state;
+        const std::lock_guard<std::mutex> guard (shared->mutex);
+        if (shared->stopping)
             return;
-        stopping = true;
+        shared->stopping = true;
     }
 
-    condition.notify_all();
-    if (worker.joinable())
-        worker.join();
+    // Never join here: the worker may currently be inside an unbounded OS
+    // filesystem call. It will observe stopping and release its shared state
+    // if and when that call returns.
+    shared->condition.notify_all();
+}
+
+bool FilesystemStatusProbe::sameFilesystemTargets (const Request& a,
+                                                   const Request& b) noexcept
+{
+    return a.destinationPath == b.destinationPath
+        && a.sessionFolder == b.sessionFolder
+        && a.mirrorPath == b.mirrorPath;
 }
 
 FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& request)
@@ -168,32 +329,49 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     return out;
 }
 
-void FilesystemStatusProbe::run()
+void FilesystemStatusProbe::run (std::shared_ptr<State> shared)
 {
-    std::unique_lock<std::mutex> lock (mutex);
-    condition.wait (lock, [this] { return stopping || hasRequest; });
-
-    while (! stopping)
+    std::unique_lock<std::mutex> lock (shared->mutex);
+    shared->condition.wait (lock, [shared]
     {
-        const auto request = requested;
-        const auto generation = requestGeneration;
+        return shared->stopping || shared->hasRequest;
+    });
+
+    while (! shared->stopping)
+    {
+        const auto request = shared->requested;
+        const auto generation = shared->requestGeneration;
 
         lock.unlock();
-        auto snapshot = sample (request);
+        Snapshot snapshot;
+        bool completed = false;
+
+        try
+        {
+            snapshot = shared->sampler (request);
+            completed = true;
+        }
+        catch (...)
+        {
+            // An exception must not escape a detached worker and terminate the
+            // process. Keep the last confirmed snapshot and retry later.
+        }
+
         lock.lock();
 
         // Do not publish a slow result for a destination that was replaced
-        // while the card was being queried.
-        if (generation == requestGeneration)
+        // while the card was being queried, or any result after stop() has
+        // promised the owner that probing is finished.
+        if (! shared->stopping && completed && generation == shared->requestGeneration)
         {
-            snapshot.revision = latest.revision + 1;
-            latest = std::move (snapshot);
-            condition.notify_all();
+            snapshot.revision = shared->latest.revision + 1;
+            shared->latest = std::move (snapshot);
+            shared->condition.notify_all();
         }
 
-        condition.wait_for (lock, interval, [this, generation]
+        shared->condition.wait_for (lock, shared->interval, [shared, generation]
         {
-            return stopping || generation != requestGeneration;
+            return shared->stopping || generation != shared->requestGeneration;
         });
     }
 }

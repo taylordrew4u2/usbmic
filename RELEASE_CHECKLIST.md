@@ -20,13 +20,29 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **532 unit tests**; if tests change, record the final discovered count here.
-- [ ] `sim_coreaudio`, `sim_wasapi` and `sim_camera` pass. The candidate baseline
-  is **115 CoreAudio checks**, **70 WASAPI checks** and **158 camera checks**;
-  record final counts from the candidate run rather than copying these numbers
-  blindly.
+  is **547 unit tests**; if tests change, record the final discovered count here.
+- [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
+  `sim_camera_sync_lifecycle` pass. The candidate baseline is **179 CoreAudio
+  checks**, **70 WASAPI checks**, **247 camera checks** and **7 synchronous
+  camera-lifecycle checks**; record final counts from the candidate run rather
+  than copying these numbers blindly.
+- [ ] The CoreAudio simulator proves the five-second production input-open
+  deadline, duplicate-open refusal, detached cleanup, IOProc/property-listener
+  lifetime gate and sticky quarantine when a driver retains callback client
+  data.
 - [ ] The sanitizer jobs pass. Both platform simulators run with ASan/UBSan
   and TSan.
+- [ ] Detached storage-task tests prove one-flight refresh, owner destruction
+  without a join, stale-result rejection after a destination change, and
+  fail-closed recovery status when a worker cannot produce a result.
+- [ ] `sim_take_combiner` proves that quitting never joins a wedged ffmpeg
+  child, cancellation leaves no partial combined file, and non-zero ffmpeg
+  exits are never reported as completed videos.
+- [ ] Camera lifecycle checks prove that a preview is not called live until an
+  actual frame arrives, loss and late recovery are generation-scoped, REC is
+  shown only after the backend confirms its writer, and metadata/combining wait
+  for successful movie finalization. DirectShow start refusal must produce no
+  REC state and no claimed movie.
 - [ ] `sim_camera`, `sim_capture_mac`, `e2e_capture`, `live_capture`,
   `e2e_app_take.sh` and `e2e_refusal.sh` pass where their workflows support them.
 
@@ -36,6 +52,23 @@ release until every **GA blocker** below is closed with evidence.
   ZIP and macOS DMG.
 - [ ] A clean-machine install and launch succeeds from each final downloaded
   artifact, not only from a build directory.
+- [ ] On the final macOS artifact, launch with a simulated or known-stalling USB
+  input and with a stale/unresponsive `/Volumes` entry. The window remains
+  responsive after the five-second input deadline, the home recording fallback
+  is available immediately, and quitting does not join either detached cleanup.
+- [ ] Stall each storage path independently: removable-volume discovery,
+  free-space/status polling, destination preflight, destination recovery and
+  local-backup recovery. Launch, destination changes and quit remain responsive;
+  obsolete results never replace current state; recording remains disabled with
+  a useful reason until every required preflight and recovery check succeeds.
+- [ ] Stall post-take ffmpeg combining, dismiss recovery after removing its
+  card, and reselect a reused mount path. Quit/dismiss remain responsive, no
+  partial combined file is presented, and the replacement medium is rescanned.
+- [ ] **GA blocker:** Pull or wedge the removable recording volume precisely
+  during Record start, Stop/finalization, saved-take listing and diagnostics
+  export. None of those message-thread paths may freeze the window or shutdown;
+  the candidate currently has detached launch, polling, preflight and recovery
+  work, but this remaining hostile-timing matrix is not yet closed.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
   reports 1.12.0 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.

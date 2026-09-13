@@ -131,7 +131,10 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build/_deps
-          key: juce-4f43011b96eb0636104cb3e433894cda98243626-${{ runner.os }}-${{ runner.arch }}
+          # Release's macOS cache contains universal arm64+x86_64 generated
+          # state, unlike CI's native-only tree. Keep the workflows namespaced
+          # so an immutable shared cache cannot cross-contaminate them.
+          key: release-juce-4f43011b96eb0636104cb3e433894cda98243626-${{ hashFiles('ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch') }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Configure macOS universal build
         if: runner.os == 'macOS'
@@ -683,6 +686,10 @@ jobs:
             spctl --assess --type execute --verbose=2 "$verify/$appname"
           fi
           test -f "$verify/.background/background.png"
+          test -L "$verify/Applications" \
+            || { echo "::error::Applications link missing from macOS disk image"; exit 1; }
+          [[ "$(readlink "$verify/Applications")" == "/Applications" ]] \
+            || { echo "::error::Applications link has the wrong target"; exit 1; }
           for document in README.md LICENSE LICENSING.md SUPPORT.md PRIVACY.md RELEASE_CHECKLIST.md; do
             test -f "$verify/$document" \
               || { echo "::error::$document missing from macOS disk image"; exit 1; }
@@ -984,7 +991,24 @@ jobs:
           test -f "$source_verify/SobStage-${version}-source/CMakeLists.txt"
           test -f "$source_verify/SobStage-${version}-source/ThirdParty/JUCE/CMakeLists.txt"
           test -f "$source_verify/SobStage-${version}-source/ThirdParty/JUCE/LICENSE.md"
+          test -f "$source_verify/SobStage-${version}-source/ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch"
+          test -f "$source_verify/SobStage-${version}-source/cmake/ApplyJucePatches.cmake"
           test -f "$source_verify/SobStage-${version}-source/SOURCE_REVISIONS.txt"
+
+          # Exercise the patch from the extracted corresponding-source bundle,
+          # rather than checking only that the files have familiar names. This
+          # proves the shipped raw JUCE tree accepts the patch, the helper is
+          # idempotent, and the resulting source matches the reverse diff.
+          source_tree="$source_verify/SobStage-${version}-source"
+          patch_probe="${RUNNER_TEMP}/verify-source-camera-patch.cmake"
+          printf 'include("%s")\nsobstage_apply_juce_camera_patch("%s")\nsobstage_apply_juce_camera_patch("%s")\n' \
+            "$source_tree/cmake/ApplyJucePatches.cmake" \
+            "$source_tree/ThirdParty/JUCE" \
+            "$source_tree/ThirdParty/JUCE" > "$patch_probe"
+          cmake -P "$patch_probe"
+          git -C "$source_tree/ThirdParty/JUCE" apply --reverse --check \
+            --ignore-whitespace --whitespace=nowarn \
+            "$source_tree/ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch"
 
           # Prove the macOS ZIP retained its executable mode through the
           # Actions upload/download boundary before this exact file is promoted.

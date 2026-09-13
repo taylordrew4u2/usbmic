@@ -11,7 +11,13 @@
 #include <cstdio>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <set>
+#include <thread>
+
+#if JUCE_MAC || defined (__linux__)
+#include <dirent.h>
+#endif
 
 #if JUCE_MAC
 #include "../Platform/CoreAudioBackend.h"
@@ -24,6 +30,58 @@
 namespace mma {
 
 namespace {
+
+std::vector<std::string> mutationAliasesForRoots (const std::vector<std::string>& roots)
+{
+    std::vector<std::string> aliases;
+    aliases.reserve (roots.size() * 2);
+
+    for (const auto& root : roots)
+    {
+        if (root.empty())
+            continue;
+
+        aliases.push_back (root);
+
+        // weakly_canonical resolves every existing symlink/alias prefix while
+        // still accepting a take folder which has not been created yet. This
+        // may enter a stale removable volume, so this helper is called only by
+        // detached workers, never by the message thread.
+        std::error_code error;
+        const auto canonical = std::filesystem::weakly_canonical (
+            std::filesystem::u8path (root), error);
+
+        if (! error)
+        {
+            const auto resolved = canonical.u8string();
+            if (! resolved.empty())
+                aliases.push_back (resolved);
+        }
+    }
+
+    return aliases;
+}
+
+DetachedPathMutationGate::LeasePtr waitForMutationLease (
+    DetachedPathMutationGate gate,
+    const std::vector<std::string>& roots,
+    const std::atomic<bool>& cancelled)
+{
+    const auto aliases = mutationAliasesForRoots (roots);
+
+    while (! cancelled.load (std::memory_order_acquire))
+    {
+        if (auto lease = gate.tryAcquire (aliases))
+            return lease;
+
+        // A prior detached syscall may never return. This worker is disposable
+        // too, so polling here never blocks the message thread and selecting a
+        // genuinely different root can abandon it immediately.
+        std::this_thread::sleep_for (std::chrono::milliseconds (10));
+    }
+
+    return {};
+}
 
 // The version CMake stamped in. JUCE_APP_VERSION is only defined for builds
 // that go through JuceHeader.h, so stringifying it here wrote the literal
@@ -56,6 +114,66 @@ bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
         return false;
 
     return file.getSize() == static_cast<juce::int64> (text.getNumBytesAsUTF8());
+}
+
+std::vector<juce::File> directChildDirectories (const juce::File& root)
+{
+    std::vector<juce::File> result;
+
+   #if JUCE_MAC || defined (__linux__)
+    // JUCE's macOS File::findChildFiles path goes through
+    // NSAllDescendantPathsEnumerator, which has been observed waiting forever
+    // when /Volumes contains a disappearing capture disk. These are flat mount
+    // roots, so use the native non-recursive directory API directly. The
+    // caller validates each candidate on its background worker.
+    const auto path = root.getFullPathName();
+    std::unique_ptr<DIR, decltype (&::closedir)> directory (
+        ::opendir (path.toRawUTF8()), &::closedir);
+
+    if (directory == nullptr)
+        return result;
+
+    while (const auto* entry = ::readdir (directory.get()))
+    {
+        const juce::String name = juce::String::fromUTF8 (entry->d_name);
+
+        if (name == "." || name == "..")
+            continue;
+
+       #if defined (DT_DIR) && defined (DT_LNK) && defined (DT_UNKNOWN)
+        if (entry->d_type != DT_DIR
+            && entry->d_type != DT_LNK
+            && entry->d_type != DT_UNKNOWN)
+            continue;
+       #endif
+
+        result.push_back (root.getChildFile (name));
+    }
+
+   #else
+    for (const auto& child : root.findChildFiles (juce::File::findDirectories, false))
+        result.push_back (child);
+   #endif
+
+    return result;
+}
+
+Application::StorageVolume homeStorageVolumeFallback()
+{
+    const auto destination = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                 .getChildFile ("RECORDINGS");
+    return { "Home folder", destination.getFullPathName(), false, false };
+}
+
+juce::String baseSessionFolderName (juce::Time now, const juce::String& name)
+{
+    auto cleaned = SessionFolderNaming::sanitizeName (name.toStdString());
+    if (cleaned.empty())
+        cleaned = SessionFolderNaming::kDefaultName;
+
+    return juce::String (SessionFolderNaming::buildFolderName (
+        now.getYear(), now.getMonth() + 1, now.getDayOfMonth(),
+        now.getHours(), now.getMinutes(), cleaned));
 }
 
 } // namespace
@@ -173,9 +291,9 @@ void Application::initialise()
         chooseInitialDestination();
 
     // A remembered destination bypasses chooseInitialDestination(), but the
-    // Settings panel will still need the volume list. Prime its one allowed
-    // synchronous snapshot during startup so opening Settings can never turn
-    // into the first mount/free-space scan on the message thread.
+    // Settings panel will still need the volume list. This only schedules the
+    // mount/free-space scan; it immediately returns the home-folder fallback,
+    // so a sick removable volume cannot hold the window closed at launch.
     (void) getStorageVolumes();
 
     // Start the filesystem worker before the window asks for its first status
@@ -185,14 +303,15 @@ void Application::initialise()
     // §6.4: benchmark before the user reaches for record, not at record time.
     beginPreflightForDestination();
 
-    // §6.6: before the window opens, and only ever here. It rewrites file
-    // headers, which must never happen while a writer has those files open --
-    // at launch nothing does.
+    // §6.6: schedule the one-shot recovery work before the window opens.
+    // The walks and repairs run on detached, worker-owned state; arming stays
+    // gated until the roots this take would use have finished.
     scanForInterruptedSessions();
 
-    // §5.1: monitoring is live from launch, independent of record state --
-    // there is deliberately no "arm monitoring" step anywhere in this flow.
-    restartCapture();
+    // §5.1 monitoring was already opened by the initial
+    // onDeviceListChanged() above. Reopening the identical CoreAudio IOProcs
+    // here immediately after startup made some USB drivers stall in their HAL
+    // teardown/recreate path before the window could appear.
 
     // Enumeration only. Nothing is opened here, so a rig with no camera
     // switched on turns no camera light on and spends no privacy prompt.
@@ -1447,14 +1566,12 @@ std::vector<Application::StorageVolume> Application::scanStorageVolumes()
     // /Volumes; on Windows the roots are the drive letters; on Linux the
     // common mount points are covered by the roots plus /media and /mnt.
     const juce::File volumesDir ("/Volumes");
-    if (volumesDir.isDirectory())
-        for (const auto& child : volumesDir.findChildFiles (juce::File::findDirectories, false))
-            add (child, false);
+    for (const auto& child : directChildDirectories (volumesDir))
+        add (child, false);
 
     for (const auto& dir : { juce::File ("/media"), juce::File ("/mnt") })
-        if (dir.isDirectory())
-            for (const auto& child : dir.findChildFiles (juce::File::findDirectories, false))
-                add (child, true);
+        for (const auto& child : directChildDirectories (dir))
+            add (child, true);
 
     juce::Array<juce::File> roots;
     juce::File::findFileSystemRoots (roots);
@@ -1470,51 +1587,17 @@ std::vector<Application::StorageVolume> Application::scanStorageVolumes()
 
 std::vector<Application::StorageVolume> Application::getStorageVolumes() const
 {
-    constexpr double kRefreshIntervalMs = 2000.0;
-    const auto now = juce::Time::getMillisecondCounterHiRes();
-    bool needInitialScan = false;
-    bool startBackgroundScan = false;
-
+    auto result = storageVolumeCache.getAndRefresh (std::chrono::milliseconds (2000), []
     {
-        const std::lock_guard<std::mutex> guard (storageVolumeMutex);
-        needInitialScan = storageVolumeCacheAtMs < 0.0;
-        startBackgroundScan = ! needInitialScan
-                           && now - storageVolumeCacheAtMs >= kRefreshIntervalMs
-                           && ! storageVolumeScanRunning.exchange (true);
-    }
+        return scanStorageVolumes();
+    });
 
-    // The first scan happens during Application::initialise(), before the
-    // window opens, because it is what chooses a connected removable card as
-    // the default. Every refresh after that stays off the message thread.
-    if (needInitialScan)
-    {
-        auto fresh = scanStorageVolumes();
-        const std::lock_guard<std::mutex> guard (storageVolumeMutex);
-        storageVolumeCache = std::move (fresh);
-        storageVolumeCacheAtMs = now;
-    }
-    else if (startBackgroundScan)
-    {
-        if (storageVolumeThread.joinable())
-            storageVolumeThread.join();
-
-        storageVolumeThread = std::thread ([this]
-        {
-            auto fresh = scanStorageVolumes();
-            {
-                const std::lock_guard<std::mutex> guard (storageVolumeMutex);
-                storageVolumeCache = std::move (fresh);
-                storageVolumeCacheAtMs = juce::Time::getMillisecondCounterHiRes();
-            }
-            storageVolumeScanRunning.store (false);
-        });
-    }
-
-    std::vector<StorageVolume> result;
-    {
-        const std::lock_guard<std::mutex> guard (storageVolumeMutex);
-        result = storageVolumeCache;
-    }
+    // This is deliberately constructed without asking the filesystem whether
+    // it exists, is writable or has free space. The very first call therefore
+    // has a useful answer even while the detached full scan is blocked in the
+    // OS on a stale mount. A completed scan normally replaces it immediately.
+    if (result.empty())
+        result.push_back (homeStorageVolumeFallback());
 
     // The selected marker is cheap application state rather than part of the
     // filesystem scan, so it remains current while the volume list is cached.
@@ -1528,54 +1611,27 @@ void Application::setDestinationByPath (const juce::String& path)
 {
     const juce::File target (path);
 
-    // Created on selection rather than at record time, so an unwritable card is
-    // discovered while someone is looking at the setting, not when they press
-    // record.
-    if (! target.exists())
-        target.createDirectory();
-
-    if (target.isDirectory() && target.hasWriteAccess())
-    {
-        setDestinationFolder (target);
-
-        // Announced only when it actually took effect. Mid-take the change is
-        // deferred and setDestinationFolder says so itself, so announcing
-        // "Takes will be saved to X" on top would contradict it in the same
-        // breath. And the check is against what the setting NOW says rather
-        // than against the recording state: a card pulled between the
-        // isDirectory() test above and the assignment leaves the old folder in
-        // place, and this used to announce the new one anyway.
-        if (recordingEngine.getState() == RecordingState::Recording)
-            return;
-
-        if (destinationFolder == target.getFullPathName().toStdString())
-            noteActivity (ActivityLevel::Started, "Save location",
-                          "Takes will be saved to " + target.getFullPathName() + ".");
-        else
-            noteActivity (ActivityLevel::Failed, "Save location",
-                          target.getFullPathName() + " stopped being available, so takes are still "
-                          "going to " + juce::String (destinationFolder) + ".");
-
+    if (path.trim().isEmpty())
         return;
-    }
 
-    // The click used to do nothing and say nothing: the old destination stayed,
-    // the setting looked unchanged, and a card that is read-only or was pulled
-    // between listing and choosing was indistinguishable from a misclick. The
-    // user then recorded to somewhere they believed they had changed.
-    noteActivity (ActivityLevel::Failed, "Save location",
-                  "Couldn't save to " + target.getFullPathName()
-                  + ", so takes are still going to " + juce::String (destinationFolder)
-                  + ". Check the card is plugged in and isn't locked.");
+    // The selected mount may disappear while the Settings row is being
+    // clicked. Do not ask that path anything on the message thread: accepting
+    // the inert string schedules detached recovery and write-speed checks,
+    // and their fail-closed result decides whether Record can arm.
+    setDestinationFolder (target);
+
+    if (recordingEngine.getState() != RecordingState::Recording)
+        noteActivity (ActivityLevel::Started, "Save location",
+                      "Checking " + target.getFullPathName()
+                      + " before it can be used for a take.");
 }
 
 void Application::chooseInitialDestination()
 {
-    // §10.1: destination defaults to a connected external card; falls back to
-    // ~/RECORDINGS, stated in one line. getStorageVolumes() already performs
-    // the platform-specific root discovery and JUCE's removable-drive check;
-    // use that same list so the first-run choice and the Settings picker cannot
-    // disagree about whether a writable card is present.
+    // §10.1: a first launch must not wait for a stale card mount. The first
+    // getStorageVolumes() result is therefore the immediate ~/RECORDINGS
+    // fallback while full platform discovery continues off the message thread.
+    // Settings picks up connected removable volumes from the completed cache.
     for (const auto& volume : getStorageVolumes())
     {
         if (! volume.isRemovable)
@@ -1600,6 +1656,16 @@ void Application::toggleRecording()
 {
     if (recordingEngine.getState() == RecordingState::Idle)
     {
+        // Keep the safety gates in the composition root as well as on the UI
+        // button. A keyboard/action callback must not be able to create a take
+        // while a recovery worker could still enumerate and repair that same
+        // destination or mirror.
+        if (const auto blocked = getRecordDisabledReason(); blocked.isNotEmpty())
+        {
+            recordStartProblem = blocked;
+            return;
+        }
+
         std::vector<RecordingChannel> channels;
         for (const auto& d : deviceManager.getDevices())
         {
@@ -1681,10 +1747,14 @@ void Application::toggleRecording()
                 currentMirrorFolder = mirror;
                 sessionStartIso = now.toISO8601 (true);
 
-                // The picture starts with the sound, into the same folder. A
-                // camera the user switched on but never looked at is opened
-                // here rather than being quietly left out of the take.
-                openEnabledCameras (true);
+                // Do not attempt a fresh platform camera open after the audio
+                // writer has started. JUCE's desktop open is synchronous and a
+                // broken capture-card driver can wait inside it indefinitely;
+                // doing that here would leave a take running behind a frozen
+                // interface. Enabled previews are opened before arming by the
+                // normal camera/UI reconciliation. Any camera which is not
+                // already open is reported below while the sound take remains
+                // controllable and complete.
 
                 // recordingStartMs is the audio take's t=0. Handing it over is
                 // what lets each camera record how far into the take its own
@@ -1747,6 +1817,13 @@ void Application::toggleRecording()
         // so the video files are closed and their real sizes are on disk by the
         // time anyone reads them.
         cameraController.stopRecording();
+
+        // AVFoundation's stopRecording is intentionally asynchronous. Keep
+        // all claims which consume or describe the movie files together, and
+        // run them only after each camera's didFinish callback (or the
+        // controller's bounded fail-closed timeout) has been observed.
+        auto completeStoppedTake = [this, takePeak, arrivedPeak]
+        {
 
         // Written after stopRecording() so the frame counts and buffer log it
         // records are the take's final ones -- and before recordingStartMs is
@@ -1868,22 +1945,14 @@ void Application::toggleRecording()
             const juce::File chosen (pendingDestinationFolder);
             pendingDestinationFolder.clear();
 
-            if (chosen.isDirectory())
-            {
-                applyDestinationFolder (chosen);
+            // Never stat a removable path on the message thread. The detached
+            // recovery and preflight workers now validate this requested root;
+            // recording remains fail-closed until both have answered.
+            applyDestinationFolder (chosen);
 
-                noteActivity (ActivityLevel::Started, "Save location",
-                              "Takes are now being saved to " + chosen.getFullPathName() + ".");
-            }
-            else
-            {
-                // Told at the time that it would apply from the next take, so
-                // told now that it did not. The alternative is a promise that
-                // quietly expires.
-                noteActivity (ActivityLevel::Failed, "Save location",
-                              chosen.getFullPathName() + " isn't there any more, so takes are still "
-                              "going to " + juce::String (destinationFolder) + ".");
-            }
+            noteActivity (ActivityLevel::Started, "Save location",
+                          "Checking " + chosen.getFullPathName()
+                          + " before it can be used for the next take.");
         }
 
         // Everything refused during the take -- a mic plugged in, an unplug,
@@ -1901,21 +1970,63 @@ void Application::toggleRecording()
         // combined-take inputs have captured the finished take, so a remembered
         // preview may safely return for the next one.
         cameraController.refreshCameras();
+        };
+
+        if (cameraController.isFinalizingRecording())
+        {
+            pendingStoppedTakeCompletion = std::move (completeStoppedTake);
+
+            // Sound has already been drained above. Drop the global REC state
+            // immediately so Stop stays responsive, while retaining the take
+            // paths and t=0 until the movie completion closes its metadata.
+            recordingEngine.stop();
+            bufferLadder.setRecording (false);
+            return;
+        }
+
+        completeStoppedTake();
     }
+}
+
+bool Application::pollCameraFinalization()
+{
+    cameraController.pollRecordingFinalization();
+
+    if (pendingStoppedTakeCompletion == nullptr
+        || cameraController.isFinalizingRecording())
+        return pendingStoppedTakeCompletion == nullptr;
+
+    if (const auto problem = cameraController.getRecordingFinalizationProblem();
+        problem.isNotEmpty())
+        noteActivity (ActivityLevel::Failed, "Cameras", problem);
+
+    // Clear the member before invoking it: completion refreshes cameras and
+    // may synchronously publish callbacks, but can never execute this take a
+    // second time through re-entrancy.
+    auto completion = std::move (pendingStoppedTakeCompletion);
+    pendingStoppedTakeCompletion = {};
+    completion();
+    return true;
+}
+
+bool Application::prepareToQuit()
+{
+    if (recordingEngine.getState() == RecordingState::Recording)
+    {
+        if (stopReason.isEmpty())
+            stopReason = "the app was asked to quit";
+        toggleRecording();
+    }
+
+    pollCameraFinalization();
+    return pendingStoppedTakeCompletion == nullptr
+        && ! cameraController.isFinalizingRecording();
 }
 
 juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const
 {
     const juce::File root (destinationFolder);
-
-    // §6.2: the user's session name, sanitized; "Session" when they gave none.
-    auto cleaned = SessionFolderNaming::sanitizeName (name.toStdString());
-    if (cleaned.empty())
-        cleaned = SessionFolderNaming::kDefaultName;
-
-    const auto desired = SessionFolderNaming::buildFolderName (now.getYear(), now.getMonth() + 1,
-                                                               now.getDayOfMonth(), now.getHours(),
-                                                               now.getMinutes(), cleaned);
+    const auto desired = baseSessionFolderName (now, name).toStdString();
 
     // §6.2: never overwrite, never prompt -- collisions get _2, _3, ...
     return juce::String (SessionFolderNaming::resolveCollision (desired,
@@ -1945,7 +2056,12 @@ Application::PlannedSave Application::planSave (const juce::String& proposedSess
 {
     PlannedSave plan;
     plan.parentFolder = juce::String (destinationFolder);
-    plan.folderName = resolveSessionFolderName (juce::Time::getCurrentTime(), proposedSessionName);
+    // This is a preview, not the creation step. Asking whether every candidate
+    // exists can wedge the prompt on a stale removable mount before the async
+    // recovery/preflight gates get a chance to explain the problem. At arm
+    // time createSessionFolder() performs the authoritative collision check
+    // and adds _2, _3, ... rather than overwriting an existing take.
+    plan.folderName = baseSessionFolderName (juce::Time::getCurrentTime(), proposedSessionName);
     plan.fullPath = juce::File (plan.parentFolder).getChildFile (plan.folderName).getFullPathName();
 
     // §6.3: the mirror decision is only actually taken at arm time, against the
@@ -2195,6 +2311,10 @@ juce::String Application::getRecordDisabledReason() const
     if (recordingEngine.getState() == RecordingState::Recording)
         return {};
 
+    if (pendingStoppedTakeCompletion != nullptr
+        || cameraController.isFinalizingRecording())
+        return "Finishing the camera files from the last take. Record will be ready when they are safely closed.";
+
     if (getIncludedMicCount() == 0)
         return "Plug in a USB microphone or audio interface first.";
 
@@ -2210,6 +2330,15 @@ juce::String Application::getRecordDisabledReason() const
                                : "The microphones aren't open: " + juce::String (problem);
     }
 
+    // Recovery can repair WAV headers. Do not let a new writer create files
+    // under either active write root until the corresponding one-shot scan has
+    // finished. In particular, a mirror scan that was blocked in the OS must
+    // never resume later and mistake this process's current take for a crashed
+    // one. Finished results are consumed here, on the message thread, before
+    // the button can become enabled.
+    if (const auto recoveryReason = recoveryBlockingReason(); recoveryReason.isNotEmpty())
+        return recoveryReason;
+
     // §6.4 blocks arming on a drive that is too SLOW. A drive with no room at
     // all was not checked here at all: the button stayed live, the take started
     // and was stopped by the capacity check a moment later. Refusing before the
@@ -2218,32 +2347,44 @@ juce::String Application::getRecordDisabledReason() const
     if (getRemainingRecordingSeconds() == 0.0)
         return "This drive is full. Free some space, or choose another drive.";
 
+    publishCompletedPreflight();
+    startPreflightIfNeeded();
+
     // §6.4: pre-flight blocks arming rather than degrading mid-take.
-    if (preflightRunning.load())
+    const bool preflightRunning = publishCompletedPreflight();
+    if (preflightTaskDestination == destinationFolder && preflightRunning)
         return "Checking this drive is fast enough...";
 
+    const auto it = preflightResults.find (destinationFolder);
+
+    // There is no safe third state between "benchmark is running" and "a
+    // verdict exists". In particular, a completion which lands between two
+    // separate result/running reads must not open a one-frame window where a
+    // keyboard action can arm without ever evaluating the drive.
+    if (it == preflightResults.end())
+        return recoveryMutationGate.isActive (destinationFolder)
+            ? juce::String ("A previous check is still finishing on this save location. "
+                            "Choose another location, or wait for the drive to respond.")
+            : juce::String ("Couldn't confirm this drive is fast enough yet. Choose another "
+                            "location, or reconnect this drive and try again.");
+
+    if (it != preflightResults.end())
     {
-        std::lock_guard<std::mutex> lock (preflightMutex);
-        const auto it = preflightResults.find (destinationFolder);
+        // The benchmark measured the card; the gate is about this take. They
+        // are applied apart so that switching a camera or a microphone on
+        // re-answers the question here, rather than leaving the verdict
+        // frozen at whatever the rig was when the 200 MB test last ran --
+        // which would let a card pass for the audio and then fail mid-take
+        // once a camera started, the exact outcome §6.4 exists to prevent.
+        const auto verdict = PreflightThroughputTest::evaluateMeasured (
+            it->second.sustainedMinBytesPerSec,
+            std::max (1, getIncludedMicCount()),
+            currentSampleRate,
+            std::max (1, currentBitDepth / 8),
+            static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
 
-        if (it != preflightResults.end())
-        {
-            // The benchmark measured the card; the gate is about this take. They
-            // are applied apart so that switching a camera or a microphone on
-            // re-answers the question here, rather than leaving the verdict
-            // frozen at whatever the rig was when the 200 MB test last ran --
-            // which would let a card pass for the audio and then fail mid-take
-            // once a camera started, the exact outcome §6.4 exists to prevent.
-            const auto verdict = PreflightThroughputTest::evaluateMeasured (
-                it->second.sustainedMinBytesPerSec,
-                std::max (1, getIncludedMicCount()),
-                currentSampleRate,
-                std::max (1, currentBitDepth / 8),
-                static_cast<double> (cameraController.getSelection().getEstimatedBytesPerSecond()));
-
-            if (! verdict.passed)
-                return juce::String (verdict.reason);
-        }
+        if (! verdict.passed)
+            return juce::String (verdict.reason);
     }
 
     return {};
@@ -2251,39 +2392,123 @@ juce::String Application::getRecordDisabledReason() const
 
 void Application::beginPreflightForDestination()
 {
-    if (preflightRunning.load() || destinationFolder.empty())
-        return;
-
-    {
-        std::lock_guard<std::mutex> lock (preflightMutex);
-
-        // §6.4: cached per volume. Re-benchmarking a card the user already
-        // waited on, every launch, is exactly the friction §10.1 rules out.
-        if (preflightResults.count (destinationFolder) > 0)
-            return;
-    }
-
-    const int channelCount = std::max (1, getIncludedMicCount());
-    const auto target = destinationFolder;
-
-    if (preflightThread.joinable())
-        preflightThread.join();
-
-    preflightRunning.store (true);
-    preflightThread = std::thread ([this, target, channelCount] { runPreflight (target, channelCount); });
+    publishCompletedPreflight();
+    startPreflightIfNeeded();
 }
 
-void Application::runPreflight (const std::string& destination, int channelCount)
+bool Application::isPreflightRunning() const
 {
+    const bool running = publishCompletedPreflight();
+    return preflightTaskDestination == destinationFolder && running;
+}
+
+bool Application::publishCompletedPreflight() const
+{
+    auto snapshot = preflightTask.poll();
+    auto completed = std::move (snapshot.result);
+    if (! completed.has_value())
+        return snapshot.running;
+
+    preflightResults[completed->destination] = completed->result;
+
+    if (completed->couldNotWrite)
+        noteActivity (ActivityLevel::Failed, "Save location",
+                      juce::String (completed->result.reason));
+
+    return snapshot.running;
+}
+
+void Application::startPreflightIfNeeded() const
+{
+    if (destinationFolder.empty() || preflightResults.count (destinationFolder) > 0)
+        return;
+
+    const auto target = destinationFolder;
+
+    if (preflightTaskDestination == target)
+    {
+        if (publishCompletedPreflight())
+            return;
+
+        if (preflightResults.count (target) > 0)
+            return;
+
+        // A completed worker always publishes a result. Reaching this branch
+        // means its callable threw (or its thread could not be created). Hold a
+        // safe failed verdict instead of launching a new worker on every UI
+        // tick or silently allowing recording without a benchmark.
+        PreflightResult failed;
+        failed.passed = false;
+        failed.reason = "Couldn't check whether this drive is fast enough. Choose another drive, or reconnect this one and try again.";
+        preflightResults[target] = failed;
+        noteActivity (ActivityLevel::Failed, "Save location", juce::String (failed.reason));
+        return;
+    }
+
+    // A syscall against the previous destination may never return. Abandoning
+    // replaces only the shared result state; the old worker keeps ownership of
+    // its files and cancellation flag, while the new safe destination starts
+    // immediately and cannot receive a late old result.
+    if (! preflightTaskDestination.empty())
+        preflightTask.abandon();
+
+    preflightTaskDestination = target;
+    const int channelCount = std::max (1, getIncludedMicCount());
+    const double sampleRate = currentSampleRate;
+    const int bytesPerSample = std::max (1, currentBitDepth / 8);
+    const auto mutationGate = recoveryMutationGate;
+
+    const bool launched = preflightTask.start (
+        [target, channelCount, sampleRate, bytesPerSample,
+         mutationGate]
+        (const std::atomic<bool>& cancelled) mutable
+        {
+            // Preflight creates, flushes and removes a 200 MB file.
+            // Cancellation suppresses publication but cannot pull a wedged
+            // syscall off the kernel. Resolve aliases and acquire the shared
+            // recovery/preflight lease on this detached worker, so reselecting
+            // the same physical volume under another spelling cannot race it.
+            auto mutationLease = waitForMutationLease (
+                mutationGate, { target }, cancelled);
+            if (mutationLease == nullptr)
+                return PreflightBackgroundResult { target, {}, false };
+
+            auto result = Application::runPreflight (target, channelCount, sampleRate,
+                                                     bytesPerSample, cancelled);
+            // Release the path before DetachedResultTask publishes completion.
+            // A caller which atomically sees running=false plus this result can
+            // therefore authorize the measured root immediately and safely.
+            mutationLease.reset();
+            return result;
+        });
+
+    if (! launched)
+    {
+        PreflightResult failed;
+        failed.passed = false;
+        failed.reason = "Couldn't start the drive speed check. Choose another drive, or restart SobStage and try again.";
+        preflightResults[target] = failed;
+        noteActivity (ActivityLevel::Failed, "Save location", juce::String (failed.reason));
+    }
+}
+
+Application::PreflightBackgroundResult Application::runPreflight (
+    std::string destination, int channelCount, double sampleRate,
+    int bytesPerSample, const std::atomic<bool>& cancelled)
+{
+    PreflightBackgroundResult completed;
+    completed.destination = std::move (destination);
     PreflightResult result;
 
-    const juce::File folder { juce::String (destination) };
+    const juce::File folder { juce::String (completed.destination) };
     folder.createDirectory();
+
+    if (cancelled.load (std::memory_order_acquire))
+        return completed;
 
     const auto testFile = folder.getNonexistentChildFile ("preflight", ".tmp");
 
     std::vector<double> rollingWindows;
-    const int bytesPerSample = currentBitDepth / 8;
 
     // A card that will not take the test file at all is not a slow card, and
     // must not be reported as one. With no windows measured the gate below
@@ -2312,7 +2537,7 @@ void Application::runPreflight (const std::string& destination, int channelCount
             while (written < PreflightThroughputTest::kTestFileBytes)
             {
                 // Quit must not wait for a slow card to swallow 200 MB.
-                if (preflightAbort.load())
+                if (cancelled.load (std::memory_order_acquire))
                     break;
 
                 if (! out.write (chunk.data(), kChunkBytes))
@@ -2352,19 +2577,21 @@ void Application::runPreflight (const std::string& destination, int channelCount
                 }
             }
 
-            out.flush();
+            if (! cancelled.load (std::memory_order_acquire))
+                out.flush();
 
             // FileOutputStream::flush() returns void; the stream carries the
             // outcome instead. A flush that failed means the bytes counted as
             // written above never reached the card, so the windows measured
             // from them describe nothing.
-            if (out.getStatus().failed())
+            if (! cancelled.load (std::memory_order_acquire) && out.getStatus().failed())
                 couldNotWrite = true;
 
             // Include the final partial window too. This gives a fast card its
             // only sample and makes the last durability flush part of the
             // sustained-floor verdict for every other card.
-            if (! couldNotWrite && writtenThisWindow > 0)
+            if (! cancelled.load (std::memory_order_acquire)
+                && ! couldNotWrite && writtenThisWindow > 0)
             {
                 const auto elapsed = std::chrono::duration<double> (
                     std::chrono::steady_clock::now() - windowStart).count();
@@ -2377,35 +2604,29 @@ void Application::runPreflight (const std::string& destination, int channelCount
 
     testFile.deleteFile();
 
-    // An aborted run proved nothing about the card; caching its verdict would
-    // wrongly condemn the volume on the next launch of this session.
-    if (! preflightAbort.load())
+    // An abandoned run proved nothing. DetachedResultTask suppresses this
+    // return after cancellation, but avoiding the calculation makes that
+    // ownership contract explicit and keeps the worker independent of the
+    // Application that launched it.
+    if (cancelled.load (std::memory_order_acquire))
+        return completed;
+
+    // What is kept from this is the measurement. The pass/fail and the wording
+    // alongside it are a snapshot of the rig as it was during the benchmark;
+    // getRecordDisabledReason() reapplies the gate to the current rig.
+    result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
+                                                sampleRate, bytesPerSample);
+
+    if (couldNotWrite)
     {
-        // What is kept from this is the measurement. The pass/fail and the
-        // wording alongside it are a snapshot of the rig as it was during the
-        // benchmark; getRecordDisabledReason() applies the gate again against
-        // the rig as it is when someone actually reaches for record.
-        result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
-                                                    currentSampleRate, bytesPerSample);
-
-        // Overridden rather than measured: this is not a speed verdict, and
-        // saying so is the difference between someone checking the lock switch
-        // and someone buying a card they did not need.
-        if (couldNotWrite)
-        {
-            result.passed = false;
-            result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
-                             "is plugged in, has room, and isn't locked.";
-
-            noteActivity (ActivityLevel::Failed, "Save location",
-                          juce::String (result.reason));
-        }
-
-        std::lock_guard<std::mutex> lock (preflightMutex);
-        preflightResults[destination] = result;
+        result.passed = false;
+        result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
+                         "is plugged in, has room, and isn't locked.";
     }
 
-    preflightRunning.store (false);
+    completed.result = std::move (result);
+    completed.couldNotWrite = couldNotWrite;
+    return completed;
 }
 
 void Application::setMasterVolume (double volume0to100)
@@ -2651,7 +2872,7 @@ void Application::setMicEnabledByName (const juce::String& displayName, bool ena
 
 void Application::setDestinationFolder (const juce::File& folder)
 {
-    if (! folder.isDirectory())
+    if (folder.getFullPathName().trim().isEmpty())
         return;
 
     // §6.5 fixes where a take is going for its duration, and nothing in the UI
@@ -2686,7 +2907,33 @@ void Application::applyDestinationFolder (const juce::File& folder)
     if (confirmedSaveLocation != destinationFolder)
         confirmedSaveLocation.clear();
 
-    // §6.4: a new volume is an unbenchmarked volume.
+    // Re-selecting the same mount path can still mean a different physical
+    // card now occupies it. Retire that path's previous safety fact so the new
+    // medium gets its own recovery scan; a stuck old worker keeps only its old
+    // cancelled shared state and is never joined.
+    if (destinationRecoveryRoot == destinationFolder)
+    {
+        destinationRecoveryTask.abandon();
+        destinationRecoveryRoot.clear();
+        destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    }
+
+    // Replace a possibly stuck old-volume scan with a fresh shared state. The
+    // old worker owns its old state until its syscall returns, so it cannot
+    // publish against this destination or hold the new one behind its gate.
+    startDestinationRecoveryScan();
+
+    // §6.4: selecting a volume is a fresh claim about what is mounted at this
+    // path now. A different card can later reuse the same /Volumes name, so a
+    // throughput pass cached for the previous occupant must not arm it. A
+    // worker already stuck on this exact path is abandoned, never joined.
+    preflightResults.erase (destinationFolder);
+    if (preflightTaskDestination == destinationFolder)
+    {
+        preflightTask.abandon();
+        preflightTaskDestination.clear();
+    }
+
     beginPreflightForDestination();
 
     saveSettings();
@@ -3042,11 +3289,11 @@ void Application::noteActivity (ActivityLevel level, const juce::String& subject
 
 void Application::flushActivityLogToTake() const
 {
-    // The message thread owns the take's folder paths, and noteActivity is not
-    // only called from it -- runPreflight files its findings from the preflight
-    // thread. Reading those juce::Strings there, and writing the same two files
-    // from two threads at once, is a race; the journal itself is locked, so the
-    // entry is already safely recorded and only the file write is deferred.
+    // The message thread owns the take's folder paths, while some device
+    // notifications can record activity from OS threads. Reading those
+    // juce::Strings there, and writing the same two files from two threads at
+    // once, is a race; the journal itself is locked, so the entry is already
+    // safely recorded and only the file write is deferred.
     if (! juce::MessageManager::existsAndIsCurrentThread())
     {
         const auto alive = getAliveToken();
@@ -3841,15 +4088,16 @@ void Application::loadSettings()
 
     applyingRememberedSettings = true;
 
-    // §10.1: a remembered destination wins over the default, but only if it is
-    // still there -- a card that has been unplugged since must not leave the
-    // app pointed at a path that no longer exists.
+    // §10.1: preserve the user's remembered destination without touching it
+    // on the launch thread. Even a seemingly harmless isDirectory() can wait
+    // indefinitely on a stale removable or network volume. The detached
+    // recovery/preflight/status workers will establish its current condition,
+    // and the user can switch to the always-available default immediately.
     if (! rememberedSettings.destinationFolder.empty())
-        if (const juce::File folder { juce::String (rememberedSettings.destinationFolder) }; folder.isDirectory())
-        {
-            destinationFolder = rememberedSettings.destinationFolder;
-            confirmedSaveLocation = rememberedSettings.confirmedSaveLocation;
-        }
+    {
+        destinationFolder = rememberedSettings.destinationFolder;
+        confirmedSaveLocation = rememberedSettings.confirmedSaveLocation;
+    }
 
     askWhereToSaveEveryTime = rememberedSettings.askWhereToSaveEveryTime;
     mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
@@ -4097,210 +4345,583 @@ struct NewestFirst
 
 void Application::clearRecoveredSessions()
 {
-    // The rule for "interrupted" is an empty stop timestamp, and repairing
-    // the headers never wrote one -- so the same takes came back at every
-    // launch. Stamped with the moment they were recovered; the audio has
-    // already been repaired and is what it is.
-    const auto now = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+    publishCompletedRecoveryAcknowledgement();
+
+    std::vector<std::string> sessionFolders;
+    sessionFolders.reserve (recoveredSessions.size());
 
     for (const auto& session : recoveredSessions)
-    {
-        const auto file = juce::File (juce::String (session.folder)).getChildFile ("session.json");
+        sessionFolders.push_back (session.folder);
 
-        if (! file.existsAsFile())
+    std::vector<std::string> mutationRoots;
+    mutationRoots.reserve (sessionFolders.size());
+    for (const auto& folder : sessionFolders)
+        mutationRoots.push_back (
+            juce::File (juce::String (folder)).getParentDirectory()
+                .getFullPathName().toStdString());
+
+    // Dismiss the card before touching any path it names. A recovered take may
+    // live on the same removable volume whose disappearance interrupted it;
+    // even existsAsFile() or loadFileAsString() can then wait indefinitely.
+    recoveredSessions.clear();
+
+    if (sessionFolders.empty())
+        return;
+
+    // The rule for "interrupted" is an empty stop timestamp, and repairing
+    // the headers never wrote one -- so the same takes came back at every
+    // launch. The worker stamps them with this acknowledgement time. It owns
+    // every folder string and never captures Application; a stuck OS call can
+    // therefore outlive this object without holding up the UI or shutdown.
+    const auto recoveredAt = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+    const auto mutationGate = recoveryMutationGate;
+    const bool launched = recoveryAcknowledgementTask.start (
+        [sessionFolders = std::move (sessionFolders), recoveredAt,
+         mutationRoots = std::move (mutationRoots), mutationGate]
+        (const std::atomic<bool>& cancelled) mutable
+        {
+            auto mutationLease = waitForMutationLease (
+                mutationGate, mutationRoots, cancelled);
+            if (mutationLease == nullptr)
+                return RecoveryAcknowledgementResult {};
+
+            auto result = Application::runRecoveryAcknowledgement (
+                std::move (sessionFolders), recoveredAt, cancelled);
+            mutationLease.reset();
+            return result;
+        });
+
+    if (! launched)
+        noteActivity (ActivityLevel::Warning, "Interrupted take",
+                      "Couldn't mark the recovered takes as dealt with. No recording was "
+                      "changed, so they may be offered again next time SobStage opens.");
+}
+
+Application::RecoveryAcknowledgementResult Application::runRecoveryAcknowledgement (
+    std::vector<std::string> sessionFolders, std::string recoveredAt,
+    const std::atomic<bool>& cancelled)
+{
+    RecoveryAcknowledgementResult result;
+
+    const auto wasCancelled = [&cancelled]
+    {
+        return cancelled.load (std::memory_order_acquire);
+    };
+
+    for (const auto& folderPath : sessionFolders)
+    {
+        if (wasCancelled())
+            break;
+
+        const auto file = juce::File (juce::String (folderPath)).getChildFile ("session.json");
+
+        // Every filesystem call stays on this detached worker. Check
+        // cancellation after each one so a worker released from a stale mount
+        // after shutdown cannot proceed to the next read or mutate a file.
+        if (! file.existsAsFile() || wasCancelled())
             continue;
 
         try
         {
-            auto meta = SessionMetadata::fromJsonString (file.loadFileAsString().toStdString());
+            const auto contents = file.loadFileAsString().toStdString();
+
+            if (wasCancelled())
+                break;
+
+            auto meta = SessionMetadata::fromJsonString (contents);
 
             if (meta.stopTimestampIso.empty())
             {
-                meta.stopTimestampIso = now;
+                meta.stopTimestampIso = recoveredAt;
+
+                if (wasCancelled())
+                    break;
 
                 // Checked. This is the write that stops a recovered take being
-                // offered again at every launch, so a card that refuses it --
-                // read-only, full, the very card whose failure caused the
-                // interruption -- produced the same list forever with nothing
-                // explaining why dismissing it did not stick.
-                if (! replaceWithTextChecked (file, juce::String (meta.toJsonString())))
-                    noteActivity (ActivityLevel::Warning, "Interrupted take",
-                                  file.getParentDirectory().getFileName()
-                                  + " can't be marked as dealt with -- this card won't accept the "
-                                    "change, so it will be offered again next time.");
+                // offered again at every launch. A read-only/full/disappearing
+                // card leaves the metadata untouched and the take is safely
+                // offered again next launch.
+                if (! replaceWithTextChecked (file, juce::String (meta.toJsonString()))
+                    && ! wasCancelled())
+                {
+                    result.activity.push_back (
+                        { ActivityLevel::Warning,
+                          "Interrupted take",
+                          (file.getParentDirectory().getFileName()
+                           + " can't be marked as dealt with -- this card won't accept the "
+                             "change, so it will be offered again next time.").toStdString() });
+                }
             }
         }
         catch (...)
         {
-            // Unreadable metadata stays as it is; the take will be offered
-            // again, which beats overwriting something we could not parse.
+            // Unreadable metadata stays as it is and is offered again. Do not
+            // risk replacing a file whose contents could not be understood.
         }
     }
 
-    recoveredSessions.clear();
+    return result;
+}
+
+void Application::publishCompletedRecoveryAcknowledgement() const
+{
+    auto completed = recoveryAcknowledgementTask.takeResult();
+
+    if (! completed.has_value())
+        return;
+
+    // Only the message thread calls this publisher. The detached worker owns
+    // plain result values and never reaches into the journal or Application.
+    for (const auto& entry : completed->activity)
+        noteActivity (entry.level, juce::String (entry.subject), juce::String (entry.message));
 }
 
 void Application::scanForInterruptedSessions()
 {
     recoveredSessions.clear();
 
-    // §6.6 names both places a take can be: the card it was written to, and the
-    // mirror, which is the copy that survives when the card is what failed.
-    std::vector<juce::File> roots { juce::File (juce::String (destinationFolder)),
-                                    juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                                        .getChildFile ("RECORDINGS-MIRROR") };
+    // Separate tasks matter here. A destination can be replaced while its OS
+    // call is stuck, and mirroring can be switched off to escape a stuck local
+    // mirror probe. Neither root is allowed to hold the other behind one
+    // worker, and neither detached worker ever captures Application.
+    startDestinationRecoveryScan();
+    startMirrorRecoveryScan();
+}
 
-    for (const auto& root : roots)
+void Application::startDestinationRecoveryScan()
+{
+    // A shared destination/mirror root may currently be represented by the
+    // destination task alone. Consume a just-finished result before changing
+    // either root so that safety fact can follow the mirror when the roots
+    // split again.
+    publishCompletedRecoveryScans();
+
+    if (destinationFolder.empty())
     {
-        if (! root.isDirectory())
+        destinationRecoveryStatus = RecoveryScanStatus::Failed;
+        return;
+    }
+
+    const auto target = juce::File (juce::String (destinationFolder))
+                            .getFullPathName().toStdString();
+
+    if (target == destinationRecoveryRoot)
+        return;
+
+    const bool destinationOwnedSharedRoot = ! destinationRecoveryRoot.empty()
+        && destinationRecoveryRoot == mirrorRecoveryRoot
+        && destinationRecoveryStatus != RecoveryScanStatus::NotStarted
+        && mirrorRecoveryStatus == RecoveryScanStatus::NotStarted;
+
+    if (destinationOwnedSharedRoot)
+    {
+        // A finished scan proves the same root safe (or unsafe) for the mirror.
+        // A running scan is about to be abandoned, so the mirror must launch
+        // its own replacement below rather than waiting on a task it no longer
+        // owns.
+        mirrorRecoveryStatus = destinationRecoveryStatus == RecoveryScanStatus::Running
+            ? RecoveryScanStatus::NotStarted
+            : destinationRecoveryStatus;
+    }
+
+    if (! destinationRecoveryRoot.empty())
+        destinationRecoveryTask.abandon();
+
+    destinationRecoveryRoot = target;
+    destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+
+    // If the user's destination is the mirror root itself, the existing scan
+    // already establishes the same safety fact. Do not race two header repairs
+    // over one directory.
+    if (target == mirrorRecoveryRoot
+        && (mirrorRecoveryStatus != RecoveryScanStatus::NotStarted
+            || mirrorRecoveryTask.isRunning()))
+        return;
+
+    const auto mutationGate = recoveryMutationGate;
+    const bool launched = destinationRecoveryTask.start (
+        [target, mutationGate] (const std::atomic<bool>& cancelled) mutable
+        {
+            auto mutationLease = waitForMutationLease (
+                mutationGate, { target }, cancelled);
+            if (mutationLease == nullptr)
+                return RecoveryBackgroundResult { target, true, {}, {} };
+
+            auto result = Application::runRecoveryScan (target, true, cancelled);
+            mutationLease.reset();
+            return result;
+        });
+
+    if (! launched)
+    {
+        destinationRecoveryStatus = RecoveryScanStatus::Failed;
+        noteActivity (ActivityLevel::Warning, "Interrupted take",
+                      "Couldn't start the interrupted-take check for this save location. "
+                      "No files were changed; restart SobStage before recording there.");
+    }
+    else
+    {
+        destinationRecoveryStatus = RecoveryScanStatus::Running;
+    }
+
+    // If changing the destination split a once-shared root while its only scan
+    // was still running, immediately give the mirror an independent task. The
+    // old detached worker is cancelled and cannot publish, but is never joined.
+    if (! mirrorRecoveryRoot.empty()
+        && mirrorRecoveryRoot != destinationRecoveryRoot
+        && mirrorRecoveryStatus == RecoveryScanStatus::NotStarted)
+        startMirrorRecoveryScan();
+}
+
+void Application::startMirrorRecoveryScan()
+{
+    const auto target = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                            .getChildFile ("RECORDINGS-MIRROR")
+                            .getFullPathName().toStdString();
+
+    if (target == mirrorRecoveryRoot)
+    {
+        if (mirrorRecoveryStatus != RecoveryScanStatus::NotStarted
+            || target == destinationRecoveryRoot)
+            return;
+    }
+    else
+    {
+        if (! mirrorRecoveryRoot.empty())
+            mirrorRecoveryTask.abandon();
+
+        mirrorRecoveryRoot = target;
+        mirrorRecoveryStatus = RecoveryScanStatus::NotStarted;
+    }
+
+    if (target == destinationRecoveryRoot)
+        return;
+
+    const auto mutationGate = recoveryMutationGate;
+    const bool launched = mirrorRecoveryTask.start (
+        [target, mutationGate] (const std::atomic<bool>& cancelled) mutable
+        {
+            auto mutationLease = waitForMutationLease (
+                mutationGate, { target }, cancelled);
+            if (mutationLease == nullptr)
+                return RecoveryBackgroundResult { target, false, {}, {} };
+
+            auto result = Application::runRecoveryScan (target, false, cancelled);
+            mutationLease.reset();
+            return result;
+        });
+
+    if (! launched)
+    {
+        mirrorRecoveryStatus = RecoveryScanStatus::Failed;
+        noteActivity (ActivityLevel::Warning, "Interrupted take",
+                      "Couldn't start the interrupted-take check for the local backup folder. "
+                      "No files were changed; restart SobStage before using local backup.");
+    }
+    else
+    {
+        mirrorRecoveryStatus = RecoveryScanStatus::Running;
+    }
+}
+
+Application::RecoveryBackgroundResult Application::runRecoveryScan (
+    std::string rootPath, bool isDestinationCopy,
+    const std::atomic<bool>& cancelled)
+{
+    RecoveryBackgroundResult result;
+    result.root = std::move (rootPath);
+    result.isDestinationCopy = isDestinationCopy;
+
+    const auto wasCancelled = [&cancelled]
+    {
+        return cancelled.load (std::memory_order_acquire);
+    };
+
+    const auto report = [&result] (ActivityLevel level, juce::String message)
+    {
+        result.activity.push_back ({ level, "Interrupted take", message.toStdString() });
+    };
+
+    if (wasCancelled())
+        return result;
+
+    const juce::File root { juce::String (result.root) };
+    if (! root.isDirectory() || wasCancelled())
+        return result;
+
+    // One level down and newest first. A card can hold hundreds of takes; an
+    // interrupted take is, by definition, among the most recent events.
+    juce::Array<juce::File> folders;
+    root.findChildFiles (folders, juce::File::findDirectories, false);
+
+    if (wasCancelled())
+        return result;
+
+    NewestFirst comparator;
+    folders.sort (comparator);
+
+    if (wasCancelled())
+        return result;
+
+    constexpr int kMaxFoldersExamined = 20;
+    const int examine = juce::jmin (folders.size(), kMaxFoldersExamined);
+
+    for (int i = 0; i < examine && ! wasCancelled(); ++i)
+    {
+        const auto folder = folders[i];
+
+        const auto metadataFile = folder.getChildFile ("session.json");
+
+        if (! metadataFile.existsAsFile() || wasCancelled())
             continue;
 
-        // One level down and newest first. A card can hold hundreds of takes and
-        // this runs before the window opens, so it looks at the recent ones
-        // rather than walking the whole volume -- an interrupted take is by
-        // definition the most recent thing that happened.
-        juce::Array<juce::File> folders;
-        root.findChildFiles (folders, juce::File::findDirectories, false);
+        SessionMetadata meta;
 
-        NewestFirst comparator;
-        folders.sort (comparator);
+        // A session.json truncated by the same power cut that interrupted the
+        // take is not a reason to fail: the audio beside it is still worth
+        // recovering, so an unreadable one is treated as interrupted.
+        bool metadataUnreadable = false;
 
-        constexpr int kMaxFoldersExamined = 20;
-        const int examine = juce::jmin (folders.size(), kMaxFoldersExamined);
-
-        for (int i = 0; i < examine; ++i)
+        try
         {
-            const auto folder = folders[i];
+            const auto text = metadataFile.loadFileAsString().toStdString();
 
-            // One take, one entry. The card and the mirror hold the SAME take
-            // under the same folder name, so scanning both listed it twice --
-            // the Recovered card said two takes were interrupted when one was,
-            // with two identical labels and no way to tell them apart. The card
-            // copy wins because it is the one the user's paths point at; a take
-            // that exists only in the mirror -- the case this scan of the
-            // mirror exists for -- still gets its entry.
-            if (std::any_of (recoveredSessions.begin(), recoveredSessions.end(),
-                             [&folder] (const RecoveredSession& existing)
-                             {
-                                 return juce::File (juce::String (existing.folder)).getFileName()
-                                        == folder.getFileName();
-                             }))
-                continue;
+            if (wasCancelled())
+                return result;
 
-            const auto metadataFile = folder.getChildFile ("session.json");
+            const auto parsed = JsonValue::parse (text);
 
-            if (! metadataFile.existsAsFile())
-                continue;
-
-            SessionMetadata meta;
-
-            // A session.json truncated by the same power cut that interrupted
-            // the take is not a reason to fail: the audio beside it is still
-            // worth recovering, so an unreadable one is treated as interrupted.
-            bool metadataUnreadable = false;
-
-            try
-            {
-                const auto text = metadataFile.loadFileAsString().toStdString();
-                const auto parsed = JsonValue::parse (text);
-
-                // The parser is lenient by design and hardly ever throws: a
-                // file cut short mid-key comes back as one dangling key with
-                // nothing under it, so the catch below could not fire and a
-                // take whose record was destroyed was recovered in silence,
-                // with no start time and no explanation for either. Judged by
-                // whether any field actually carried a value, the same way an
-                // unreadable settings file is.
-                if (parsed.getType() != JsonValue::Type::Object || parsed.getValuedMemberCount() == 0)
-                {
-                    meta = {};
-                    metadataUnreadable = true;
-                }
-                else
-                {
-                    meta = SessionMetadata::fromJson (parsed);
-                }
-            }
-            catch (...)
+            // The parser is lenient by design and hardly ever throws: a file
+            // cut short mid-key comes back as one dangling key with nothing
+            // under it. Judge it by whether a field carried a value.
+            if (parsed.getType() != JsonValue::Type::Object
+                || parsed.getValuedMemberCount() == 0)
             {
                 meta = {};
                 metadataUnreadable = true;
             }
-
-            // A take whose record cannot be read is not thereby a take that did
-            // not happen, and the user should be told the record is corrupt
-            // rather than left with a recovery entry that has no start time and
-            // no explanation.
-            //
-            // Reported unconditionally. Guarding this on
-            // `! sessionWasInterrupted(meta)` was a branch that could never run:
-            // the catch leaves meta empty, an empty meta has no stop timestamp,
-            // and no stop timestamp is exactly what sessionWasInterrupted()
-            // calls interrupted -- so the condition was always false and this
-            // read as coverage while doing nothing.
-            if (metadataUnreadable)
-                noteActivity (ActivityLevel::Warning, "Interrupted take",
-                              juce::String (folder.getFileName())
-                              + " has a details file this app can't read, so what it says about "
-                                "that take is gone. Its audio is still in that folder.");
-
-            if (! SessionRecovery::sessionWasInterrupted (meta))
-                continue;
-
-            RecoveredSession session;
-            session.folder = folder.getFullPathName().toStdString();
-            session.startedIso = meta.startTimestampIso;
-
-            for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*.wav", juce::File::findFiles))
-                session.files.push_back (
-                    SessionRecovery::repairWavFile (entry.getFile().getFullPathName().toStdString()));
-
-            std::sort (session.files.begin(), session.files.end(),
-                       [] (const RecoveredFile& a, const RecoveredFile& b) { return a.fileName < b.fileName; });
-
-            // A repair the card would not accept. The file is still listed --
-            // it is the user's audio and may well play -- but "recovered" would
-            // be a promise this could not keep.
-            for (const auto& f : session.files)
-                if (f.repairFailed)
-                    noteActivity (ActivityLevel::Warning, "Interrupted take",
-                                  juce::String (f.fileName)
-                                  + " couldn't be opened or repaired -- this card wouldn't accept "
-                                    "the fix. Copy it somewhere else before playing it.");
-
-            // §6.6: a take where nothing survived is not presented at all --
-            // better to say nothing than to hand someone an unplayable stub.
-            //
-            // But §6.6 asks for the other half too: "report it as empty rather
-            // than presenting an unplayable stub." Reporting it was the half
-            // that never happened, so an interrupted take that lost everything
-            // vanished from the recovery list with no trace -- and a folder
-            // sitting on the card holding nothing playable is exactly the thing
-            // someone spends an evening trying to open.
-            if (session.isWorthPresenting())
-            {
-                // In the record as well as on the card. The card is dismissed
-                // in a second and then the only trace that a take was repaired
-                // at all was gone -- from the log the app ships to whoever is
-                // helping, and from the account of the session it belongs to.
-                noteActivity (ActivityLevel::Recovered, "Interrupted take",
-                              juce::String (folder.getFileName())
-                              + " was interrupted, and its "
-                              + juce::String (static_cast<int> (session.files.size()))
-                              + (session.files.size() == 1 ? " file has" : " files have")
-                              + " been repaired and can be played.");
-
-                recoveredSessions.push_back (std::move (session));
-            }
             else
             {
-                noteActivity (ActivityLevel::Failed, "Interrupted take",
-                              juce::String (folder.getFileName())
-                              + " was interrupted and nothing playable survived in it. There is "
-                                "nothing to recover from that folder.");
+                meta = SessionMetadata::fromJson (parsed);
             }
         }
+        catch (...)
+        {
+            meta = {};
+            metadataUnreadable = true;
+        }
+
+        if (wasCancelled())
+            return result;
+
+        if (metadataUnreadable)
+            report (ActivityLevel::Warning,
+                    folder.getFileName()
+                    + " has a details file this app can't read, so what it says about "
+                      "that take is gone. Its audio is still in that folder.");
+
+        if (! SessionRecovery::sessionWasInterrupted (meta))
+            continue;
+
+        RecoveredSession session;
+        session.folder = folder.getFullPathName().toStdString();
+        session.startedIso = meta.startTimestampIso;
+
+        for (const auto& entry : juce::RangedDirectoryIterator (
+                 folder, false, "*.wav", juce::File::findFiles))
+        {
+            if (wasCancelled())
+                return result;
+
+            session.files.push_back (SessionRecovery::repairWavFile (
+                entry.getFile().getFullPathName().toStdString()));
+
+            if (wasCancelled())
+                return result;
+        }
+
+        std::sort (session.files.begin(), session.files.end(),
+                   [] (const RecoveredFile& a, const RecoveredFile& b)
+                   {
+                       return a.fileName < b.fileName;
+                   });
+
+        for (const auto& file : session.files)
+            if (file.repairFailed)
+                report (ActivityLevel::Warning,
+                        juce::String (file.fileName)
+                        + " couldn't be opened or repaired -- this card wouldn't accept "
+                          "the fix. Copy it somewhere else before playing it.");
+
+        if (session.isWorthPresenting())
+        {
+            report (ActivityLevel::Recovered,
+                    folder.getFileName()
+                    + " was interrupted, and its "
+                    + juce::String (static_cast<int> (session.files.size()))
+                    + (session.files.size() == 1 ? " file has" : " files have")
+                    + " been repaired and can be played.");
+            result.sessions.push_back (std::move (session));
+        }
+        else
+        {
+            report (ActivityLevel::Failed,
+                    folder.getFileName()
+                    + " was interrupted and nothing playable survived in it. There is "
+                      "nothing to recover from that folder.");
+        }
     }
+
+    return result;
+}
+
+void Application::publishCompletedRecoveryScans() const
+{
+    const auto publish = [this] (DetachedResultTask<RecoveryBackgroundResult>& task,
+                                 const std::string& expectedRoot,
+                                 RecoveryScanStatus& status,
+                                 const juce::String& failureMessage)
+    {
+        if (status != RecoveryScanStatus::Running)
+            return;
+
+        auto completed = task.takeResult();
+
+        // The worker publishes its result and clears `running` under the same
+        // mutex. If the first read arrived just before that publication and
+        // the second sees the worker finished, one final result read closes
+        // that narrow race before a missing result is treated as failure.
+        if (! completed.has_value())
+        {
+            if (task.isRunning())
+                return;
+
+            completed = task.takeResult();
+
+            if (! completed.has_value())
+            {
+                status = RecoveryScanStatus::Failed;
+                noteActivity (ActivityLevel::Warning, "Interrupted take", failureMessage);
+                return;
+            }
+        }
+
+        if (completed->root != expectedRoot)
+        {
+            status = RecoveryScanStatus::Failed;
+            noteActivity (ActivityLevel::Warning, "Interrupted take", failureMessage);
+            return;
+        }
+
+        status = RecoveryScanStatus::Succeeded;
+
+        for (const auto& entry : completed->activity)
+            noteActivity (entry.level, juce::String (entry.subject),
+                          juce::String (entry.message));
+
+        for (auto& session : completed->sessions)
+        {
+            const auto name = juce::File (juce::String (session.folder)).getFileName();
+            const auto existing = std::find_if (
+                recoveredSessions.begin(), recoveredSessions.end(),
+                [&name] (const RecoveredSession& candidate)
+                {
+                    return juce::File (juce::String (candidate.folder)).getFileName() == name;
+                });
+
+            if (existing == recoveredSessions.end())
+                recoveredSessions.push_back (std::move (session));
+            else if (completed->isDestinationCopy)
+                *existing = std::move (session); // the user's primary copy wins
+        }
+    };
+
+    publish (mirrorRecoveryTask, mirrorRecoveryRoot, mirrorRecoveryStatus,
+             "The interrupted-take check for the local backup folder stopped unexpectedly. "
+             "No files were changed; turn off local backup or restart SobStage before recording.");
+    publish (destinationRecoveryTask, destinationRecoveryRoot, destinationRecoveryStatus,
+             "The interrupted-take check for this save location stopped unexpectedly. "
+             "No files were changed; choose another save location or restart SobStage before recording there.");
+}
+
+juce::String Application::recoveryBlockingReason() const
+{
+    publishCompletedRecoveryScans();
+
+    const auto hasNonPreflightMutation = [this] (const std::string& root)
+    {
+        if (! recoveryMutationGate.isActive (root))
+            return false;
+
+        // The speed benchmark deliberately shares this mutation gate with
+        // recovery. Once recovery itself has succeeded, that current worker
+        // is reported by the preflight-specific status below rather than as a
+        // misleading interrupted-take scan. An abandoned preflight has a fresh
+        // task state (not running) and therefore still blocks here until its
+        // old worker and lease really return.
+        return ! (preflightTaskDestination == root && preflightTask.isRunning());
+    };
+
+    const bool rootsAreShared = ! destinationRecoveryRoot.empty()
+        && destinationRecoveryRoot == mirrorRecoveryRoot;
+
+    const auto sharedStatus = [&]
+    {
+        // Exactly one task is launched when the save location and local backup
+        // are the same directory. Whichever side owns that task establishes
+        // the safety fact for both roots.
+        if (destinationRecoveryStatus != RecoveryScanStatus::NotStarted)
+            return destinationRecoveryStatus;
+
+        return mirrorRecoveryStatus;
+    };
+
+    const auto destinationStatus = rootsAreShared ? sharedStatus()
+                                                   : destinationRecoveryStatus;
+
+    if (destinationStatus == RecoveryScanStatus::Failed)
+        return "Couldn't check this save location for interrupted takes. Choose another save "
+               "location or restart SobStage before recording here.";
+
+    if (destinationStatus != RecoveryScanStatus::Succeeded)
+        return "Checking this save location for an interrupted take...";
+
+    if (hasNonPreflightMutation (destinationRecoveryRoot))
+        return "Waiting for earlier work on this save location to finish. Choose another "
+               "location if this drive is no longer responding.";
+
+    if (! mirrorPolicy.isEnabledByUser())
+        return {};
+
+    const auto enabledMirrorStatus = rootsAreShared ? sharedStatus()
+                                                    : mirrorRecoveryStatus;
+
+    if (enabledMirrorStatus == RecoveryScanStatus::Failed)
+        return "Couldn't check the local backup folder for interrupted takes. Turn off local "
+               "backup or restart SobStage before recording.";
+
+    if (enabledMirrorStatus != RecoveryScanStatus::Succeeded)
+        return "Checking the local backup folder for an interrupted take...";
+
+    if (hasNonPreflightMutation (mirrorRecoveryRoot))
+        return "Waiting for earlier work on the local backup folder to finish. Turn off local "
+               "backup if that drive is no longer responding.";
+
+    return {};
+}
+
+bool Application::isRecoveryScanPending() const
+{
+    publishCompletedRecoveryAcknowledgement();
+    publishCompletedRecoveryScans();
+    return destinationRecoveryTask.isRunning() || mirrorRecoveryTask.isRunning();
+}
+
+const std::vector<RecoveredSession>& Application::getRecoveredSessions() const
+{
+    publishCompletedRecoveryAcknowledgement();
+    publishCompletedRecoveryScans();
+    return recoveredSessions;
 }
 
 juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) const
@@ -4347,15 +4968,17 @@ void Application::shutdown()
     // call into this function.
     invalidateAliveToken();
 
-    // Finalize user media before *any* auxiliary teardown. The preflight,
-    // mounted-volume scan and filesystem-status probe all perform filesystem
-    // calls that the OS may hold inside a disappearing/network volume. Their
-    // stop flags wake condition-variable waits, but C++ cannot cancel a syscall
-    // already in progress. Those joins may therefore still wait on the OS;
-    // starting finalization first at least prevents a nonessential status scan
-    // from delaying it. Finalization itself also performs filesystem I/O and is
-    // not cancellable: force-terminating while either writer is blocked can
-    // still leave an incomplete file, which no in-process ordering can prevent.
+    // Combining is post-take convenience work. Ask its detached worker and
+    // child process to stop before any hardware or filesystem finalizer gets a
+    // chance to stall; this request never joins the worker.
+    takeCombiner.cancel();
+
+    // Finalize user media before auxiliary teardown. The detached storage
+    // workers never join here; their cancellation flags only suppress late
+    // publication, and worker-owned state survives any OS call that does not
+    // return. Finalization itself performs filesystem I/O and is not
+    // cancellable: force-terminating while either writer is blocked can still
+    // leave an incomplete file, which no in-process ordering can prevent.
     // Camera first: CaptureCoordinator::stopRecording drains and joins a writer
     // that may itself be stuck in removable-volume I/O. Putting the movie stop
     // behind that join could leave its header open forever. JUCE camera teardown
@@ -4379,14 +5002,10 @@ void Application::shutdown()
     if (systemAggregate != nullptr)
         systemAggregate->remove();
 
-    preflightAbort.store (true);
-
-    if (preflightThread.joinable())
-        preflightThread.join();
-
-    if (storageVolumeThread.joinable())
-        storageVolumeThread.join();
-
+    preflightTask.cancel();
+    destinationRecoveryTask.cancel();
+    mirrorRecoveryTask.cancel();
+    recoveryAcknowledgementTask.cancel();
     filesystemStatusProbe.stop();
 
     // The rig as the user is leaving it, so tomorrow starts where today ended.

@@ -5,10 +5,12 @@
 #include <unistd.h> // pid_t, and getpid() where the platform has it
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -56,6 +58,7 @@ struct State
     std::vector<Listener> listeners;
     AudioObjectID nextId = 100;
     bool allowPropertyListeners = true;
+    bool allowSystemPropertyListenerRemoval = true;
 };
 
 State& state()
@@ -256,6 +259,13 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
         case kAudioObjectPropertyName:
         case kAudioDevicePropertyDeviceUID:
         {
+            if (address->mSelector == kAudioDevicePropertyDeviceUID
+                && device->spec.uidReadDelayMilliseconds > 0)
+            {
+                std::this_thread::sleep_for (std::chrono::milliseconds (
+                    device->spec.uidReadDelayMilliseconds));
+            }
+
             auto* handle = new FakeString { address->mSelector == kAudioObjectPropertyName
                                                 ? device->spec.name : device->spec.uid };
             auto ref = reinterpret_cast<CFStringRef> (handle);
@@ -453,6 +463,14 @@ OSStatus AudioObjectRemovePropertyListener (AudioObjectID object,
     if (address == nullptr)
         return kAudioHardwareUnspecifiedError;
 
+    if (object == kAudioObjectSystemObject
+        && ! state().allowSystemPropertyListenerRemoval)
+        return kAudioHardwareUnspecifiedError;
+
+    if (auto* device = find (object);
+        device != nullptr && ! device->spec.allowPropertyListenerRemoval)
+        return kAudioHardwareUnspecifiedError;
+
     auto& listeners = state().listeners;
     listeners.erase (std::remove_if (listeners.begin(), listeners.end(),
                                      [&] (const Listener& l)
@@ -477,6 +495,10 @@ OSStatus AudioDeviceCreateIOProcID (AudioObjectID device, AudioDeviceIOProc proc
     if (d == nullptr || proc == nullptr || outProcId == nullptr)
         return kAudioHardwareBadObjectError;
 
+    if (d->spec.createDelayMilliseconds > 0)
+        std::this_thread::sleep_for (
+            std::chrono::milliseconds (d->spec.createDelayMilliseconds));
+
     d->procs.push_back ({ proc, clientData, false });
     *outProcId = proc;
     return noErr;
@@ -487,6 +509,10 @@ OSStatus AudioDeviceDestroyIOProcID (AudioObjectID device, AudioDeviceIOProcID p
     auto* d = find (device);
     if (d == nullptr)
         return kAudioHardwareBadObjectError;
+
+    if (d->spec.destroyDelayMilliseconds > 0)
+        std::this_thread::sleep_for (
+            std::chrono::milliseconds (d->spec.destroyDelayMilliseconds));
 
     auto& procs = d->procs;
     procs.erase (std::remove_if (procs.begin(), procs.end(),
@@ -501,10 +527,27 @@ OSStatus AudioDeviceStart (AudioObjectID device, AudioDeviceIOProcID procId)
     if (d == nullptr)
         return kAudioHardwareBadObjectError;
 
+    if (d->spec.startDelayMilliseconds > 0)
+        std::this_thread::sleep_for (
+            std::chrono::milliseconds (d->spec.startDelayMilliseconds));
+
     for (auto& r : d->procs)
         if (r.proc == procId)
         {
             r.running = true;
+
+            if (d->spec.callbackBeforeStartReturns && d->spec.inputChannels > 0)
+            {
+                float sample = 0.25f;
+                AudioBufferList input {};
+                input.mNumberBuffers = 1;
+                input.mBuffers[0].mNumberChannels = 1;
+                input.mBuffers[0].mDataByteSize = sizeof (sample);
+                input.mBuffers[0].mData = &sample;
+                AudioTimeStamp now {};
+                r.proc (device, &now, &input, &now, nullptr, &now, r.clientData);
+            }
+
             return noErr;
         }
 
@@ -516,6 +559,10 @@ OSStatus AudioDeviceStop (AudioObjectID device, AudioDeviceIOProcID procId)
     auto* d = find (device);
     if (d == nullptr)
         return kAudioHardwareBadObjectError;
+
+    if (d->spec.stopDelayMilliseconds > 0)
+        std::this_thread::sleep_for (
+            std::chrono::milliseconds (d->spec.stopDelayMilliseconds));
 
     for (auto& r : d->procs)
         if (r.proc == procId)
@@ -535,11 +582,33 @@ void reset()
     state().listeners.clear();
     state().nextId = 100;
     state().allowPropertyListeners = true;
+    state().allowSystemPropertyListenerRemoval = true;
 }
 
 void setPropertyListenersAllowed (bool allowed)
 {
     state().allowPropertyListeners = allowed;
+}
+
+void setSystemPropertyListenerRemovalAllowed (bool allowed)
+{
+    state().allowSystemPropertyListenerRemoval = allowed;
+}
+
+void fireDeviceListChange()
+{
+    fireDeviceListListeners();
+}
+
+int systemPropertyListenerCount()
+{
+    return static_cast<int> (std::count_if (
+        state().listeners.begin(), state().listeners.end(),
+        [] (const Listener& listener)
+        {
+            return listener.object == kAudioObjectSystemObject
+                && listener.address.mSelector == kAudioHardwarePropertyDevices;
+        }));
 }
 
 AudioObjectID addDevice (const DeviceSpec& spec)

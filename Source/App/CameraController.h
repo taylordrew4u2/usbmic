@@ -36,11 +36,28 @@ namespace mma {
 class CameraController
 {
 public:
+    enum class SignalState
+    {
+        NotOpen,
+        Waiting,
+        Live,
+        TimedOut
+    };
+
+    enum class RecordingFinalizationState
+    {
+        Idle,
+        Waiting,
+        Succeeded,
+        Failed
+    };
+
     struct TakeCameraState
     {
         std::string id;
         std::string displayName;
         bool recording = false;
+        bool starting = false;
     };
 
     /// One camera writer which actually started for the current/most recent
@@ -65,6 +82,12 @@ public:
     /// applies the previous completed result, if any. Device discovery can
     /// enter AVFoundation/DirectShow and must not stall the message thread.
     void refreshCameras();
+
+    /// Periodic topology poll which consumes a completed snapshot but does not
+    /// supersede a scan already inside the OS. This prevents a consistently
+    /// slow (but healthy) enumerator from being restarted faster than it can
+    /// ever publish. Explicit user/topology actions use refreshCameras().
+    void refreshCamerasIfIdle();
 
     /// Applies a completed background discovery result on the message thread.
     /// Returns true only when a new result was consumed.
@@ -101,6 +124,22 @@ public:
     /// device id replaces its old "no picture" placeholder.
     uint64_t getViewerRevision (const std::string& deviceId) const;
 
+    /// A non-null CameraDevice/native preview is only an opened handle, not
+    /// proof that an HDMI capture card is delivering pictures. A camera is
+    /// eligible for a take only after its current device generation has
+    /// delivered an actual image callback.
+    SignalState getSignalState (const std::string& deviceId) const;
+
+    /// Plain-language status for a tile which cannot yet show a proven live
+    /// picture. Empty once a frame has arrived.
+    juce::String getSignalStatusText (const std::string& deviceId) const;
+
+#if defined(SOBSTAGE_CAMERA_SIMULATION)
+    /// Advances only the signal-timeout clock used by the deterministic camera
+    /// simulator. Shipping builds always use the monotonic system clock.
+    void advanceSignalClockForTesting (double milliseconds);
+#endif
+
     /// §6.2: one file per camera, in the session folder next to the audio.
     /// Returns false only when nothing could be started at all.
     ///
@@ -118,6 +157,20 @@ public:
     /// hardware just before it is destroyed.
     void stopRecordingForShutdown();
     bool isRecording() const { return recording; }
+
+    /// Applies AVFoundation's file-finished callbacks and the bounded timeout.
+    /// This never waits inside the OS. The ordinary UI camera poll calls it too;
+    /// the explicit name lets Application gate metadata and combining on it.
+    bool pollRecordingFinalization();
+    RecordingFinalizationState getRecordingFinalizationState() const noexcept
+    {
+        return recordingFinalizationState;
+    }
+    bool isFinalizingRecording() const noexcept
+    {
+        return recordingFinalizationState == RecordingFinalizationState::Waiting;
+    }
+    juce::String getRecordingFinalizationProblem() const { return recordingFinalizationProblem; }
 
     /// Frozen camera membership for the current/most recent take. A camera that
     /// disappears remains here with recording=false, so the watchdog can report
@@ -183,10 +236,16 @@ private:
         // the UI receives lightweight hosts which reparent it between screens.
         std::unique_ptr<juce::Component> nativeViewer;
         std::shared_ptr<std::atomic<juce::Component*>> viewerTarget;
+        std::unique_ptr<juce::CameraDevice::Listener> frameListener;
         uint64_t viewerRevision = 0;
         int osIndex = -1;
         juce::File recordingFile;
         bool recordingThisTake = false;
+        bool startingThisTake = false;
+        bool firstFrameReceived = false;
+        bool signalTimedOut = false;
+        double openedAtMs = 0.0;
+        double lastFrameAtMs = 0.0;
 
         /// Seconds after the audio's t=0 that this camera's first frame lands.
         double startOffsetSeconds = 0.0;
@@ -197,6 +256,9 @@ private:
     // follow it onto a different camera.
     std::map<std::string, OpenCamera> open;
     std::map<std::string, juce::String> openFailures;
+    // A movie writer missed didFinish. Discovery churn must never spend a new
+    // open attempt for that same id until an explicit retry/switch cycle.
+    std::set<std::string> finalizationRetryRequiredIds;
     std::map<std::string, uint64_t> viewerRevisions;
 
     struct RuntimeCameraError
@@ -206,10 +268,37 @@ private:
         juce::String message;
     };
 
+    struct FrameNotification
+    {
+        std::string id;
+        uint64_t viewerRevision = 0;
+    };
+
+    struct RecordingFinishedNotification
+    {
+        std::string id;
+        uint64_t viewerRevision = 0;
+        uint64_t takeGeneration = 0;
+        juce::File file;
+        juce::String error;
+    };
+
+    struct RecordingStartedNotification
+    {
+        std::string id;
+        uint64_t viewerRevision = 0;
+        uint64_t takeGeneration = 0;
+        juce::File file;
+        double startOffsetSeconds = 0.0;
+    };
+
     struct RuntimeErrorMailbox
     {
         std::mutex mutex;
         std::vector<RuntimeCameraError> pending;
+        std::vector<FrameNotification> frames;
+        std::vector<RecordingStartedNotification> recordingsStarted;
+        std::vector<RecordingFinishedNotification> recordingsFinished;
     };
 
     std::shared_ptr<RuntimeErrorMailbox> runtimeErrorMailbox =
@@ -219,8 +308,16 @@ private:
     void openCamera (const std::string& id, int osIndex,
                      const juce::String& expectedDeviceName);
     void closeCamera (const std::string& id);
-    bool applyPendingRuntimeErrors();
-    void requestDiscovery();
+    bool applyPendingRuntimeEvents();
+    bool applySignalTimeouts();
+    bool applyRecordingFinalizationTimeout();
+    bool finishRecordingFinalizationIfReady();
+    void reconcileAfterTake();
+    double signalClockMs() const noexcept;
+    void requestDiscovery (bool supersedePending = true);
+#if defined(SOBSTAGE_CAMERA_SIMULATION)
+    double signalClockOffsetForTesting = 0.0;
+#endif
 #endif
 
     struct TakeRecording
@@ -230,33 +327,64 @@ private:
         std::string deviceName;
         juce::File file;
         double startOffsetSeconds = 0.0;
+        bool started = false;
+        bool finalizationComplete = false;
+        juce::String finalizationError;
     };
+
+#if JUCE_USE_CAMERA
+    struct FinalizingDevice
+    {
+        std::string id;
+        uint64_t viewerRevision = 0;
+        uint64_t takeGeneration = 0;
+        std::unique_ptr<juce::CameraDevice> device;
+    };
+#endif
 
     bool takeActive = false;
     std::vector<CameraPlan> takePlans;
     std::vector<TakeRecording> takeRecordings;
     std::set<std::string> recordingCameraIds;
+    std::set<std::string> startingCameraIds;
     std::map<std::string, int> takeDeviceNameCounts;
     std::set<std::string> ambiguousTakeDeviceNames;
     void stopRecordingInternal (bool reconcileForNextTake);
+    uint64_t takeGeneration = 0;
+    RecordingFinalizationState recordingFinalizationState = RecordingFinalizationState::Idle;
+    juce::String recordingFinalizationProblem;
+    double recordingFinalizationDeadlineMs = 0.0;
+    bool reconcileWhenFinalized = false;
+#if JUCE_USE_CAMERA
+    std::vector<FinalizingDevice> finalizingDevices;
+#endif
 
     // The OS list index for each id, refreshed with the list itself.
     std::map<std::string, int> osIndexById;
 
 #if JUCE_USE_CAMERA
-    void runDiscoveryThread();
+    struct DiscoveryState
+    {
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool cancelled = false;
+        bool workerRunning = false;
+        uint64_t requested = 0;
+        uint64_t completed = 0;
+        juce::StringArray pendingDeviceNames;
+    };
+
+    static void runDiscoveryWorker (std::shared_ptr<DiscoveryState> state);
     void applyDeviceNames (const juce::StringArray& names);
 
-    std::thread discoveryThread;
-    std::mutex discoveryMutex;
-    std::condition_variable discoveryCondition;
-    bool discoveryStopping = false;
-    uint64_t discoveryRequested = 0;
-    uint64_t discoveryCompleted = 0;
+    // Camera enumeration can remain inside AVFoundation/DirectShow forever.
+    // The detached worker owns only this shared mailbox, never the controller,
+    // so destroying CameraController cancels publication without waiting for
+    // that unbounded platform call to return.
+    std::shared_ptr<DiscoveryState> discoveryState = std::make_shared<DiscoveryState>();
     uint64_t discoveryApplied = 0;
     bool hasAppliedDeviceList = false;
     double initialDiscoveryRequestedAtMs = 0.0;
-    juce::StringArray pendingDeviceNames;
     // The unfiltered OS snapshot most recently applied on the message thread.
     // During a take, deferred ids are hidden from Selection; replaying this at
     // stop restores a camera which already reconnected without waiting for a

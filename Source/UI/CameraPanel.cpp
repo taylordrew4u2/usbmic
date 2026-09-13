@@ -91,7 +91,7 @@ void CameraPanel::setRecording (bool isRecording)
     lastCameraIds.clear();
 
     // §9.3: never colour alone. The heading says it as well as showing it.
-    heading.setText (recording ? "Cameras -- recording" : "Cameras", juce::dontSendNotification);
+    updateRecordingHeading();
     heading.setColour (juce::Label::textColourId,
                        recording ? AppLookAndFeel::danger : AppLookAndFeel::bone);
 
@@ -103,6 +103,24 @@ void CameraPanel::setRecording (bool isRecording)
         row.enabledToggle->setEnabled (! recording);
         row.nameEditor->setEnabled (! recording);
     }
+}
+
+void CameraPanel::updateRecordingHeading()
+{
+    if (! recording)
+    {
+        heading.setText ("Cameras", juce::dontSendNotification);
+        return;
+    }
+
+    if (recordingCameraCount > 0)
+        heading.setText ("Cameras -- " + juce::String (recordingCameraCount)
+                             + (recordingCameraCount == 1 ? " recording" : " recording"),
+                         juce::dontSendNotification);
+    else if (startingCameraCount > 0)
+        heading.setText ("Cameras -- starting video", juce::dontSendNotification);
+    else
+        heading.setText ("Cameras -- no video recording", juce::dontSendNotification);
 }
 
 void CameraPanel::setUnavailableReason (const juce::String& reason)
@@ -141,8 +159,11 @@ void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
     std::vector<char> enabled;
     std::vector<char> available;
     std::vector<char> discoveryPending;
+    std::vector<char> recordingThisTake;
+    std::vector<char> startingThisTake;
     juce::StringArray fileNames;
     std::vector<uint64_t> viewerRevisions;
+    juce::StringArray signalStatusTexts;
 
     for (const auto& camera : cameras)
     {
@@ -150,22 +171,39 @@ void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
         enabled.push_back (camera.enabled ? 1 : 0);
         available.push_back (camera.available ? 1 : 0);
         discoveryPending.push_back (camera.discoveryPending ? 1 : 0);
+        recordingThisTake.push_back (camera.recordingThisTake ? 1 : 0);
+        startingThisTake.push_back (camera.startingThisTake ? 1 : 0);
         fileNames.add (camera.fileName);
         viewerRevisions.push_back (camera.viewerRevision);
+        signalStatusTexts.add (camera.signalStatusText);
     }
 
     if (ids == lastCameraIds && enabled == lastEnabled && available == lastAvailable
         && discoveryPending == lastDiscoveryPending
+        && recordingThisTake == lastRecordingThisTake
+        && startingThisTake == lastStartingThisTake
         && fileNames == lastFileNames
-        && viewerRevisions == lastViewerRevisions)
+        && viewerRevisions == lastViewerRevisions
+        && signalStatusTexts == lastSignalStatusTexts)
         return;
 
     lastCameraIds = std::move (ids);
     lastEnabled = std::move (enabled);
     lastAvailable = std::move (available);
     lastDiscoveryPending = std::move (discoveryPending);
+    lastRecordingThisTake = std::move (recordingThisTake);
+    lastStartingThisTake = std::move (startingThisTake);
     lastFileNames = std::move (fileNames);
     lastViewerRevisions = std::move (viewerRevisions);
+    lastSignalStatusTexts = std::move (signalStatusTexts);
+    recordingCameraCount = 0;
+    startingCameraCount = 0;
+    for (const auto& camera : cameras)
+    {
+        recordingCameraCount += camera.recordingThisTake ? 1 : 0;
+        startingCameraCount += camera.startingThisTake ? 1 : 0;
+    }
+    updateRecordingHeading();
     rebuildRows (cameras);
 }
 
@@ -211,10 +249,18 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         row.fileName = std::make_unique<juce::Label>();
         row.fileName->setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
         row.fileName->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
-        row.fileName->setText (camera.discoveryPending ? "Checking the system for this camera..."
-                              : ! camera.available && recording
-                                  ? "Out for this take -- checked again when it ends"
+        row.fileName->setText (recording && camera.recordingThisTake
+                                  && camera.signalStatusText.isNotEmpty()
+                                  ? "Video signal lost -- this file may be incomplete"
+                              : recording && camera.recordingThisTake
+                                  ? "Recording to " + camera.fileName
+                              : recording && camera.startingThisTake
+                                  ? "Starting video -- waiting for the camera to confirm"
+                              : recording ? "Not recording video in this take"
+                              : camera.discoveryPending ? "Checking the system for this camera..."
                               : ! camera.available ? "Unavailable -- not in the next recording"
+                              : camera.enabled && camera.signalStatusText.isNotEmpty()
+                                  ? "Waiting for a live picture -- not ready to record"
                               : camera.enabled ? "Writes " + camera.fileName
                                                : "Not in the recording",
                                juce::dontSendNotification);
@@ -238,6 +284,8 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
                                           ? "Out for this take. SobStage will check and reopen it for the next take."
                                       : ! camera.available
                                           ? "Not available to the system. Reconnect it; SobStage will rescan automatically."
+                                      : camera.enabled && camera.signalStatusText.isNotEmpty()
+                                          ? camera.signalStatusText
                                       : camera.enabled
                                           ? "This camera didn't open. Check that nothing else is using it."
                                           : "Switched off. Turn it on to see it live.",

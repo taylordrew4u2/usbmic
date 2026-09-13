@@ -182,6 +182,12 @@ A novice losing track of their recording is a total product failure even when th
 - If internal space drops below 1 GB during recording, stop the mirror, keep the card write going, and note it in `session.json`. Do not interrupt the recording and do not show a modal.
 ### 6.4 Pre-flight
 Run on volume selection and again on arming; cache per volume ID with a 30-day expiry.
+- Run the filesystem work away from the window thread. Only one check for the
+  current destination may publish; changing destinations abandons the old
+  result, and launch, destination changes and shutdown never join the worker.
+- Keep recording disabled with a plain-language reason while the current check
+  is pending. Failure to start or complete the check is a refusal, never an
+  implicit pass.
 - Write a 200 MB test file. Measure **sustained minimum throughput over rolling 1-second windows**, not average. Delete the test file.
 - Required rate = channels × sample rate × bytes per sample × 2 (card plus mix file overhead).
 - **Block arming if sustained minimum is under 2× required.** Refuse before recording starts; **never degrade mid-take.** A novice cannot act on a mid-take warning, and a corrupted three-hour recording is worse than a delayed start.
@@ -200,7 +206,14 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 | Output device disappears | Monitoring stops, recording continues uninterrupted. Re-select per §5.3 and resume monitoring automatically. |
 ### 6.6 Crash and power loss
 - Update WAV headers every 5 seconds so an interrupted file remains playable to within 5 seconds of the cut.
-- On launch, scan the last-used card and the mirror directory for sessions lacking a stop timestamp. Repair headers, present recovered recordings before the main screen.
+- On launch, scan the last-used card and the enabled mirror directory for
+  sessions lacking a stop timestamp. Run both scans away from the window thread;
+  they must never delay the first window, a destination change or shutdown.
+  Discard an obsolete result if its destination changes while it is running.
+- Block recording until every required recovery scan succeeds. Failure to start
+  or complete a scan fails closed with a plain-language next step. Once both
+  current scans settle, repair headers and present any recovered recordings
+  before recording can begin.
 - Discard any recovered file containing under 1 second of audio; report it as empty rather than presenting an unplayable stub.
 - **Inhibit system sleep, screensaver, and display sleep for the duration of a recording.** A laptop sleeping mid-take is a common and total failure.
 - Monitor for thermal throttling and sustained CPU pressure above 80% for 30 seconds; warn before it causes dropouts.
@@ -280,7 +293,12 @@ Target user has never configured an audio device, does not know what a sample ra
 - Every connected microphone detected and included automatically.
 - Rate, depth, buffer, clock master, output device, and backend chosen automatically. The user is never asked.
 - Monitoring live the instant the window opens.
-- Destination defaults to the connected external card; if none, `~/RECORDINGS`, stated in one line.
+- Destination starts at `~/RECORDINGS`; removable-volume discovery runs
+  detached and adds connected card choices afterward, stated in one line.
+  Free-space and destination-status probes use the same detached, one-flight
+  model. A stale mount or filesystem call must never hold the first window,
+  destination changes or application shutdown, and obsolete results must not
+  replace current state.
 - **Permissions are the first real obstacle.** macOS microphone permission, macOS removable-volume access, Windows microphone privacy setting. If any is denied, show what to enable and why, inside the app, without sending the user hunting through system settings unaided.
 ### 10.2 Main screen
 One window. One primary control: a large record button. Everything else is status.
@@ -299,7 +317,9 @@ sample rate · bit depth · buffer size · measured latency · clock master sele
 ### 10.4 Record button behavior
 - Idle → press → recording starts immediately, no countdown, no confirmation.
 - Recording → press → recording stops immediately, files finalize, location is shown. No confirmation dialog. Stopping is not destructive.
-- Disabled only when zero microphones are connected or pre-flight (§6.4) has failed, and in both cases the reason is shown next to the button.
+- Disabled when zero microphones are connected, a required recovery scan is
+  pending or failed, or pre-flight (§6.4) is pending or failed; the reason and
+  applicable next step are shown next to the button.
 ### 10.5 Physical setup guidance
 Novices fail on hardware, not software. Detect and explain, with the fix stated:
 - Bus power exhausted → a hub **with its own wall adapter** is needed, and why.
@@ -322,6 +342,15 @@ Hand the app and a bag of microphones to someone who has never recorded audio. T
 - Suggested stack: C++ with JUCE, or PortAudio/miniaudio. CoreAudio on macOS;
   WASAPI exclusive on Windows v1. Keep ASIO isolated as post-v1 work.
 - Real-time thread does no allocation, locking, logging, file I/O, or drawing. Ever.
+- A macOS input HAL open may hold the UI for at most five seconds. After that
+  deadline, the worker retains and cleans up its stream without being joined by
+  launch or shutdown. Close callback admission and drain all admitted IOProc and
+  property-listener callbacks before releasing their owner.
+- Removable-volume discovery, filesystem status polling, destination preflight
+  and interrupted-take recovery must not retain an application/UI owner and are
+  never joined by launch, destination changes or shutdown. Publish only results
+  that still belong to the current destination, and fail the recording gate
+  closed when a required check cannot produce a result.
 - Signed and notarized macOS build. Authenticode-signed Windows portable ZIP.
 - **Diagnostics export**: one button writes a zip containing app logs, the last five `session.json` files, and a device inventory. Never includes audio. This is how support requests are handled without screen-sharing.
 - **No automatic crash upload in v1.** Recovery, local logs and a user-initiated

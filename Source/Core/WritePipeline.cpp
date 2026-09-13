@@ -137,6 +137,7 @@ bool WritePipeline::start (const std::string& sessionFolder,
     }
 
     framesAccepted.store (0, std::memory_order_relaxed);
+    framesWritten.store (0, std::memory_order_relaxed);
     framesDropped.store (0, std::memory_order_relaxed);
     peakWritten.store (0.0f, std::memory_order_relaxed);
 
@@ -425,6 +426,13 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         if (! mixWriter->writeInterleaved (mixScratch.data(), frames))
             cardWriteFailed.store (true, std::memory_order_release);
+        else
+            // This is also the writer-completion boundary: every destination
+            // stem for these frames was handled above. Ring emptiness cannot
+            // provide that fact because read() publishes space before the file
+            // writes have completed.
+            framesWritten.fetch_add (static_cast<uint64_t> (frames),
+                                     std::memory_order_release);
 
         if (mirrorActiveForThisPass && mirrorMixWriter != nullptr)
             if (! mirrorMixWriter->writeInterleaved (mixScratch.data(), frames))

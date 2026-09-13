@@ -779,6 +779,372 @@ void aMicrophoneWhoseFirstCallbackNeverArrivesIsReported()
            "the missing first callback is not repeated on every poll");
 }
 
+/// Some class-compliant USB drivers block the caller inside AudioDeviceStart
+/// for minutes. The app window is created only after audio initialisation, so
+/// an unbounded call makes the whole application appear never to launch.
+void aStuckInputStartIsBoundedAndCleanedUp()
+{
+    std::printf ("\nA USB mic whose HAL start call stalls\n");
+    fakeca::reset();
+
+    const auto outputId = fakeca::addDevice (headphones (
+        "Working Output", "uid-working-output", 2,
+        fakeca::BufferShape::oneChannelPerBuffer));
+    const auto workingInputId = fakeca::addDevice (microphone (
+        "Working Mic", "uid-working-input", 1,
+        fakeca::BufferShape::oneChannelPerBuffer));
+
+    auto spec = microphone ("Stuck Start Mic", "uid-stuck-start", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.startDelayMilliseconds = 250;
+    spec.callbackBeforeStartReturns = true;
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture, workingCapture;
+    std::atomic<int> callbacksAfterOwnerRelease { 0 };
+    auto callbackOwner = std::make_shared<int> (1);
+    std::weak_ptr<int> weakCallbackOwner = callbackOwner;
+    auto lifetimeCheckedCallback = [&callbacksAfterOwnerRelease, weakCallbackOwner] (
+        const float* const*, int, float* const*, int, int)
+    {
+        if (weakCallbackOwner.expired())
+            callbacksAfterOwnerRelease.fetch_add (1, std::memory_order_relaxed);
+    };
+    check (backend.openExclusiveOutputStream (
+               "uid-working-output", 48000.0, 256,
+               [] (const float* const*, int, float* const*, int, int) {}),
+           "a monitor output is already live before the failure");
+    check (backend.openInputStream (
+               "uid-working-input", 48000.0, 256, workingCapture.callback()),
+           "another microphone is already live before the failure");
+
+    const auto began = std::chrono::steady_clock::now();
+
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, lifetimeCheckedCallback),
+           "the backend stops waiting for the stalled input");
+    callbackOwner.reset();
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - began);
+    check (elapsed < std::chrono::milliseconds (200),
+           "the simulated launch remains bounded well below the HAL delay");
+    check (backend.getLastOpenError().find ("took too long") != std::string::npos,
+           "the failure explains that macOS timed out rather than blaming a cable silently");
+
+    const auto retryBegan = std::chrono::steady_clock::now();
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+           "device churn does not launch a second stuck attempt for the same input");
+    check (std::chrono::steady_clock::now() - retryBegan < std::chrono::milliseconds (25),
+           "the duplicate attempt is rejected without touching the HAL again");
+
+    const auto closeBegan = std::chrono::steady_clock::now();
+    backend.closeAllStreams();
+    check (std::chrono::steady_clock::now() - closeBegan < std::chrono::milliseconds (100),
+           "previously-open streams are quarantined without blocking behind the stuck HAL");
+
+    // Synchronizes with the detached owner after Start returns and it performs
+    // Stop/listener removal/Destroy. This is also what makes the TSan scenario
+    // a real lifetime proof rather than a sleep that merely tends to pass.
+    check (backend.waitForPendingInputAttemptsForTesting (1000),
+           "the abandoned worker eventually completes its own cleanup");
+    check (! fakeca::isRunning (id), "the late-started IOProc is stopped");
+    check (callbacksAfterOwnerRelease.load (std::memory_order_relaxed) == 0,
+           "a callback that begins behind the timeout gate cannot reach its former owner");
+    check (! fakeca::isRunning (workingInputId) && ! fakeca::isRunning (outputId),
+           "the quarantined healthy streams are stopped by their owning worker");
+    check (fakeca::propertyListenerCount (id) == 0,
+           "no listener points at the retired stream");
+    check (fakeca::propertyListenerCount (workingInputId) == 0
+           && fakeca::propertyListenerCount (outputId) == 0,
+           "the quarantined streams also remove every listener");
+}
+
+void aDriverThatRetainsListenerClientDataIsQuarantined()
+{
+    std::printf ("\nA driver that refuses to release listener clientData\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Unsafe Teardown Mic", "uid-unsafe-teardown", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.allowPropertyListenerRemoval = false;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+           "the unusual device opens before teardown");
+    backend.closeAllStreams();
+
+    const auto retryBegan = std::chrono::steady_clock::now();
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+           "a retained listener keeps the device quarantined");
+    check (std::chrono::steady_clock::now() - retryBegan < std::chrono::milliseconds (25),
+           "the quarantine refuses a retry without touching the unsafe driver");
+}
+
+/// This is the ordering that matters after a launch timeout: the abandoned
+/// input discovers that CoreAudio retained listener clientData, while an
+/// already-live stream is queued for asynchronous teardown. Successful cleanup
+/// of that other stream must never erase the abandoned input's sticky quarantine.
+void aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup()
+{
+    std::printf ("\nA timed-out input whose listener clientData is retained\n");
+    fakeca::reset();
+
+    fakeca::addDevice (headphones (
+        "Working Output", "uid-sticky-output", 2,
+        fakeca::BufferShape::oneChannelPerBuffer));
+
+    auto spec = microphone ("Stuck Unsafe Mic", "uid-stuck-unsafe", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.startDelayMilliseconds = 250;
+    spec.allowPropertyListenerRemoval = false;
+    const auto inputId = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openExclusiveOutputStream (
+               "uid-sticky-output", 48000.0, 256,
+               [] (const float* const*, int, float* const*, int, int) {}),
+           "a healthy stream is live before the unsafe timeout");
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+           "the unsafe input still observes the bounded open deadline");
+
+    backend.closeAllStreams();
+
+    check (backend.waitForPendingInputAttemptsForTesting (1000),
+           "the timed-out worker and queued healthy cleanup both settle behind a sticky quarantine");
+    check (fakeca::propertyListenerCount (inputId) == 3,
+           "retained listener clientData keeps its inert stream storage alive");
+
+    const auto retryBegan = std::chrono::steady_clock::now();
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+           "successful cleanup of another stream cannot reopen the unsafe device gate");
+    check (std::chrono::steady_clock::now() - retryBegan < std::chrono::milliseconds (25),
+           "the sticky quarantine rejects the retry without another HAL transaction");
+}
+
+void anInputPropertyCallCannotFreezeLaunch()
+{
+    std::printf ("\nA USB mic whose UID property call stalls\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Stuck Property Mic", "uid-stuck-property", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.uidReadDelayMilliseconds = 250;
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    const auto began = std::chrono::steady_clock::now();
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
+           "a property call before IOProc creation observes the same open deadline");
+    check (std::chrono::steady_clock::now() - began < std::chrono::milliseconds (200),
+           "the stalled property query cannot hold the launch thread");
+    check (backend.getLastOpenError().find ("took too long") != std::string::npos,
+           "the bounded property failure explains that macOS timed out");
+    check (backend.waitForPendingInputAttemptsForTesting (1000),
+           "the property worker eventually settles under its own lifetime");
+    check (! fakeca::isRunning (id) && fakeca::propertyListenerCount (id) == 0,
+           "a late property result cannot leave an IOProc or listener behind");
+}
+
+void stuckOutputCreateAndStartCallsAreBounded()
+{
+    std::printf ("\nOutput IOProc creation and start calls that stall\n");
+
+    for (const bool stallCreate : { true, false })
+    {
+        fakeca::reset();
+        auto spec = headphones (stallCreate ? "Stuck Create Out" : "Stuck Start Out",
+                                stallCreate ? "uid-stuck-create-out" : "uid-stuck-start-out", 2,
+                                fakeca::BufferShape::interleaved);
+        if (stallCreate)
+            spec.createDelayMilliseconds = 250;
+        else
+            spec.startDelayMilliseconds = 250;
+        const auto id = fakeca::addDevice (spec);
+
+        mma::CoreAudioBackend backend;
+        const auto began = std::chrono::steady_clock::now();
+        check (! backend.openExclusiveOutputStream (
+                   spec.uid, 48000.0, 256,
+                   [] (const float* const*, int, float* const*, int, int) {}),
+               stallCreate ? "a stalled output CreateIOProc is bounded"
+                           : "a stalled output Start is bounded");
+        check (std::chrono::steady_clock::now() - began < std::chrono::milliseconds (200),
+               "the bad output cannot freeze launch");
+        check (backend.waitForPendingInputAttemptsForTesting (1000),
+               "the abandoned output worker owns cleanup through completion");
+        check (! fakeca::isRunning (id),
+               "the abandoned output has no running IOProc");
+        check (! fakeca::hogModeHeld (id),
+               "the abandoned output gives hog mode back");
+        check (fakeca::propertyListenerCount (id) == 0,
+               "the abandoned output removes all clientData listeners");
+    }
+}
+
+void stuckStopAndDestroyCannotFreezeClose()
+{
+    std::printf ("\nOutput Stop and Destroy calls that stall\n");
+
+    for (const bool stallStop : { true, false })
+    {
+        fakeca::reset();
+        auto spec = headphones (stallStop ? "Stuck Stop Out" : "Stuck Destroy Out",
+                                stallStop ? "uid-stuck-stop-out" : "uid-stuck-destroy-out", 2,
+                                fakeca::BufferShape::interleaved);
+        if (stallStop)
+            spec.stopDelayMilliseconds = 250;
+        else
+            spec.destroyDelayMilliseconds = 250;
+        const auto id = fakeca::addDevice (spec);
+
+        mma::CoreAudioBackend backend;
+        check (backend.openExclusiveOutputStream (
+                   spec.uid, 48000.0, 256,
+                   [] (const float* const*, int, float* const*, int, int) {}),
+               "the output opens before the teardown fault");
+
+        const auto began = std::chrono::steady_clock::now();
+        backend.closeAllStreams();
+        check (std::chrono::steady_clock::now() - began < std::chrono::milliseconds (200),
+               stallStop ? "a stalled Stop cannot freeze close"
+                         : "a stalled Destroy cannot freeze close");
+        check (backend.waitForPendingInputAttemptsForTesting (1000),
+               "the detached close owner eventually finishes the HAL teardown");
+        check (! fakeca::isRunning (id) && ! fakeca::hogModeHeld (id),
+               "late teardown stops the IOProc and releases hog mode");
+        check (fakeca::propertyListenerCount (id) == 0,
+               "late teardown removes every clientData listener");
+    }
+}
+
+void cleanupThreadCreationFailureRetainsInertClientData()
+{
+    std::printf ("\nA timed-out rig cannot create its detached cleanup owner\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Cleanup Thread Failure", "uid-cleanup-thread-failure", 1,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    const auto id = fakeca::addDevice (spec);
+    auto stuckSpec = microphone ("Timed-out Before Cleanup", "uid-timeout-before-cleanup", 1,
+                                 fakeca::BufferShape::oneChannelPerBuffer);
+    stuckSpec.startDelayMilliseconds = 250;
+    fakeca::addDevice (stuckSpec);
+
+    mma::CoreAudioBackend backend;
+    std::atomic<int> callbacksAfterOwnerRelease { 0 };
+    auto owner = std::make_shared<int> (1);
+    std::weak_ptr<int> weakOwner = owner;
+    check (backend.openInputStream (
+               spec.uid, 48000.0, 256,
+               [&callbacksAfterOwnerRelease, weakOwner] (
+                   const float* const*, int, float* const*, int, int)
+               {
+                   if (weakOwner.expired())
+                       callbacksAfterOwnerRelease.fetch_add (1, std::memory_order_relaxed);
+               }),
+           "the input is live before cleanup ownership cannot be transferred");
+
+    Capture stuckCapture;
+    check (! backend.openInputStream (
+               stuckSpec.uid, 48000.0, 256, stuckCapture.callback()),
+           "another interface times out before the rig is retired");
+
+    backend.failNextCleanupWorkerStartForTesting();
+    backend.closeAllStreams();
+    owner.reset();
+
+    check (backend.waitForPendingInputAttemptsForTesting (1000),
+           "the original timed-out worker eventually completes independently");
+
+    check (fakeca::isRunning (id) && fakeca::propertyListenerCount (id) == 3,
+           "live HAL registrations retain their closed-gate storage instead of dangling");
+    check (fakeca::pumpInput (id, { { 0.5f, 0.25f } }),
+           "the simulated HAL can still call the retained IOProc");
+    check (callbacksAfterOwnerRelease.load (std::memory_order_relaxed) == 0,
+           "the retained IOProc is inert after its callback owner is gone");
+
+    Capture retryCapture;
+    check (! backend.openInputStream (spec.uid, 48000.0, 256, retryCapture.callback()),
+           "the failed cleanup permanently quarantines further HAL transactions");
+}
+
+void systemListenerClientDataSurvivesFailedRemoval()
+{
+    std::printf ("\nA HAL that retains system-listener clientData\n");
+    fakeca::reset();
+    fakeca::setSystemPropertyListenerRemovalAllowed (false);
+
+    std::atomic<int> callsAfterOwnerRelease { 0 };
+    auto owner = std::make_shared<int> (1);
+    std::weak_ptr<int> weakOwner = owner;
+    {
+        mma::CoreAudioBackend backend;
+        backend.setDeviceChangeCallback ([&callsAfterOwnerRelease, weakOwner]
+        {
+            if (weakOwner.expired())
+                callsAfterOwnerRelease.fetch_add (1, std::memory_order_relaxed);
+        });
+        check (fakeca::systemPropertyListenerCount() == 1,
+               "the system hot-plug listener is installed");
+        backend.setDeviceChangeCallback (nullptr);
+        check (! backend.getHotplugProblem().empty(),
+               "the refused listener removal is checked and reported");
+    }
+
+    owner.reset();
+    fakeca::fireDeviceListChange();
+    check (fakeca::systemPropertyListenerCount() == 1,
+           "the broken HAL really did retain the raw clientData");
+    check (callsAfterOwnerRelease.load (std::memory_order_relaxed) == 0,
+           "a retained system listener is inert after backend destruction");
+}
+
+void destructionDrainsAnActiveSystemListener()
+{
+    std::printf ("\nBackend destruction racing an active hot-plug callback\n");
+    fakeca::reset();
+
+    auto backend = std::make_unique<mma::CoreAudioBackend>();
+    std::atomic<bool> callbackEntered { false };
+    std::atomic<bool> releaseCallback { false };
+    std::atomic<bool> destructionFinished { false };
+
+    backend->setDeviceChangeCallback ([&]
+    {
+        callbackEntered.store (true, std::memory_order_release);
+        while (! releaseCallback.load (std::memory_order_acquire))
+            std::this_thread::yield();
+    });
+
+    std::thread notifier ([] { fakeca::fireDeviceListChange(); });
+    while (! callbackEntered.load (std::memory_order_acquire))
+        std::this_thread::yield();
+
+    std::thread destroyer ([&]
+    {
+        backend.reset();
+        destructionFinished.store (true, std::memory_order_release);
+    });
+
+    std::this_thread::sleep_for (std::chrono::milliseconds (10));
+    check (! destructionFinished.load (std::memory_order_acquire),
+           "destruction waits for the callback lease already in flight");
+    releaseCallback.store (true, std::memory_order_release);
+    notifier.join();
+    destroyer.join();
+    check (destructionFinished.load (std::memory_order_acquire),
+           "destruction completes after the active callback drains");
+
+    fakeca::fireDeviceListChange();
+    check (fakeca::systemPropertyListenerCount() == 0,
+           "successful removal leaves no callback for later notifications");
+}
+
 /// A Mac that refuses the device-list listener leaves the app deaf to the rig:
 /// a microphone plugged in is never noticed, and one pulled out MID-TAKE is
 /// never reported, so a take that lost a channel looks like a clean one. The
@@ -1037,6 +1403,15 @@ int main()
     aMacThatWillNotWatchTheRigSaysSo();
     aMicrophoneThatGoesQuietAfterOpeningIsReported();
     aMicrophoneWhoseFirstCallbackNeverArrivesIsReported();
+    aStuckInputStartIsBoundedAndCleanedUp();
+    aDriverThatRetainsListenerClientDataIsQuarantined();
+    aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup();
+    anInputPropertyCallCannotFreezeLaunch();
+    stuckOutputCreateAndStartCallsAreBounded();
+    stuckStopAndDestroyCannotFreezeClose();
+    cleanupThreadCreationFailureRetainsInertClientData();
+    systemListenerClientDataSurvivesFailedRemoval();
+    destructionDrainsAnActiveSystemListener();
     aLargerThanRequestedCallbackIsStillDelivered();
     anOversizedBufferKeepsItsPhysicalChannelSlots();
     eightMicrophonesEachKeepTheirOwnAudio();

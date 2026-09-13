@@ -42,7 +42,7 @@ SaveLocationPrompt::SaveLocationPrompt()
     addAndMakeVisible (folderNameValue);
 
     styleBody (folderNameNote, AppLookAndFeel::tertiary);
-    folderNameNote.setText ("The date and time in the name are the moment you press start.",
+    folderNameNote.setText ("The exact time and any _2 suffix are chosen when you press start.",
                             juce::dontSendNotification);
     addAndMakeVisible (folderNameNote);
 
@@ -96,7 +96,8 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
                                   const juce::String& folderName,
                                   const juce::String& mirrorFolder,
                                   const juce::StringArray& fileNames,
-                                  int cameraCount)
+                                  int armedCameraCount,
+                                  int readyCameraCount)
 {
     folderValue.setText (parentFolder, juce::dontSendNotification);
     folderNameValue.setText (folderName, juce::dontSendNotification);
@@ -111,13 +112,33 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
     contentsValue.setText (listed.joinIntoString ("\n"), juce::dontSendNotification);
     contentsLines = juce::jmax (1, listed.size());
 
-    videoNote.setVisible (cameraCount > 0);
-    videoNote.setText (cameraCount == 1
-                           ? "The video and the sound are separate files. The video has no sound "
-                             "of its own -- that's what the microphone files are for."
-                           : juce::String (cameraCount) + " cameras, one file each. Video and sound "
-                             "stay separate files, so the video has no sound of its own.",
-                       juce::dontSendNotification);
+    const auto armed = juce::jmax (0, armedCameraCount);
+    const auto ready = juce::jlimit (0, armed, readyCameraCount);
+    videoNote.setVisible (armed > 0);
+    contentsQuestion.setText (armed > ready ? "What this take is set up to make:"
+                                            : "What'll be in it:",
+                              juce::dontSendNotification);
+
+    if (armed > 0 && ready == 0)
+        videoNote.setText (juce::String (armed)
+                               + (armed == 1 ? " camera is" : " cameras are")
+                               + " switched on, but none has a live picture yet. Video records only "
+                                 "if it is live when the take starts.",
+                           juce::dontSendNotification);
+    else if (ready < armed)
+        videoNote.setText (juce::String (armed) + " cameras are switched on; "
+                               + juce::String (ready) + (ready == 1 ? " is" : " are")
+                               + " live and ready. Only live cameras record when the take starts.",
+                           juce::dontSendNotification);
+    else if (armed == 1)
+        videoNote.setText ("1 camera is live and ready. Video and sound stay separate, and the "
+                           "video has no sound of its own.",
+                           juce::dontSendNotification);
+    else if (armed > 1)
+        videoNote.setText (juce::String (armed)
+                               + " cameras are live and ready, one video file each. Video and sound "
+                                 "stay separate files.",
+                           juce::dontSendNotification);
 
     // §6.3: a second copy nobody knows about is a second copy nobody finds.
     mirrorValue.setVisible (mirrorFolder.isNotEmpty());

@@ -33,10 +33,16 @@ public:
         bool enabled = false;
         bool available = true;
         bool discoveryPending = false;
+        bool recordingThisTake = false;
+        bool startingThisTake = false;
         /// The file this camera will write, extension included. Empty when the
         /// camera is switched off and so will not write one.
         juce::String fileName;
         uint64_t viewerRevision = 0;
+        /// Empty only when a current-generation image has proved this camera
+        /// live. Otherwise this is the actionable waiting/open failure shown
+        /// in place of a misleading black preview.
+        juce::String signalStatusText;
     };
 
     /// The camera list and the state of each one. Rebuilds the rows -- and the
@@ -89,13 +95,19 @@ private:
     std::vector<char> lastEnabled;
     std::vector<char> lastAvailable;
     std::vector<char> lastDiscoveryPending;
+    std::vector<char> lastRecordingThisTake;
+    std::vector<char> lastStartingThisTake;
     juce::StringArray lastFileNames;
     std::vector<uint64_t> lastViewerRevisions;
+    juce::StringArray lastSignalStatusTexts;
     PreviewQuality previewQuality = PreviewQuality::Low;
     bool recording = false;
+    int recordingCameraCount = 0;
+    int startingCameraCount = 0;
 
     int viewHeight() const;
     void rebuildRows (const std::vector<CameraRow>& cameras);
+    void updateRecordingHeading();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CameraPanel)
 };

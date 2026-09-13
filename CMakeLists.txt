@@ -141,6 +141,12 @@ if (MMA_BUILD_APP)
 
     if (NOT juce_POPULATED)
         FetchContent_Populate(JUCE)
+    endif()
+
+    include(cmake/ApplyJucePatches.cmake)
+    sobstage_apply_juce_camera_patch ("${juce_SOURCE_DIR}")
+
+    if (NOT TARGET juce::juce_core)
         add_subdirectory(${juce_SOURCE_DIR} ${juce_BINARY_DIR} EXCLUDE_FROM_ALL)
     endif()
 
@@ -248,12 +254,14 @@ if (MMA_BUILD_APP)
     # needs no display -- which is what lets the camera row be checked on a
     # machine where no camera can render.
     add_executable(layout_probe Tools/layout_probe.cpp
+        Source/UI/AdvancedPanel.cpp
         Source/UI/MainScreen.cpp
         Source/UI/CameraPanel.cpp
         Source/UI/SkullMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/AppLookAndFeel.cpp
-        Source/UI/ModalCard.cpp)
+        Source/UI/ModalCard.cpp
+        Source/UI/SaveLocationPrompt.cpp)
     target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_STANDALONE_APPLICATION=1)
     target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
@@ -275,6 +283,7 @@ if (MMA_BUILD_APP)
             Source/App/CameraController.cpp
             Simulation/Camera/FakeCameraDevice.cpp)
         target_compile_definitions(sim_camera PRIVATE
+            SOBSTAGE_CAMERA_SIMULATION=1
             JUCE_USE_CAMERA=1
             JUCE_WEB_BROWSER=0
             JUCE_USE_CURL=0
@@ -285,7 +294,43 @@ if (MMA_BUILD_APP)
             ${CMAKE_CURRENT_SOURCE_DIR}/Source)
         target_link_libraries(sim_camera PRIVATE mma_core juce::juce_gui_basics)
         add_test(NAME sim_camera COMMAND sim_camera)
+
+        # JUCE's Windows camera writer has a synchronous start/stop contract.
+        # The pinned patch publishes callbacks only around successful graph
+        # creation/removal; drive that timing on every CI host so Windows
+        # cannot silently stay STARTING or claim a failed writer.
+        add_executable(sim_camera_sync_lifecycle
+            Tools/sim_camera_sync_lifecycle.cpp
+            Source/App/CameraController.cpp
+            Simulation/Camera/FakeCameraDevice.cpp)
+        target_compile_definitions(sim_camera_sync_lifecycle PRIVATE
+            SOBSTAGE_CAMERA_SIMULATION=1
+            JUCE_USE_CAMERA=1
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+            JUCE_STANDALONE_APPLICATION=1)
+        target_include_directories(sim_camera_sync_lifecycle BEFORE PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/Simulation/Camera
+            ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+        target_link_libraries(sim_camera_sync_lifecycle PRIVATE mma_core juce::juce_gui_basics)
+        add_test(NAME sim_camera_sync_lifecycle COMMAND sim_camera_sync_lifecycle)
     endif()
+
+    # A real ffmpeg process can remain alive forever on a damaged removable
+    # take. This executable invokes itself as that wedged child and proves that
+    # TakeCombiner destruction never joins it and leaves no partial output.
+    add_executable(sim_take_combiner
+        Tools/sim_take_combiner.cpp
+        Source/App/TakeCombiner.cpp)
+    target_compile_definitions(sim_take_combiner PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1)
+    target_include_directories(sim_take_combiner PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_take_combiner PRIVATE mma_core juce::juce_core)
+    add_test(NAME sim_take_combiner COMMAND sim_take_combiner)
+    set_tests_properties(sim_take_combiner PROPERTIES TIMEOUT 10)
 
     if (WIN32)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI

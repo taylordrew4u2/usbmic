@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#include <set>
 
 namespace mma {
 
@@ -419,6 +420,12 @@ void MainComponent::startRecordingNow()
     application.toggleRecording();
     mainScreen.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
 
+    // CameraController freezes the writers which actually started inside the
+    // toggle above. Rebuild the tile captions in this same click so an opened
+    // camera which never delivered a frame reads NOT RECORDING immediately,
+    // while only the proven writers receive a REC label.
+    refreshCameras();
+
     // §6.2: a stop that wrote a take raises the notice; showing it here rather
     // than waiting for the next timer tick keeps the panel attached to the
     // press that caused it.
@@ -428,11 +435,23 @@ void MainComponent::startRecordingNow()
 void MainComponent::showSaveLocationPrompt()
 {
     const auto plan = application.planSave (mainScreen.getSessionName());
+    const auto& cameraController = application.getCameraController();
+    const auto& cameraSelection = cameraController.getSelection();
+    int armedCameraCount = 0;
+    int readyCameraCount = 0;
+
+    for (const auto& camera : cameraSelection.getKnownCameras())
+        armedCameraCount += cameraSelection.isEnabled (camera.id) ? 1 : 0;
+
+    for (const auto& camera : cameraSelection.getAvailableCameras())
+        if (cameraSelection.isEnabled (camera.id)
+            && cameraController.getSignalState (camera.id) == CameraController::SignalState::Live)
+            ++readyCameraCount;
 
     saveLocationPrompt.setSessionName (mainScreen.getSessionName());
     saveLocationPrompt.setAskEveryTime (application.getAskWhereToSaveEveryTime());
     saveLocationPrompt.setPlan (plan.parentFolder, plan.folderName, plan.mirrorFolder, plan.fileNames,
-                                application.getCameraController().getSelection().getEnabledCount());
+                                armedCameraCount, readyCameraCount);
 
     saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
     // Room for the whole card BEFORE it is shown. ModalCard clamps itself to
@@ -456,6 +475,20 @@ void MainComponent::dismissSaveLocationPrompt()
 
 void MainComponent::showRecoveredTakes()
 {
+    // Both one-shot scans must have settled before this card is populated. If
+    // the first result were shown and dismissed while the second was still in
+    // a blocked OS call, that late result could reopen the card. Waiting also
+    // keeps recovery presentation out of the way of an active take or another
+    // modal/panel.
+    if (application.isRecoveryScanPending()
+        || recoveredTakesPanel.isVisible()
+        || application.getRecordingEngine().getState() == RecordingState::Recording
+        || saveLocationPrompt.isVisible()
+        || savedTakePanel.isVisible()
+        || takeAlertCard.isVisible()
+        || advancedVisible || cameraVisible || helpVisible)
+        return;
+
     const auto& sessions = application.getRecoveredSessions();
 
     // The overwhelmingly common case: the last run quit cleanly and there is
@@ -561,7 +594,7 @@ void MainComponent::watchTake (bool isRecording)
     if (--ticksUntilCameraRecheck <= 0)
     {
         ticksUntilCameraRecheck = kStatusRefreshHz * 2;
-        application.getCameraController().refreshCameras();
+        application.getCameraController().refreshCamerasIfIdle();
         application.announceCameraChanges();
     }
 
@@ -677,7 +710,13 @@ void MainComponent::chooseDestinationFolder (std::function<void()> onChosen)
                                 [this, onChosen] (const juce::FileChooser& chooser) {
                                     const auto result = chooser.getResult();
 
-                                    if (result.isDirectory())
+                                    // The mount can disappear after the native
+                                    // chooser returns. Even isDirectory() is an
+                                    // unbounded filesystem call on macOS, so pass
+                                    // the inert path to Application and let its
+                                    // detached recovery/preflight gates validate
+                                    // it before Record can arm.
+                                    if (result.getFullPathName().isNotEmpty())
                                         application.setDestinationFolder (result);
 
                                     if (onChosen)
@@ -711,6 +750,11 @@ void MainComponent::promptRenameMic (int index)
 
 void MainComponent::refreshStatus()
 {
+    // AVFoundation closes movie files on its own callback queue. Consume that
+    // bounded mailbox from the ordinary UI tick; this never waits, and is what
+    // releases metadata/combining/saved notices once every movie is real.
+    application.pollCameraFinalization();
+
     // The capture-rebuilt callback is the source of truth after construction.
     // The first refresh performs the initial bind because Application has
     // already opened monitoring before this component exists. In particular,
@@ -797,6 +841,11 @@ void MainComponent::refreshStatus()
         // the card fills or is pulled. The notice belongs to the stop, not to
         // the press, so it is picked up here too.
         showSavedTake();
+
+        // Recovery now runs away from the message thread. The constructor's
+        // first attempt usually sees it in flight; this slow tick presents the
+        // combined result once both roots have settled.
+        showRecoveredTakes();
 
         const auto reason = application.getRecordDisabledReason();
         mainScreen.setRecordButtonEnabled (reason.isEmpty(), reason);
@@ -1052,28 +1101,45 @@ void MainComponent::refreshCameras()
     cameraPanel.setRecording (application.getRecordingEngine().getState() == RecordingState::Recording);
 
     std::vector<CameraPanel::CameraRow> cameras;
+    std::map<std::string, CameraController::TakeCameraState> takeCameraStates;
+
+    if (application.getRecordingEngine().getState() == RecordingState::Recording)
+        for (const auto& camera : controller.getTakeCameraStates())
+            takeCameraStates[camera.id] = camera;
 
     for (const auto& camera : controller.getSelection().getAvailableCameras())
+    {
+        const auto takeState = takeCameraStates.find (camera.id);
         cameras.push_back ({ camera.id,
                              juce::String (controller.getSelection().getDisplayName (camera.id)),
                              controller.getSelection().isEnabled (camera.id),
                              true,
                              false,
+                             takeState != takeCameraStates.end() && takeState->second.recording,
+                             takeState != takeCameraStates.end() && takeState->second.starting,
                              controller.getPlannedFileNameFor (camera.id),
-                             controller.getViewerRevision (camera.id) });
+                             controller.getViewerRevision (camera.id),
+                             controller.getSignalStatusText (camera.id) });
+    }
 
     // Keep remembered rows actionable while the asynchronous first snapshot
     // runs. If a platform driver wedges, the user can still switch its camera
     // off and record sound; after the bounded grace period this becomes the
     // ordinary unavailable row while discovery continues in the background.
     for (const auto& camera : controller.getSelection().getUnavailableEnabledCameras())
+    {
+        const auto takeState = takeCameraStates.find (camera.id);
         cameras.push_back ({ camera.id,
                              juce::String (camera.displayName),
                              true,
                              false,
                              controller.isInitialDiscoveryPending(),
+                             takeState != takeCameraStates.end() && takeState->second.recording,
+                             takeState != takeCameraStates.end() && takeState->second.starting,
                              controller.getPlannedFileNameFor (camera.id),
-                             controller.getViewerRevision (camera.id) });
+                             controller.getViewerRevision (camera.id),
+                             {} });
+    }
 
     // Only the visible surface owns preview hosts. Keeping CameraPanel rows
     // populated while it was hidden let its cached host lose the native view
@@ -1095,7 +1161,10 @@ void MainComponent::refreshCameras()
 
         for (const auto& camera : cameras)
             if (camera.enabled && camera.available)
-                tiles.push_back ({ camera.id, camera.displayName, camera.viewerRevision });
+                tiles.push_back ({ camera.id, camera.displayName, camera.viewerRevision,
+                                   camera.signalStatusText,
+                                   camera.recordingThisTake,
+                                   camera.startingThisTake });
 
         const int before = mainScreen.getPreferredHeight();
         mainScreen.setCameraTiles (tiles);

@@ -18,12 +18,20 @@
 // -----------------------------------------------------------------------
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <vector>
 
 namespace juce {
 
 class CameraDevice
 {
 public:
+    class Listener
+    {
+    public:
+        virtual ~Listener() = default;
+        virtual void imageReceived (const Image& image) = 0;
+    };
+
     explicit CameraDevice (String deviceName = {});
     virtual ~CameraDevice();
 
@@ -37,8 +45,13 @@ public:
     const String& getName() const noexcept { return name; }
 
     std::function<void (const String&)> onErrorOccurred;
+    std::function<void (const File&)> onRecordingStarted;
+    std::function<void (const File&, const String&)> onRecordingFinished;
 
     Component* createViewerComponent();
+
+    void addListener (Listener* listenerToAdd);
+    void removeListener (Listener* listenerToRemove);
 
     void startRecordingToFile (const File& file, int quality = 2);
     void stopRecording();
@@ -47,6 +60,7 @@ public:
 
 private:
     String name;
+    File recordingFile;
     bool recording = false;
 };
 
@@ -55,10 +69,34 @@ private:
 /// The fake's own controls, outside juce so nothing here shadows a real API.
 namespace fakecamera {
 
+enum class FinalizationMode
+{
+    ImmediateSuccess,
+    DelayedSuccess,
+    Never,
+    ImmediateError
+};
+
 /// What CameraDevice::getAvailableDevices() will report from now on.
 void setDevices (const juce::StringArray& names);
+/// Pauses the next `count` discovery calls after each has captured its device
+/// snapshot. These controls make a permanently slow platform enumerator
+/// deterministic without changing CameraController's production source.
+void pauseNextEnumerations (int count);
+bool waitForPausedEnumerationCount (int count, int timeoutMilliseconds);
+void releaseOnePausedEnumeration();
+bool waitForNoPausedEnumerations (int timeoutMilliseconds);
 void setOpenSucceeds (bool shouldSucceed);
 void setViewerSucceeds (bool shouldSucceed);
+/// Whether addListener immediately delivers one valid image. Enabled by
+/// default so existing healthy-camera scenarios model an active source.
+void setAutoFrameOnListener (bool shouldDeliver);
+/// Delivers a valid image to the listeners on every current generation with
+/// this OS name.
+void emitFrame (const juce::String& deviceName);
+int getAddListenerCallCount();
+int getRemoveListenerCallCount();
+void resetListenerCallCounts();
 void resetOpenCallCount();
 int getOpenCallCount();
 void resetViewerCreateCallCount();
@@ -71,5 +109,13 @@ void resetRecordingCallCounts();
 int getStartRecordingCallCount();
 int getStopRecordingCallCount();
 int getActiveRecordingCount();
+void setAutoConfirmRecordingStart (bool shouldConfirm);
+void setStartRecordingSucceeds (bool shouldSucceed);
+int getPendingRecordingStartCount();
+void completePendingRecordingStarts();
+void setFinalizationMode (FinalizationMode mode);
+int getPendingFinalizationCount();
+void completePendingFinalizations();
+std::vector<int> getOpenedDeviceIndices();
 
 } // namespace fakecamera

@@ -68,6 +68,27 @@ struct DeviceSpec
     /// kAudioDevicePropertyDeviceIsAlive. A false value means the object still
     /// exists long enough to notify clients but is no longer usable.
     bool isAlive = true;
+
+    /// Artificial HAL delay used to prove a driver stuck in AudioDeviceStart,
+    /// on either an input or output, cannot hold launch indefinitely.
+    int startDelayMilliseconds = 0;
+
+    /// Other calls made before and after Start can wedge in third-party HAL
+    /// plug-ins too. These delays exercise the same deadline at UID lookup,
+    /// IOProc creation, Stop, and Destroy.
+    int uidReadDelayMilliseconds = 0;
+    int createDelayMilliseconds = 0;
+    int stopDelayMilliseconds = 0;
+    int destroyDelayMilliseconds = 0;
+
+    /// Deliver one input block before the delayed Start call returns. Some real
+    /// HALs begin IO before unblocking AudioDeviceStart; the backend must still
+    /// close callback admission when its caller times out.
+    bool callbackBeforeStartReturns = false;
+
+    /// false models a broken driver retaining property-listener clientData even
+    /// after the application asks to remove it.
+    bool allowPropertyListenerRemoval = true;
 };
 
 /// Clears every device, listener and IOProc. Call between scenarios.
@@ -76,6 +97,16 @@ void reset();
 /// false makes AudioObjectAddPropertyListener fail, which models a Mac that
 /// will not tell the app about devices coming and going.
 void setPropertyListenersAllowed (bool allowed);
+
+/// false models a HAL that accepts the system hot-plug listener but refuses to
+/// remove it later, retaining its raw clientData.
+void setSystemPropertyListenerRemovalAllowed (bool allowed);
+
+/// Fires the current system device-list listeners without mutating a device.
+/// Useful for deterministic callback/destructor races.
+void fireDeviceListChange();
+
+int systemPropertyListenerCount();
 
 AudioObjectID addDevice (const DeviceSpec& spec);
 

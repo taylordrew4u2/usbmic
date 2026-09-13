@@ -25,7 +25,8 @@ public:
                   const juce::String& folderName,
                   const juce::String& mirrorFolder,
                   const juce::StringArray& fileNames,
-                  int cameraCount);
+                  int armedCameraCount,
+                  int readyCameraCount);
 
     void setSessionName (const juce::String& name);
     juce::String getSessionName() const { return nameEditor.getText(); }

@@ -90,6 +90,12 @@ public:
     /// Total frames accepted from the audio thread, for session.json.
     uint64_t getFramesAccepted() const noexcept { return framesAccepted.load (std::memory_order_relaxed); }
 
+    /// Frames successfully handed to the destination MIX writer. Unlike ring
+    /// fill, this advances only after the writer thread has finished every stem
+    /// write for the same frames, so status/tests can observe a real completed
+    /// writer boundary rather than a dequeue that is still being processed.
+    uint64_t getFramesWritten() const noexcept { return framesWritten.load (std::memory_order_acquire); }
+
     /// Frames the ring buffer could not accept. Any value above zero means
     /// audio was lost, which §0.1 treats as the one unacceptable failure.
     uint64_t getFramesDropped() const noexcept { return framesDropped.load (std::memory_order_relaxed); }
@@ -177,6 +183,7 @@ private:
     std::thread writerThread;
     std::atomic<bool> running { false };
     std::atomic<uint64_t> framesAccepted { 0 };
+    std::atomic<uint64_t> framesWritten { 0 };
     std::atomic<uint64_t> framesDropped { 0 };
 
     /// Loudest sample written this take; reset by start().

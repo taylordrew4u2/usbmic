@@ -43,12 +43,12 @@ public:
     /// needs, and the second one can wait.
     bool start (const juce::File& sessionFolder, const CombinedTakePlan& plan);
 
-    /// Blocks until the current run has finished. Used on shutdown -- a process
-    /// left running past the app's exit writes a file nobody is waiting for.
-    void waitForCompletion();
-
-    bool isRunning() const { return running.load(); }
+    bool isRunning() const;
     Status getStatus() const;
+
+    /// Requests that any ffmpeg child stop. Returns immediately; the detached
+    /// worker owns its remaining cleanup and cannot refer back to this object.
+    void cancel() noexcept;
 
     /// The ffmpeg this will use, or empty when none was found. Resolved once
     /// and cached, since the answer cannot change while the app runs.
@@ -62,15 +62,20 @@ private:
     juce::String resolvedFfmpeg;
     bool haveResolved = false;
 
-    std::atomic<bool> running { false };
-    std::atomic<bool> cancelling { false };
+    struct RunState
+    {
+        std::atomic<bool> running { false };
+        std::atomic<bool> cancelling { false };
+        mutable std::mutex statusLock;
+        Status status;
+    };
 
-    mutable std::mutex statusLock;
-    Status status;
+    std::shared_ptr<RunState> runState;
 
-    std::unique_ptr<std::thread> worker;
-
-    void run (juce::File sessionFolder, CombinedTakePlan plan, juce::String ffmpeg);
+    static void run (std::shared_ptr<RunState> state,
+                     juce::File sessionFolder,
+                     CombinedTakePlan plan,
+                     juce::String ffmpeg);
 };
 
 } // namespace mma

@@ -102,6 +102,11 @@ public:
         std::string id;
         juce::String displayName;
         uint64_t viewerRevision = 0;
+        juce::String signalStatusText;
+        /// True only when this exact camera id is in CameraController's frozen
+        /// set of writers which successfully started for the running take.
+        bool recordingThisTake = false;
+        bool startingThisTake = false;
     };
 
     /// §10.2: the picture belongs beside the levels, not behind a door.
@@ -205,6 +210,9 @@ private:
     {
         std::string id;
         juce::String displayName;
+        bool recordingThisTake = false;
+        bool startingThisTake = false;
+        juce::String signalStatusText;
         // Owned here and destroyed with the tile, per releaseCameraViews().
         std::unique_ptr<juce::Component> viewer;
         std::unique_ptr<juce::Label> caption;
@@ -255,6 +263,9 @@ private:
     std::vector<std::string> lastTileIds;
     std::vector<std::string> lastTileDisplayNames;
     std::vector<uint64_t> lastTileViewerRevisions;
+    juce::StringArray lastTileSignalStatusTexts;
+    std::vector<char> lastTileRecordingStates;
+    std::vector<char> lastTileStartingStates;
 
     /// The band the monitor-problem line needs, grown to fit its message.
     ///

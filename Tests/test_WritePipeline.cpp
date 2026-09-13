@@ -38,15 +38,15 @@ uint32_t readU32LE (std::ifstream& f, std::streampos pos)
          | (static_cast<uint32_t> (b[2]) << 16) | (static_cast<uint32_t> (b[3]) << 24);
 }
 
-/// Spins until the writer thread has taken everything pushed so far, so a test
-/// can say "after this block was written" without guessing at thread timing.
-/// Returns false if it never drains, so a hang shows up as a failed assertion
-/// rather than a test that never finishes.
-bool waitForDrain (const WritePipeline& p)
+/// Spins until the writer thread has completed the requested number of frames.
+/// Ring emptiness is too early: the consumer publishes its read index before it
+/// writes the stems, so ASAN could observe an empty ring and switch to mix-only
+/// while that dequeued block was still between those two operations.
+bool waitForWrittenFrames (const WritePipeline& p, uint64_t minimumFrames)
 {
     for (int attempt = 0; attempt < 2000; ++attempt)
     {
-        if (p.getFillFraction() == 0.0)
+        if (p.getFramesWritten() >= minimumFrames)
             return true;
 
         std::this_thread::sleep_for (std::chrono::milliseconds (1));
@@ -571,7 +571,8 @@ TEST_CASE (WritePipeline_MixOnlyStopsTheStemsAndKeepsTheMix)
     // only". A complete mix is worth more than eight stems with the same hole
     // in them, and the ring drains at a fraction of the byte rate while it
     // recovers.
-    const auto dir = tempDir();
+    ScopedTempTree files ("mix-only-boundary");
+    const auto dir = files.card();
     std::vector<WriteChannelSpec> channels = { { "degrade_a", 0.0f }, { "degrade_b", 0.0f } };
 
     WritePipeline p;
@@ -582,10 +583,10 @@ TEST_CASE (WritePipeline_MixOnlyStopsTheStemsAndKeepsTheMix)
     const float* chans[] = { a.data(), b.data() };
     REQUIRE (p.pushBlock (chans, 2, 512));
 
-    // Wait for the writer thread to actually take that block before degrading.
-    // Without this the test races it: degrade first and the stem never receives
-    // the block at all, which looks like a bug in the pipeline and is not one.
-    REQUIRE (waitForDrain (p));
+    // Wait for the writer thread to finish that block before degrading. Merely
+    // seeing an empty ring means it was dequeued, not that its stems were
+    // written; that weaker condition made this test scheduler-dependent.
+    REQUIRE (waitForWrittenFrames (p, 512));
 
     // Everything written so far is on both the stems and the mix.
     p.fallBackToMixOnly();
@@ -603,9 +604,6 @@ TEST_CASE (WritePipeline_MixOnlyStopsTheStemsAndKeepsTheMix)
     REQUIRE (readU32LE (stem, kDataSizeOffset) == 512 * 2);
     REQUIRE (readU32LE (mix, kDataSizeOffset) == 1024 * 2);
 
-    std::remove ((dir + "/degrade_a.wav").c_str());
-    std::remove ((dir + "/degrade_b.wav").c_str());
-    std::remove ((dir + "/MIX.wav").c_str());
 }
 
 TEST_CASE (WritePipeline_TheMixStillCarriesEveryChannelAfterDegrading)
@@ -881,7 +879,7 @@ TEST_CASE (WritePipeline_TwentyFourBitIsTheDepthTheAppShipsAndMustCarrySignal)
     const float* chans[] = { loud.data() };
 
     REQUIRE (p.pushBlock (chans, 1, 512));
-    REQUIRE (waitForDrain (p));
+    REQUIRE (waitForWrittenFrames (p, 512));
     p.stop();
 
     std::ifstream f (dir + "/depth24.wav", std::ios::binary);

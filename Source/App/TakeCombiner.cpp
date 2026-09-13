@@ -4,11 +4,14 @@
 
 namespace mma {
 
-TakeCombiner::TakeCombiner() = default;
+TakeCombiner::TakeCombiner()
+    : runState (std::make_shared<RunState>())
+{
+}
 
 TakeCombiner::~TakeCombiner()
 {
-    waitForCompletion();
+    cancel();
 }
 
 juce::String TakeCombiner::findFfmpeg()
@@ -58,15 +61,15 @@ juce::String TakeCombiner::findFfmpeg()
 
 bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePlan& plan)
 {
-    if (running.load() || ! plan.hasWork())
+    if (isRunning() || ! plan.hasWork())
         return false;
 
     const auto ffmpeg = findFfmpeg();
+    auto next = std::make_shared<RunState>();
 
     {
-        const std::lock_guard<std::mutex> lock (statusLock);
-        status = {};
-        status.total = static_cast<int> (plan.jobs.size());
+        const std::lock_guard<std::mutex> lock (next->statusLock);
+        next->status.total = static_cast<int> (plan.jobs.size());
     }
 
     if (ffmpeg.isEmpty())
@@ -74,31 +77,51 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
         // §10.6: name what happened and what to do about it. Nothing has been
         // lost -- the picture and the sound are both on disk, complete -- so
         // this says that too, or the sentence reads like a failed recording.
-        const std::lock_guard<std::mutex> lock (statusLock);
-        status.problem = "Couldn't find ffmpeg, so the combined video wasn't made. "
-                         "Your picture and sound are both saved as separate files. "
-                         "Install ffmpeg (on a Mac: brew install ffmpeg) and the next "
-                         "take will combine them.";
+        const std::lock_guard<std::mutex> lock (next->statusLock);
+        next->status.problem = "Couldn't find ffmpeg, so the combined video wasn't made. "
+                               "Your picture and sound are both saved as separate files. "
+                               "Install ffmpeg (on a Mac: brew install ffmpeg) and the next "
+                               "take will combine them.";
+        runState = std::move (next);
         return false;
     }
 
-    waitForCompletion();
+    next->running.store (true, std::memory_order_release);
+    {
+        const std::lock_guard<std::mutex> lock (next->statusLock);
+        next->status.running = true;
+    }
+    runState = next;
 
-    running.store (true);
-    cancelling.store (false);
+    // A removable volume or ffmpeg itself may never answer. The worker owns
+    // every path and all status it can touch, so quitting merely requests
+    // cancellation and never joins it. A late worker cannot refer back to a
+    // destroyed TakeCombiner or overwrite a later run's status.
+    try
+    {
+        std::thread ([next, sessionFolder, plan, ffmpeg]
+        {
+            TakeCombiner::run (next, sessionFolder, plan, ffmpeg);
+        }).detach();
+    }
+    catch (...)
+    {
+        next->running.store (false, std::memory_order_release);
+        const std::lock_guard<std::mutex> lock (next->statusLock);
+        next->status.running = false;
+        next->status.problem = "Couldn't start the combined-video worker. Your separate picture "
+                               "and sound files are still saved.";
+        return false;
+    }
 
-    worker = std::make_unique<std::thread> ([this, sessionFolder, plan, ffmpeg]
-                                            { run (sessionFolder, plan, ffmpeg); });
     return true;
 }
 
-void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::String ffmpeg)
+void TakeCombiner::run (std::shared_ptr<RunState> state,
+                        juce::File sessionFolder,
+                        CombinedTakePlan plan,
+                        juce::String ffmpeg)
 {
-    {
-        const std::lock_guard<std::mutex> lock (statusLock);
-        status.running = true;
-    }
-
     int failures = 0;
 
     // Kept from the first failure only. Two cameras failing for the same reason
@@ -108,7 +131,7 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
 
     for (const auto& job : plan.jobs)
     {
-        if (cancelling.load())
+        if (state->cancelling.load (std::memory_order_acquire))
             break;
 
         const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
@@ -142,43 +165,45 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
             argv.add (juce::String (arg));
 
         juce::ChildProcess process;
-        bool ok = process.start (argv, juce::ChildProcess::wantStdErr);
+
+        // No captured output pipe: POSIX stdio reads can block forever while
+        // a wedged ffmpeg still owns the pipe. With its streams discarded we
+        // can poll the child in bounded steps and honour shutdown promptly.
+        bool ok = process.start (argv, 0);
 
         if (! ok && firstFailureDetail.isEmpty())
             firstFailureDetail = "ffmpeg wouldn't start.";
 
         if (ok)
         {
-            // Read the output as it comes rather than after: a pipe nobody
-            // drains fills, and ffmpeg then blocks writing to it forever, which
-            // presents as a combine that never finishes.
-            juce::String errorText = process.readAllProcessOutput();
-            ok = process.waitForProcessToFinish (-1) && process.getExitCode() == 0;
+            bool finished = false;
 
-            // ffmpeg says why it failed and this threw the answer away, so the
-            // user got a count and never a cause -- and a cause here is usually
-            // actionable ("no space left", "Invalid data found"). The last
-            // non-empty line is the one that carries it; the rest is banner.
-            if (! ok)
+            while (! state->cancelling.load (std::memory_order_acquire))
             {
-                auto lines = juce::StringArray::fromLines (errorText.trim());
-
-                for (int i = lines.size(); --i >= 0;)
+                if (process.waitForProcessToFinish (100))
                 {
-                    if (lines[i].trim().isNotEmpty())
-                    {
-                        // Only if nothing has been kept yet. Assigning
-                        // unconditionally made this the LAST failure's reason
-                        // while the name and the comment both promised the
-                        // first -- and the first is the one that stopped the
-                        // run being clean.
-                        if (firstFailureDetail.isEmpty())
-                            firstFailureDetail = lines[i].trim();
-
-                        break;
-                    }
+                    finished = true;
+                    break;
                 }
             }
+
+            if (state->cancelling.load (std::memory_order_acquire))
+            {
+                if (process.isRunning())
+                    (void) process.kill();
+
+                (void) process.waitForProcessToFinish (1000);
+                output.deleteFile();
+                break;
+            }
+
+            // waitForProcessToFinish's successful terminal poll is also the
+            // POSIX reap. Calling isRunning() after it can ask waitpid about an
+            // already-reaped child and make JUCE replace the real status.
+            ok = finished && process.getExitCode() == 0;
+
+            if (! ok && firstFailureDetail.isEmpty())
+                firstFailureDetail = "ffmpeg stopped before it made a complete file.";
         }
 
         // A file left behind by a run that failed halfway is worse than no file
@@ -189,47 +214,53 @@ void TakeCombiner::run (juce::File sessionFolder, CombinedTakePlan plan, juce::S
             ++failures;
         }
 
-        const std::lock_guard<std::mutex> lock (statusLock);
-        ++status.done;
+        const std::lock_guard<std::mutex> lock (state->statusLock);
+        ++state->status.done;
 
         if (ok)
-            status.written.add (output.getFileName());
+            state->status.written.add (output.getFileName());
     }
 
     {
-        const std::lock_guard<std::mutex> lock (statusLock);
-        status.running = false;
+        const std::lock_guard<std::mutex> lock (state->statusLock);
+        state->status.running = false;
 
         if (failures > 0)
         {
-            status.problem = juce::String (failures)
-                           + (failures == 1 ? " camera couldn't be combined with the sound. "
-                                            : " cameras couldn't be combined with the sound. ")
-                           + "The separate picture and sound files are all still there.";
+            state->status.problem = juce::String (failures)
+                                  + (failures == 1 ? " camera couldn't be combined with the sound. "
+                                                   : " cameras couldn't be combined with the sound. ")
+                                  + "The separate picture and sound files are all still there.";
 
             if (firstFailureDetail.isNotEmpty())
-                status.problem += " (" + firstFailureDetail + ")";
+                state->status.problem += " (" + firstFailureDetail + ")";
         }
     }
 
-    running.store (false);
+    state->running.store (false, std::memory_order_release);
 }
 
-void TakeCombiner::waitForCompletion()
+void TakeCombiner::cancel() noexcept
 {
-    if (worker != nullptr)
-    {
-        if (worker->joinable())
-            worker->join();
+    if (runState != nullptr)
+        runState->cancelling.store (true, std::memory_order_release);
+}
 
-        worker.reset();
-    }
+bool TakeCombiner::isRunning() const
+{
+    return runState != nullptr
+        && runState->running.load (std::memory_order_acquire);
 }
 
 TakeCombiner::Status TakeCombiner::getStatus() const
 {
-    const std::lock_guard<std::mutex> lock (statusLock);
-    return status;
+    const auto state = runState;
+
+    if (state == nullptr)
+        return {};
+
+    const std::lock_guard<std::mutex> lock (state->statusLock);
+    return state->status;
 }
 
 } // namespace mma

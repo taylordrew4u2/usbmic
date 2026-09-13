@@ -1,4 +1,5 @@
 #include "CameraController.h"
+#include <algorithm>
 #include <chrono>
 #include <set>
 
@@ -10,10 +11,45 @@ namespace mma {
 
 namespace {
 
+#if JUCE_USE_CAMERA
+constexpr double kCameraSignalTimeoutMs = 5000.0;
+constexpr double kCameraFinalizationTimeoutMs = 15000.0;
+
+#if JUCE_MAC || JUCE_WINDOWS || defined(SOBSTAGE_CAMERA_SIMULATION)
+constexpr bool kCameraBackendReportsFinalization = true;
+#else
+constexpr bool kCameraBackendReportsFinalization = false;
+#endif
+
+/// CameraDevice::Listener may run on a platform capture thread. It publishes
+/// one tiny generation-tagged fact and never reaches back into the controller
+/// or UI. That makes an already-running callback harmless after a close/reopen:
+/// the message-thread drain rejects it unless the exact device generation is
+/// still current.
+class FrameHeartbeatListener final : public juce::CameraDevice::Listener
+{
+public:
+    explicit FrameHeartbeatListener (std::function<void()> publishIn)
+        : publish (std::move (publishIn))
+    {
+    }
+
+    void imageReceived (const juce::Image& image) override
+    {
+        if (image.isValid())
+            publish();
+    }
+
+private:
+    std::function<void()> publish;
+};
+#endif
+
 /// A disposable UI owner for the one native preview component created when a
 /// camera opens. Adding the native child here automatically removes it from a
 /// previous host, so moving between the Cameras panel and the main screen does
 /// not destroy/recreate AVFoundation's preview layer or restart its session.
+#if JUCE_USE_CAMERA
 class CameraViewerHost final : public juce::Component
 {
 public:
@@ -33,40 +69,38 @@ public:
 private:
     std::shared_ptr<std::atomic<juce::Component*>> target;
 };
+#endif
 
 } // namespace
 
-CameraController::CameraController()
-{
-#if JUCE_USE_CAMERA
-    discoveryThread = std::thread ([this] { runDiscoveryThread(); });
-#endif
-}
+CameraController::CameraController() = default;
 
 CameraController::~CameraController()
 {
 #if JUCE_USE_CAMERA
-    // Close every live recording/device before waiting on OS discovery. Camera
-    // enumeration can be stuck in AVFoundation/DirectShow; a slow discovery
-    // must never leave a movie writer open while teardown waits for it.
+    // Suppress a late platform result before touching message-thread-owned
+    // camera state. Enumeration itself is deliberately not joined: an OS
+    // camera service can remain wedged forever, and the worker owns no part of
+    // this controller which could become dangling after destruction.
+    const auto discovery = discoveryState;
+    {
+        const std::lock_guard<std::mutex> guard (discovery->mutex);
+        discovery->cancelled = true;
+        discovery->pendingDeviceNames.clear();
+    }
+    discovery->condition.notify_all();
+
     stopRecordingInternal (false);
 
     for (auto& [id, entry] : open)
     {
         juce::ignoreUnused (id);
+        if (entry.device != nullptr && entry.frameListener != nullptr)
+            entry.device->removeListener (entry.frameListener.get());
         entry.viewerTarget->store (nullptr);
     }
 
     open.clear();
-
-    {
-        const std::lock_guard<std::mutex> guard (discoveryMutex);
-        discoveryStopping = true;
-    }
-    discoveryCondition.notify_all();
-
-    if (discoveryThread.joinable())
-        discoveryThread.join();
 #else
     stopRecording();
 #endif
@@ -97,7 +131,18 @@ void CameraController::refreshCameras()
 {
 #if JUCE_USE_CAMERA
     applyPendingCameraList();
-    requestDiscovery();
+    requestDiscovery (true);
+#else
+    // Keep the unsupported build's selection consistently empty.
+    selection.setAvailableCameras ({});
+#endif
+}
+
+void CameraController::refreshCamerasIfIdle()
+{
+#if JUCE_USE_CAMERA
+    applyPendingCameraList();
+    requestDiscovery (false);
 #else
     // Keep the unsupported build's selection consistently empty.
     selection.setAvailableCameras ({});
@@ -107,15 +152,20 @@ void CameraController::refreshCameras()
 bool CameraController::applyPendingCameraList()
 {
 #if JUCE_USE_CAMERA
-    const bool runtimeStateChanged = applyPendingRuntimeErrors();
+    const bool runtimeStateChanged = applyPendingRuntimeEvents();
+    const bool signalStateChanged = applySignalTimeouts();
+    bool finalizationStateChanged = applyRecordingFinalizationTimeout();
+    finalizationStateChanged = finishRecordingFinalizationIfReady()
+                            || finalizationStateChanged;
     juce::StringArray names;
     bool hasNewDeviceList = false;
+    const auto discovery = discoveryState;
     {
-        const std::lock_guard<std::mutex> guard (discoveryMutex);
-        if (discoveryCompleted > discoveryApplied)
+        const std::lock_guard<std::mutex> guard (discovery->mutex);
+        if (! discovery->cancelled && discovery->completed > discoveryApplied)
         {
-            names = pendingDeviceNames;
-            discoveryApplied = discoveryCompleted;
+            names = discovery->pendingDeviceNames;
+            discoveryApplied = discovery->completed;
             hasNewDeviceList = true;
         }
     }
@@ -131,10 +181,11 @@ bool CameraController::applyPendingCameraList()
     // the outer UI deliberately does not call applySelection(). Leaving cleanup
     // to that caller kept an unplugged CameraDevice alive and allowed a same-name
     // reconnect to reuse the stale object indefinitely.
-    if (hasNewDeviceList || runtimeStateChanged)
+    if (hasNewDeviceList || runtimeStateChanged || signalStateChanged)
         applySelection (false);
 
-    return hasNewDeviceList || runtimeStateChanged;
+    return hasNewDeviceList || runtimeStateChanged || signalStateChanged
+        || finalizationStateChanged;
 #else
     return false;
 #endif
@@ -143,18 +194,25 @@ bool CameraController::applyPendingCameraList()
 bool CameraController::waitForCameraRefresh (int timeoutMilliseconds)
 {
 #if JUCE_USE_CAMERA
-    std::unique_lock<std::mutex> lock (discoveryMutex);
-    const auto requested = discoveryRequested;
+    const auto discovery = discoveryState;
+    std::unique_lock<std::mutex> lock (discovery->mutex);
+    const auto requested = discovery->requested;
     if (requested == 0)
         return false;
 
-    const bool completed = discoveryCondition.wait_for (
+    const bool signalled = discovery->condition.wait_for (
         lock, std::chrono::milliseconds (juce::jmax (0, timeoutMilliseconds)),
-        [this, requested] { return discoveryStopping || discoveryCompleted >= requested; });
-    const bool stopped = discoveryStopping;
+        [discovery, requested]
+        {
+            return discovery->cancelled
+                || discovery->completed >= requested
+                || ! discovery->workerRunning;
+        });
+    const bool completed = discovery->completed >= requested;
+    const bool cancelled = discovery->cancelled;
     lock.unlock();
 
-    return completed && ! stopped && applyPendingCameraList();
+    return signalled && completed && ! cancelled && applyPendingCameraList();
 #else
     juce::ignoreUnused (timeoutMilliseconds);
     return false;
@@ -182,15 +240,143 @@ bool CameraController::isInitialDiscoveryPending() const noexcept
 }
 
 #if JUCE_USE_CAMERA
-bool CameraController::applyPendingRuntimeErrors()
+bool CameraController::applyPendingRuntimeEvents()
 {
     std::vector<RuntimeCameraError> errors;
+    std::vector<FrameNotification> frames;
+    std::vector<RecordingStartedNotification> recordingsStarted;
+    std::vector<RecordingFinishedNotification> recordingsFinished;
     {
         const std::lock_guard<std::mutex> guard (runtimeErrorMailbox->mutex);
         errors.swap (runtimeErrorMailbox->pending);
+        frames.swap (runtimeErrorMailbox->frames);
+        recordingsStarted.swap (runtimeErrorMailbox->recordingsStarted);
+        recordingsFinished.swap (runtimeErrorMailbox->recordingsFinished);
     }
 
     bool changed = false;
+
+    for (const auto& started : recordingsStarted)
+    {
+        const auto take = std::find_if (takeRecordings.begin(), takeRecordings.end(),
+            [&] (const TakeRecording& recording)
+            {
+                return recording.deviceId == started.id
+                    && recording.file == started.file;
+            });
+
+        if (take == takeRecordings.end() || started.takeGeneration != takeGeneration
+            || take->finalizationComplete || take->started)
+            continue;
+
+        take->started = true;
+        take->startOffsetSeconds = started.startOffsetSeconds;
+        startingCameraIds.erase (started.id);
+
+        // didStart may legitimately arrive after Stop was pressed. It still
+        // proves that this movie must be awaited and can be used if didFinish
+        // succeeds, but it must not put the stopped take back into REC.
+        if (takeActive)
+        {
+            recordingCameraIds.insert (started.id);
+            recording = true;
+        }
+
+        const auto entry = open.find (started.id);
+        if (entry != open.end() && entry->second.viewerRevision == started.viewerRevision)
+        {
+            entry->second.startingThisTake = false;
+            entry->second.recordingThisTake = takeActive;
+        }
+
+        changed = true;
+    }
+
+    for (const auto& frame : frames)
+    {
+        const auto entry = open.find (frame.id);
+
+        // A frame from the device generation which just closed must never make
+        // a same-id replacement look live. This is especially important for
+        // capture cards, whose product string and therefore app id rarely
+        // changes across a USB reconnect.
+        if (entry == open.end() || entry->second.viewerRevision != frame.viewerRevision)
+            continue;
+
+        const bool becameLive = ! entry->second.firstFrameReceived
+                             || entry->second.signalTimedOut;
+        entry->second.firstFrameReceived = true;
+        entry->second.signalTimedOut = false;
+        entry->second.lastFrameAtMs = signalClockMs();
+        openFailures.erase (frame.id);
+
+        // Keep this generation's listener attached. SobStage's pinned-JUCE
+        // patch throttles the proof capture to two frames per second, which is
+        // cheap enough to detect HDMI loss/recovery without the old unbounded
+        // still-photo loop contending with the movie writer.
+        if (becameLive)
+        {
+            // Device generation stays fixed for callback validation. The public
+            // revision is only the UI cache token for placeholder/live changes.
+            ++viewerRevisions[frame.id];
+            changed = true;
+        }
+    }
+
+    for (const auto& finished : recordingsFinished)
+    {
+        const auto take = std::find_if (takeRecordings.begin(), takeRecordings.end(),
+            [&] (const TakeRecording& recording)
+            {
+                return recording.deviceId == finished.id
+                    && recording.file == finished.file;
+            });
+
+        if (take == takeRecordings.end() || finished.takeGeneration != takeGeneration
+            || take->finalizationComplete)
+            continue;
+
+        take->finalizationComplete = true;
+        take->finalizationError = finished.error;
+
+        // didFinish is required even for a start which AVFoundation rejected.
+        // A backend may provide no NSError in that edge case; the missing
+        // didStart is itself enough evidence that no usable movie began.
+        if (! take->started)
+        {
+            if (take->finalizationError.isEmpty())
+                take->finalizationError = "The camera ended before it confirmed recording started";
+
+            recordProblem = "Couldn't start recording video from "
+                          + juce::String (take->displayName) + ": "
+                          + take->finalizationError + ".";
+        }
+
+        const auto openEntry = open.find (finished.id);
+        if (openEntry != open.end()
+            && openEntry->second.viewerRevision == finished.viewerRevision)
+        {
+            openEntry->second.recordingThisTake = false;
+            openEntry->second.startingThisTake = false;
+            openEntry->second.device->onRecordingStarted = nullptr;
+            openEntry->second.device->onRecordingFinished = nullptr;
+        }
+
+        finalizingDevices.erase (
+            std::remove_if (finalizingDevices.begin(), finalizingDevices.end(),
+                [&] (const FinalizingDevice& device)
+                {
+                    return device.id == finished.id
+                        && device.viewerRevision == finished.viewerRevision
+                        && device.takeGeneration == finished.takeGeneration;
+                }),
+            finalizingDevices.end());
+
+        recordingCameraIds.erase (finished.id);
+        startingCameraIds.erase (finished.id);
+        recording = ! recordingCameraIds.empty();
+        changed = true;
+    }
 
     for (const auto& error : errors)
     {
@@ -205,63 +391,251 @@ bool CameraController::applyPendingRuntimeErrors()
         closeCamera (error.id);
         openFailures[error.id] = "Lost video from " + name
                                + (error.message.isNotEmpty() ? ": " + error.message : juce::String())
-                               + ". Check the HDMI signal and cable, close any other app using "
-                                 "the camera, then turn this camera off and back on.";
+                               + ". Check the camera or capture-device signal and cables, close any "
+                                 "other app using it, then turn this camera off and back on.";
         changed = true;
     }
 
     return changed;
 }
 
-void CameraController::requestDiscovery()
+double CameraController::signalClockMs() const noexcept
 {
-    {
-        const std::lock_guard<std::mutex> guard (discoveryMutex);
-        if (discoveryStopping)
-            return;
-
-        if (discoveryRequested == 0)
-            initialDiscoveryRequestedAtMs = juce::Time::getMillisecondCounterHiRes();
-
-        ++discoveryRequested;
-    }
-
-    discoveryCondition.notify_all();
+    auto now = juce::Time::getMillisecondCounterHiRes();
+#if defined(SOBSTAGE_CAMERA_SIMULATION)
+    now += signalClockOffsetForTesting;
+#endif
+    return now;
 }
 
-void CameraController::runDiscoveryThread()
+bool CameraController::applySignalTimeouts()
+{
+    bool changed = false;
+    const auto now = signalClockMs();
+
+    for (auto& [id, entry] : open)
+    {
+        const auto lastProofAt = entry.firstFrameReceived ? entry.lastFrameAtMs
+                                                          : entry.openedAtMs;
+
+        if (entry.signalTimedOut || now - lastProofAt < kCameraSignalTimeoutMs)
+            continue;
+
+        entry.signalTimedOut = true;
+        openFailures[id] = "No video frames arrived from "
+                         + juce::String (selection.getDisplayName (id))
+                         + ". Check that the camera or capture device is on. For HDMI, check its "
+                           "output plus the capture card's HDMI and USB cables. Then turn this "
+                           "camera off and back on.";
+        ++viewerRevisions[id];
+        changed = true;
+    }
+
+    return changed;
+}
+
+bool CameraController::applyRecordingFinalizationTimeout()
+{
+    if (recordingFinalizationState != RecordingFinalizationState::Waiting
+        || signalClockMs() < recordingFinalizationDeadlineMs)
+        return false;
+
+    juce::StringArray timedOutNames;
+
+    std::vector<std::string> timedOutIds;
+
+    for (auto& recording : takeRecordings)
+    {
+        if (recording.finalizationComplete)
+            continue;
+
+        recording.finalizationComplete = true;
+        recording.finalizationError = "The camera did not finish writing its movie within 15 seconds.";
+        timedOutNames.add (juce::String (recording.displayName));
+        timedOutIds.push_back (recording.deviceId);
+
+        const auto entry = open.find (recording.deviceId);
+        if (entry != open.end())
+        {
+            entry->second.device->onRecordingFinished = nullptr;
+            entry->second.device->onRecordingStarted = nullptr;
+            entry->second.recordingThisTake = false;
+            entry->second.startingThisTake = false;
+        }
+
+        // A writer which missed its required completion callback is not a
+        // safe device generation to reuse. Keep this durable until the user
+        // explicitly retries the camera; periodic discovery/reconciliation
+        // must not silently open it for the next take.
+        openFailures[recording.deviceId] =
+            "Video file finalization timed out for "
+            + juce::String (recording.displayName)
+            + ". Turn this camera off and back on before recording with it again.";
+        finalizationRetryRequiredIds.insert (recording.deviceId);
+    }
+
+    if (! timedOutNames.isEmpty())
+        recordingFinalizationProblem = timedOutNames.size() == 1
+            ? timedOutNames[0] + " did not finish its video file. The audio is safe; do not use that movie."
+            : juce::String (timedOutNames.size())
+                + " cameras did not finish their video files. The audio is safe; do not use those movies.";
+
+    finalizingDevices.clear();
+
+    // A backend that missed its required completion callback is not safe to
+    // reuse for another file. Closing is asynchronous in the pinned JUCE patch,
+    // so this remains bounded even when the driver itself is wedged.
+    for (const auto& id : timedOutIds)
+        closeCamera (id);
+
+    return true;
+}
+
+bool CameraController::finishRecordingFinalizationIfReady()
+{
+    if (recordingFinalizationState != RecordingFinalizationState::Waiting)
+        return false;
+
+    if (std::any_of (takeRecordings.begin(), takeRecordings.end(),
+                     [] (const TakeRecording& recording) { return ! recording.finalizationComplete; }))
+        return false;
+
+    const bool failed = std::any_of (takeRecordings.begin(), takeRecordings.end(),
+        [] (const TakeRecording& recording) { return recording.finalizationError.isNotEmpty(); });
+
+    if (failed && recordingFinalizationProblem.isEmpty())
+    {
+        juce::StringArray failedNames;
+        for (const auto& recording : takeRecordings)
+            if (recording.finalizationError.isNotEmpty())
+                failedNames.add (juce::String (recording.displayName));
+
+        recordingFinalizationProblem = failedNames.size() == 1
+            ? failedNames[0] + " could not finish its video file. The audio is safe; do not use that movie."
+            : juce::String (failedNames.size())
+                + " cameras could not finish their video files. The audio is safe; do not use those movies.";
+    }
+
+    recordingFinalizationState = failed ? RecordingFinalizationState::Failed
+                                        : RecordingFinalizationState::Succeeded;
+    finalizingDevices.clear();
+
+    if (reconcileWhenFinalized)
+        reconcileAfterTake();
+
+    reconcileWhenFinalized = false;
+    return true;
+}
+
+void CameraController::requestDiscovery (bool supersedePending)
+{
+    const auto discovery = discoveryState;
+    bool launchWorker = false;
+
+    {
+        const std::lock_guard<std::mutex> guard (discovery->mutex);
+        if (discovery->cancelled)
+            return;
+
+        // The status timer is observation, not a new user request. Let the
+        // current OS call finish so a merely slow enumerator can eventually
+        // publish; explicit actions are allowed to invalidate that snapshot.
+        if (discovery->workerRunning && ! supersedePending)
+            return;
+
+        if (discovery->requested == 0)
+            initialDiscoveryRequestedAtMs = juce::Time::getMillisecondCounterHiRes();
+
+        ++discovery->requested;
+        if (! discovery->workerRunning)
+        {
+            discovery->workerRunning = true;
+            launchWorker = true;
+        }
+    }
+
+    if (! launchWorker)
+        return;
+
+    try
+    {
+        std::thread ([discovery]
+        {
+            runDiscoveryWorker (discovery);
+        }).detach();
+    }
+    catch (...)
+    {
+        // Thread construction can fail under severe resource pressure. Leave
+        // the request pending and reopen the one-flight gate so a later UI
+        // refresh can retry without blocking this caller.
+        const std::lock_guard<std::mutex> guard (discovery->mutex);
+        discovery->workerRunning = false;
+        discovery->condition.notify_all();
+    }
+}
+
+void CameraController::runDiscoveryWorker (std::shared_ptr<DiscoveryState> discovery)
 {
    #if JUCE_WINDOWS
     const auto comResult = CoInitializeEx (nullptr, COINIT_MULTITHREADED);
     const bool uninitialiseCom = SUCCEEDED (comResult);
    #endif
 
-    std::unique_lock<std::mutex> lock (discoveryMutex);
-
-    while (! discoveryStopping)
+    for (;;)
     {
-        discoveryCondition.wait (lock, [this]
+        uint64_t requested = 0;
         {
-            return discoveryStopping || discoveryRequested > discoveryCompleted;
-        });
+            const std::lock_guard<std::mutex> guard (discovery->mutex);
+            if (discovery->cancelled)
+            {
+                discovery->workerRunning = false;
+                discovery->condition.notify_all();
+                break;
+            }
 
-        if (discoveryStopping)
+            requested = discovery->requested;
+        }
+
+        juce::StringArray names;
+        bool succeeded = false;
+        try
+        {
+            names = juce::CameraDevice::getAvailableDevices();
+            succeeded = true;
+        }
+        catch (...)
+        {
+            // A platform exception must not escape a detached worker. Keep the
+            // previous applied snapshot and allow a later refresh to retry.
+        }
+
+        bool finished = false;
+        {
+            const std::lock_guard<std::mutex> guard (discovery->mutex);
+
+            if (discovery->cancelled || ! succeeded)
+            {
+                discovery->workerRunning = false;
+                finished = true;
+            }
+            else if (discovery->requested == requested)
+            {
+                // Only the newest requested generation may become visible.
+                // If another refresh arrived while the OS was blocked, this
+                // snapshot is stale and the loop immediately enumerates again.
+                discovery->pendingDeviceNames = std::move (names);
+                discovery->completed = requested;
+                discovery->workerRunning = false;
+                finished = true;
+            }
+
+            discovery->condition.notify_all();
+        }
+
+        if (finished)
             break;
-
-        const auto requested = discoveryRequested;
-        lock.unlock();
-        const auto names = juce::CameraDevice::getAvailableDevices();
-        lock.lock();
-
-        // A later request may have arrived while the OS was enumerating. This
-        // result is still a valid snapshot; publish it, then loop immediately
-        // for the newer request instead of discarding useful state.
-        pendingDeviceNames = names;
-        discoveryCompleted = requested;
-        discoveryCondition.notify_all();
     }
-
-    lock.unlock();
 
    #if JUCE_WINDOWS
     if (uninitialiseCom)
@@ -341,7 +715,8 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
 
         // Reconnecting is a fresh opportunity to open the camera. A failure
         // belonging to the prior connection must not suppress that one.
-        if (previousIds.count (id) == 0)
+        if (previousIds.count (id) == 0
+            && finalizationRetryRequiredIds.count (id) == 0)
             openFailures.erase (id);
     }
     selection.setAvailableCameras (std::move (cameras));
@@ -360,6 +735,11 @@ void CameraController::applySelection (bool retryFailures)
     // keep the existing explanation visible even though it deliberately does
     // not spend another blocking open attempt.
     openProblem.clear();
+
+    if (retryFailures)
+        for (const auto& camera : selection.getAvailableCameras())
+            if (selection.isEnabled (camera.id))
+                finalizationRetryRequiredIds.erase (camera.id);
 
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
@@ -390,7 +770,11 @@ void CameraController::applySelection (bool retryFailures)
         const bool stillEnabled = selection.isEnabled (it->first);
         const bool stillAvailable = osIndexById.count (it->first) > 0;
         if (! stillEnabled || ! stillAvailable)
+        {
+            if (! stillEnabled)
+                finalizationRetryRequiredIds.erase (it->first);
             it = openFailures.erase (it);
+        }
         else
             ++it;
     }
@@ -410,7 +794,9 @@ void CameraController::applySelection (bool retryFailures)
         const auto index = osIndexById.find (camera.id);
 
         if (index != osIndexById.end()
-            && (retryFailures || openFailures.count (camera.id) == 0))
+            && (retryFailures
+                || (openFailures.count (camera.id) == 0
+                    && finalizationRetryRequiredIds.count (camera.id) == 0)))
             openCamera (camera.id, index->second, juce::String (camera.displayName));
     }
 
@@ -479,7 +865,7 @@ void CameraController::openCamera (const std::string& id, int osIndex,
         // clear above was added to remove, still live one function away.
         openFailures[id] = "Couldn't open " + juce::String (selection.getDisplayName (id))
                          + ". Close any other app using it, and check this app is allowed "
-                           "to use the camera in your system privacy settings.";
+                           "to use cameras and capture devices in your system privacy settings.";
         return;
     }
 
@@ -503,6 +889,7 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     entry.device = std::move (device);
     entry.viewerRevision = viewerRevision;
     entry.viewerTarget = std::make_shared<std::atomic<juce::Component*>> (nullptr);
+    entry.openedAtMs = signalClockMs();
 
     const auto mailbox = runtimeErrorMailbox;
     entry.device->onErrorOccurred = [mailbox, id, viewerRevision] (const juce::String& error)
@@ -520,7 +907,7 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     {
         openFailures[id] = "Couldn't start video from "
                          + juce::String (selection.getDisplayName (id))
-                         + ". Check the HDMI signal and cable, close any other app using it, "
+                         + ". Check the camera or capture-device signal and cables, close any other app using it, "
                            "then turn this camera off and back on.";
         return;
     }
@@ -529,6 +916,28 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     entry.osIndex = osIndex;
     open[id] = std::move (entry);
     openFailures.erase (id);
+    finalizationRetryRequiredIds.erase (id);
+
+    // A native preview component proves only that JUCE created a view. Capture
+    // cards with no HDMI signal commonly satisfy that condition while drawing
+    // a permanent black rectangle. Listen for an actual image from this exact
+    // open generation and keep the UI in its explicit waiting state until one
+    // arrives. The native viewer is deliberately created first: JUCE's macOS
+    // backend requires that ordering before addListener starts the session.
+    const auto frameMailbox = runtimeErrorMailbox;
+    auto& stored = open.at (id);
+    stored.frameListener = std::make_unique<FrameHeartbeatListener> (
+        [frameMailbox, id, viewerRevision]
+        {
+            const std::lock_guard<std::mutex> guard (frameMailbox->mutex);
+            frameMailbox->frames.push_back ({ id, viewerRevision });
+        });
+    stored.device->addListener (stored.frameListener.get());
+
+    // Some camera backends can synchronously deliver their first frame while
+    // the listener is being attached. Consume that proof before returning so a
+    // working camera does not flash a false waiting state for one UI tick.
+    applyPendingRuntimeEvents();
 
     // Deliberately does NOT clear openProblem. It used to, which meant one
     // camera opening successfully erased the message about another that had
@@ -545,19 +954,31 @@ void CameraController::closeCamera (const std::string& id)
         return;
 
     const bool wasRecordingThisTake = entry->second.recordingThisTake
-                                   || recordingCameraIds.count (id) > 0;
+                                   || entry->second.startingThisTake
+                                   || recordingCameraIds.count (id) > 0
+                                   || startingCameraIds.count (id) > 0;
 
     if (wasRecordingThisTake && entry->second.device != nullptr)
         entry->second.device->stopRecording();
+
+    if (entry->second.device != nullptr && entry->second.frameListener != nullptr)
+        entry->second.device->removeListener (entry->second.frameListener.get());
 
     if (takeActive && wasRecordingThisTake)
         camerasDeferredUntilTakeEnds.insert (id);
 
     recordingCameraIds.erase (id);
+    startingCameraIds.erase (id);
     recording = ! recordingCameraIds.empty();
 
     entry->second.viewerTarget->store (nullptr);
     ++viewerRevisions[id];
+
+    if (takeActive && wasRecordingThisTake && kCameraBackendReportsFinalization
+        && entry->second.device != nullptr)
+        finalizingDevices.push_back ({ id, entry->second.viewerRevision, takeGeneration,
+                                       std::move (entry->second.device) });
+
     open.erase (entry);
 }
 #endif
@@ -567,7 +988,8 @@ std::unique_ptr<juce::Component> CameraController::createViewer (const std::stri
 #if JUCE_USE_CAMERA
     const auto entry = open.find (deviceId);
 
-    if (entry != open.end() && entry->second.nativeViewer != nullptr)
+    if (entry != open.end() && entry->second.nativeViewer != nullptr
+        && entry->second.firstFrameReceived && ! entry->second.signalTimedOut)
         return std::make_unique<CameraViewerHost> (entry->second.viewerTarget);
 #else
     juce::ignoreUnused (deviceId);
@@ -575,6 +997,63 @@ std::unique_ptr<juce::Component> CameraController::createViewer (const std::stri
 
     return nullptr;
 }
+
+CameraController::SignalState CameraController::getSignalState (const std::string& deviceId) const
+{
+#if JUCE_USE_CAMERA
+    const auto entry = open.find (deviceId);
+
+    if (entry == open.end())
+        return SignalState::NotOpen;
+
+    if (entry->second.signalTimedOut)
+        return SignalState::TimedOut;
+
+    return entry->second.firstFrameReceived ? SignalState::Live : SignalState::Waiting;
+#else
+    juce::ignoreUnused (deviceId);
+    return SignalState::NotOpen;
+#endif
+}
+
+juce::String CameraController::getSignalStatusText (const std::string& deviceId) const
+{
+    const auto displayName = juce::String (selection.getDisplayName (deviceId));
+
+    switch (getSignalState (deviceId))
+    {
+        case SignalState::Waiting:
+            return "Waiting for video from " + displayName
+                 + ". Turn the camera on; if it uses HDMI, check the HDMI and USB cables.";
+
+        case SignalState::TimedOut:
+            return "No video signal from " + displayName
+                 + ". Check the camera or capture device; for HDMI, check the output and both cables, "
+                   "then turn this camera off and back on.";
+
+        case SignalState::NotOpen:
+            return "No picture from " + displayName
+                 + ". Close any other app using it, then turn this camera off and back on.";
+
+        case SignalState::Live:
+            break;
+    }
+
+    return {};
+}
+
+#if defined(SOBSTAGE_CAMERA_SIMULATION)
+void CameraController::advanceSignalClockForTesting (double milliseconds)
+{
+#if JUCE_USE_CAMERA
+    signalClockOffsetForTesting += juce::jmax (0.0, milliseconds);
+    if (applySignalTimeouts())
+        applySelection (false);
+#else
+    juce::ignoreUnused (milliseconds);
+#endif
+}
+#endif
 
 uint64_t CameraController::getViewerRevision (const std::string& deviceId) const
 {
@@ -624,16 +1103,40 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     if (takeActive)
         return recording;
 
-    const auto extension = juce::CameraDevice::getFileExtension();
-    int started = 0;
+    if (recordingFinalizationState == RecordingFinalizationState::Waiting)
+    {
+        recordProblem = "The last camera files are still finishing. Wait before starting another take.";
+        return false;
+    }
 
+    // A frame may have arrived since the last UI poll. Consume that bounded
+    // mailbox now so the frozen take roster uses the freshest proof without
+    // ever entering a platform camera call after audio has begun.
+    const bool cameraStateChanged = applyPendingRuntimeEvents() || applySignalTimeouts();
+    if (cameraStateChanged)
+        applySelection (false);
+
+    const auto extension = juce::CameraDevice::getFileExtension();
+    int startRequests = 0;
+
+    ++takeGeneration;
     takeActive = true;
     takePlans = selection.buildIntendedPlans();
     takeRecordings.clear();
     recordingCameraIds.clear();
+    startingCameraIds.clear();
+    finalizingDevices.clear();
     camerasDeferredUntilTakeEnds.clear();
     takeDeviceNameCounts.clear();
     ambiguousTakeDeviceNames.clear();
+    recordingFinalizationState = RecordingFinalizationState::Idle;
+    recordingFinalizationProblem.clear();
+    reconcileWhenFinalized = false;
+
+    // Its own field, and cleared each time this runs. A callback-backed start
+    // failure below must remain visible rather than being erased after the
+    // mailbox is drained.
+    recordProblem.clear();
 
     for (const auto& camera : selection.getAvailableCameras())
         ++takeDeviceNameCounts[camera.displayName];
@@ -642,7 +1145,8 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     {
         const auto entry = open.find (plan.deviceId);
 
-        if (entry == open.end() || entry->second.device == nullptr)
+        if (entry == open.end() || entry->second.device == nullptr
+            || ! entry->second.firstFrameReceived || entry->second.signalTimedOut)
             continue;
 
         // §6.2: the picture goes in the same session folder as the sound, under
@@ -650,26 +1154,42 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
         const auto file = sessionFolder.getChildFile (juce::String (plan.fileName) + extension);
         entry->second.recordingFile = file;
 
+        const auto mailbox = runtimeErrorMailbox;
+        const auto viewerRevision = entry->second.viewerRevision;
+        const auto generation = takeGeneration;
+        entry->second.device->onRecordingStarted =
+            [mailbox, id = plan.deviceId, viewerRevision, generation, audioStartMs]
+            (const juce::File& startedFile)
+            {
+                const auto offset = audioStartMs > 0.0
+                    ? juce::jmax (0.0,
+                        (juce::Time::getMillisecondCounterHiRes() - audioStartMs) / 1000.0)
+                    : 0.0;
+                const std::lock_guard<std::mutex> guard (mailbox->mutex);
+                mailbox->recordingsStarted.push_back (
+                    { id, viewerRevision, generation, startedFile, offset });
+            };
+        entry->second.device->onRecordingFinished =
+            [mailbox, id = plan.deviceId, viewerRevision, generation]
+            (const juce::File& finishedFile, const juce::String& error)
+            {
+                const std::lock_guard<std::mutex> guard (mailbox->mutex);
+                mailbox->recordingsFinished.push_back (
+                    { id, viewerRevision, generation, finishedFile, error });
+            };
+
+        entry->second.startingThisTake = true;
+        entry->second.recordingThisTake = false;
+        startingCameraIds.insert (plan.deviceId);
+        takeRecordings.push_back ({ plan.deviceId, plan.displayName,
+                                    entry->second.device->getName().toStdString(), file,
+                                    0.0, false, false, {} });
+
         // Quality 2 is JUCE's highest. There is no setting for this and there
         // should not be: nobody wants the take they cannot redo in medium.
         entry->second.device->startRecordingToFile (file, 2);
 
-        // Read after the call returns, not before. What matters is when the OS
-        // actually began taking frames, and opening a camera file is the slow
-        // part -- timing it from before the call would under-report the gap by
-        // exactly the amount that matters.
-        entry->second.startOffsetSeconds =
-            audioStartMs > 0.0
-                ? juce::jmax (0.0, (juce::Time::getMillisecondCounterHiRes() - audioStartMs) / 1000.0)
-                : 0.0;
-
-        entry->second.recordingThisTake = true;
-        recordingCameraIds.insert (plan.deviceId);
-        takeRecordings.push_back ({ plan.deviceId, plan.displayName,
-                                    entry->second.device->getName().toStdString(), file,
-                                    entry->second.startOffsetSeconds });
-
-        ++started;
+        ++startRequests;
     }
 
     // A physically absent camera cannot join a movie after the take begins.
@@ -681,19 +1201,17 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     for (const auto& camera : selection.getUnavailableEnabledCameras())
         camerasDeferredUntilTakeEnds.insert (camera.id);
 
-    recording = ! recordingCameraIds.empty();
+    // REC is confirmed only by AVFoundation's didStart callback. A submitted
+    // request remains STARTING until that generation-scoped callback arrives.
+    recording = false;
+    applyPendingRuntimeEvents();
 
-    // Its own field, and cleared each time this runs. Assigning the shared one
-    // overwrote "X isn't connected any more" with the vaguer count, and never
-    // clearing it left a previous take's failure standing over a clean one.
-    recordProblem.clear();
-
-    if (! takePlans.empty() && started < static_cast<int> (takePlans.size()))
-        recordProblem = juce::String (static_cast<int> (takePlans.size()) - started)
+    if (! takePlans.empty() && startRequests < static_cast<int> (takePlans.size()))
+        recordProblem = juce::String (static_cast<int> (takePlans.size()) - startRequests)
                         + " of your cameras couldn't start "
                         "recording. The sound is recording either way.";
 
-    return recording;
+    return startRequests > 0;
 #else
     juce::ignoreUnused (sessionFolder, audioStartMs);
     return false;
@@ -712,8 +1230,10 @@ std::vector<CombinedTakeInput> CameraController::getCombinedTakeInputs() const
     {
         const auto& file = takeRecording.file;
 
-        inputs.push_back ({ file.existsAsFile() ? file.getFileName().toStdString() : std::string(),
-                            takeRecording.startOffsetSeconds });
+        if (takeRecording.started && takeRecording.finalizationComplete
+            && takeRecording.finalizationError.isEmpty())
+            inputs.push_back ({ file.getFileName().toStdString(),
+                                takeRecording.startOffsetSeconds });
     }
 #endif
 
@@ -732,8 +1252,10 @@ std::vector<CameraController::TakeVideoRecord> CameraController::getTakeVideoRec
     // or failed-open camera. An interrupted writer remains here because its
     // finalized partial movie is still a real contribution to the take.
     for (const auto& takeRecording : takeRecordings)
-        videos.push_back ({ takeRecording.displayName,
-                            takeRecording.file.getFileName().toStdString() });
+        if (takeRecording.started && takeRecording.finalizationComplete
+            && takeRecording.finalizationError.isEmpty())
+            videos.push_back ({ takeRecording.displayName,
+                                takeRecording.file.getFileName().toStdString() });
 #endif
 
     return videos;
@@ -746,7 +1268,8 @@ std::vector<CameraController::TakeCameraState> CameraController::getTakeCameraSt
 
     for (const auto& plan : takePlans)
         states.push_back ({ plan.deviceId, plan.displayName,
-                            recordingCameraIds.count (plan.deviceId) > 0 });
+                            recordingCameraIds.count (plan.deviceId) > 0,
+                            startingCameraIds.count (plan.deviceId) > 0 });
 
     return states;
 }
@@ -761,6 +1284,11 @@ void CameraController::stopRecordingForShutdown()
     stopRecordingInternal (false);
 }
 
+bool CameraController::pollRecordingFinalization()
+{
+    return applyPendingCameraList();
+}
+
 void CameraController::stopRecordingInternal (bool reconcileForNextTake)
 {
     const bool wasTakeActive = takeActive;
@@ -768,44 +1296,85 @@ void CameraController::stopRecordingInternal (bool reconcileForNextTake)
 #if JUCE_USE_CAMERA
     for (auto& entry : open)
     {
-        if (entry.second.recordingThisTake && entry.second.device != nullptr)
+        if ((entry.second.recordingThisTake || entry.second.startingThisTake)
+            && entry.second.device != nullptr)
             entry.second.device->stopRecording();
 
         entry.second.recordingThisTake = false;
+        entry.second.startingThisTake = false;
     }
 
+    // The simulator can deliver both start and finish synchronously. Drain its
+    // generation-tagged facts before deciding whether any file is still owed.
+    applyPendingRuntimeEvents();
 #endif
 
     recordingCameraIds.clear();
+    startingCameraIds.clear();
     recording = false;
     takeActive = false;
     takeDeviceNameCounts.clear();
     ambiguousTakeDeviceNames.clear();
 
 #if JUCE_USE_CAMERA
+    if (! wasTakeActive)
+        return;
+
+    reconcileWhenFinalized = reconcileForNextTake;
+    recordingFinalizationState = RecordingFinalizationState::Waiting;
+    recordingFinalizationDeadlineMs = signalClockMs() + kCameraFinalizationTimeoutMs;
+
+    if (! kCameraBackendReportsFinalization)
+    {
+        // Unpatched/unsupported JUCE camera backends expose no completion
+        // callback. Their legacy stop contract is the only available boundary;
+        // the patched macOS and Windows backends never enter this fallback.
+        for (auto& recording : takeRecordings)
+            recording.finalizationComplete = true;
+
+        for (auto& [id, entry] : open)
+        {
+            juce::ignoreUnused (id);
+            entry.device->onRecordingStarted = nullptr;
+            entry.device->onRecordingFinished = nullptr;
+            entry.recordingThisTake = false;
+            entry.startingThisTake = false;
+        }
+    }
+
+    finishRecordingFinalizationIfReady();
+#else
+    juce::ignoreUnused (wasTakeActive, reconcileForNextTake);
+#endif
+}
+
+#if JUCE_USE_CAMERA
+void CameraController::reconcileAfterTake()
+{
     const auto deferred = camerasDeferredUntilTakeEnds;
     camerasDeferredUntilTakeEnds.clear();
 
-    if (wasTakeActive && reconcileForNextTake)
+    // applyDeviceNames deliberately hid absent-at-start or interrupted cameras
+    // from the running take. Restore the latest unfiltered OS list only after
+    // every movie is complete, so a reconnect cannot reuse its writer early.
+    applyDeviceNames (lastAppliedDeviceNames);
+
+    for (const auto& id : deferred)
     {
-        // applyDeviceNames deliberately hid absent-at-start or interrupted
-        // cameras from the running take. Restore the latest unfiltered OS list
-        // now; otherwise an immediate second Record click can freeze another
-        // missing roster while an unnecessary rediscovery is still pending.
-        applyDeviceNames (lastAppliedDeviceNames);
+        const bool failedToFinalize = std::any_of (
+            takeRecordings.begin(), takeRecordings.end(),
+            [&] (const TakeRecording& recording)
+            {
+                return recording.deviceId == id
+                    && recording.finalizationError.isNotEmpty();
+            });
 
-        // Only a camera that failed while this take was active earns an
-        // automatic retry. Privacy/busy failures from before the take remain
-        // explicit-action retries, and teardown never opens hardware.
-        for (const auto& id : deferred)
-            if (selection.isEnabled (id) && osIndexById.count (id) > 0)
-                openFailures.erase (id);
-
-        // Applies a safely deferred off switch and reopens only the eligible
-        // in-take failures cleared immediately above.
-        applySelection (false);
+        if (! failedToFinalize && selection.isEnabled (id) && osIndexById.count (id) > 0)
+            openFailures.erase (id);
     }
-#endif
+
+    applySelection (false);
 }
+#endif
 
 } // namespace mma
