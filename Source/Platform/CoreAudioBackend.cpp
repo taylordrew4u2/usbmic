@@ -140,7 +140,10 @@ constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (75);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
 #else
-constexpr auto kHalTransactionTimeout = std::chrono::seconds (5);
+// HAL calls are isolated on owned workers, so the caller must remain bounded
+// even when a broken driver never returns.  A short deadline keeps startup and
+// reconfiguration responsive while the worker continues its own cleanup.
+constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (190);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (500);
 #endif
 

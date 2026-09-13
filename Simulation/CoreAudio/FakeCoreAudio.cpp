@@ -158,7 +158,7 @@ void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector se
 } // namespace
 
 #if defined (_WIN32)
-pid_t getpid()
+extern "C" pid_t getpid()
 {
     // Any stable non-negative value works: the backend only ever compares this
     // against the owner the hog-mode property reports back.
