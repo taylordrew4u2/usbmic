@@ -8,11 +8,8 @@
 // the include path, so it has to hand back through rather than replace it.
 
 #if defined (_WIN32)
-
-using pid_t = int;
-
-/// A stable identity for this process, which is all the backend uses it for.
-pid_t getpid();
+#include <process.h>
+#define getpid _getpid
 
 #else
 

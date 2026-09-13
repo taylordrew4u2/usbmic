@@ -138,12 +138,14 @@ constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
 
 #if defined (MMA_SIMULATE_MAC)
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (75);
+constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (75);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
 #else
 // HAL calls are isolated on owned workers, so the caller must remain bounded
 // even when a broken driver never returns.  A short deadline keeps startup and
 // reconfiguration responsive while the worker continues its own cleanup.
-constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (190);
+constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (750);
+constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (150);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (500);
 #endif
 
@@ -1457,7 +1459,9 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     }
 
     std::unique_lock<std::mutex> lock (attempt->mutex);
-    if (! attempt->changed.wait_for (lock, kHalTransactionTimeout,
+    if (! attempt->changed.wait_for (lock,
+                                     attempt->stream->isOutput ? kOutputHalTransactionTimeout
+                                                               : kHalTransactionTimeout,
                                      [&attempt] { return attempt->finished; }))
     {
         attempt->abandoned = true;

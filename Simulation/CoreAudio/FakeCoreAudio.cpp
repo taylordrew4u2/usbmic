@@ -157,15 +157,6 @@ void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector se
 
 } // namespace
 
-#if defined (_WIN32)
-extern "C" pid_t getpid()
-{
-    // Any stable non-negative value works: the backend only ever compares this
-    // against the owner the hog-mode property reports back.
-    return 4242;
-}
-#endif
-
 // --- CoreFoundation ---------------------------------------------------------
 
 Boolean CFStringGetCString (CFStringRef value, char* buffer, long bufferSize, CFStringEncoding)
