@@ -14,6 +14,8 @@ namespace mma {
 /// the callback to forward into. Defined in the .cpp so this header stays free
 /// of <CoreAudio/CoreAudio.h>.
 struct CoreAudioStream;
+struct CoreAudioPendingInputAttempts;
+struct CoreAudioDeviceListListenerState;
 
 /// macOS implementation of IAudioBackend using CoreAudio directly (not JUCE's
 /// generic AudioIODeviceType) so we get exclusive/hog-mode control and raw
@@ -58,11 +60,16 @@ public:
     uint64_t getOutputGlitchCount() const override;
 
 private:
-    DeviceChangeCallback deviceChangeCallback;
-
     // Open streams, each owning its IOProc registration. Held as pointers so
     // the address handed to CoreAudio as clientData stays stable.
     std::vector<std::unique_ptr<CoreAudioStream>> openStreams;
+
+    // CoreAudio receives a raw pointer for the system device-list listener.
+    // Its separately-owned state has its own callback lease gate, so destroying
+    // the backend can make an already-dispatched notification inert and drain
+    // a callback already in progress without exposing `this` after teardown.
+    std::unique_ptr<CoreAudioDeviceListListenerState> deviceListListenerState;
+    bool deviceListListenerInstalled = false;
 
     std::string lastOpenError;
 
@@ -75,14 +82,33 @@ private:
     /// takeStreamFailures(); both are message-thread today, and this makes the
     /// flag correct without depending on that staying true.
     std::atomic<bool> bufferSizeWasRefused { false };
-    uint32_t openOutputDeviceId = 0;
-    bool outputStreamIsHogModeExclusive = false;
+    // A timed-out HAL call is deliberately left on its worker until CoreAudio
+    // returns and that worker can tear the IOProc down. The registry outlives
+    // this backend when necessary and stops device-list churn from launching a
+    // second stuck audio transaction in the meantime.
+    std::shared_ptr<CoreAudioPendingInputAttempts> pendingInputAttempts;
 
     static std::vector<AudioDeviceDescriptor> enumerateDevices (bool wantInput);
     void installDeviceListListener();
     void removeDeviceListListener();
     bool openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                      AudioCallback callback, bool isOutput);
+
+   #if defined (MMA_SIMULATE_MAC)
+public:
+    /// Simulation-only synchronization point for delayed HAL-call tests.
+    bool waitForPendingInputAttemptsForTesting (int timeoutMilliseconds);
+
+    /// Exercises the no-thread fallback used when the OS refuses to create the
+    /// detached teardown owner. The shipping build has no injection point.
+    void failNextCleanupWorkerStartForTesting() noexcept
+    {
+        failNextCleanupWorkerStart = true;
+    }
+
+private:
+    bool failNextCleanupWorkerStart = false;
+   #endif
 };
 
 } // namespace mma

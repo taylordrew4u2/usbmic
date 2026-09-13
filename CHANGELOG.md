@@ -32,8 +32,23 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 - Mid-take alerts distinguish urgent audio loss, warnings, recovery and ordinary
   news by severity; overflow is counted instead of silently dropping a fifth
   event.
-- The initial recording destination prefers a writable removable volume when one
-  is present, falling back to `~/RECORDINGS`.
+- The initial recording destination is immediately usable at `~/RECORDINGS`.
+  Removable-volume discovery continues on a detached worker and publishes card
+  choices when it finishes, so a stale mount under `/Volumes` cannot keep the
+  SobStage window from appearing or make shutdown wait for that scan.
+- Destination status polling, write-speed preflight and interrupted-take
+  recovery now use detached one-flight workers too. They never join a blocked
+  filesystem call during launch, a location change or shutdown, and results
+  from a destination that has since changed are discarded.
+- Choosing or deferring a save location and previewing the next folder no
+  longer stats a removable path on the interface thread. The selected path is
+  validated by the detached recovery and speed gates, and revisiting the same
+  mount name rechecks the physical medium now occupying it.
+- Recording fails closed while the selected destination or enabled local backup
+  is still being checked for an interrupted take, or when a required recovery
+  scan or preflight cannot run. The disabled record control states what is being
+  checked and what the operator can change or restart; a worker failure cannot
+  silently become permission to record.
 - Loudness advice now says “turn down” when true-peak headroom makes the computed
   gain negative and explains when a steadier next take is needed.
 
@@ -72,17 +87,44 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 
 - Camera screens now share one native preview for each open device instead of
   recreating an AVFoundation preview layer on an already-running session.
+  The macOS native view is now a real AppKit layer-hosting view, created in
+  Apple's required layer-then-enable order, and the selected OS index is pinned
+  to that camera's unique identifier so same-name capture cards do not all open
+  the first device. Capture-session start/stop work runs on a serial background
+  queue so a stuck card driver cannot hold the interface or app shutdown.
   Same-device retries replace stale placeholders, reported runtime capture
   errors replace the affected tile with an explanation, and an enabled HDMI
   capture card that disappears from the operating-system camera list remains
   visible as unavailable with reconnection guidance. This does not claim that
   every black frame can be diagnosed: the physical HDMI preview-and-recording
   gate remains open in `RELEASE_CHECKLIST.md`.
+- Camera tiles and take arming now require a real image callback rather than a
+  non-null native view. A bounded first-frame timeout and throttled heartbeat
+  expose missing or lost HDMI signal, reject stale callbacks after reconnect,
+  and allow a late live signal to recover without being mistaken for a new
+  device.
+- REC and movie metadata now follow backend evidence. macOS AVFoundation and
+  Windows DirectShow report real writer start and finish results; a failed
+  DirectShow graph never enters REC, and Stop waits asynchronously for movie
+  finalization before metadata or ffmpeg combining can claim the file. A
+  fifteen-second timeout quarantines a writer that never finishes, rapid retake
+  is blocked while finalizing, and ordinary quit drains callbacks without
+  joining a stuck camera driver.
 - A missing capture card remains in the frozen watchdog roster without being
   promised as a file or written into `session.json` as a movie that never
   started. A connected busy/privacy-blocked camera retains that precise error,
   and a card which reconnects during a take is restored synchronously for an
   immediate next take.
+- Camera discovery owns detached mailbox state, coalesces repeated refreshes
+  and never joins AVFoundation or DirectShow enumeration at shutdown. A stale
+  or late discovery result cannot reach a destroyed/replacement controller.
+  SobStage also never attempts a fresh synchronous camera open after the audio
+  writer has started, so a faulty capture-card open cannot strand a live take
+  behind a frozen interface.
+- Dismissing repaired takes no longer reads or rewrites their removable-card
+  metadata on the interface thread. A detached acknowledgement worker owns the
+  paths; an unavailable/read-only card leaves the metadata untouched so the
+  take can be offered again on a later launch.
 - `session.json` now records whether the mirror actually ran, so the end-to-end
   gate really compares every mirrored file. First-run save-location handling in
   that gate is also exercised.
@@ -105,6 +147,21 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   destination cannot be changed underneath it.
 - CoreAudio rate changes wait up to a bounded 500 ms for the asynchronous HAL
   update instead of rejecting a change on the first stale read-back.
+- A saved explicit sample rate remains visible in Settings while every eligible
+  external microphone is unplugged; the picker no longer turns into a blank
+  control between rigs.
+- A macOS input open now has a five-second UI deadline. If a USB driver's HAL
+  start call wedges, its worker retains ownership and performs cleanup detached;
+  already-open streams are quarantined behind it rather than making launch or
+  quit wait for the driver's minutes-long timeout. One callback lifetime gate
+  covers both the audio IOProc and nominal-rate, device-alive and overload
+  property listeners, and drains admitted callbacks before their owner can be
+  released. A driver that refuses to release callback client data stays safely
+  quarantined for the rest of that process instead of being retried unsafely.
+- Launch no longer closes and immediately reopens the audio rig after the first
+  device-list callback has already started monitoring. That redundant reopen
+  could send a fragile USB driver straight into a teardown/recreate stall before
+  the first window appeared.
 - Monitor selection carries the backend's built-in and sample-rate capability
   facts. A fixed-48 kHz HDMI capture-card output can no longer displace a
   compatible Mac output at launch or on hot-plug during a 44.1 kHz take. If a
@@ -167,13 +224,25 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 - macOS serious/critical thermal pressure now reaches the existing performance
   warning and activity journal; other systems remain explicitly unknown rather
   than guessed.
+- Post-take ffmpeg combining owns detached state and polls a child process in
+  bounded steps. Quit requests cancellation without joining a wedged muxer,
+  kills its child and removes an incomplete combined file; the original video
+  and WAV files remain untouched.
 
 ### Verification baseline
 
-The candidate contains 532 unit tests, 115 CoreAudio simulator checks, 70
-WASAPI simulator checks and 158 camera simulator checks, plus the capture,
+The candidate contains 547 unit tests, 179 CoreAudio simulator checks, 70
+WASAPI simulator checks, 247 camera simulator checks, a seven-check synchronous
+camera-lifecycle probe and an 11-check take-combiner probe, plus the capture,
 refusal and end-to-end harnesses. These numbers describe automated coverage,
 not physical-hardware certification.
+
+CoreAudio input and output opens and closes now use bounded ownership paths;
+the simulator covers stalled HAL calls, late callbacks, cleanup failure and
+hot-plug listener lifetime. This is not evidence for the hardware matrix.
+Developer ID/notarization, Windows Authenticode, physical audio takes and
+visibly non-black HDMI capture-card preview and recording remain GA gates in
+`RELEASE_CHECKLIST.md`.
 
 ## v1.11.0 -- 2026-09-08
 

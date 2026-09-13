@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-532%20passing-brightgreen" alt="532 tests passing">
+  <img src="https://img.shields.io/badge/tests-547%20passing-brightgreen" alt="547 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ four-hour 44.1/48 kHz soaks, against a 1 ms ceiling — more than a 23× margin.
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-532 unit tests, an end-to-end take and an end-to-end refusal through the real
+547 unit tests, an end-to-end take and an end-to-end refusal through the real
 app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
 checks run in CI.
 
@@ -330,14 +330,14 @@ sources before distributing a binary or considering a proprietary build.
 ## What to expect on your platform
 
 This is the **v1.12.0 release candidate**. The recording engine is covered by
-532 unit tests plus capture and platform harnesses. What differs by platform is
+547 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. The simulator covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.12.0 candidate. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.12.0 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other
@@ -612,21 +612,31 @@ and this is what came up on the next launch.
 
 ### First run — where things go, on every platform
 
-- **Recordings** default to `RECORDINGS` on the first writable removable volume
-  the app finds, or to `~/RECORDINGS` when none is available. Change the
-  destination from **Settings → Save recordings to**. The app benchmarks a new
-  destination before enabling the record button (§6.4). The benchmark measures
-  the card once; whether that is fast enough is decided fresh each time you
-  reach for record, so switching a camera on can block arming a card that was
-  fine for the microphones alone — and the message says the cameras are what
-  did it.
+- **Recordings** start at `~/RECORDINGS` immediately while removable-volume
+  discovery runs away from the window thread. Connected card choices appear in
+  **Settings → Save recordings to** after that scan finishes; a stale mount
+  under `/Volumes` cannot hold the app closed at launch or quit. Free-space and
+  destination-status polling use the same detached, one-at-a-time pattern, and
+  a result for a destination you have since changed is ignored. The app
+  benchmarks a new destination away from the window thread before enabling the
+  record button (§6.4). The benchmark measures the card once; whether that is
+  fast enough is decided fresh each time you reach for record, so switching a
+  camera on can block arming a card that was fine for the microphones alone —
+  and the message says the cameras are what did it. A benchmark that cannot be
+  started or completed blocks recording with an explanation; it cannot silently
+  become a pass or make launch or quit wait for the worker.
 - **Video goes in the same folder** as the audio for that take, one file per
   camera, named `V01_<camera name>`. The remaining-time figure on the main
   screen accounts for it, so "Room for 2h 10m" stays true once a camera is
   running.
 - **A local backup copy** of each take is kept by default in
   `RECORDINGS-MIRROR` in your home directory, so a card failure is an
-  inconvenience rather than data loss. Toggle it in the Settings panel.
+  inconvenience rather than data loss. Toggle it in the Settings panel. The
+  destination and enabled-backup interrupted-take scans also run away from the
+  window thread. Recording stays disabled, with the reason shown, until both
+  required scans succeed; a scan that cannot run fails closed. Recovered takes
+  are shown after both scans settle, while stale work from an old destination is
+  abandoned without delaying launch, a location change or shutdown.
 - **Your settings** live beside the log, at
   `SobStage/settings.json`. Delete it to start over from defaults;
   a corrupt or unreadable one is ignored rather than fatal.
@@ -747,7 +757,7 @@ to JUCE 8.
 ### Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-532 unit tests passing in CI on Linux, macOS
+547 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
@@ -844,13 +854,28 @@ never what failed:
 | Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
 | Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
 
-The current baseline is 115 CoreAudio checks and 70 WASAPI checks, run by `ctest`
+The current baseline is 179 CoreAudio checks and 70 WASAPI checks, run by `ctest`
 on Linux, macOS and Windows alike. The WASAPI backend's worker thread is a real
 thread doing a real event handshake, so that path is exercised rather than
 reasoned about. Both simulators run under AddressSanitizer,
 UndefinedBehaviorSanitizer and ThreadSanitizer.
 The release checklist requires recording the final counts if the candidate gains
 another check during hardening.
+
+The CoreAudio simulator includes a start call that returns only after the UI
+deadline, including a callback delivered before that late return. Input open
+stops waiting after five seconds in production; the detached worker retains the
+stream, serializes its cleanup, and prevents duplicate opens from stacking on
+the same device. A single admission-and-lease gate covers the IOProc and all
+property listeners, so teardown can close admission and drain every callback
+before application-owned state is released. The same harness retains listener
+client data deliberately and verifies that SobStage keeps the inert stream
+quarantined instead of creating a use-after-free or unsafe retry.
+
+Input and output HAL opens and closes use bounded ownership paths. The simulator
+stalls rate, buffer, hog-mode, IOProc create/start/stop/destroy and listener
+operations, including late callbacks and failed cleanup-worker construction.
+That liveness evidence is still not a substitute for the physical audio matrix.
 
 **Whether the simulation is worth anything was checked by breaking things.** Each
 of the five shipped defects was re-introduced, plus four more (a dropped
@@ -894,13 +919,16 @@ The full application builds and links in CI on Linux, macOS and Windows, so
 - `CameraController` compiles twice: once as it ships (camera path compiled out
   on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
   stand-in `juce_video`, via the `sim_camera` target. That simulator executes
-  enumeration, selection, arrival/removal, open failure/retry, a list reorder
-  during open, native-viewer lifetime and reparenting, runtime-error recovery,
-  an enabled capture card missing from the OS list, and a recorded camera
-  unplug/replug. It verifies that an interrupted camera stays out for the rest
-  of that take and its remembered preview reopens only afterwards;
-  final-candidate AVFoundation/DirectShow open, visibly non-black preview and
-  recording still need macOS or Windows hardware.
+  247 checks covering enumeration, selection, arrival/removal, open
+  failure/retry, a list reorder during open, actual-frame gating and loss,
+  native-viewer lifetime and reparenting, runtime-error recovery, an enabled
+  capture card missing from the OS list, recording-start truth and asynchronous
+  movie finalization and start refusal. A separate seven-check synchronous
+  lifecycle probe covers DirectShow start and finish callback ordering. It
+  verifies that an interrupted camera
+  stays out for the rest of that take and its remembered preview reopens only
+  afterwards; final-candidate AVFoundation/DirectShow open, visibly non-black
+  preview and recording still need macOS or Windows hardware.
 - `RecoveredTakesPanel` has been rendered against a real interrupted take:
   a session folder with no stop timestamp and four WAVs whose size fields were
   zeroed, as a SIGKILL leaves them. The app found it at launch, repaired all

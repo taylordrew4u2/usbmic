@@ -29,6 +29,7 @@
 #include "../Core/TakeWatchdog.h"
 #include "../Core/RecordingProof.h"
 #include "../Core/FilesystemStatusProbe.h"
+#include "../Core/DetachedRefreshCache.h"
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
@@ -73,6 +74,16 @@ public:
     /// confirmation either direction.
     void toggleRecording();
 
+    /// Drains camera start/finish callbacks without blocking the message
+    /// thread and completes the stopped take only after every movie is closed
+    /// (or the controller's bounded fail-closed timeout expires).
+    bool pollCameraFinalization();
+
+    /// Starts the ordinary stop path when necessary and returns true once it
+    /// is safe for JUCE to destroy the application. Repeated calls are the
+    /// nonblocking quit poll; no device wait occurs on this thread.
+    bool prepareToQuit();
+
     /// §10.2 status the main screen shows by default. All plain language --
     /// no sample rates, buffers or backends leak into these.
     juce::String getDestinationFolder() const { return juce::String (destinationFolder); }
@@ -92,7 +103,7 @@ public:
     /// thread; the record button stays disabled until it passes. Cached per
     /// volume for 30 days, so a card is benchmarked once and not on every launch.
     void beginPreflightForDestination();
-    bool isPreflightRunning() const { return preflightRunning.load(); }
+    bool isPreflightRunning() const;
 
     /// §5.1 master monitor volume, 0-100. Recorded files are unaffected.
     void setMasterVolume (double volume0to100);
@@ -501,11 +512,17 @@ public:
     /// pulled card. Found at launch on the destination volume and in the mirror
     /// folder, with their headers repaired, and presented before the main
     /// screen. Empty when the last run ended cleanly, which is the usual case.
-    const std::vector<RecoveredSession>& getRecoveredSessions() const { return recoveredSessions; }
-    /// Called once the user has been shown them.
+    const std::vector<RecoveredSession>& getRecoveredSessions() const;
+    /// Recovery touches files, so its launch-time scans run off the message
+    /// thread. The UI waits for both one-shot scans before presenting their
+    /// combined result; this also guarantees a dismissed card cannot be
+    /// reopened by a late second result.
+    bool isRecoveryScanPending() const;
     /// Called once the user has been shown them. Also marks each one as
     /// finished on disk, so it is offered once rather than at every launch
-    /// until twenty newer takes push it out of the scan.
+    /// until twenty newer takes push it out of the scan. The card disappears
+    /// immediately; all removable-volume reads and writes happen on a detached
+    /// worker so a card that vanished cannot freeze the interface.
     void clearRecoveredSessions();
 
     /// §11: diagnostics export -- logs, last 5 session.json files, device
@@ -545,9 +562,8 @@ private:
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
 
     // Lifetime token for callbacks marshalled from OS threads; see initialise().
-    // runPreflight can copy it while shutdown invalidates it, so every access
-    // goes through the mutex-backed helpers rather than touching the same
-    // shared_ptr object concurrently.
+    // Every access goes through the mutex-backed helpers so shutdown cannot
+    // race a device callback copying the shared_ptr.
     mutable std::mutex aliveTokenMutex;
     std::shared_ptr<int> aliveToken = std::make_shared<int> (0);
     std::weak_ptr<int> getAliveToken() const;
@@ -612,6 +628,7 @@ private:
     // fixed-width detectors in SetupAdvisor.
     CameraController cameraController;
     TakeCombiner takeCombiner;
+    std::function<void()> pendingStoppedTakeCompletion;
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;
 
@@ -619,15 +636,27 @@ private:
     int tapDetectorChannels = 0;
     int tappedChannel = -1;
 
-    // §6.4 preflight. Keyed by destination path so switching back to a card
-    // already benchmarked does not re-run the test.
-    std::atomic<bool> preflightRunning { false };
-    std::atomic<bool> preflightAbort { false };
-    std::map<std::string, PreflightResult> preflightResults;
-    // mutable: getRecordDisabledReason() is const and must read the result.
-    mutable std::mutex preflightMutex;
-    std::thread preflightThread;
-    void runPreflight (const std::string& destination, int channelCount);
+    struct PreflightBackgroundResult
+    {
+        std::string destination;
+        PreflightResult result;
+        bool couldNotWrite = false;
+    };
+
+    // §6.4 preflight. The detached task owns every value it probes and only
+    // publishes a result into shared state. A stale volume may retain that
+    // worker, but neither Application destruction nor shutdown ever joins it.
+    mutable DetachedResultTask<PreflightBackgroundResult> preflightTask;
+    mutable std::string preflightTaskDestination;
+    mutable std::map<std::string, PreflightResult> preflightResults;
+    static PreflightBackgroundResult runPreflight (
+        std::string destination, int channelCount, double sampleRate,
+        int bytesPerSample, const std::atomic<bool>& cancelled);
+    /// Consumes any completed verdict and atomically reports whether its
+    /// worker is still running. This combined observation is what keeps Record
+    /// fail-closed at the instant a background benchmark publishes.
+    bool publishCompletedPreflight() const;
+    void startPreflightIfNeeded() const;
     std::unique_ptr<VirtualDeviceBackend> virtualDeviceBackend;
     std::unique_ptr<SystemAggregateDevice> systemAggregate;
     juce::String aggregateName { "SobStage" };
@@ -674,11 +703,9 @@ private:
     int64_t getMirrorFreeBytes() const;
 
     static std::vector<StorageVolume> scanStorageVolumes();
-    mutable std::mutex storageVolumeMutex;
-    mutable std::vector<StorageVolume> storageVolumeCache;
-    mutable double storageVolumeCacheAtMs = -1.0;
-    mutable std::atomic<bool> storageVolumeScanRunning { false };
-    mutable std::thread storageVolumeThread;
+    mutable DetachedRefreshCache<std::vector<StorageVolume>> storageVolumeCache {
+        std::vector<StorageVolume> {}
+    };
 
     /// What the last enumeration held, by identity key, with the name to call
     /// each one by. The diff against this is what makes an arrival or a
@@ -839,11 +866,57 @@ private:
     void loadSettings();
     void saveSettings();
 
-    /// §6.6: walks the destination and the mirror for takes with no stop
-    /// timestamp. Launch-only -- it repairs file headers, which must never
-    /// happen alongside a writer that has those files open.
+    struct RecoveryActivity
+    {
+        ActivityLevel level = ActivityLevel::Started;
+        std::string subject;
+        std::string message;
+    };
+
+    struct RecoveryBackgroundResult
+    {
+        std::string root;
+        bool isDestinationCopy = false;
+        std::vector<RecoveredSession> sessions;
+        std::vector<RecoveryActivity> activity;
+    };
+
+    struct RecoveryAcknowledgementResult
+    {
+        std::vector<RecoveryActivity> activity;
+    };
+
+    enum class RecoveryScanStatus { NotStarted, Running, Succeeded, Failed };
+
+    /// §6.6: schedules separate detached walks of the destination and mirror
+    /// for takes with no stop timestamp. A take cannot start while the scans
+    /// that could touch either of its write roots are pending. Each worker owns
+    /// all paths/results and publication into Application is message-thread-only.
     void scanForInterruptedSessions();
-    std::vector<RecoveredSession> recoveredSessions;
+    void startDestinationRecoveryScan();
+    void startMirrorRecoveryScan();
+    static RecoveryBackgroundResult runRecoveryScan (
+        std::string root, bool isDestinationCopy,
+        const std::atomic<bool>& cancelled);
+    static RecoveryAcknowledgementResult runRecoveryAcknowledgement (
+        std::vector<std::string> sessionFolders, std::string recoveredAt,
+        const std::atomic<bool>& cancelled);
+    void publishCompletedRecoveryScans() const;
+    void publishCompletedRecoveryAcknowledgement() const;
+    juce::String recoveryBlockingReason() const;
+    mutable DetachedResultTask<RecoveryBackgroundResult> destinationRecoveryTask;
+    mutable DetachedResultTask<RecoveryBackgroundResult> mirrorRecoveryTask;
+    mutable DetachedResultTask<RecoveryAcknowledgementResult> recoveryAcknowledgementTask;
+    /// A cancelled detached recovery or preflight worker can still be inside
+    /// an OS write. Its lease keeps that root unavailable until the worker has
+    /// truly returned, so a replacement check or new take can never race the
+    /// late mutation.
+    mutable DetachedPathMutationGate recoveryMutationGate;
+    std::string destinationRecoveryRoot;
+    std::string mirrorRecoveryRoot;
+    mutable RecoveryScanStatus destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    mutable RecoveryScanStatus mirrorRecoveryStatus = RecoveryScanStatus::NotStarted;
+    mutable std::vector<RecoveredSession> recoveredSessions;
 
     /// Pushes the remembered per-port names and trims, and the microphones the
     /// user switched off, onto the device list as it currently stands. Runs

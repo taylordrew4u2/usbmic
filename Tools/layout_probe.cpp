@@ -3,6 +3,8 @@
 #include "UI/MainScreen.h"
 #include "UI/CameraPanel.h"
 #include "UI/ModalCard.h"
+#include "UI/AdvancedPanel.h"
+#include "UI/SaveLocationPrompt.h"
 #include <algorithm>
 #include <cstdio>
 #include <vector>
@@ -85,6 +87,24 @@ int main()
     failures += returnActivated ? 0 : 1;
     failures += hintNamesBothKeys ? 0 : 1;
 
+    std::printf ("-- saved sample rate with no connected microphone --\n");
+
+    mma::AdvancedPanel advancedPanel;
+    advancedPanel.setSampleRates ({}, 44100);
+    advancedPanel.setSampleRateSelection (44100);
+
+    bool savedRateRemainsVisible = false;
+    for (int i = 0; i < advancedPanel.getNumChildComponents(); ++i)
+        if (auto* combo = dynamic_cast<juce::ComboBox*> (
+                advancedPanel.getChildComponent (i));
+            combo != nullptr && combo->getSelectedId() == 44100
+                && combo->getText() == "44.1 kHz")
+            savedRateRemainsVisible = true;
+
+    std::printf ("saved 44.1 kHz stays visible: %s\n\n",
+                 savedRateRemainsVisible ? "PASS" : "FAIL");
+    failures += savedRateRemainsVisible ? 0 : 1;
+
     std::printf ("-- camera viewer revision invalidates UI caches --\n");
 
     int mainViewerCreates = 0;
@@ -94,10 +114,10 @@ int main()
         ++mainViewerCreates;
         return std::make_unique<juce::Component>();
     };
-    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1 } });
-    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1 } });
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1, {}, true } });
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1, {}, true } });
     const bool mainCacheKeepsViewer = mainViewerCreates == 1;
-    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 2 } });
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 2, {}, true } });
     const bool mainRevisionRebuildsViewer = mainViewerCreates == 2;
 
     const auto hasExactLabel = [&cameraScreen] (const juce::String& text)
@@ -116,6 +136,12 @@ int main()
     const bool stoppedCaptionDropsRec = hasExactLabel ("HDMI")
                                      && ! hasExactLabel ("REC: HDMI");
 
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3,
+                                     "Waiting for HDMI signal from HDMI.", false } });
+    cameraScreen.setRecording (true);
+    const bool omittedCameraNeverClaimsRec = hasExactLabel ("NOT RECORDING: HDMI")
+                                          && ! hasExactLabel ("REC: HDMI");
+
     int panelViewerCreates = 0;
     mma::CameraPanel cameraPanel;
     cameraPanel.makeViewer = [&panelViewerCreates] (const std::string&)
@@ -123,10 +149,13 @@ int main()
         ++panelViewerCreates;
         return std::make_unique<juce::Component>();
     };
-    cameraPanel.setCameras ({ { "capture", "HDMI", true, true, false, "HDMI.mov", 1 } });
-    cameraPanel.setCameras ({ { "capture", "HDMI", true, true, false, "HDMI.mov", 1 } });
+    cameraPanel.setCameras (
+        { { "capture", "HDMI", true, true, false, false, false, "HDMI.mov", 1 } });
+    cameraPanel.setCameras (
+        { { "capture", "HDMI", true, true, false, false, false, "HDMI.mov", 1 } });
     const bool panelCacheKeepsViewer = panelViewerCreates == 1;
-    cameraPanel.setCameras ({ { "capture", "HDMI", true, true, false, "HDMI.mov", 2 } });
+    cameraPanel.setCameras (
+        { { "capture", "HDMI", true, true, false, false, false, "HDMI.mov", 2 } });
     const bool panelRevisionRebuildsViewer = panelViewerCreates == 2;
 
     auto cameraConfigurationHasState = [&cameraPanel] (bool expectedEnabled)
@@ -163,19 +192,22 @@ int main()
     mma::CameraPanel takeUnavailablePanel;
     takeUnavailablePanel.setRecording (true);
     takeUnavailablePanel.setCameras (
-        { { "late", "Late HDMI", true, false, false, "V01_Late-HDMI.mov", 1 } });
+        { { "late", "Late HDMI", true, false, false, false, false,
+            "V01_Late-HDMI.mov", 1 } });
     juce::String inTakeUnavailableCopy;
     for (int i = 0; i < takeUnavailablePanel.getNumChildComponents(); ++i)
         if (auto* label = dynamic_cast<juce::Label*> (
                 takeUnavailablePanel.getChildComponent (i)))
             inTakeUnavailableCopy += " " + label->getText();
     const bool lateCameraCopyNamesThisTake =
-        inTakeUnavailableCopy.containsIgnoreCase ("out for this take")
-        && inTakeUnavailableCopy.containsIgnoreCase ("next take");
+        inTakeUnavailableCopy.containsIgnoreCase ("no video recording")
+        && inTakeUnavailableCopy.containsIgnoreCase ("Not recording video in this take")
+        && ! inTakeUnavailableCopy.containsIgnoreCase ("Recording to");
 
     takeUnavailablePanel.setRecording (false);
     takeUnavailablePanel.setCameras (
-        { { "late", "Late HDMI", true, false, false, "V01_Late-HDMI.mov", 1 } });
+        { { "late", "Late HDMI", true, false, false, false, false,
+            "V01_Late-HDMI.mov", 1 } });
     juce::String afterTakeUnavailableCopy;
     for (int i = 0; i < takeUnavailablePanel.getNumChildComponents(); ++i)
         if (auto* label = dynamic_cast<juce::Label*> (
@@ -183,6 +215,20 @@ int main()
             afterTakeUnavailableCopy += " " + label->getText();
     const bool afterTakeCopyReturnsToReconnect =
         afterTakeUnavailableCopy.containsIgnoreCase ("reconnect");
+
+    mma::SaveLocationPrompt cameraReadinessPrompt;
+    cameraReadinessPrompt.setPlan ("/Volumes/CARD", "Take", {},
+                                   { "MIX.wav", "V01-Wide.mov", "V02-Close.mov" },
+                                   2, 1);
+    juce::String readinessCopy;
+    for (int i = 0; i < cameraReadinessPrompt.getNumChildComponents(); ++i)
+        if (auto* label = dynamic_cast<juce::Label*> (
+                cameraReadinessPrompt.getChildComponent (i)))
+            readinessCopy += " " + label->getText();
+    const bool savePromptDistinguishesArmedFromReady =
+        readinessCopy.containsIgnoreCase ("2 cameras are switched on")
+        && readinessCopy.containsIgnoreCase ("1 is live and ready")
+        && readinessCopy.containsIgnoreCase ("Only live cameras record");
 
     std::printf ("main cache preserves unchanged viewer: %s\n",
                  mainCacheKeepsViewer ? "PASS" : "FAIL");
@@ -192,6 +238,8 @@ int main()
                  recCaptionIsOutsideNativePreview ? "PASS" : "FAIL");
     std::printf ("stopped camera caption clears REC state: %s\n",
                  stoppedCaptionDropsRec ? "PASS" : "FAIL");
+    std::printf ("camera omitted from frozen take never claims REC: %s\n",
+                 omittedCameraNeverClaimsRec ? "PASS" : "FAIL");
     std::printf ("panel cache preserves unchanged viewer: %s\n",
                  panelCacheKeepsViewer ? "PASS" : "FAIL");
     std::printf ("panel revision rebuilds viewer: %s\n\n",
@@ -200,20 +248,24 @@ int main()
                  takeFreezesCameraControls ? "PASS" : "FAIL");
     std::printf ("stopping restores camera roster controls: %s\n\n",
                  stopRestoresCameraControls ? "PASS" : "FAIL");
-    std::printf ("late camera copy says this take/next take: %s\n",
+    std::printf ("omitted camera row and heading stay truthful: %s\n",
                  lateCameraCopyNamesThisTake ? "PASS" : "FAIL");
     std::printf ("after-take unavailable copy returns to reconnect: %s\n\n",
                  afterTakeCopyReturnsToReconnect ? "PASS" : "FAIL");
+    std::printf ("save prompt distinguishes armed cameras from ready cameras: %s\n\n",
+                 savePromptDistinguishesArmedFromReady ? "PASS" : "FAIL");
     failures += mainCacheKeepsViewer ? 0 : 1;
     failures += mainRevisionRebuildsViewer ? 0 : 1;
     failures += recCaptionIsOutsideNativePreview ? 0 : 1;
     failures += stoppedCaptionDropsRec ? 0 : 1;
+    failures += omittedCameraNeverClaimsRec ? 0 : 1;
     failures += panelCacheKeepsViewer ? 0 : 1;
     failures += panelRevisionRebuildsViewer ? 0 : 1;
     failures += takeFreezesCameraControls ? 0 : 1;
     failures += stopRestoresCameraControls ? 0 : 1;
     failures += lateCameraCopyNamesThisTake ? 0 : 1;
     failures += afterTakeCopyReturnsToReconnect ? 0 : 1;
+    failures += savePromptDistinguishesArmedFromReady ? 0 : 1;
 
     struct Case { int w, h, mics; const char* label; };
     const Case cases[] = {

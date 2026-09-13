@@ -34,7 +34,8 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
 };
 
-class SobStageApplication : public juce::JUCEApplication
+class SobStageApplication : public juce::JUCEApplication,
+                            private juce::Timer
 {
 public:
     SobStageApplication() = default;
@@ -83,6 +84,7 @@ public:
 
     void shutdown() override
     {
+        stopTimer();
         mainWindow.reset();
 
         // Cleared before the look-and-feel goes out of scope: JUCE asserts if a
@@ -102,6 +104,35 @@ public:
 
     void systemRequestedQuit() override
     {
+        if (quitPending)
+        {
+            // A second explicit quit is the user's escape hatch for a driver
+            // which outlives even the bounded finalization window. Audio was
+            // already drained by the first request; no saved-video claim is
+            // made for a movie whose didFinish callback never arrived.
+            juce::Logger::writeToLog (
+                "Quit requested again while camera files were finishing; forcing shutdown.");
+            quit();
+            return;
+        }
+
+        if (application == nullptr || application->prepareToQuit())
+        {
+            quit();
+            return;
+        }
+
+        quitPending = true;
+        startTimer (50);
+    }
+
+    void timerCallback() override
+    {
+        if (application != nullptr && ! application->prepareToQuit())
+            return;
+
+        stopTimer();
+        quitPending = false;
         quit();
     }
 
@@ -113,6 +144,7 @@ private:
     // outlives the look-and-feel it points at.
     AppLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
+    bool quitPending = false;
 };
 
 } // namespace mma

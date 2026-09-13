@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include "CoreAudioBackend.h"
 #include "SystemAggregateDevice.h"
 
@@ -10,9 +11,11 @@
 #include <unistd.h> // getpid() for hog-mode ownership
 #include <algorithm>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <cmath>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace mma {
@@ -23,6 +26,7 @@ struct CoreAudioStream
     AudioDeviceIOProcID ioProcId = nullptr;
     AudioCallback callback;
     bool isOutput = false;
+    bool ownsHogMode = false;
 
     // Channel pointer scratch, sized once at open time. §11 forbids allocation
     // inside the callback, so the IOProc only ever fills these.
@@ -55,6 +59,13 @@ struct CoreAudioStream
     double startedSeconds = 0.0;
     std::atomic<double> lastCallbackSeconds { 0.0 };
     std::atomic<bool> reportedDead { false };
+
+    // One atomic is both the admission gate and the in-flight callback count.
+    // A separate `enabled` flag and counter has a TOCTOU window where teardown
+    // can observe zero just before a callback increments it. Here the closed
+    // bit and every lease share one modification order, so once close wins no
+    // new callback can acquire a lease.
+    std::atomic<uint64_t> callbackLeases { 0 };
 
     // CoreAudio can deliver all three property notifications from threads the
     // app does not own. Processor-overload notifications in particular are
@@ -98,7 +109,189 @@ struct CoreAudioStream
     int numPendingInterleave = 0;
 };
 
+struct CoreAudioDeviceListListenerState
+{
+    DeviceChangeCallback callback;
+
+    // The system listener has the same raw-clientData lifetime problem as an
+    // IOProc. Once the high bit closes admission, the low bits drain callbacks
+    // that were already inside the trampoline.
+    std::atomic<uint64_t> callbackLeases { 0 };
+};
+
+struct CoreAudioPendingInputAttempts
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::unordered_set<std::string> deviceIds;
+    bool teardownInProgress = false;
+    bool cleanupUnsafe = false;
+    // Orders detached open/cleanup work without ever making the message thread
+    // wait behind a wedged HAL call.
+    std::mutex halTransactions;
+};
+
 namespace {
+
+constexpr uint64_t kCallbackGateClosed = uint64_t { 1 } << 63;
+constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
+
+#if defined (MMA_SIMULATE_MAC)
+constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (75);
+constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
+#else
+constexpr auto kHalTransactionTimeout = std::chrono::seconds (5);
+constexpr auto kRateSettleTimeout = std::chrono::milliseconds (500);
+#endif
+
+bool tryAcquireCallbackLease (CoreAudioStream& stream) noexcept
+{
+    auto state = stream.callbackLeases.load (std::memory_order_acquire);
+
+    while ((state & kCallbackGateClosed) == 0)
+    {
+        if ((state & kCallbackLeaseCountMask) == kCallbackLeaseCountMask)
+            return false;
+
+        if (stream.callbackLeases.compare_exchange_weak (
+                state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire))
+            return true;
+    }
+
+    return false;
+}
+
+bool tryAcquireCallbackLease (CoreAudioDeviceListListenerState& state) noexcept
+{
+    auto leases = state.callbackLeases.load (std::memory_order_acquire);
+
+    while ((leases & kCallbackGateClosed) == 0)
+    {
+        if ((leases & kCallbackLeaseCountMask) == kCallbackLeaseCountMask)
+            return false;
+
+        if (state.callbackLeases.compare_exchange_weak (
+                leases, leases + 1, std::memory_order_acq_rel, std::memory_order_acquire))
+            return true;
+    }
+
+    return false;
+}
+
+void releaseCallbackLease (CoreAudioStream& stream) noexcept
+{
+    stream.callbackLeases.fetch_sub (1, std::memory_order_release);
+}
+
+void releaseCallbackLease (CoreAudioDeviceListListenerState& state) noexcept
+{
+    state.callbackLeases.fetch_sub (1, std::memory_order_release);
+}
+
+void closeCallbackGateAndDrain (CoreAudioStream& stream) noexcept
+{
+    stream.callbackLeases.fetch_or (kCallbackGateClosed, std::memory_order_acq_rel);
+
+    // The IOProc contract forbids blocking work, so an admitted callback is a
+    // few hundred microseconds at most. Waiting for its lease is what makes it
+    // safe for a timed-out worker to outlive the CaptureCoordinator captured by
+    // the callback: after this returns that callback can never run again.
+    while ((stream.callbackLeases.load (std::memory_order_acquire)
+            & kCallbackLeaseCountMask) != 0)
+        std::this_thread::yield();
+}
+
+void closeCallbackGateAndDrain (CoreAudioDeviceListListenerState& state) noexcept
+{
+    state.callbackLeases.fetch_or (kCallbackGateClosed, std::memory_order_acq_rel);
+
+    while ((state.callbackLeases.load (std::memory_order_acquire)
+            & kCallbackLeaseCountMask) != 0)
+        std::this_thread::yield();
+}
+
+// A HAL that refuses to remove a callback may retain its clientData forever.
+// Keep those small, closed-gate objects reachable for the process lifetime so
+// a late driver callback is harmless and leak checkers can distinguish this
+// deliberate quarantine from an accidental lost allocation.
+void retainInertStream (std::unique_ptr<CoreAudioStream> stream) noexcept
+{
+    try
+    {
+        static auto* mutex = new std::mutex();
+        static auto* streams = new std::vector<std::unique_ptr<CoreAudioStream>>();
+        const std::lock_guard<std::mutex> guard (*mutex);
+        streams->push_back (std::move (stream));
+    }
+    catch (...)
+    {
+        // Losing ownership is intentional here: deleting the object is the one
+        // unsafe action when the HAL may still call its raw clientData.
+        (void) stream.release();
+    }
+}
+
+void retainInertDeviceListListener (
+    std::unique_ptr<CoreAudioDeviceListListenerState> state) noexcept
+{
+    try
+    {
+        static auto* mutex = new std::mutex();
+        static auto* states =
+            new std::vector<std::unique_ptr<CoreAudioDeviceListListenerState>>();
+        const std::lock_guard<std::mutex> guard (*mutex);
+        states->push_back (std::move (state));
+    }
+    catch (...)
+    {
+        (void) state.release();
+    }
+}
+
+struct PendingInputToken
+{
+    std::shared_ptr<CoreAudioPendingInputAttempts> registry;
+    std::string deviceId;
+
+    ~PendingInputToken()
+    {
+        if (registry == nullptr)
+            return;
+
+        {
+            const std::lock_guard<std::mutex> guard (registry->mutex);
+            registry->deviceIds.erase (deviceId);
+        }
+
+        registry->changed.notify_all();
+    }
+};
+
+std::shared_ptr<PendingInputToken> beginInputAttempt (
+    const std::shared_ptr<CoreAudioPendingInputAttempts>& registry,
+    const std::string& deviceId)
+{
+    const std::lock_guard<std::mutex> guard (registry->mutex);
+
+    if (registry->teardownInProgress || registry->cleanupUnsafe
+        || ! registry->deviceIds.empty())
+        return {};
+
+    if (! registry->deviceIds.insert (deviceId).second)
+        return {};
+
+    auto token = std::make_shared<PendingInputToken>();
+    token->registry = registry;
+    token->deviceId = deviceId;
+    return token;
+}
+
+void holdAudioTeardownQuarantine (
+    const std::shared_ptr<CoreAudioPendingInputAttempts>& registry)
+{
+    const std::lock_guard<std::mutex> guard (registry->mutex);
+    registry->cleanupUnsafe = true;
+}
 
 // Reads a CoreAudio string property (device name, manufacturer, etc.) into a
 // std::string, freeing the CFString afterward.
@@ -181,9 +374,20 @@ std::vector<uint32_t> querySupportedSampleRates (AudioObjectID device)
 // polled on a timer (§2).
 OSStatus deviceListChanged (AudioObjectID, UInt32, const AudioObjectPropertyAddress*, void* clientData)
 {
-    auto* callback = static_cast<DeviceChangeCallback*> (clientData);
-    if (callback && *callback)
-        (*callback)();
+    auto* state = static_cast<CoreAudioDeviceListListenerState*> (clientData);
+
+    if (state == nullptr || ! tryAcquireCallbackLease (*state))
+        return noErr;
+
+    struct LeaseReleaser
+    {
+        CoreAudioDeviceListListenerState& state;
+        ~LeaseReleaser() { releaseCallbackLease (state); }
+    } lease { *state };
+
+    if (state->callback)
+        state->callback();
+
     return noErr;
 }
 
@@ -219,8 +423,15 @@ OSStatus streamPropertyChanged (AudioObjectID, UInt32 numAddresses,
 {
     auto* stream = static_cast<CoreAudioStream*> (clientData);
 
-    if (stream == nullptr || addresses == nullptr)
+    if (stream == nullptr || addresses == nullptr
+        || ! tryAcquireCallbackLease (*stream))
         return noErr;
+
+    struct LeaseReleaser
+    {
+        CoreAudioStream& stream;
+        ~LeaseReleaser() { releaseCallbackLease (stream); }
+    } lease { *stream };
 
     bool overloadSeen = false;
 
@@ -272,31 +483,41 @@ void installStreamPropertyListeners (CoreAudioStream& stream)
                                         streamPropertyChanged, &stream) == noErr;
 }
 
-void removeStreamPropertyListeners (CoreAudioStream& stream)
+bool removeStreamPropertyListeners (CoreAudioStream& stream)
 {
+    bool allRemoved = true;
+
     if (stream.nominalRateListenerInstalled)
     {
         auto address = nominalRateAddress();
-        AudioObjectRemovePropertyListener (stream.deviceId, &address,
-                                           streamPropertyChanged, &stream);
-        stream.nominalRateListenerInstalled = false;
+        if (AudioObjectRemovePropertyListener (stream.deviceId, &address,
+                                               streamPropertyChanged, &stream) == noErr)
+            stream.nominalRateListenerInstalled = false;
+        else
+            allRemoved = false;
     }
 
     if (stream.deviceAliveListenerInstalled)
     {
         auto address = deviceAliveAddress();
-        AudioObjectRemovePropertyListener (stream.deviceId, &address,
-                                           streamPropertyChanged, &stream);
-        stream.deviceAliveListenerInstalled = false;
+        if (AudioObjectRemovePropertyListener (stream.deviceId, &address,
+                                               streamPropertyChanged, &stream) == noErr)
+            stream.deviceAliveListenerInstalled = false;
+        else
+            allRemoved = false;
     }
 
     if (stream.processorOverloadListenerInstalled)
     {
         auto address = processorOverloadAddress();
-        AudioObjectRemovePropertyListener (stream.deviceId, &address,
-                                           streamPropertyChanged, &stream);
-        stream.processorOverloadListenerInstalled = false;
+        if (AudioObjectRemovePropertyListener (stream.deviceId, &address,
+                                               streamPropertyChanged, &stream) == noErr)
+            stream.processorOverloadListenerInstalled = false;
+        else
+            allRemoved = false;
     }
+
+    return allRemoved;
 }
 
 bool readDeviceIsAlive (AudioObjectID device)
@@ -418,9 +639,8 @@ bool setNominalSampleRate (AudioObjectID device, double sampleRate)
     // never applies it must not hang launch. Confirm the final value rather than
     // assuming success, because landing on a neighbouring rate would make the
     // device a permanent drift source.
-    constexpr auto settleTimeout = std::chrono::milliseconds (500);
     constexpr auto pollInterval = std::chrono::milliseconds (10);
-    const auto deadline = std::chrono::steady_clock::now() + settleTimeout;
+    const auto deadline = std::chrono::steady_clock::now() + kRateSettleTimeout;
 
     for (;;)
     {
@@ -472,9 +692,9 @@ bool takeHogMode (AudioObjectID device)
     return setHogMode (device, getpid());
 }
 
-void releaseHogMode (AudioObjectID device)
+bool releaseHogMode (AudioObjectID device)
 {
-    setHogMode (device, -1);
+    return setHogMode (device, -1);
 }
 
 /// The real-time IOProc. §11: no allocation, locking, logging or file I/O here.
@@ -489,7 +709,16 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
 {
     auto* stream = static_cast<CoreAudioStream*> (clientData);
 
-    if (stream == nullptr || ! stream->callback)
+    if (stream == nullptr || ! tryAcquireCallbackLease (*stream))
+        return noErr;
+
+    struct LeaseReleaser
+    {
+        CoreAudioStream& stream;
+        ~LeaseReleaser() { releaseCallbackLease (stream); }
+    } lease { *stream };
+
+    if (! stream->callback)
         return noErr;
 
     // A timestamp, taken before any work, so the message thread can tell a
@@ -643,9 +872,230 @@ OSStatus ioProcTrampoline (AudioObjectID /*device*/,
     return noErr;
 }
 
+struct CoreAudioOpenResult
+{
+    bool succeeded = false;
+    std::string error;
+    bool streamSafeToDelete = true;
+    bool cleanupSucceeded = true;
+    bool bufferSizeWasRefused = false;
+};
+
+struct CoreAudioCleanupResult
+{
+    bool streamSafeToDelete = true;
+    bool cleanupSucceeded = true;
+};
+
+CoreAudioCleanupResult destroyStreamAfterFailedOpen (CoreAudioStream& stream)
+{
+    closeCallbackGateAndDrain (stream);
+    const bool listenersRemoved = removeStreamPropertyListeners (stream);
+    bool ioProcDestroyed = true;
+
+    if (stream.ioProcId != nullptr)
+    {
+        ioProcDestroyed = AudioDeviceDestroyIOProcID (stream.deviceId, stream.ioProcId) == noErr;
+        if (ioProcDestroyed)
+            stream.ioProcId = nullptr;
+    }
+
+    bool hogReleased = true;
+    if (stream.ownsHogMode)
+    {
+        hogReleased = releaseHogMode (stream.deviceId);
+        if (hogReleased)
+            stream.ownsHogMode = false;
+    }
+
+    return { listenersRemoved && ioProcDestroyed,
+             listenersRemoved && ioProcDestroyed && hogReleased };
+}
+
+CoreAudioCleanupResult stopAndDestroyAbandonedStream (CoreAudioStream& stream)
+{
+    closeCallbackGateAndDrain (stream);
+    bool listenersRemoved = true;
+    bool ioProcDestroyed = true;
+    bool stopped = true;
+
+    if (stream.ioProcId != nullptr)
+    {
+        stopped = AudioDeviceStop (stream.deviceId, stream.ioProcId) == noErr;
+        listenersRemoved = removeStreamPropertyListeners (stream);
+        ioProcDestroyed = AudioDeviceDestroyIOProcID (stream.deviceId, stream.ioProcId) == noErr;
+        if (ioProcDestroyed)
+            stream.ioProcId = nullptr;
+    }
+    else
+    {
+        listenersRemoved = removeStreamPropertyListeners (stream);
+    }
+
+    bool hogReleased = true;
+    if (stream.ownsHogMode)
+    {
+        hogReleased = releaseHogMode (stream.deviceId);
+        if (hogReleased)
+            stream.ownsHogMode = false;
+    }
+
+    // If CoreAudio refused to remove either callback registration, its
+    // clientData may still be called later. Retaining the tiny stream object is
+    // safer than freeing that pointer; the closed lease gate makes it inert.
+    return { listenersRemoved && ioProcDestroyed,
+             stopped && listenersRemoved && ioProcDestroyed && hogReleased };
+}
+
+// The HAL transaction intentionally includes rollback. Real devices have been
+// observed blocking not only in CreateIOProc/Start but also in DestroyIOProc
+// after Start fails. Running the whole transaction on one owned worker means a
+// timeout never hands closeAllStreams a half-created IOProc.
+CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
+{
+    if (AudioDeviceCreateIOProcID (stream.deviceId, ioProcTrampoline, &stream,
+                                   &stream.ioProcId) != noErr
+        || stream.ioProcId == nullptr)
+    {
+        CoreAudioCleanupResult cleanup;
+        if (stream.ioProcId != nullptr || stream.ownsHogMode)
+            cleanup = destroyStreamAfterFailedOpen (stream);
+
+        return { false,
+                 "macOS wouldn't let this app attach to this interface. Another app is usually "
+                 "holding it -- close anything else recording or streaming from it, then try again.",
+                 cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+    }
+
+    installStreamPropertyListeners (stream);
+
+    const double rateImmediatelyBeforeStart = getNominalSampleRate (stream.deviceId);
+    if (! readDeviceIsAlive (stream.deviceId)
+        || rateImmediatelyBeforeStart <= 0.0
+        || std::abs (rateImmediatelyBeforeStart - stream.expectedSampleRate) >= 1.0)
+    {
+        if (rateImmediatelyBeforeStart > 0.0
+            && std::abs (rateImmediatelyBeforeStart - stream.expectedSampleRate) >= 1.0)
+        {
+            const auto error = "This interface changed to " + formatRate (rateImmediatelyBeforeStart)
+                             + " while SobStage was opening it at "
+                             + formatRate (stream.expectedSampleRate)
+                             + ". Set both to the same rate, then try again.";
+            const auto cleanup = destroyStreamAfterFailedOpen (stream);
+            return { false, error, cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+        }
+
+        const auto cleanup = destroyStreamAfterFailedOpen (stream);
+        return { false,
+                 "This interface disconnected while SobStage was opening it. Plug it back in, "
+                 "then try again.", cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+    }
+
+    if (AudioDeviceStart (stream.deviceId, stream.ioProcId) != noErr)
+    {
+        const auto cleanup = destroyStreamAfterFailedOpen (stream);
+        return { false,
+                 "macOS wouldn't start this interface. Check that SobStage is allowed to use the "
+                 "microphone in System Settings > Privacy & Security > Microphone, and that no "
+                 "other app is recording from it.", cleanup.streamSafeToDelete,
+                 cleanup.cleanupSucceeded };
+    }
+
+    stream.startedSeconds = std::chrono::duration<double> (
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return { true, {}, true, true };
+}
+
+// Every device call involved in opening belongs in the bounded HAL
+// transaction, including UID resolution, transport/rate checks, buffer setup,
+// hog mode, IOProc creation and Start. A bad driver can block any of these --
+// moving only AudioDeviceStart off the launch thread merely moves the freeze to
+// the property call immediately before it.
+CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
+                                           const std::string& deviceUid,
+                                           double sampleRate,
+                                           int bufferSizeSamples,
+                                           bool isOutput)
+{
+    const auto device = findDeviceByUID (deviceUid);
+
+    if (device == kAudioObjectUnknown)
+    {
+        return { false,
+                 isOutput
+                    ? "That sound output isn't there any more. Choose another one."
+                    : "This microphone is no longer connected. Unplug it and plug it back in, "
+                      "then try again." };
+    }
+
+    stream.deviceId = device;
+
+    if (! isOutput && ! isDirectlyAttachedInputTransport (readTransportType (device)))
+    {
+        return { false,
+                 "SobStage only records from a directly connected external USB, FireWire, "
+                 "or Thunderbolt microphone or audio interface." };
+    }
+
+    if (! readDeviceIsAlive (device))
+    {
+        return { false,
+                 isOutput
+                    ? "That sound output disconnected while SobStage was opening it. Choose another one."
+                    : "This interface disconnected while SobStage was opening it. Plug it back in, "
+                      "then try again." };
+    }
+
+    if (! setNominalSampleRate (device, sampleRate))
+    {
+        const double actual = getNominalSampleRate (device);
+        return { false,
+                 "This interface is running at " + formatRate (actual)
+                    + " and won't change to the " + formatRate (sampleRate)
+                    + " this recording uses. Set the recording to " + formatRate (actual)
+                    + " in Settings, or change the interface to " + formatRate (sampleRate)
+                    + " in Audio MIDI Setup." };
+    }
+
+    const bool bufferSizeRefused = ! setBufferFrameSize (device, bufferSizeSamples);
+
+    stream.uid = deviceUid;
+    stream.expectedSampleRate = sampleRate;
+    stream.isOutput = isOutput;
+
+    const int granted = std::max (getBufferFrameSize (device), bufferSizeSamples);
+    stream.maxFramesPerCallback = std::max (granted * 2, 4096);
+
+    const size_t scratchSamples = static_cast<size_t> (CoreAudioStream::kMaxChannels)
+                                * static_cast<size_t> (stream.maxFramesPerCallback);
+    stream.deinterleaveScratch.assign (scratchSamples, 0.0f);
+    stream.interleaveScratch.assign (scratchSamples, 0.0f);
+
+    if (isOutput)
+    {
+        if (! takeHogMode (device))
+        {
+            return { false,
+                     "This sound output won't give this app exclusive use, which live monitoring needs. "
+                     "Pick a different output in Advanced -- a USB or Thunderbolt interface usually works, "
+                     "Bluetooth headphones usually don't.",
+                     true, true, bufferSizeRefused };
+        }
+
+        stream.ownsHogMode = true;
+    }
+
+    auto result = createAndStartStream (stream);
+    result.bufferSizeWasRefused = bufferSizeRefused;
+    return result;
+}
+
 } // namespace
 
-CoreAudioBackend::CoreAudioBackend() = default;
+CoreAudioBackend::CoreAudioBackend()
+    : pendingInputAttempts (std::make_shared<CoreAudioPendingInputAttempts>())
+{
+}
 
 CoreAudioBackend::~CoreAudioBackend()
 {
@@ -720,69 +1170,173 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateOutputDevices() { 
 
 void CoreAudioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
 {
-    deviceChangeCallback = std::move (callback);
+    hotplugProblem.clear();
+    removeDeviceListListener();
+
+    if (! callback)
+        return;
+
+    deviceListListenerState = std::make_unique<CoreAudioDeviceListListenerState>();
+    deviceListListenerState->callback = std::move (callback);
     installDeviceListListener();
 }
 
 void CoreAudioBackend::installDeviceListListener()
 {
-    hotplugProblem.clear();
-
     AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
                                          kAudioObjectPropertyElementMain };
+
+    if (deviceListListenerState == nullptr)
+        return;
 
     // The result is read. Discarded, a listener macOS refused to install left
     // the app deaf to the rig for the rest of the session without a word: a
     // microphone plugged in is never noticed, and one pulled out MID-TAKE is
     // never reported, so a take that lost a channel looks like a clean one.
     if (AudioObjectAddPropertyListener (kAudioObjectSystemObject, &address, deviceListChanged,
-                                        &deviceChangeCallback) != noErr)
+                                        deviceListListenerState.get()) != noErr)
+    {
         hotplugProblem =
             "This Mac won't tell the app when microphones are plugged in or unplugged, so the list "
             "only updates when the app starts. Restart it after changing your rig.";
+        deviceListListenerState.reset();
+        return;
+    }
+
+    deviceListListenerInstalled = true;
 }
 
 void CoreAudioBackend::removeDeviceListListener()
 {
+    if (deviceListListenerState == nullptr)
+        return;
+
+    closeCallbackGateAndDrain (*deviceListListenerState);
+
     AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
                                          kAudioObjectPropertyElementMain };
-    AudioObjectRemovePropertyListener (kAudioObjectSystemObject, &address, deviceListChanged, &deviceChangeCallback);
+
+    bool removed = true;
+    if (deviceListListenerInstalled)
+        removed = AudioObjectRemovePropertyListener (
+            kAudioObjectSystemObject, &address, deviceListChanged,
+            deviceListListenerState.get()) == noErr;
+
+    deviceListListenerInstalled = false;
+
+    // Even a successful remove may overlap a notification the HAL dispatched
+    // just before it returned. Process-lifetime retirement makes that raw
+    // clientData safe in both the success and refusal cases; its gate is closed
+    // so it can never call the backend's former owner again.
+    retainInertDeviceListListener (std::move (deviceListListenerState));
+
+    if (! removed)
+        hotplugProblem =
+            "macOS didn't fully release the microphone hot-plug listener. SobStage made it inert, "
+            "but restart the app before changing the audio rig again.";
 }
 
 ExclusiveModeCapability CoreAudioBackend::checkExclusiveModeCapability (const std::string& outputDeviceId,
                                                                         double sampleRate, int bufferSizeSamples)
 {
-    ExclusiveModeCapability cap;
-    // CoreAudio's "hog mode" (kAudioDevicePropertyHogMode) plus a direct
-    // AudioDeviceIOProc (bypassing HAL mixing) is the exclusive-equivalent
-    // path on macOS -- there is no separate "shared vs exclusive" API split
-    // like WASAPI's, so availability mainly depends on whether another
-    // process already holds hog mode.
-    const AudioObjectID device = findDeviceByUID (outputDeviceId);
-
-    if (device == kAudioObjectUnknown)
+    auto token = beginInputAttempt (pendingInputAttempts, outputDeviceId);
+    if (token == nullptr)
     {
-        cap.unavailableReason = "That sound output isn't connected any more.";
+        ExclusiveModeCapability cap;
+        cap.unavailableReason = "macOS is still finishing an earlier audio-rig operation. Wait a "
+                                "moment, then try this output again.";
         return cap;
     }
 
-    // Hog mode is unavailable when another process already holds it. §5.4 wants
-    // the cause named rather than a silently degraded mix.
-    AudioObjectPropertyAddress address { kAudioDevicePropertyHogMode,
-                                         kAudioObjectPropertyScopeGlobal,
-                                         kAudioObjectPropertyElementMain };
-    pid_t owner = -1;
-    UInt32 size = sizeof (owner);
-
-    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &owner) == noErr
-        && owner != -1 && owner != getpid())
+    struct CapabilityAttempt
     {
-        cap.unavailableReason = "Another app has taken exclusive control of your headphones. Quit it, then reopen this app.";
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool finished = false;
+        ExclusiveModeCapability result;
+        std::shared_ptr<PendingInputToken> token;
+    };
+
+    auto attempt = std::make_shared<CapabilityAttempt>();
+    attempt->token = std::move (token);
+
+    std::thread worker;
+    try
+    {
+        worker = std::thread ([attempt, outputDeviceId, sampleRate, bufferSizeSamples]
+        {
+            ExclusiveModeCapability cap;
+
+            {
+                const std::lock_guard<std::mutex> halGuard (
+                    attempt->token->registry->halTransactions);
+
+                // CoreAudio's hog mode plus a direct IOProc is the
+                // exclusive-equivalent path. UID resolution and the hog-owner
+                // read are both driver calls, so they share the open deadline.
+                const auto device = findDeviceByUID (outputDeviceId);
+                if (device == kAudioObjectUnknown)
+                {
+                    cap.unavailableReason = "That sound output isn't connected any more.";
+                }
+                else
+                {
+                    AudioObjectPropertyAddress address {
+                        kAudioDevicePropertyHogMode,
+                        kAudioObjectPropertyScopeGlobal,
+                        kAudioObjectPropertyElementMain };
+                    pid_t owner = -1;
+                    UInt32 size = sizeof (owner);
+
+                    if (AudioObjectGetPropertyData (device, &address, 0, nullptr,
+                                                    &size, &owner) == noErr
+                        && owner != -1 && owner != getpid())
+                    {
+                        cap.unavailableReason =
+                            "Another app has taken exclusive control of your headphones. Quit it, "
+                            "then reopen this app.";
+                    }
+                    else
+                    {
+                        cap.exclusiveModeAvailable = true;
+                        cap.measuredOrEstimatedLatencyMs =
+                            (bufferSizeSamples / sampleRate) * 1000.0 * 2.0;
+                    }
+                }
+            }
+
+            attempt->token.reset();
+            {
+                const std::lock_guard<std::mutex> guard (attempt->mutex);
+                attempt->result = std::move (cap);
+                attempt->finished = true;
+            }
+            attempt->changed.notify_one();
+        });
+    }
+    catch (...)
+    {
+        ExclusiveModeCapability cap;
+        cap.unavailableReason = "macOS couldn't create the worker needed to check this sound output "
+                                "safely. Restart SobStage, then try again.";
         return cap;
     }
 
-    cap.exclusiveModeAvailable = true;
-    cap.measuredOrEstimatedLatencyMs = (bufferSizeSamples / sampleRate) * 1000.0 * 2.0; // in + out buffer
+    std::unique_lock<std::mutex> lock (attempt->mutex);
+    if (! attempt->changed.wait_for (lock, kHalTransactionTimeout,
+                                     [&attempt] { return attempt->finished; }))
+    {
+        lock.unlock();
+        worker.detach();
+        ExclusiveModeCapability cap;
+        cap.unavailableReason = "macOS took too long to check this sound output, so SobStage stopped "
+                                "waiting. Choose another output or reconnect it.";
+        return cap;
+    }
+
+    auto cap = std::move (attempt->result);
+    lock.unlock();
+    worker.join();
     return cap;
 }
 
@@ -793,140 +1347,156 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     // as the reason this one failed -- or, worse, be shown beside a success.
     lastOpenError.clear();
 
-    const AudioObjectID device = findDeviceByUID (deviceId);
-
-    if (device == kAudioObjectUnknown || ! callback)
+    if (! callback)
     {
-        lastOpenError = "This microphone is no longer connected. Unplug it and plug it back in, "
-                        "then try again.";
+        lastOpenError = "SobStage couldn't start this audio path because its audio callback was missing.";
         return false;
     }
 
-    // Enumeration is not an authorization token. Re-check the live object at
-    // the point an input is opened so a stale/reused UID, or another internal
-    // call site that did not come through enumerateInputDevices(), cannot turn
-    // a built-in, Continuity, wireless, aggregate, virtual, or unknown source
-    // into a recording stream. Outputs keep their intentionally broader policy.
-    if (! isOutput && ! isDirectlyAttachedInputTransport (readTransportType (device)))
+    auto transactionToken = beginInputAttempt (pendingInputAttempts, deviceId);
+    if (transactionToken == nullptr)
     {
-        lastOpenError = "SobStage only records from a directly connected external USB, FireWire, "
-                        "or Thunderbolt microphone or audio interface.";
+        lastOpenError = "macOS is still finishing an earlier audio-rig operation. Wait a moment, "
+                        "then unplug and reconnect the interface before trying again.";
         return false;
     }
-
-    // Match the negotiated rate (§2.2) before the IOProc starts, so the device
-    // is not still converting when audio begins.
-    if (! setNominalSampleRate (device, sampleRate))
-    {
-        // Name both rates. "Couldn't be opened" sends the user hunting through
-        // cables for a fault that is one number in a settings pane, and the
-        // rate the device is actually running at is the whole answer.
-        const double actual = getNominalSampleRate (device);
-
-        lastOpenError = "This interface is running at " + formatRate (actual)
-                      + " and won't change to the " + formatRate (sampleRate)
-                      + " this recording uses. Set the recording to "
-                      + formatRate (actual) + " in Settings, or change the interface "
-                      + "to " + formatRate (sampleRate) + " in Audio MIDI Setup.";
-        return false;
-    }
-
-    // §5.4 buffer ladder: the requested size is a target, and CoreAudio clamps
-    // it to what the device allows. Failing to set it is not fatal -- a larger
-    // buffer costs latency, and the measured figure reported at startup will
-    // show it rather than the estimate hiding it.
-    // The result is read now. Failing to set it is still not fatal -- a larger
-    // buffer costs latency, not audio -- but it was discarded entirely, so a
-    // device that refused the requested size left the app quietly running at
-    // whatever the device preferred with nothing saying so. lastOpenError is
-    // not the place (the open succeeds), so it goes in the field the caller
-    // reads for exactly this: something worth knowing that did not stop us.
-    if (! setBufferFrameSize (device, bufferSizeSamples))
-        bufferSizeWasRefused.store (true);
 
     auto stream = std::make_unique<CoreAudioStream>();
-    stream->deviceId = device;
+    stream->callback = std::move (callback);
     stream->uid = deviceId;
     stream->expectedSampleRate = sampleRate;
-    stream->callback = std::move (callback);
     stream->isOutput = isOutput;
 
-    // Size the de/interleave scratch from the size the device actually granted,
-    // not the size we asked for, and leave headroom: the HAL is allowed to hand
-    // the IOProc a larger slice than the nominal buffer. §11 forbids allocating
-    // in the callback, so anything not covered here has to be dropped there.
-    const int granted = std::max (getBufferFrameSize (device), bufferSizeSamples);
-    stream->maxFramesPerCallback = std::max (granted * 2, 4096);
-
-    const size_t scratchSamples = static_cast<size_t> (CoreAudioStream::kMaxChannels)
-                                * static_cast<size_t> (stream->maxFramesPerCallback);
-    stream->deinterleaveScratch.assign (scratchSamples, 0.0f);
-    stream->interleaveScratch.assign (scratchSamples, 0.0f);
-
-    if (AudioDeviceCreateIOProcID (device, ioProcTrampoline, stream.get(), &stream->ioProcId) != noErr
-        || stream->ioProcId == nullptr)
+    struct Attempt
     {
-        lastOpenError = "macOS wouldn't let this app attach to this interface. Another app is "
-                        "usually holding it -- close anything else recording or streaming from "
-                        "it, then try again.";
-        return false;
-    }
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool finished = false;
+        bool abandoned = false;
+        CoreAudioOpenResult result;
+        std::unique_ptr<CoreAudioStream> stream;
+        std::shared_ptr<PendingInputToken> token;
+    };
 
-    // Register after our own asynchronous nominal-rate write has settled, so
-    // opening at the requested rate cannot be mistaken for another app changing
-    // it. Register before Start so there is no unobserved running interval.
-    installStreamPropertyListeners (*stream);
+    auto attempt = std::make_shared<Attempt>();
+    attempt->stream = std::move (stream);
+    attempt->token = std::move (transactionToken);
 
-    // Close the small race between the successful rate/alive checks above and
-    // listener installation. If another app changes the rate, or the device
-    // begins disappearing, inside that window, never start an IOProc whose
-    // format is already stale. The listener flags alone are not enough here:
-    // they are intentionally consumed later on the message thread.
-    const double rateImmediatelyBeforeStart = getNominalSampleRate (device);
-    if (! readDeviceIsAlive (device)
-        || rateImmediatelyBeforeStart <= 0.0
-        || std::abs (rateImmediatelyBeforeStart - sampleRate) >= 1.0)
+    std::thread worker;
+    try
     {
-        removeStreamPropertyListeners (*stream);
-        AudioDeviceDestroyIOProcID (device, stream->ioProcId);
-        stream->ioProcId = nullptr;
-
-        if (rateImmediatelyBeforeStart > 0.0
-            && std::abs (rateImmediatelyBeforeStart - sampleRate) >= 1.0)
+        worker = std::thread ([attempt, deviceId, sampleRate, bufferSizeSamples, isOutput]
         {
-            lastOpenError = "This interface changed to " + formatRate (rateImmediatelyBeforeStart)
-                          + " while SobStage was opening it at " + formatRate (sampleRate)
-                          + ". Set both to the same rate, then try again.";
-        }
-        else
-        {
-            lastOpenError = "This interface disconnected while SobStage was opening it. Plug it "
-                            "back in, then try again.";
-        }
+            CoreAudioOpenResult result;
+            try
+            {
+                const std::lock_guard<std::mutex> halGuard (
+                    attempt->token->registry->halTransactions);
+                result = prepareAndStartStream (*attempt->stream, deviceId, sampleRate,
+                                                bufferSizeSamples, isOutput);
+            }
+            catch (...)
+            {
+                // Allocation can fail while preparing scratch storage. It is
+                // normally before CreateIOProc, but clean defensively in case a
+                // future HAL step that can throw is added after registration.
+                const std::lock_guard<std::mutex> halGuard (
+                    attempt->token->registry->halTransactions);
+                const auto cleanup = stopAndDestroyAbandonedStream (*attempt->stream);
+                result = { false,
+                           "SobStage couldn't prepare this interface for audio. Close other apps "
+                           "using it, then try again.",
+                           cleanup.streamSafeToDelete, cleanup.cleanupSucceeded };
+            }
 
-        return false;
+            {
+                const std::lock_guard<std::mutex> guard (attempt->mutex);
+                if (! attempt->abandoned)
+                {
+                    attempt->result = std::move (result);
+                    attempt->finished = true;
+                    attempt->changed.notify_one();
+                    return;
+                }
+            }
+
+            // The caller timed out and has already closed/drained the callback
+            // gate. If the HAL eventually started, stop it here. If transaction
+            // rollback itself was what blocked, createAndStartStream did not
+            // return until that rollback was complete. In either case this
+            // worker remains the sole owner for the full unsafe lifetime.
+            CoreAudioCleanupResult cleanup { result.streamSafeToDelete,
+                                             result.cleanupSucceeded };
+            if (result.succeeded)
+            {
+                // closeAllStreams uses the same transaction mutex. Keep late
+                // rollback serialized with teardown of streams that were
+                // already live when this attempt timed out.
+                const std::lock_guard<std::mutex> halGuard (
+                    attempt->token->registry->halTransactions);
+                cleanup = stopAndDestroyAbandonedStream (*attempt->stream);
+            }
+
+            if (! cleanup.cleanupSucceeded)
+                holdAudioTeardownQuarantine (attempt->token->registry);
+
+            if (! cleanup.streamSafeToDelete)
+                retainInertStream (std::move (attempt->stream));
+
+            attempt->token.reset();
+        });
     }
-
-    if (AudioDeviceStart (device, stream->ioProcId) != noErr)
+    catch (...)
     {
-        removeStreamPropertyListeners (*stream);
-        AudioDeviceDestroyIOProcID (device, stream->ioProcId);
-
-        // The commonest cause by far, and the one with a fix the user can
-        // actually carry out: macOS has not been told this app may listen.
-        lastOpenError = "macOS wouldn't start this interface. Check that SobStage is allowed to "
-                        "use the microphone in System Settings > Privacy & Security > Microphone, "
-                        "and that no other app is recording from it.";
+        lastOpenError = "macOS couldn't create the worker needed to open this audio interface "
+                        "safely. Restart SobStage, then try again.";
         return false;
     }
 
-    // The IOProc may never arrive even though AudioDeviceStart returned
-    // success. Remember when that successful start completed so the watchdog
-    // has a bounded first-callback grace period instead of skipping a zero
-    // lastCallbackSeconds value forever.
-    stream->startedSeconds = std::chrono::duration<double> (
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::unique_lock<std::mutex> lock (attempt->mutex);
+    if (! attempt->changed.wait_for (lock, kHalTransactionTimeout,
+                                     [&attempt] { return attempt->finished; }))
+    {
+        attempt->abandoned = true;
+        auto* timedOutStream = attempt->stream.get();
+        lock.unlock();
 
+        // This is the lifetime boundary: whether the worker is blocked in a
+        // property call, CreateIOProc or Start, every later callback observes
+        // the closed gate and cannot reach the caller's former owner.
+        closeCallbackGateAndDrain (*timedOutStream);
+        worker.detach();
+
+        lastOpenError = "macOS took too long to connect this interface, so SobStage stopped "
+                        "waiting. Unplug it and plug it back in, and close any other app using "
+                        "audio before trying again.";
+        return false;
+    }
+
+    auto result = std::move (attempt->result);
+    lock.unlock();
+    worker.join();
+
+    stream = std::move (attempt->stream);
+
+    if (result.bufferSizeWasRefused)
+        bufferSizeWasRefused.store (true);
+
+    if (! result.succeeded)
+    {
+        lastOpenError = std::move (result.error);
+
+        if (! result.cleanupSucceeded)
+            holdAudioTeardownQuarantine (pendingInputAttempts);
+
+        if (! result.streamSafeToDelete)
+            retainInertStream (std::move (stream));
+
+        attempt->token.reset();
+        return false;
+    }
+
+    attempt->token.reset();
     openStreams.push_back (std::move (stream));
     return true;
 }
@@ -1078,8 +1648,9 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     // alive/dead, but invoking the app callback from the CoreAudio listener
     // itself would allocate from a HAL-owned thread. This method is message-
     // thread-only, so it is the safe bridge back into the normal hotplug path.
-    if (devicePropertiesChanged && deviceChangeCallback)
-        deviceChangeCallback();
+    if (devicePropertiesChanged && deviceListListenerState != nullptr)
+        deviceListChanged (kAudioObjectSystemObject, 0, nullptr,
+                           deviceListListenerState.get());
 
     return failures;
 }
@@ -1109,44 +1680,22 @@ uint64_t CoreAudioBackend::getOutputGlitchCount() const
 bool CoreAudioBackend::openExclusiveOutputStream (const std::string& outputDeviceId, double sampleRate,
                                                   int bufferSizeSamples, AudioCallback callback)
 {
-    const AudioObjectID device = findDeviceByUID (outputDeviceId);
-
-    if (device == kAudioObjectUnknown)
     {
-        lastOpenError = "That sound output isn't there any more. Choose another one.";
-        return false;
+        const std::lock_guard<std::mutex> guard (pendingInputAttempts->mutex);
+        if (pendingInputAttempts->teardownInProgress
+            || pendingInputAttempts->cleanupUnsafe)
+        {
+            lastOpenError = "macOS is still releasing the previous audio rig. Wait a moment, then "
+                            "unplug and reconnect the interface before trying again.";
+            return false;
+        }
     }
 
-    // Hog mode is the exclusive-equivalent on macOS: it stops the HAL mixing
-    // other processes into this device. §5.4 requires the monitor path be
-    // exclusive, and §5.4 also requires naming the cause when it is not -- so
-    // record whether we actually got it rather than assuming we did.
-    lastOpenError.clear();
-    outputStreamIsHogModeExclusive = takeHogMode (device);
-
-    // §5.4: this method promises an exclusive monitor path, and the caller
-    // (CaptureCoordinator) branches on that promise. Reporting success without
-    // hog mode hands the user a shared output while the app believes otherwise,
-    // so fail here and let checkExclusiveModeCapability name the cause.
-    if (! outputStreamIsHogModeExclusive)
-    {
-        lastOpenError = "This sound output won't give this app exclusive use, which live monitoring needs. "
-                        "Pick a different output in Advanced -- a USB or Thunderbolt interface usually works, "
-                        "Bluetooth headphones usually don't.";
-        return false;
-    }
-
-    if (! openStream (outputDeviceId, sampleRate, bufferSizeSamples, std::move (callback), true))
-    {
-        if (outputStreamIsHogModeExclusive)
-            releaseHogMode (device);
-
-        outputStreamIsHogModeExclusive = false;
-        return false;
-    }
-
-    openOutputDeviceId = device;
-    return true;
+    // UID/property queries, hog mode, IOProc creation and Start are all part of
+    // openStream's bounded worker. Keeping even one of them here would leave a
+    // broken output driver able to freeze launch before the deadline exists.
+    return openStream (outputDeviceId, sampleRate, bufferSizeSamples,
+                       std::move (callback), true);
 }
 
 bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double sampleRate,
@@ -1162,29 +1711,147 @@ bool CoreAudioBackend::openInputStream (const std::string& inputDeviceId, double
 
 void CoreAudioBackend::closeAllStreams()
 {
+    if (openStreams.empty())
+        return;
+
+    // Close callback admission on the caller before ownership moves. The HAL
+    // can now stall in Stop, listener removal or Destroy for as long as it
+    // likes without either freezing quit/reconfiguration or reaching the
+    // CaptureCoordinator after this function returns.
     for (auto& stream : openStreams)
+        closeCallbackGateAndDrain (*stream);
+
+    struct CleanupAttempt
     {
-        if (stream->ioProcId != nullptr)
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool finished = false;
+        std::vector<std::unique_ptr<CoreAudioStream>> streams;
+        std::shared_ptr<CoreAudioPendingInputAttempts> registry;
+    };
+
+    std::shared_ptr<CleanupAttempt> attempt;
+    try
+    {
+        attempt = std::make_shared<CleanupAttempt>();
+        attempt->registry = pendingInputAttempts;
+        attempt->streams = std::move (openStreams);
+    }
+    catch (...)
+    {
+        // No HAL call has been made and every gate is already closed. Preserve
+        // all clientData forever rather than allowing vector destruction to
+        // free an IOProc the driver still owns.
+        for (auto& stream : openStreams)
+            retainInertStream (std::move (stream));
+        openStreams.clear();
+        holdAudioTeardownQuarantine (pendingInputAttempts);
+        return;
+    }
+
+    {
+        const std::lock_guard<std::mutex> guard (attempt->registry->mutex);
+        attempt->registry->teardownInProgress = true;
+    }
+
+    std::thread worker;
+    bool workerStarted = false;
+
+   #if defined (MMA_SIMULATE_MAC)
+    const bool injectWorkerFailure = std::exchange (failNextCleanupWorkerStart, false);
+   #else
+    constexpr bool injectWorkerFailure = false;
+   #endif
+
+    if (! injectWorkerFailure)
+    {
+        try
         {
-            AudioDeviceStop (stream->deviceId, stream->ioProcId);
-            removeStreamPropertyListeners (*stream);
-            AudioDeviceDestroyIOProcID (stream->deviceId, stream->ioProcId);
-            stream->ioProcId = nullptr;
+            worker = std::thread ([attempt]
+            {
+                bool cleanupSucceeded = true;
+
+                {
+                    const std::lock_guard<std::mutex> halGuard (
+                        attempt->registry->halTransactions);
+
+                    for (auto& stream : attempt->streams)
+                    {
+                        const auto cleanup = stopAndDestroyAbandonedStream (*stream);
+                        cleanupSucceeded = cleanupSucceeded && cleanup.cleanupSucceeded;
+
+                        if (! cleanup.streamSafeToDelete)
+                            retainInertStream (std::move (stream));
+                    }
+                }
+
+                {
+                    const std::lock_guard<std::mutex> guard (
+                        attempt->registry->mutex);
+                    attempt->registry->teardownInProgress = false;
+                    if (! cleanupSucceeded)
+                        attempt->registry->cleanupUnsafe = true;
+                }
+                attempt->registry->changed.notify_all();
+
+                {
+                    const std::lock_guard<std::mutex> guard (attempt->mutex);
+                    attempt->finished = true;
+                }
+                attempt->changed.notify_one();
+            });
+            workerStarted = true;
         }
-        else
+        catch (...)
         {
-            removeStreamPropertyListeners (*stream);
+            workerStarted = false;
         }
     }
 
-    openStreams.clear();
+    if (! workerStarted)
+    {
+        // Thread construction can fail under process pressure. The callable's
+        // destructor must not own the only references to live clientData, so
+        // the streams live in `attempt` until they are explicitly quarantined.
+        for (auto& stream : attempt->streams)
+            retainInertStream (std::move (stream));
+        attempt->streams.clear();
 
-    if (outputStreamIsHogModeExclusive && openOutputDeviceId != kAudioObjectUnknown)
-        releaseHogMode (openOutputDeviceId);
+        {
+            const std::lock_guard<std::mutex> guard (attempt->registry->mutex);
+            attempt->registry->teardownInProgress = false;
+            attempt->registry->cleanupUnsafe = true;
+        }
+        attempt->registry->changed.notify_all();
+        return;
+    }
 
-    openOutputDeviceId = 0;
-    outputStreamIsHogModeExclusive = false;
+    std::unique_lock<std::mutex> lock (attempt->mutex);
+    if (! attempt->changed.wait_for (lock, kHalTransactionTimeout,
+                                     [&attempt] { return attempt->finished; }))
+    {
+        lock.unlock();
+        worker.detach();
+        return;
+    }
+
+    lock.unlock();
+    worker.join();
 }
+
+#if defined (MMA_SIMULATE_MAC)
+bool CoreAudioBackend::waitForPendingInputAttemptsForTesting (int timeoutMilliseconds)
+{
+    std::unique_lock<std::mutex> lock (pendingInputAttempts->mutex);
+    return pendingInputAttempts->changed.wait_for (
+        lock, std::chrono::milliseconds (timeoutMilliseconds),
+        [this]
+        {
+            return pendingInputAttempts->deviceIds.empty()
+                && ! pendingInputAttempts->teardownInProgress;
+        });
+}
+#endif
 
 } // namespace mma
 

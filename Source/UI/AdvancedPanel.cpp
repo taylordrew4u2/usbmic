@@ -358,6 +358,14 @@ void AdvancedPanel::setSampleRateSelection (uint32_t chosen)
 
     const int id = chosen == 0 ? 1 : static_cast<int> (chosen);
 
+    // A saved explicit rate remains meaningful while every eligible external
+    // microphone is unplugged. In that state the live capability list is
+    // empty, so selecting the saved ID used to clear the ComboBox and leave a
+    // blank setting. Keep the stored choice visible (and selectable) until the
+    // rig returns and the normal capability refresh rebuilds the menu.
+    if (chosen != 0 && sampleRateCombo.indexOfItemId (id) < 0)
+        sampleRateCombo.addItem (rateText (chosen), id);
+
     if (sampleRateCombo.getSelectedId() != id)
         sampleRateCombo.setSelectedId (id, juce::dontSendNotification);
 }

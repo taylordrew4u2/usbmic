@@ -41,6 +41,7 @@ add_executable(mma_core_tests
     test_ChannelPlan.cpp
     test_AlsaInputPolicy.cpp
     test_FilesystemStatusProbe.cpp
+    test_DetachedRefreshCache.cpp
     test_StreamFailurePolicy.cpp
 )
 

@@ -11,10 +11,13 @@ build; this summary is not a substitute for its terms.
 The release configuration was checked against the official JUCE 7 licence on
 that date. This repository is public, ships its GPLv3 source, and pins JUCE
 7.0.12 at commit `4f43011b96eb0636104cb3e433894cda98243626` in
-`CMakeLists.txt`; those are the facts the GPL distribution path relies on. A
-release owner must still confirm the final source archive and notices beside
-each published binary. This engineering review is not legal advice or a
-substitute for the release owner's approval.
+`CMakeLists.txt`. SobStage applies the source-available camera lifecycle patch
+in `ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch`; the corresponding
+source archive includes both the exact upstream JUCE tree and that patch. Those
+are the facts the GPL distribution path relies on. A release owner must still
+confirm the final source archive and notices beside each published binary.
+This engineering review is not legal advice or a substitute for the release
+owner's approval.
 
 ## What GPLv3 means here
 
@@ -22,8 +25,8 @@ substitute for the release owner's approval.
 - If you distribute binaries, you must make the corresponding source available
   under the same licence. Tagged SobStage releases are configured to ship a
   versioned source bundle containing both the exact SobStage revision and the
-  pinned JUCE tree; the release owner still verifies that bundle and its
-  notices against the binaries before publishing.
+  pinned JUCE tree plus SobStage's applied JUCE patch; the release owner still
+  verifies that bundle and its notices against the binaries before publishing.
 - This repository does not rely on a commercial JUCE price tier. Distribution
   still has to follow the GPLv3 and JUCE 7 terms linked above.
 

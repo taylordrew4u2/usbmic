@@ -3,6 +3,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -61,6 +63,11 @@ public:
         std::chrono::milliseconds refreshInterval = std::chrono::milliseconds (500));
     ~FilesystemStatusProbe();
 
+    FilesystemStatusProbe (const FilesystemStatusProbe&) = delete;
+    FilesystemStatusProbe& operator= (const FilesystemStatusProbe&) = delete;
+    FilesystemStatusProbe (FilesystemStatusProbe&&) = delete;
+    FilesystemStatusProbe& operator= (FilesystemStatusProbe&&) = delete;
+
     /// Changes what the worker samples. Repeating an identical request is a
     /// no-op; the worker refreshes the active request at its own bounded rate.
     void setRequest (Request request);
@@ -73,18 +80,21 @@ public:
     void stop();
 
 private:
-    static Snapshot sample (const Request& request);
-    void run();
+    struct State;
+    using Sampler = std::function<Snapshot (const Request&)>;
 
-    const std::chrono::milliseconds interval;
-    mutable std::mutex mutex;
-    mutable std::condition_variable condition;
-    std::thread worker;
-    bool stopping = false;
-    bool hasRequest = false;
-    uint64_t requestGeneration = 0;
-    Request requested;
-    Snapshot latest;
+    FilesystemStatusProbe (std::chrono::milliseconds refreshInterval,
+                           Sampler sampler);
+
+    static Snapshot sample (const Request& request);
+    static void run (std::shared_ptr<State> state);
+    static void launchWorker (const std::shared_ptr<State>& state);
+    static bool sameFilesystemTargets (const Request& a, const Request& b) noexcept;
+
+    mutable std::mutex stateHandleMutex;
+    std::shared_ptr<State> state;
+
+    friend struct FilesystemStatusProbeTestAccess;
 };
 
 } // namespace mma
