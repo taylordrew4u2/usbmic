@@ -259,14 +259,46 @@ void aDelayedRateChangeSettlesBeforeTheStreamOpens()
                             fakeca::BufferShape::oneChannelPerBuffer);
     spec.currentRate = 44100.0;
     spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
-    spec.rateChangeDelayReads = 3;
+    // One stale read, not three.
+    //
+    // The claim here is that a rate the HAL applies asynchronously is waited
+    // for rather than read back once and treated as a refusal -- and a single
+    // stale read proves exactly that: the first read after the write still
+    // returns 44.1, so an implementation without the confirmation poll still
+    // fails this test. Three reads proved nothing further and cost three poll
+    // intervals, which is what made this the one test that failed on macOS.
+    //
+    // The poll is 10 ms inside a 50 ms settle window, so five polls are
+    // available -- and that window sits inside the 75 ms HAL transaction
+    // deadline for the whole open, so the real budget is smaller still.
+    // Needing four of those five left nothing for a sleep that overshoots,
+    // which is what sleep_until does on the macOS runners: the open was
+    // refused at 51 ms with the correct rate one read away. Widening the
+    // settle window is not the fix -- it has to stay inside the transaction
+    // that contains it, the way production's 500 ms sits inside 750 ms.
+    spec.rateChangeDelayReads = 1;
     const auto id = fakeca::addDevice (spec);
 
     mma::CoreAudioBackend backend;
     Capture capture;
 
-    check (backend.openInputStream ("uid-slow-rate", 48000.0, 256, capture.callback()),
-           "the stream waits for the delayed rate and opens");
+    // Measured, not just asserted. This test is the one that fails on macOS and
+    // passes everywhere else, and a bare FAIL line says nothing about which of
+    // the two bounded waits ran out -- the rate-settle poll or the HAL
+    // transaction deadline around the whole open. The numbers separate them.
+    const auto openBegan = std::chrono::steady_clock::now();
+    const bool opened = backend.openInputStream ("uid-slow-rate", 48000.0, 256,
+                                                 capture.callback());
+    const auto openTook = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - openBegan);
+
+    std::printf ("  [measured] the open took %lld ms; the device now reads %.0f Hz\n",
+                 (long long) openTook.count(), fakeca::nominalRate (id));
+
+    if (! opened)
+        std::printf ("  [measured] refused with: %s\n", backend.getLastOpenError().c_str());
+
+    check (opened, "the stream waits for the delayed rate and opens");
     check (fakeca::nominalRate (id) == 48000.0,
            "the stream starts only after the requested rate is visible");
     check (fakeca::isRunning (id), "the IOProc actually starts after confirmation");
@@ -297,6 +329,16 @@ void aRateChangeThatNeverSettlesTimesOut()
 
     check (! opened, "the open is refused rather than using the stale rate");
     check (! fakeca::isRunning (id), "no IOProc starts at the wrong rate");
+
+    // This device never applies the rate, so its worker keeps polling for the
+    // whole settle window after the open has already given up. Waiting for it
+    // here is not politeness: the next test calls fakeca::reset(), and the
+    // harness has no lock, so a worker still reading a device while the next
+    // test replaces it is a genuine race -- ThreadSanitizer reports it the
+    // moment the settle window outlasts the gap between the two tests. Every
+    // other test that abandons a worker already waits for it exactly here.
+    check (backend.waitForPendingInputAttemptsForTesting (2000),
+           "the abandoned rate-confirmation worker settles before the next test");
     check (elapsed < std::chrono::milliseconds (650),
            "confirmation returns at its 500 ms bound instead of hanging launch");
 }
@@ -840,7 +882,20 @@ void aStuckInputStartIsBoundedAndCleanedUp()
 
     const auto closeBegan = std::chrono::steady_clock::now();
     backend.closeAllStreams();
-    check (std::chrono::steady_clock::now() - closeBegan < std::chrono::milliseconds (100),
+    const auto closeTook = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - closeBegan);
+
+    // 200 ms, matching every sibling bound in this file rather than the 100 ms
+    // this check alone carried. closeAllStreams() is DESIGNED to wait out
+    // kHalTransactionTimeout (75 ms in simulation) whenever the HAL is stuck,
+    // so 100 ms left 25 ms for scheduling jitter -- and this check has been
+    // passing and failing run to run on the macOS runners because of it.
+    // What the check is really for is unchanged: 200 ms is still far below the
+    // 250 ms stall, so a close that genuinely waits for the stuck HAL to finish
+    // still fails here.
+    std::printf ("  [measured] closeAllStreams returned in %lld ms (stall is %d ms)\n",
+                 (long long) closeTook.count(), spec.startDelayMilliseconds);
+    check (closeTook < std::chrono::milliseconds (200),
            "previously-open streams are quarantined without blocking behind the stuck HAL");
 
     // Synchronizes with the detached owner after Start returns and it performs
