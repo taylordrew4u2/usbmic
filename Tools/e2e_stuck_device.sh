@@ -16,7 +16,8 @@
 #
 #   Tools/e2e_stuck_device.sh
 #
-# Passes when the app opens anyway and records from the healthy microphone.
+# Passes when the app opens anyway, says which microphone it gave up on, and
+# records a real take from the healthy one.
 set -euo pipefail
 
 DISPLAY_NUM="${MMA_DISPLAY:-:99}"
@@ -92,14 +93,8 @@ echo "PASS: the window opened with a wedged device attached"
 # it gave up on and why, rather than presenting a microphone that silently does
 # nothing. That sentence goes to the activity log, so it can be asserted without
 # reading pixels.
-#
-# What this deliberately does NOT assert is that a take records. With one
-# microphone wedged the app opens, names the failure, and leaves "Start
-# recording" disabled -- which is its existing policy for a microphone that
-# will not open, not something this fix introduced. Whether a take should be
-# allowed to start with the microphones that DID open is a product decision,
-# and it is a separate one from this bug: the bug was that there was no window
-# to make that decision in.
+LOG="$HOME/.config/SobStage/log.txt"
+
 # Only the lines THIS run appended: the log persists between runs, and a line
 # left by an earlier one would otherwise pass this test without the app having
 # said anything at all.
@@ -118,5 +113,71 @@ if ! new_log_lines | grep -q "mma_mic2.*took too long to connect"; then
   exit 1
 fi
 echo "PASS: the wedged device was named, with what to do about it"
+
+# The count has to be the microphones that OPENED. Carrying on without a device
+# must not also mean claiming it is live: a count wrong in the user's favour is
+# worse than no count, and this read "3 microphones are live" for a rig with a
+# dead one until the live/selected distinction was made.
+if ! new_log_lines | grep -q "2 microphones are live"; then
+  echo "FAIL: the app did not report the number of microphones that actually opened."
+  new_log_lines | grep -i "microphone" | tail -5
+  exit 1
+fi
+echo "PASS: the live count is the microphones that opened, not the ones selected"
+
+# The point of all of it: the working microphone still records. A wedged device
+# used to close every other stream on its way out, so a rig with one dead
+# microphone recorded NOTHING -- the largest loss §0.1 can take, arriving by the
+# most ordinary way for a gig to go wrong.
+RECORDINGS="$HOME/RECORDINGS"
+mkdir -p "$RECORDINGS"
+newest() { find "$RECORDINGS" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | LC_ALL=C sort | tail -1; }
+BEFORE=$(newest)
+
+click() {
+  local win geo x y
+  win=$(DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage | head -1)
+  geo=$(DISPLAY="$DISPLAY_NUM" xdotool getwindowgeometry --shell "$win")
+  x=$(echo "$geo" | sed -n 's/^X=//p'); y=$(echo "$geo" | sed -n 's/^Y=//p')
+  DISPLAY="$DISPLAY_NUM" xdotool mousemove $((x + $1)) $((y + $2)) click 1
+}
+
+sleep 3
+for DONE_Y in 263 293 312 332; do click 417 "$DONE_Y"; done
+sleep 1
+
+TAKE=""
+for attempt in 1 2 3; do
+  click 973 178
+  sleep 1
+  click 733 540
+  for _ in $(seq 1 10); do
+    sleep 1
+    CUR=$(newest); if [ -n "$CUR" ] && [ "$CUR" != "$BEFORE" ]; then TAKE="$CUR"; break; fi
+  done
+  [ -n "$TAKE" ] && break
+  echo "record press $attempt did not start a take; trying again"
+done
+
+if [ -z "$TAKE" ]; then
+  DISPLAY="$DISPLAY_NUM" import -window root /tmp/mma-e2e-stuck-no-record.png 2>/dev/null || true
+  echo "FAIL: the app would not record at all with one wedged microphone attached."
+  echo "      The microphones that DID open are working; refusing the take loses"
+  echo "      the whole performance because one cable is bad."
+  echo "      (screen: /tmp/mma-e2e-stuck-no-record.png)"
+  exit 1
+fi
+echo "PASS: a take started with a wedged microphone attached ($TAKE)"
+
+sleep 7
+DISPLAY="$DISPLAY_NUM" xdotool key Escape
+sleep 1
+click 973 178
+for _ in $(seq 1 20); do
+  sleep 1
+  python3 -c "import json,sys; sys.exit(0 if json.load(open('$RECORDINGS/$TAKE/session.json')).get('stopTimestamp') else 1)" 2>/dev/null && break
+done
+
+python3 Tools/verify_partial_take.py "$RECORDINGS/$TAKE" mic1 mic2
 
 echo "ALL CHECKS PASSED"
