@@ -791,6 +791,19 @@ bool CaptureCoordinator::isChannelLayoutDecisionPersistable (int index) const no
         std::memory_order_acquire);
 }
 
+bool CaptureCoordinator::pullOutputBlock (float* const* outputs, int numOutputs,
+                                          int numSamples) noexcept
+{
+    // The same hand-off the output callback and the software clock take, so a
+    // caller outside those two cannot pull a ring the clock is already pulling.
+    if (pulling.exchange (true, std::memory_order_acq_rel))
+        return false;
+
+    processOutputBlock (outputs, numOutputs, numSamples);
+    pulling.store (false, std::memory_order_release);
+    return true;
+}
+
 void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept
 {
     if (numSamples <= 0)

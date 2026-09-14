@@ -205,7 +205,7 @@ int main (int argc, char** argv)
 
     for (int i = 0; i < blocks; ++i)
     {
-        coordinator.processOutputBlock (outs, 2, block);
+        coordinator.pullOutputBlock (outs, 2, block);
         std::this_thread::sleep_for (std::chrono::microseconds (200));
     }
 

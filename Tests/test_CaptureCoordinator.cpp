@@ -271,7 +271,7 @@ TEST_CASE (CaptureCoordinator_ASliceOverTwiceTheNominalBufferIsStillRecorded)
     {
         backend.inputCallbacks[0] (loudIn, 1, nullptr, 0, callbackFrames);
         backend.inputCallbacks[1] (quietIn, 1, nullptr, 0, callbackFrames);
-        c.processOutputBlock (outs, 1, callbackFrames);
+        c.pullOutputBlock (outs, 1, callbackFrames);
     }
 
     for (int i = 0; i < 60; ++i)
@@ -675,7 +675,7 @@ TEST_CASE (CaptureCoordinator_EachDeviceLandsInItsOwnChannel)
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
-    c.processOutputBlock (outs, 1, 64);
+    c.pullOutputBlock (outs, 1, 64);
 
     for (int i = 0; i < 10; ++i)
     {
@@ -706,7 +706,7 @@ TEST_CASE (CaptureCoordinator_OutputClockPullsEveryDeviceIntoTheMix)
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
-    c.processOutputBlock (outs, 1, 64);
+    c.pullOutputBlock (outs, 1, 64);
 
     // §5.1: the mix contains every mic, summed at unity, so it must exceed
     // either one alone.
@@ -748,7 +748,7 @@ TEST_CASE (CaptureCoordinator_MasterReportsNoDriftAgainstItself)
     float* outs[] = { out.data() };
 
     for (int i = 0; i < 100; ++i)
-        c.processOutputBlock (outs, 1, 64);
+        c.pullOutputBlock (outs, 1, 64);
 
     // §3.1: the timebase is never corrected against itself, however its ring
     // happens to sit.
@@ -773,7 +773,7 @@ TEST_CASE (CaptureCoordinator_UnpluggedDeviceStillYieldsItsChannel)
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
-    c.processOutputBlock (outs, 1, 64);
+    c.pullOutputBlock (outs, 1, 64);
 
     for (int i = 0; i < 10; ++i)
         c.getChannelMetering (1)->tick (1.0 / 60.0);
@@ -848,7 +848,7 @@ TakeResult runTake (bool unplugMaster, int failoverTo, double seconds, double un
             backend.inputCallbacks[static_cast<size_t> (d)] (block, 1, nullptr, 0, n);
         }
 
-        c.processOutputBlock (outs, 1, 64);
+        c.pullOutputBlock (outs, 1, 64);
     }
 
     TakeResult r;
@@ -981,7 +981,7 @@ TEST_CASE (CaptureCoordinator_DoesNotSubstituteAnUnselectedPhysicalInput)
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
-    c.processOutputBlock (outs, 1, 64);
+    c.pullOutputBlock (outs, 1, 64);
 
     for (int i = 0; i < 10; ++i)
     {
@@ -1018,7 +1018,7 @@ TEST_CASE (CaptureCoordinator_FreshStereoPairIsAnalyzedWithoutCollapsingEitherIn
     for (int block = 0; block < 282; ++block)
     {
         pushStereo (backend, 0, silent, signal);
-        c.processOutputBlock (outs, 1, 512);
+        c.pullOutputBlock (outs, 1, 512);
     }
 
     REQUIRE (c.getChannelLayoutDecision (0) == ChannelLayoutDecision::Mono);
@@ -1123,7 +1123,7 @@ TEST_CASE (CaptureCoordinator_ExplicitStereoMicVerdictStillUsesItsLiveSide)
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
-    c.processOutputBlock (outs, 1, 64);
+    c.pullOutputBlock (outs, 1, 64);
 
     bool heardSignal = false;
     for (const auto sample : out)
@@ -1170,7 +1170,7 @@ TEST_CASE (CaptureCoordinator_PersistedRightSideSurvivesAnImmediateRecording)
     for (int block = 0; block < 20; ++block)
     {
         std::fill (out.begin(), out.end(), 0.0f);
-        c.processOutputBlock (outs, 1, 64);
+        c.pullOutputBlock (outs, 1, 64);
         for (const auto sample : out)
             heardSignal = heardSignal || sample != 0.0f;
     }
@@ -1218,7 +1218,7 @@ TEST_CASE (CaptureCoordinator_MonoDeviceIsUntouchedByChannelLayout)
 
     std::vector<float> out (64, 0.0f);
     float* outs[] = { out.data() };
-    c.processOutputBlock (outs, 1, 64);
+    c.pullOutputBlock (outs, 1, 64);
 
     for (int i = 0; i < 10; ++i)
         c.getChannelMetering (0)->tick (1.0 / 60.0);
