@@ -102,6 +102,16 @@ public:
     bool isMonitoring() const noexcept { return monitoring; }
     const std::string& getMonitorProblem() const noexcept { return monitorProblem; }
 
+    /// Devices that refused to open when monitoring started, by id.
+    ///
+    /// Their channels are live-false and write silence. §0.1: the take's record
+    /// has to be able to say WHY a stem is silent, and "the microphone never
+    /// opened" is a different answer from "it was unplugged part way through".
+    const std::vector<std::string>& getDevicesThatFailedToOpen() const noexcept
+    {
+        return devicesThatFailedToOpen;
+    }
+
     /// §6: begins writing. Monitoring continues untouched -- §5.1 makes the two
     /// independent, and §6.1 keeps a monitor mute from silencing the recording.
     /// mirrorFolder is §6.3's local copy; empty means card-only.
@@ -420,6 +430,7 @@ private:
 
     bool monitoring = false;
     std::string monitorProblem;
+    std::vector<std::string> devicesThatFailedToOpen;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
 

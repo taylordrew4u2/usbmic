@@ -26,6 +26,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
 
     channels = chans;
     monitorProblem.clear();
+    devicesThatFailedToOpen.clear();
 
     channelMeters.clear();
     for (size_t i = 0; i < channels.size(); ++i)
@@ -205,6 +206,9 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // device once per channel would ask the OS for the same exclusive stream
     // four times; on macOS the second open is refused and the take dies with a
     // message naming a microphone that is plugged in and working.
+    std::vector<std::string> failedDevices;
+    std::string firstFailure;
+
     for (const auto& [deviceId, channelIndices] : byDevice)
     {
         // Captured by value into the callback so the audio thread never reaches
@@ -226,13 +230,40 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             // reported the cause; the microphone path is no different.
             const auto reason = backend.getLastOpenError();
 
-            monitorProblem = channels[channelIndices.front()].displayName
-                           + " couldn't be opened for recording."
-                           + (reason.empty() ? std::string() : " " + reason);
+            // One microphone's failure is not every microphone's failure.
+            //
+            // This used to closeAllStreams() and give up the moment ANY device
+            // refused, so a four-microphone rig with one dead cable recorded
+            // NOTHING -- not the three that were working perfectly. The button
+            // then read "The microphones aren't open", which was true only
+            // because this function had just closed them. Being unable to
+            // record at all is the largest loss §0.1 can take, and a broken
+            // microphone is the most ordinary way for a gig to go wrong.
+            //
+            // continueInputOnly above already settles the principle for the
+            // output -- "monitoring failure is not recording failure" -- and an
+            // input is no different: carry on with the devices that opened,
+            // keep the ones that did not as a named warning, and refuse only
+            // when NOTHING opened.
+            failedDevices.push_back (deviceId);
 
-            backend.closeAllStreams();
-            return false;
+            if (firstFailure.empty())
+                firstFailure = channels[channelIndices.front()].displayName
+                             + " couldn't be opened for recording."
+                             + (reason.empty() ? std::string() : " " + reason);
+
+            continue;
         }
+    }
+
+    // Nothing opened at all. This is the case the record button's guard is
+    // really for: a take now would write nothing but empty files with the clock
+    // running.
+    if (! byDevice.empty() && failedDevices.size() == byDevice.size())
+    {
+        monitorProblem = firstFailure;
+        backend.closeAllStreams();
+        return false;
     }
 
     // The software clock runs for the life of the rig. With an output stream
@@ -250,6 +281,28 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     }
 
     monitoring = true;
+
+    // The devices that would not open, now that monitoring is genuinely up.
+    //
+    // Marked not-live so their channels write silence rather than a held
+    // sample -- the same answer §6.5 already gives a microphone that goes away
+    // MID-take, because a microphone that never arrived is the same problem one
+    // step earlier. Recorded by id as well, so the take's own record can say
+    // why that stem is silent instead of leaving it to be discovered in the
+    // files afterwards.
+    devicesThatFailedToOpen.clear();
+
+    for (const auto& deviceId : failedDevices)
+    {
+        devicesThatFailedToOpen.push_back (deviceId);
+        setChannelLive (deviceId, false);
+    }
+
+    if (! failedDevices.empty())
+        monitorProblem = firstFailure
+                       + " Recording is available from the other microphones; this one's"
+                         " track will be silent.";
+
     return true;
 }
 

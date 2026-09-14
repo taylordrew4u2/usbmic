@@ -745,6 +745,7 @@ private:
     /// rename, hot-plug and output change, so an entry per call would bury the
     /// journal in "2 microphones are live" -- only an actual change is news.
     int journalledMonitorCount = -1;
+    int journalledMonitorFailedCount = -1;
     bool journalledMonitorOk = false;
 
     /// The backend drop count already reported, so a loss that is still growing
