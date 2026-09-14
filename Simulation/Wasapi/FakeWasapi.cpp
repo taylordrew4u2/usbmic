@@ -1,4 +1,6 @@
 #include "FakeWasapi.h"
+#include <chrono>
+#include <thread>
 
 #include <windows.h>
 #include <mmdeviceapi.h>
@@ -395,6 +397,10 @@ struct FakeAudioClient : RefCounted<IAudioClient>
     {
         if (format == nullptr || endpoint == nullptr)
             return E_POINTER;
+
+        if (endpoint->spec.initializeDelayMilliseconds > 0)
+            std::this_thread::sleep_for (std::chrono::milliseconds (
+                endpoint->spec.initializeDelayMilliseconds));
 
         if (mode != AUDCLNT_SHAREMODE_EXCLUSIVE)
             return AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;

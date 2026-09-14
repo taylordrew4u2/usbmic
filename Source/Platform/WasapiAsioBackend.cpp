@@ -1,4 +1,7 @@
 #include "WasapiAsioBackend.h"
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
 
 #if JUCE_WINDOWS
 
@@ -143,6 +146,18 @@ struct WasapiStream
 };
 
 namespace {
+
+// How long the caller waits for Windows to finish opening a device before
+// giving up on it. CoreAudioBackend bounds its HAL calls the same way and for
+// the same reason; this is the Windows half of that. Generous enough that a
+// merely slow interface still opens, short enough that a wedged one cannot
+// hold the window closed.
+#if defined (MMA_SIMULATE_WINDOWS)
+constexpr auto kOpenDeadline = std::chrono::milliseconds (750);
+#else
+constexpr auto kOpenDeadline = std::chrono::seconds (5);
+#endif
+
 
 std::string wideToUtf8 (const std::wstring& wide)
 {
@@ -781,14 +796,17 @@ ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const s
     return cap;
 }
 
-bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, double sampleRate,
-                                                   int bufferSizeSamples, bool isInput,
-                                                   AudioCallback callback)
+std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std::string& deviceId,
+                                                                      double sampleRate,
+                                                                      int bufferSizeSamples,
+                                                                      bool isInput,
+                                                                      AudioCallback callback,
+                                                                      std::string& openError)
 {
     if (! callback)
-        return false;
+        return nullptr;
 
-    lastOpenError.clear();
+    openError.clear();
 
     ComPtr<IMMDevice> device;
     if (! resolveDevice (deviceId, device) || device == nullptr)
@@ -796,11 +814,11 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         // §5.4 asks for the cause to be named. Only the format-refused case
         // below ever filled this in, so every other refusal in here reached the
         // user as a generic "couldn't open" with nothing to act on.
-        lastOpenError = isInput
+        openError = isInput
             ? "This microphone is no longer connected. Unplug it and plug it back in, then try "
               "again."
             : "This sound output isn't there any more. Pick a different one in Advanced.";
-        return false;
+        return nullptr;
     }
 
     // Re-resolve the physical device evidence when an input is actually
@@ -819,8 +837,8 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         if (! hasEnumerator
             || ! isDirectlyAttachedExternalInput (device.Get(), eligibilityEnumerator.Get()))
         {
-            lastOpenError = "SobStage only records from directly connected external audio hardware.";
-            return false;
+            openError = "SobStage only records from directly connected external audio hardware.";
+            return nullptr;
         }
     }
 
@@ -837,12 +855,12 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
     if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
                                   reinterpret_cast<void**> (stream->client.GetAddressOf()))))
     {
-        lastOpenError = isInput
+        openError = isInput
             ? "Windows wouldn't let this app attach to this microphone. Check Settings > Privacy > "
               "Microphone, then try again."
             : "Windows wouldn't let this app attach to this output. Close anything else using it, "
               "then try again.";
-        return false;
+        return nullptr;
     }
 
     // §5.4: exclusive mode or nothing -- falling back to shared would deliver
@@ -879,9 +897,9 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
     if (! formatFound)
     {
-        lastOpenError = "This device won't accept a low-latency connection at " + std::to_string ((int) sampleRate)
+        openError = "This device won't accept a low-latency connection at " + std::to_string ((int) sampleRate)
                       + " Hz. Try a different sample rate, or a different device, in Advanced.";
-        return false;
+        return nullptr;
     }
 
     stream->bytesPerSample = format.Format.wBitsPerSample / 8;
@@ -911,7 +929,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
             if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
                                           reinterpret_cast<void**> (stream->client.GetAddressOf()))))
-                return false;
+                return nullptr;
 
             hr = stream->client->Initialize (AUDCLNT_SHAREMODE_EXCLUSIVE,
                                              AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -926,28 +944,28 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         // The commonest cause by far, and the one with a fix the user can carry
         // out: exclusive mode is refused because something else already holds
         // the device, or because it is switched off for this endpoint.
-        lastOpenError = isInput
+        openError = isInput
             ? "This microphone wouldn't give this app exclusive use, which recording needs. Close "
               "anything else recording or streaming from it, and check \"Allow applications to take "
               "exclusive control\" is ticked for it in Sound settings."
             : "These headphones wouldn't give this app exclusive use, which live monitoring needs. "
               "Close anything else playing sound, or pick a different output in Advanced.";
-        return false;
+        return nullptr;
     }
 
     stream->readyEvent = CreateEventW (nullptr, FALSE, FALSE, nullptr);
     if (stream->readyEvent == nullptr || FAILED (stream->client->SetEventHandle (stream->readyEvent)))
     {
-        lastOpenError = "Windows refused to set up the audio connection for this device. "
+        openError = "Windows refused to set up the audio connection for this device. "
                         "Unplug it and plug it back in, or restart the app.";
-        return false;
+        return nullptr;
     }
 
     if (FAILED (stream->client->GetBufferSize (&stream->bufferFrames)))
     {
-        lastOpenError = "Windows refused to set up the audio connection for this device. "
+        openError = "Windows refused to set up the audio connection for this device. "
                         "Unplug it and plug it back in, or restart the app.";
-        return false;
+        return nullptr;
     }
 
     if (isInput)
@@ -955,9 +973,9 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         if (FAILED (stream->client->GetService (__uuidof (IAudioCaptureClient),
                                                 reinterpret_cast<void**> (stream->capture.GetAddressOf()))))
         {
-            lastOpenError = "Windows refused to hand over this microphone's audio. Unplug it and "
+            openError = "Windows refused to hand over this microphone's audio. Unplug it and "
                             "plug it back in, or restart the app.";
-            return false;
+            return nullptr;
         }
     }
     else
@@ -965,9 +983,9 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         if (FAILED (stream->client->GetService (__uuidof (IAudioRenderClient),
                                                 reinterpret_cast<void**> (stream->render.GetAddressOf()))))
         {
-            lastOpenError = "Windows refused to hand over this output's audio. Pick a different "
+            openError = "Windows refused to hand over this output's audio. Pick a different "
                             "output in Advanced.";
-            return false;
+            return nullptr;
         }
     }
 
@@ -979,13 +997,132 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
     if (FAILED (stream->client->Start()))
     {
-        lastOpenError = isInput
+        openError = isInput
             ? "This microphone accepted the connection but wouldn't start. Unplug it and plug it "
               "back in, then try again."
             : "This output accepted the connection but wouldn't start. Pick a different one in "
               "Advanced.";
+        return nullptr;
+    }
+
+    return stream;
+}
+
+
+bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, double sampleRate,
+                                                  int bufferSizeSamples, bool isInput,
+                                                  AudioCallback callback)
+{
+    lastOpenError.clear();
+
+    // Every COM call below -- Activate, IsFormatSupported, Initialize -- runs
+    // on an owned worker behind a deadline, for the reason CoreAudioBackend
+    // gives for doing the same to the HAL: a class-compliant USB driver can
+    // block the caller inside one of them for minutes, and the window is only
+    // created after audio initialisation, so an unbounded call makes SobStage
+    // appear never to launch. Windows had none of this and a driver stalling
+    // three seconds inside Initialize blocked the caller for three seconds --
+    // measured, not assumed, once the simulation could express a slow driver.
+    //
+    // Simpler than the macOS equivalent because COM is reference counted: a
+    // worker that finishes after the deadline drops the last reference to
+    // whatever it built and Windows releases it. There is no clientData for a
+    // driver to retain and nothing to quarantine.
+    struct Attempt
+    {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool finished = false;
+        bool abandoned = false;
+        std::string error;
+        std::unique_ptr<WasapiStream> stream;
+    };
+
+    auto attempt = std::make_shared<Attempt>();
+    auto pending = pendingOpens;
+
+    {
+        const std::lock_guard<std::mutex> guard (pending->mutex);
+        ++pending->running;
+    }
+
+    std::thread worker;
+    try
+    {
+        worker = std::thread ([this, attempt, pending, deviceId, sampleRate, bufferSizeSamples,
+                               isInput, callback = std::move (callback)] () mutable
+        {
+            std::string error;
+            auto built = buildExclusiveStream (deviceId, sampleRate, bufferSizeSamples, isInput,
+                                               std::move (callback), error);
+
+            // Announced before the result is published and on every exit, so a
+            // caller that stopped waiting still learns when the driver let go.
+            struct Leaving
+            {
+                std::shared_ptr<PendingOpens> pending;
+                ~Leaving()
+                {
+                    {
+                        const std::lock_guard<std::mutex> guard (pending->mutex);
+                        --pending->running;
+                    }
+                    pending->changed.notify_all();
+                }
+            } leaving { pending };
+
+            const std::lock_guard<std::mutex> guard (attempt->mutex);
+
+            // The caller gave up. Let the stream go here rather than handing
+            // back something nobody is waiting for; its COM pointers release
+            // with it.
+            if (attempt->abandoned)
+                return;
+
+            attempt->stream = std::move (built);
+            attempt->error = std::move (error);
+            attempt->finished = true;
+            attempt->changed.notify_one();
+        });
+    }
+    catch (...)
+    {
+        {
+            const std::lock_guard<std::mutex> guard (pending->mutex);
+            --pending->running;
+        }
+        pending->changed.notify_all();
+
+        lastOpenError = "Windows couldn't create the worker needed to open this audio device "
+                        "safely. Restart SobStage, then try again.";
         return false;
     }
+
+    std::unique_lock<std::mutex> lock (attempt->mutex);
+
+    if (! attempt->changed.wait_for (lock, kOpenDeadline,
+                                     [&attempt] { return attempt->finished; }))
+    {
+        attempt->abandoned = true;
+        lock.unlock();
+        worker.detach();
+
+        lastOpenError = isInput
+            ? "Windows took too long to connect this microphone, so SobStage stopped waiting. "
+              "Unplug it and plug it back in, and close any other app using audio before trying "
+              "again."
+            : "Windows took too long to connect this sound output, so SobStage stopped waiting. "
+              "Choose another output or reconnect it.";
+        return false;
+    }
+
+    auto stream = std::move (attempt->stream);
+    lastOpenError = std::move (attempt->error);
+    lock.unlock();
+    worker.join();
+
+    if (stream == nullptr)
+        return false;
 
     stream->running = true;
     auto* raw = stream.get();
@@ -993,6 +1130,14 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
 
     openStreams.push_back (std::move (stream));
     return true;
+}
+
+bool WasapiAsioBackend::waitForPendingOpensForTesting (int timeoutMilliseconds)
+{
+    const auto pending = pendingOpens;
+    std::unique_lock<std::mutex> lock (pending->mutex);
+    return pending->changed.wait_for (lock, std::chrono::milliseconds (timeoutMilliseconds),
+                                      [&pending] { return pending->running == 0; });
 }
 
 uint64_t WasapiAsioBackend::getFramesDroppedByBackend() const
