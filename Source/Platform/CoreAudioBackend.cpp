@@ -139,7 +139,14 @@ constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
 #if defined (MMA_SIMULATE_MAC)
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (75);
 constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (75);
-constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
+// 200 ms, not 50. This is a simulation-only value, cut short to keep the test
+// suite quick -- but the delayed-negotiation test needs four reads of the rate
+// property, and at a 10 ms poll that only fits inside 50 ms if every sleep is
+// precise. On the macOS runners sleep_until overshoots enough that the third
+// read lands at 51 ms, one short, and the open is refused at a rate that was
+// about to arrive. 200 ms leaves room for twenty polls instead of five, and
+// still returns long before the 650 ms the never-settles test allows.
+constexpr auto kRateSettleTimeout = std::chrono::milliseconds (200);
 #else
 // HAL calls are isolated on owned workers, so the caller must remain bounded
 // even when a broken driver never returns.  A short deadline keeps startup and

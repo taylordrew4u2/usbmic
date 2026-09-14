@@ -312,6 +312,16 @@ void aRateChangeThatNeverSettlesTimesOut()
 
     check (! opened, "the open is refused rather than using the stale rate");
     check (! fakeca::isRunning (id), "no IOProc starts at the wrong rate");
+
+    // This device never applies the rate, so its worker keeps polling for the
+    // whole settle window after the open has already given up. Waiting for it
+    // here is not politeness: the next test calls fakeca::reset(), and the
+    // harness has no lock, so a worker still reading a device while the next
+    // test replaces it is a genuine race -- ThreadSanitizer reports it the
+    // moment the settle window outlasts the gap between the two tests. Every
+    // other test that abandons a worker already waits for it exactly here.
+    check (backend.waitForPendingInputAttemptsForTesting (2000),
+           "the abandoned rate-confirmation worker settles before the next test");
     check (elapsed < std::chrono::milliseconds (650),
            "confirmation returns at its 500 ms bound instead of hanging launch");
 }
