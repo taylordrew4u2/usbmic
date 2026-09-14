@@ -741,8 +741,24 @@ void Application::restartCapture()
         // in the [failed] branch below; carrying on without it must not also
         // mean carrying on quietly.
         if (failedCount > 0 && worthSaying)
+        {
             noteActivity (ActivityLevel::Warning, "Microphones",
                           juce::String (capture->getMonitorProblem()));
+
+            // §14.2 names this exact event first: "bus power exhaustion doesn't
+            // produce a clean error; it shows up as ENUMERATION FAILURES and
+            // device drops". BusPowerDetector has always been able to count
+            // them and nothing ever handed it one -- Application::
+            // noteDeviceDropout() was written, wired to the advisor, and called
+            // from nowhere in the app, so "use a powered hub" could not be
+            // reached however many microphones dropped off a shared port.
+            //
+            // Gated on worthSaying with the message above, so a rebuild that
+            // changes nothing does not stack events into the five-minute
+            // window and invent a power problem out of one bad cable.
+            for (int i = 0; i < failedCount; ++i)
+                noteDeviceDropout();
+        }
     }
     else if (worthSaying)
     {
@@ -1055,6 +1071,12 @@ void Application::onDeviceListChanged()
                 noteActivity (ActivityLevel::Failed, juce::String (ch.displayName),
                               "Unplugged mid-take. Its track keeps its place and is being written "
                               "as silence.");
+
+                // The other half of §14.2's heuristic: a "device drop". Already
+                // edge-triggered by the isWritingSilence guard above, so one
+                // unplug counts once however many times the device list is
+                // re-read while it is gone.
+                noteDeviceDropout();
             }
             else if (live && recordingEngine.isWritingSilence (ch.deviceId))
             {
@@ -3496,7 +3518,15 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // drift check above.
         for (const auto& advice : getSetupAdvice())
         {
-            if (advice.issue != SetupIssue::SilentChannel)
+            // Two of the advisor's findings are about something being WRONG
+            // with the rig for the whole take rather than about how to set it
+            // up better, and both reached the screen and nowhere else. A take
+            // recorded on an underpowered hub, or with someone's microphone
+            // muted right through it, should carry the reason in its own
+            // record; the rest of the advice is guidance and would only be
+            // noise in a log.
+            if (advice.issue != SetupIssue::SilentChannel
+                && advice.issue != SetupIssue::BusPowerExhausted)
                 continue;
 
             const auto who = advice.channelIndex >= 0
