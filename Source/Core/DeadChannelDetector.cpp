@@ -36,7 +36,20 @@ void DeadChannelDetector::processBlock (const std::vector<float>& peaksDb, doubl
             }
         }
 
-        if (peaksDb[static_cast<size_t> (ch)] < kDeadThresholdDb)
+        // <=, not <, and the difference is the whole detector.
+        //
+        // Metering FLOORS at its kMinDb, which is this same -60 dBFS: both the
+        // dB conversion (std::max (kMinDb, ...)) and the peak hold (std::clamp
+        // (..., kMinDb, kMaxDb)) stop there. So a channel with NO signal at all
+        // reports exactly -60.0, and "< -60.0" is false for it forever. The one
+        // condition this detector exists to catch -- §10.5's "a silent channel
+        // is most often the hardware mute switch, the single most common
+        // failure" -- was the one condition it could not see.
+        //
+        // It passed its own tests because every one of them feeds -70 dBFS, a
+        // value the real metering cannot produce. A silent channel is at the
+        // floor, and at the floor is what the spec means by below.
+        if (peaksDb[static_cast<size_t> (ch)] <= kDeadThresholdDb)
         {
             belowThresholdSeconds[static_cast<size_t> (ch)] += blockSeconds;
             if (otherChannelActiveThisBlock)
