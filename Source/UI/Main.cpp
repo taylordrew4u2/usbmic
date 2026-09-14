@@ -1,4 +1,5 @@
 #include <juce_gui_extra/juce_gui_extra.h>
+#include <iostream>
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
@@ -71,6 +72,30 @@ public:
 
         juce::Logger::setCurrentLogger (logger.get());
         juce::Logger::writeToLog ("Starting up.");
+
+        // A machine with no display cannot show a recording screen, and this is
+        // the last moment at which that can be said rather than crashed on.
+        // JUCE's centreWithSize goes through getParentOrMainMonitorBounds,
+        // which dereferences getPrimaryDisplay() WITHOUT checking it: with an
+        // empty display list that is a null read, so building the window
+        // segfaulted on launch instead of explaining anything. Over SSH, or
+        // with a broken display configuration, the app simply died -- exit 139
+        // and not a word, in the log or anywhere else.
+        //
+        // Checked before Application is constructed, so a launch that cannot
+        // succeed does not open the audio devices on its way to failing.
+        if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
+        {
+            const auto message = juce::String ("SobStage needs a display, and this computer reports "
+                                               "none. If you are connected over SSH or a remote "
+                                               "shell, run SobStage on the computer itself.");
+            juce::Logger::writeToLog (message);
+            std::cerr << message << std::endl;
+
+            setApplicationReturnValue (1);
+            quit();
+            return;
+        }
 
         application = std::make_unique<Application>();
         // Installed before any window exists, so every control is painted in the
