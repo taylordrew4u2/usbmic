@@ -141,6 +141,7 @@ jobs:
           ./Tools/setup_alsa_fixture.sh
           bash Tools/e2e_app_take.sh 8
           bash Tools/e2e_refusal.sh
+          bash Tools/e2e_stuck_device.sh
 
       - name: App-integrated regression tests
         run: >-
