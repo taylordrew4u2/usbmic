@@ -16,6 +16,10 @@
 #include <atomic>
 #include <cstring>
 #include <thread>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 
 namespace mma {
 
@@ -212,6 +216,123 @@ namespace {
 ///
 /// Answers 1 for anything it cannot ask, which is where this started: one
 /// microphone is the safe reading of a device that will not say.
+
+/// How long the app waits for a device to finish opening before it gives up on
+/// that device and carries on without it.
+///
+/// Five seconds, matching the Windows backend: long enough that a USB interface
+/// still enumerating is not abandoned, short enough that a person does not
+/// conclude the app is broken.
+constexpr auto kAlsaOpenDeadline = std::chrono::seconds (5);
+
+/// The same bound for the enumeration probe, which only ever asks a device how
+/// many inputs it has. Shorter because it runs once per device while the app is
+/// starting up and its answer already has a documented fallback -- a device
+/// that will not say is one microphone -- so waiting the full five seconds per
+/// device buys nothing.
+constexpr auto kAlsaProbeDeadline = std::chrono::seconds (2);
+
+/// snd_pcm_open, bounded.
+///
+/// §0.1 is about not losing audio, and an app that never opens cannot record
+/// any. snd_pcm_open is a BLOCKING open: the mode argument here is 0, so for a
+/// device whose open cannot complete it does not return at all. It ran on the
+/// calling thread, which at start-up is the message thread, so a single wedged
+/// microphone held the entire app closed -- no window, no way to record with
+/// the microphones that were working perfectly well beside it.
+///
+/// Reproduced against a real ALSA device whose open blocks (a FIFO with no
+/// writer): the main thread parked in fifo_open/wait_for_partner inside
+/// openat, two threads alive, and no window after twenty seconds. The code
+/// below already anticipated the device being held by something else -- that is
+/// the -EBUSY branch its caller has -- but a driver that BLOCKS instead of
+/// returning -EBUSY never reaches that branch.
+///
+/// SND_PCM_NONBLOCK is not the answer and the probes that pass it are not
+/// safe either: that flag governs the PCM's data semantics, not the open of
+/// whatever backs the device, so the enumeration probe wedged in exactly the
+/// same place -- and enumeration runs at start-up, on the message thread. Every
+/// snd_pcm_open in this backend goes through here for that reason.
+///
+/// This is the same hazard the macOS and Windows backends already bound their
+/// HAL and COM calls against; ALSA was the one backend still calling straight
+/// through. The open runs on a worker with a deadline, and a worker that
+/// finishes after the caller has stopped waiting closes the handle it opened
+/// rather than leaking it -- ALSA has no reference counting to do that for us.
+int openPcmBounded (snd_pcm_t** pcm, const std::string& deviceId,
+                    snd_pcm_stream_t direction, int mode,
+                    std::chrono::milliseconds deadline, bool& timedOut)
+{
+    struct Attempt
+    {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool finished = false;
+        bool abandoned = false;
+        int result = 0;
+        snd_pcm_t* pcm = nullptr;
+    };
+
+    auto attempt = std::make_shared<Attempt>();
+    timedOut = false;
+
+    std::thread worker;
+    try
+    {
+        worker = std::thread ([attempt, deviceId, direction, mode]
+        {
+            snd_pcm_t* opened = nullptr;
+            const int err = snd_pcm_open (&opened, deviceId.c_str(), direction, mode);
+
+            const std::lock_guard<std::mutex> guard (attempt->mutex);
+
+            // Nobody is waiting any more. Whatever the driver eventually handed
+            // over is ours to dispose of: left open it is a device the user
+            // cannot reselect, because ALSA would then report it busy.
+            if (attempt->abandoned)
+            {
+                if (err >= 0 && opened != nullptr)
+                    snd_pcm_close (opened);
+
+                return;
+            }
+
+            attempt->pcm = opened;
+            attempt->result = err;
+            attempt->finished = true;
+            attempt->changed.notify_one();
+        });
+    }
+    catch (...)
+    {
+        // No worker, so no bound. Failing the open is the honest answer; the
+        // alternative is calling straight through and risking the wedge this
+        // whole function exists to prevent.
+        return -ENOMEM;
+    }
+
+    std::unique_lock<std::mutex> lock (attempt->mutex);
+
+    if (! attempt->changed.wait_for (lock, deadline,
+                                     [&attempt] { return attempt->finished; }))
+    {
+        attempt->abandoned = true;
+        lock.unlock();
+
+        // Detached, not joined: joining is exactly the wait we just declined.
+        worker.detach();
+        timedOut = true;
+        return -ETIMEDOUT;
+    }
+
+    *pcm = attempt->pcm;
+    const int result = attempt->result;
+    lock.unlock();
+    worker.join();
+    return result;
+}
+
+
 unsigned int captureChannelsFor (const char* name)
 {
     // Where a real device stops and a plugin's shrug begins.
@@ -230,7 +351,10 @@ unsigned int captureChannelsFor (const char* name)
 
     snd_pcm_t* pcm = nullptr;
 
-    if (snd_pcm_open (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK) < 0)
+    bool probeTimedOut = false;
+
+    if (openPcmBounded (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK,
+                        kAlsaProbeDeadline, probeTimedOut) < 0)
         return 1;
 
     snd_pcm_hw_params_t* params = nullptr;
@@ -546,7 +670,10 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
     snd_pcm_t* pcm = nullptr;
 
     // Opening it is the only honest test: another client may already hold it.
-    if (snd_pcm_open (&pcm, outputDeviceId.c_str(), SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) < 0)
+    bool capabilityProbeTimedOut = false;
+
+    if (openPcmBounded (&pcm, outputDeviceId, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK,
+                        kAlsaProbeDeadline, capabilityProbeTimedOut) < 0)
     {
         cap.unavailableReason =
             "Another app is using this sound output. Close it, or choose a different output in Advanced.";
@@ -561,6 +688,7 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
     return cap;
 }
 
+
 bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                               bool isInput, AudioCallback callback)
 {
@@ -572,8 +700,23 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
 
     lastOpenError.clear();
 
-    if (const int err = snd_pcm_open (&stream->pcm, deviceId.c_str(), direction, 0); err < 0)
+    bool openTimedOut = false;
+
+    if (const int err = openPcmBounded (&stream->pcm, deviceId, direction, 0,
+                                        kAlsaOpenDeadline, openTimedOut); err < 0)
     {
+        // A device that never finished opening is neither busy nor gone, and
+        // saying either would send the user chasing the wrong thing.
+        if (openTimedOut)
+        {
+            lastOpenError = isInput
+                ? "This microphone took too long to connect, so SobStage carried on without it. "
+                  "Unplug it and plug it back in, then pick it again."
+                : "This sound output took too long to connect, so SobStage carried on without it. "
+                  "Pick it again in Advanced, or choose a different one.";
+            return false;
+        }
+
         // The two causes worth telling apart, because they have different
         // answers: something else is holding the device, or the device is not
         // there any more. snd_strerror is not shown to the user -- it is a
