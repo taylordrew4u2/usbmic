@@ -20,6 +20,40 @@ namespace {
 int failures = 0;
 int checks = 0;
 
+// ---------------------------------------------------------------------------
+// The timing budgets these tests run on, as one stated relationship rather
+// than the same magic numbers repeated at a dozen call sites.
+//
+// Every "cannot freeze launch" check answers one question: when a HAL call
+// hangs, does the caller bound itself, or does it wait for the hang? It can
+// only answer that if the two outcomes are far apart. They were not. The stall
+// was 250 ms and the budget 200 ms, so a correct answer and a wrong one were
+// 50 ms apart -- and the macOS runners add well over 100 ms of scheduling
+// latency of their own. The same closeAllStreams call measured 94 ms, then
+// 144 ms, then 162 ms across three runs of one commit; the third crossed the
+// budget and failed a release build on a commit that had just passed CI.
+//
+// So the stall moved, not the budget alone. A bounded call returns in tens of
+// milliseconds and is allowed the better part of a second; a call that really
+// waits takes two full seconds. Nothing in between is ambiguous.
+// ---------------------------------------------------------------------------
+
+/// How long a simulated HAL call hangs for.
+constexpr int kStuckHalMilliseconds = 2000;
+
+/// What a correctly bounded call may take. kHalTransactionTimeout is 75 ms in
+/// simulation, so this is roughly five times the worst latency yet seen on a
+/// loaded runner, and still well under half the stall above.
+constexpr auto kBoundedReturn = std::chrono::milliseconds (800);
+
+/// A call refused without touching the HAL does no waiting at all; this only
+/// has to stay far below the stall.
+constexpr auto kNoHalRoundTrip = std::chrono::milliseconds (200);
+
+/// Waiting for the worker that owns a stuck HAL call through to completion.
+/// It cannot finish before the stall does, so this must exceed it.
+constexpr int kWorkerSettleMilliseconds = 6000;
+
 void check (bool condition, const std::string& what)
 {
     ++checks;
@@ -337,7 +371,7 @@ void aRateChangeThatNeverSettlesTimesOut()
     // test replaces it is a genuine race -- ThreadSanitizer reports it the
     // moment the settle window outlasts the gap between the two tests. Every
     // other test that abandons a worker already waits for it exactly here.
-    check (backend.waitForPendingInputAttemptsForTesting (2000),
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
            "the abandoned rate-confirmation worker settles before the next test");
     check (elapsed < std::chrono::milliseconds (650),
            "confirmation returns at its 500 ms bound instead of hanging launch");
@@ -838,7 +872,7 @@ void aStuckInputStartIsBoundedAndCleanedUp()
 
     auto spec = microphone ("Stuck Start Mic", "uid-stuck-start", 1,
                             fakeca::BufferShape::oneChannelPerBuffer);
-    spec.startDelayMilliseconds = 250;
+    spec.startDelayMilliseconds = kStuckHalMilliseconds;
     spec.callbackBeforeStartReturns = true;
     const auto id = fakeca::addDevice (spec);
 
@@ -869,7 +903,7 @@ void aStuckInputStartIsBoundedAndCleanedUp()
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds> (
         std::chrono::steady_clock::now() - began);
-    check (elapsed < std::chrono::milliseconds (200),
+    check (elapsed < kBoundedReturn,
            "the simulated launch remains bounded well below the HAL delay");
     check (backend.getLastOpenError().find ("took too long") != std::string::npos,
            "the failure explains that macOS timed out rather than blaming a cable silently");
@@ -877,7 +911,7 @@ void aStuckInputStartIsBoundedAndCleanedUp()
     const auto retryBegan = std::chrono::steady_clock::now();
     check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
            "device churn does not launch a second stuck attempt for the same input");
-    check (std::chrono::steady_clock::now() - retryBegan < std::chrono::milliseconds (25),
+    check (std::chrono::steady_clock::now() - retryBegan < kNoHalRoundTrip,
            "the duplicate attempt is rejected without touching the HAL again");
 
     const auto closeBegan = std::chrono::steady_clock::now();
@@ -895,13 +929,13 @@ void aStuckInputStartIsBoundedAndCleanedUp()
     // still fails here.
     std::printf ("  [measured] closeAllStreams returned in %lld ms (stall is %d ms)\n",
                  (long long) closeTook.count(), spec.startDelayMilliseconds);
-    check (closeTook < std::chrono::milliseconds (200),
+    check (closeTook < kBoundedReturn,
            "previously-open streams are quarantined without blocking behind the stuck HAL");
 
     // Synchronizes with the detached owner after Start returns and it performs
     // Stop/listener removal/Destroy. This is also what makes the TSan scenario
     // a real lifetime proof rather than a sleep that merely tends to pass.
-    check (backend.waitForPendingInputAttemptsForTesting (1000),
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
            "the abandoned worker eventually completes its own cleanup");
     check (! fakeca::isRunning (id), "the late-started IOProc is stopped");
     check (callbacksAfterOwnerRelease.load (std::memory_order_relaxed) == 0,
@@ -934,7 +968,7 @@ void aDriverThatRetainsListenerClientDataIsQuarantined()
     const auto retryBegan = std::chrono::steady_clock::now();
     check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
            "a retained listener keeps the device quarantined");
-    check (std::chrono::steady_clock::now() - retryBegan < std::chrono::milliseconds (25),
+    check (std::chrono::steady_clock::now() - retryBegan < kNoHalRoundTrip,
            "the quarantine refuses a retry without touching the unsafe driver");
 }
 
@@ -953,7 +987,7 @@ void aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup()
 
     auto spec = microphone ("Stuck Unsafe Mic", "uid-stuck-unsafe", 1,
                             fakeca::BufferShape::oneChannelPerBuffer);
-    spec.startDelayMilliseconds = 250;
+    spec.startDelayMilliseconds = kStuckHalMilliseconds;
     spec.allowPropertyListenerRemoval = false;
     const auto inputId = fakeca::addDevice (spec);
 
@@ -968,7 +1002,7 @@ void aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup()
 
     backend.closeAllStreams();
 
-    check (backend.waitForPendingInputAttemptsForTesting (1000),
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
            "the timed-out worker and queued healthy cleanup both settle behind a sticky quarantine");
     check (fakeca::propertyListenerCount (inputId) == 3,
            "retained listener clientData keeps its inert stream storage alive");
@@ -976,7 +1010,7 @@ void aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup()
     const auto retryBegan = std::chrono::steady_clock::now();
     check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
            "successful cleanup of another stream cannot reopen the unsafe device gate");
-    check (std::chrono::steady_clock::now() - retryBegan < std::chrono::milliseconds (25),
+    check (std::chrono::steady_clock::now() - retryBegan < kNoHalRoundTrip,
            "the sticky quarantine rejects the retry without another HAL transaction");
 }
 
@@ -987,7 +1021,7 @@ void anInputPropertyCallCannotFreezeLaunch()
 
     auto spec = microphone ("Stuck Property Mic", "uid-stuck-property", 1,
                             fakeca::BufferShape::oneChannelPerBuffer);
-    spec.uidReadDelayMilliseconds = 250;
+    spec.uidReadDelayMilliseconds = kStuckHalMilliseconds;
     const auto id = fakeca::addDevice (spec);
 
     mma::CoreAudioBackend backend;
@@ -995,11 +1029,11 @@ void anInputPropertyCallCannotFreezeLaunch()
     const auto began = std::chrono::steady_clock::now();
     check (! backend.openInputStream (spec.uid, 48000.0, 256, capture.callback()),
            "a property call before IOProc creation observes the same open deadline");
-    check (std::chrono::steady_clock::now() - began < std::chrono::milliseconds (200),
+    check (std::chrono::steady_clock::now() - began < kBoundedReturn,
            "the stalled property query cannot hold the launch thread");
     check (backend.getLastOpenError().find ("took too long") != std::string::npos,
            "the bounded property failure explains that macOS timed out");
-    check (backend.waitForPendingInputAttemptsForTesting (1000),
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
            "the property worker eventually settles under its own lifetime");
     check (! fakeca::isRunning (id) && fakeca::propertyListenerCount (id) == 0,
            "a late property result cannot leave an IOProc or listener behind");
@@ -1016,9 +1050,9 @@ void stuckOutputCreateAndStartCallsAreBounded()
                                 stallCreate ? "uid-stuck-create-out" : "uid-stuck-start-out", 2,
                                 fakeca::BufferShape::interleaved);
         if (stallCreate)
-            spec.createDelayMilliseconds = 250;
+            spec.createDelayMilliseconds = kStuckHalMilliseconds;
         else
-            spec.startDelayMilliseconds = 250;
+            spec.startDelayMilliseconds = kStuckHalMilliseconds;
         const auto id = fakeca::addDevice (spec);
 
         mma::CoreAudioBackend backend;
@@ -1028,9 +1062,9 @@ void stuckOutputCreateAndStartCallsAreBounded()
                    [] (const float* const*, int, float* const*, int, int) {}),
                stallCreate ? "a stalled output CreateIOProc is bounded"
                            : "a stalled output Start is bounded");
-        check (std::chrono::steady_clock::now() - began < std::chrono::milliseconds (200),
+        check (std::chrono::steady_clock::now() - began < kBoundedReturn,
                "the bad output cannot freeze launch");
-        check (backend.waitForPendingInputAttemptsForTesting (1000),
+        check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
                "the abandoned output worker owns cleanup through completion");
         check (! fakeca::isRunning (id),
                "the abandoned output has no running IOProc");
@@ -1052,9 +1086,9 @@ void stuckStopAndDestroyCannotFreezeClose()
                                 stallStop ? "uid-stuck-stop-out" : "uid-stuck-destroy-out", 2,
                                 fakeca::BufferShape::interleaved);
         if (stallStop)
-            spec.stopDelayMilliseconds = 250;
+            spec.stopDelayMilliseconds = kStuckHalMilliseconds;
         else
-            spec.destroyDelayMilliseconds = 250;
+            spec.destroyDelayMilliseconds = kStuckHalMilliseconds;
         const auto id = fakeca::addDevice (spec);
 
         mma::CoreAudioBackend backend;
@@ -1065,10 +1099,10 @@ void stuckStopAndDestroyCannotFreezeClose()
 
         const auto began = std::chrono::steady_clock::now();
         backend.closeAllStreams();
-        check (std::chrono::steady_clock::now() - began < std::chrono::milliseconds (200),
+        check (std::chrono::steady_clock::now() - began < kBoundedReturn,
                stallStop ? "a stalled Stop cannot freeze close"
                          : "a stalled Destroy cannot freeze close");
-        check (backend.waitForPendingInputAttemptsForTesting (1000),
+        check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
                "the detached close owner eventually finishes the HAL teardown");
         check (! fakeca::isRunning (id) && ! fakeca::hogModeHeld (id),
                "late teardown stops the IOProc and releases hog mode");
@@ -1087,7 +1121,7 @@ void cleanupThreadCreationFailureRetainsInertClientData()
     const auto id = fakeca::addDevice (spec);
     auto stuckSpec = microphone ("Timed-out Before Cleanup", "uid-timeout-before-cleanup", 1,
                                  fakeca::BufferShape::oneChannelPerBuffer);
-    stuckSpec.startDelayMilliseconds = 250;
+    stuckSpec.startDelayMilliseconds = kStuckHalMilliseconds;
     fakeca::addDevice (stuckSpec);
 
     mma::CoreAudioBackend backend;
@@ -1113,7 +1147,7 @@ void cleanupThreadCreationFailureRetainsInertClientData()
     backend.closeAllStreams();
     owner.reset();
 
-    check (backend.waitForPendingInputAttemptsForTesting (1000),
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
            "the original timed-out worker eventually completes independently");
 
     check (fakeca::isRunning (id) && fakeca::propertyListenerCount (id) == 3,
