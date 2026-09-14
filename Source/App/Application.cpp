@@ -3485,6 +3485,26 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                           juce::String (getMicDisplayName (i))
                           + " can't keep steady time with the others. Try a different USB port.");
         }
+
+        // §10.5: a channel that stays silent while the others are working is
+        // the single most common failure on a live rig -- usually the mute
+        // switch on the microphone itself -- and it reached the screen and
+        // nowhere else. A take where someone's microphone was muted right
+        // through it left nothing in the record to say so, which is the same
+        // silence-nobody-warned-about this app exists to prevent. noteActivity
+        // already collapses the repeat, so this can run on the timer beside the
+        // drift check above.
+        for (const auto& advice : getSetupAdvice())
+        {
+            if (advice.issue != SetupIssue::SilentChannel)
+                continue;
+
+            const auto who = advice.channelIndex >= 0
+                           ? juce::String (getMicDisplayName (advice.channelIndex))
+                           : juce::String ("Microphones");
+
+            noteActivity (ActivityLevel::Warning, who, juce::String (advice.message));
+        }
     }
 
     // §6.5 "target card removed" outranks even running out of room: the drive
