@@ -335,6 +335,69 @@ int countChannels (AudioObjectID device, bool input)
     return total;
 }
 
+/// §2.3: the depths this device can actually deliver.
+///
+/// CoreAudio keeps this on the STREAM rather than the device, so it is two
+/// hops: the device's streams, then one stream's available physical formats.
+/// One stream is enough -- a device's inputs share a format set, and the
+/// question being asked is "what can this microphone give", not "what is each
+/// channel doing right now".
+///
+/// Returns EMPTY when the device cannot be asked. That is not "this device is
+/// limited": chooseRecordingBitDepth turns empty into the caller's fallback,
+/// where a wrong list would silently change the depth of a recording.
+std::vector<int> querySupportedBitDepths (AudioObjectID device)
+{
+    AudioObjectPropertyAddress streamsAddress { kAudioDevicePropertyStreams,
+                                                kAudioObjectPropertyScopeInput,
+                                                kAudioObjectPropertyElementMain };
+    UInt32 streamsSize = 0;
+    if (AudioObjectGetPropertyDataSize (device, &streamsAddress, 0, nullptr, &streamsSize) != noErr
+        || streamsSize < sizeof (AudioObjectID))
+        return {};
+
+    std::vector<AudioObjectID> streams (streamsSize / sizeof (AudioObjectID));
+    if (AudioObjectGetPropertyData (device, &streamsAddress, 0, nullptr, &streamsSize,
+                                    streams.data()) != noErr || streams.empty())
+        return {};
+
+    AudioObjectPropertyAddress formatsAddress { kAudioStreamPropertyAvailablePhysicalFormats,
+                                                kAudioObjectPropertyScopeGlobal,
+                                                kAudioObjectPropertyElementMain };
+    UInt32 formatsSize = 0;
+    if (AudioObjectGetPropertyDataSize (streams.front(), &formatsAddress, 0, nullptr,
+                                        &formatsSize) != noErr
+        || formatsSize < sizeof (AudioStreamRangedDescription))
+        return {};
+
+    std::vector<AudioStreamRangedDescription> formats (formatsSize
+                                                       / sizeof (AudioStreamRangedDescription));
+    if (AudioObjectGetPropertyData (streams.front(), &formatsAddress, 0, nullptr, &formatsSize,
+                                    formats.data()) != noErr)
+        return {};
+
+    std::vector<int> depths;
+
+    for (const auto& format : formats)
+    {
+        const auto bits = static_cast<int> (format.mFormat.mBitsPerChannel);
+
+        // Only what this app can write. A float stream reports 32 bits here and
+        // is not a 32-bit integer format, so it is left out rather than read as
+        // a depth the writer would take literally.
+        if (format.mFormat.mFormatID != kAudioFormatLinearPCM)
+            continue;
+
+        if (bits != 16 && bits != 24)
+            continue;
+
+        if (std::find (depths.begin(), depths.end(), bits) == depths.end())
+            depths.push_back (bits);
+    }
+
+    return depths;
+}
+
 std::vector<uint32_t> querySupportedSampleRates (AudioObjectID device)
 {
     AudioObjectPropertyAddress address { kAudioDevicePropertyAvailableNominalSampleRates,
@@ -1162,6 +1225,7 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         d.isBuiltIn = (transport == kAudioDeviceTransportTypeBuiltIn);
         d.maxInputChannels = wantInput ? channels : 0;
         d.supportedSampleRates = querySupportedSampleRates (deviceId);
+        d.supportedBitDepths = querySupportedBitDepths (deviceId);
         d.currentSampleRate = static_cast<uint32_t> (getNominalSampleRate (deviceId) + 0.5);
         d.isMicrophone = wantInput;
         result.push_back (d);

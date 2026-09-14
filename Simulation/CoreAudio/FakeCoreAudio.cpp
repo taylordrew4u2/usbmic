@@ -67,6 +67,16 @@ State& state()
     return s;
 }
 
+/// A device's stream object. Derived rather than registered: CoreAudio hands
+/// out opaque AudioObjectIDs and the backend only ever uses one to ask the
+/// question below, so a reversible offset models it exactly and keeps the
+/// device map the single place a device exists.
+constexpr AudioObjectID kStreamIdBase = 900000;
+
+AudioObjectID streamIdFor (AudioObjectID device) { return kStreamIdBase + device; }
+bool isStreamId (AudioObjectID object) { return object >= kStreamIdBase; }
+AudioObjectID deviceForStream (AudioObjectID stream) { return stream - kStreamIdBase; }
+
 Device* find (AudioObjectID id)
 {
     auto it = state().devices.find (id);
@@ -191,9 +201,27 @@ OSStatus AudioObjectGetPropertyDataSize (AudioObjectID object,
         return noErr;
     }
 
+    if (isStreamId (object) && address->mSelector == kAudioStreamPropertyAvailablePhysicalFormats)
+    {
+        auto* owner = find (deviceForStream (object));
+        if (owner == nullptr)
+            return kAudioHardwareBadObjectError;
+
+        *outSize = static_cast<UInt32> (owner->spec.bitDepths.size()
+                                        * sizeof (AudioStreamRangedDescription));
+        return noErr;
+    }
+
     auto* device = find (object);
     if (device == nullptr)
         return kAudioHardwareBadObjectError;
+
+    if (address->mSelector == kAudioDevicePropertyStreams)
+    {
+        *outSize = static_cast<UInt32> (device->spec.bitDepths.empty()
+                                            ? 0 : sizeof (AudioObjectID));
+        return noErr;
+    }
 
     if (address->mSelector == kAudioDevicePropertyStreamConfiguration)
     {
@@ -229,6 +257,31 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
 {
     if (address == nullptr || ioSize == nullptr)
         return kAudioHardwareUnspecifiedError;
+
+    if (isStreamId (object) && address->mSelector == kAudioStreamPropertyAvailablePhysicalFormats)
+    {
+        auto* owner = find (deviceForStream (object));
+        if (owner == nullptr)
+            return kAudioHardwareBadObjectError;
+
+        std::vector<AudioStreamRangedDescription> formats;
+
+        for (const int depth : owner->spec.bitDepths)
+        {
+            AudioStreamRangedDescription described {};
+            described.mFormat.mSampleRate = owner->spec.currentRate;
+            described.mFormat.mFormatID = kAudioFormatLinearPCM;
+            described.mFormat.mBitsPerChannel = static_cast<UInt32> (depth);
+            described.mFormat.mChannelsPerFrame =
+                static_cast<UInt32> (std::max (1, owner->spec.inputChannels));
+            described.mSampleRateRange = { owner->spec.currentRate, owner->spec.currentRate };
+            formats.push_back (described);
+        }
+
+        return deliver (formats.data(),
+                        static_cast<UInt32> (formats.size() * sizeof (AudioStreamRangedDescription)),
+                        ioSize, outData);
+    }
 
     if (object == kAudioObjectSystemObject && address->mSelector == kAudioHardwarePropertyDevices)
         return deliver (state().order.data(),
@@ -287,6 +340,20 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
             auto* list = storage.build (channels, 1, device->spec.shape);
             const auto bytes = static_cast<UInt32> (storage.listBytes.size());
             return deliver (list, bytes, ioSize, outData);
+        }
+
+        case kAudioDevicePropertyStreams:
+        {
+            // One stream per device is enough to answer §2.3: the backend asks
+            // a stream for its formats, and a device whose inputs all share a
+            // format set needs no more than one to be asked. A device with no
+            // depths to report has no stream at all, which is how CoreAudio
+            // presents a device that cannot be queried.
+            if (device->spec.bitDepths.empty())
+                return deliver (nullptr, 0, ioSize, outData);
+
+            const AudioObjectID stream = streamIdFor (object);
+            return deliver (&stream, static_cast<UInt32> (sizeof (stream)), ioSize, outData);
         }
 
         case kAudioDevicePropertyAvailableNominalSampleRates:
