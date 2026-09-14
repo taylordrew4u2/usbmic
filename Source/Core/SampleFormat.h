@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace mma {
 
@@ -17,6 +18,53 @@ namespace mma {
 /// tested headlessly -- the backends that use it only compile on their own OS.
 /// §11 applies: these run on the audio thread, so no allocation and no locking.
 namespace SampleFormat {
+
+/// §2.3: the depth one stem should be WRITTEN at, given what its device can do.
+///
+///   "Follows device capability per channel. Do not upconvert -- it adds file
+///    size and no information. Where a device supports multiple depths, choose
+///    the highest, capped at 24-bit."
+///
+/// The cap is the spec's, not a limitation: 24 bits is past the point where
+/// more carries anything a listener or an editor can use, and a 32-bit
+/// container costs a third more card for it. A device that offers only depths
+/// above the cap therefore lands on the cap.
+///
+/// An empty list means the backend cannot say -- not that the device is
+/// limited -- so it yields the fallback rather than a guess. Only depths this
+/// app can actually write are considered; a device advertising something
+/// exotic falls back rather than producing a file nothing can open.
+///
+/// Note what this does NOT change: a device reporting the usual {16, 24, 32}
+/// lands on 24, exactly what the app wrote before §2.3 was implemented. The
+/// depth only moves for hardware that genuinely cannot do 24 -- which is the
+/// whole point, and is the Blue Yeti of §14.1.
+inline int chooseRecordingBitDepth (const std::vector<int>& supportedBitDepths,
+                                    int fallbackDepth = 24) noexcept
+{
+    constexpr int kHighestUsefulDepth = 24;
+
+    int best = 0;
+
+    for (const int depth : supportedBitDepths)
+    {
+        // 16 and 24 are what SessionWriter can lay down. Anything else is
+        // either below what this app offers or above the cap.
+        if (depth != 16 && depth != kHighestUsefulDepth)
+            continue;
+
+        if (depth > best)
+            best = depth;
+    }
+
+    if (best > 0)
+        return best;
+
+    // Nothing usable was named. Either the backend said nothing at all, or it
+    // named only depths outside what this app writes -- a 32-bit-only device,
+    // for instance, which the cap sends here too.
+    return supportedBitDepths.empty() ? fallbackDepth : kHighestUsefulDepth;
+}
 
 /// Reads one interleaved sample at `index` from a raw device buffer.
 /// `bytesPerSample` is the container width (2, 3 or 4); `isFloat` selects

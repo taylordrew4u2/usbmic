@@ -54,7 +54,11 @@ bool WritePipeline::start (const std::string& sessionFolder,
         auto writer = std::make_unique<SessionWriter>();
 
         // §6.1: stems are mono, one file per microphone, at unity gain.
-        if (! writer->open (sessionFolder + "/" + spec.fileName, rate, 1, bitDepth, originTimestamp))
+        // §2.3: this stem's own depth when the device behind it named one,
+        // and the take's otherwise.
+        const int stemDepth = spec.bitDepth > 0 ? spec.bitDepth : bitDepth;
+
+        if (! writer->open (sessionFolder + "/" + spec.fileName, rate, 1, stemDepth, originTimestamp))
         {
             // Close what did open. A take that failed to start must not leave
             // half-written headers on the card for the recovery pass to find.
@@ -276,7 +280,12 @@ bool WritePipeline::openMirrorWriters (const std::string& mirrorFolder,
     {
         auto writer = std::make_unique<SessionWriter>();
 
-        if (! writer->open (mirrorFolder + "/" + spec.fileName, rate, 1, bitDepth, originTimestamp))
+        // The mirror is a second copy of the same take, so it is written at
+        // the same per-stem depth -- a backup in a different format is not a
+        // backup of what was recorded (§6.3).
+        const int stemDepth = spec.bitDepth > 0 ? spec.bitDepth : bitDepth;
+
+        if (! writer->open (mirrorFolder + "/" + spec.fileName, rate, 1, stemDepth, originTimestamp))
         {
             mirrorStemWriters.clear();
             return false;

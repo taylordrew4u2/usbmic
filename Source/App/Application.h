@@ -33,6 +33,7 @@
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
+#include "../Core/SampleFormat.h"
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"

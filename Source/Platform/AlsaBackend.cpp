@@ -333,6 +333,59 @@ int openPcmBounded (snd_pcm_t** pcm, const std::string& deviceId,
 }
 
 
+/// §2.3: the depths this device will actually accept, asked rather than assumed.
+///
+/// Both call sites used to state a flat { 16, 24, 32 } for every device on the
+/// machine, which is not a capability report but a placeholder -- and since
+/// nothing downstream read the field, nobody found out. It is read now: the
+/// depth each stem is written at follows it, and "do not upconvert" is only
+/// meaningful if the list is true.
+///
+/// Uses the same bounded open as everything else here, and the same
+/// snd_pcm_hw_params_test_format ALSA offers for exactly this question. A
+/// device that cannot be opened to ask returns EMPTY rather than a guess:
+/// empty means "not reported", which the chooser turns into the fallback,
+/// while a wrong list would silently change the depth of a recording.
+std::vector<int> supportedBitDepthsFor (const char* name)
+{
+    snd_pcm_t* pcm = nullptr;
+    bool timedOut = false;
+
+    if (openPcmBounded (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK,
+                        kAlsaProbeDeadline, timedOut) < 0)
+        return {};
+
+    snd_pcm_hw_params_t* params = nullptr;
+    snd_pcm_hw_params_alloca (&params);
+
+    std::vector<int> depths;
+
+    if (snd_pcm_hw_params_any (pcm, params) >= 0)
+    {
+        // Only the depths this app can write. S24_3LE is the packed 3-byte
+        // layout SessionWriter lays down; S24_LE is the same 24 bits in a
+        // 4-byte container, and either one means the device can give 24.
+        const struct { snd_pcm_format_t format; int depth; } candidates[] = {
+            { SND_PCM_FORMAT_S16_LE,   16 },
+            { SND_PCM_FORMAT_S24_3LE,  24 },
+            { SND_PCM_FORMAT_S24_LE,   24 },
+            { SND_PCM_FORMAT_S32_LE,   32 },
+        };
+
+        for (const auto& candidate : candidates)
+        {
+            if (snd_pcm_hw_params_test_format (pcm, params, candidate.format) != 0)
+                continue;
+
+            if (std::find (depths.begin(), depths.end(), candidate.depth) == depths.end())
+                depths.push_back (candidate.depth);
+        }
+    }
+
+    snd_pcm_close (pcm);
+    return depths;
+}
+
 unsigned int captureChannelsFor (const char* name)
 {
     // Where a real device stops and a plugin's shrug begins.
@@ -455,7 +508,7 @@ std::vector<AudioDeviceDescriptor> enumerateDirectExternalInputs()
             descriptor.maxInputChannels = static_cast<int> (
                 captureChannelsFor (descriptor.usbLocationId.c_str()));
             descriptor.supportedSampleRates = { 44100, 48000 };
-            descriptor.supportedBitDepths = { 16, 24, 32 };
+            descriptor.supportedBitDepths = supportedBitDepthsFor (descriptor.usbLocationId.c_str());
 
             result.push_back (std::move (descriptor));
         }
@@ -527,7 +580,7 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
             // promised rather than silence where the rest should be.
             d.maxInputChannels = wantInput ? static_cast<int> (captureChannelsFor (name)) : 0;
             d.supportedSampleRates = { 44100, 48000 };
-            d.supportedBitDepths = { 16, 24, 32 };
+            d.supportedBitDepths = supportedBitDepthsFor (name);
 
             result.push_back (std::move (d));
         }
