@@ -265,8 +265,23 @@ void aDelayedRateChangeSettlesBeforeTheStreamOpens()
     mma::CoreAudioBackend backend;
     Capture capture;
 
-    check (backend.openInputStream ("uid-slow-rate", 48000.0, 256, capture.callback()),
-           "the stream waits for the delayed rate and opens");
+    // Measured, not just asserted. This test is the one that fails on macOS and
+    // passes everywhere else, and a bare FAIL line says nothing about which of
+    // the two bounded waits ran out -- the rate-settle poll or the HAL
+    // transaction deadline around the whole open. The numbers separate them.
+    const auto openBegan = std::chrono::steady_clock::now();
+    const bool opened = backend.openInputStream ("uid-slow-rate", 48000.0, 256,
+                                                 capture.callback());
+    const auto openTook = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - openBegan);
+
+    std::printf ("  [measured] the open took %lld ms; the device now reads %.0f Hz\n",
+                 (long long) openTook.count(), fakeca::nominalRate (id));
+
+    if (! opened)
+        std::printf ("  [measured] refused with: %s\n", backend.getLastOpenError().c_str());
+
+    check (opened, "the stream waits for the delayed rate and opens");
     check (fakeca::nominalRate (id) == 48000.0,
            "the stream starts only after the requested rate is visible");
     check (fakeca::isRunning (id), "the IOProc actually starts after confirmation");
@@ -840,7 +855,20 @@ void aStuckInputStartIsBoundedAndCleanedUp()
 
     const auto closeBegan = std::chrono::steady_clock::now();
     backend.closeAllStreams();
-    check (std::chrono::steady_clock::now() - closeBegan < std::chrono::milliseconds (100),
+    const auto closeTook = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - closeBegan);
+
+    // 200 ms, matching every sibling bound in this file rather than the 100 ms
+    // this check alone carried. closeAllStreams() is DESIGNED to wait out
+    // kHalTransactionTimeout (75 ms in simulation) whenever the HAL is stuck,
+    // so 100 ms left 25 ms for scheduling jitter -- and this check has been
+    // passing and failing run to run on the macOS runners because of it.
+    // What the check is really for is unchanged: 200 ms is still far below the
+    // 250 ms stall, so a close that genuinely waits for the stuck HAL to finish
+    // still fails here.
+    std::printf ("  [measured] closeAllStreams returned in %lld ms (stall is %d ms)\n",
+                 (long long) closeTook.count(), spec.startDelayMilliseconds);
+    check (closeTook < std::chrono::milliseconds (200),
            "previously-open streams are quarantined without blocking behind the stuck HAL");
 
     // Synchronizes with the detached owner after Start returns and it performs
