@@ -554,7 +554,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     specs.reserve (channels.size());
 
     for (const auto& ch : channels)
-        specs.push_back ({ ch.fileName, ch.trimDb });
+        specs.push_back ({ ch.fileName, ch.trimDb, ch.bitDepth });
 
     auto p = std::make_unique<WritePipeline>();
 

@@ -22,6 +22,10 @@ struct CaptureChannel
     std::string fileName; // §6.2 sanitized, e.g. "01_Yeti-Kitchen"
     float trimDb = 0.0f;
 
+    /// §2.3: the depth this channel's stem is written at, chosen from its own
+    /// device's capability. Zero means "use the take's depth".
+    int bitDepth = 0;
+
     /// Which input of that device this channel takes.
     ///
     /// One device is not one microphone. An audio interface with four mics

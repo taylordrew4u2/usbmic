@@ -105,3 +105,46 @@ TEST_CASE (SampleFormat_InterleavedIndexingKeepsChannelsSeparate)
             REQUIRE_NEAR (SampleFormat::read (wire.data(), static_cast<size_t> (f) * channels + ch, 2, false),
                           0.1f * static_cast<float> (ch + 1), 1.0e-3f);
 }
+
+TEST_CASE (SampleFormat_BitDepthFollowsTheDeviceAndDoesNotUpconvert)
+{
+    // §2.3, which had no implementation at all: the field carrying device
+    // capability existed, ALSA filled it with a hardcoded {16,24,32}, and
+    // nothing anywhere read it. The app wrote 24-bit whatever the hardware was.
+    //
+    // The case that matters is §14.1's own hardware: a Blue Yeti is 16-bit, and
+    // writing its stem at 24 adds half again the file size and not one bit of
+    // information. On an eight-microphone four-hour take that is gigabytes of
+    // padding on the card the app is otherwise counting down for the user.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 16 }) == 16);
+
+    // An interface that can do better gets it, up to the cap.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 16, 24 }) == 24);
+
+    // The cap is the spec's: past 24 bits nothing is gained and a third more
+    // card is spent, so a device offering more still lands on 24.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 16, 24, 32 }) == 24);
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 32 }) == 24);
+
+    // Order must not matter; this reads a capability list, not a preference.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 32, 16, 24 }) == 24);
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 24, 16 }) == 24);
+}
+
+TEST_CASE (SampleFormat_ABackendThatCannotSayGetsTheFallbackNotAGuess)
+{
+    // Empty means "this backend does not report capability", which is true of
+    // CoreAudio and WASAPI today. That is not the same as "this device is
+    // limited", and guessing 16 there would quietly halve the depth of every
+    // recording on two of the three platforms.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({}) == 24);
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({}, 16) == 16);
+
+    // A device naming only depths this app cannot write is not a licence to
+    // write one of them.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 8 }) == 24);
+
+    // The everyday list is unchanged from what the app did before: this is why
+    // implementing §2.3 moves nothing for ordinary hardware.
+    REQUIRE (SampleFormat::chooseRecordingBitDepth ({ 16, 24, 32 }) == 24);
+}

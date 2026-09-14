@@ -16,6 +16,17 @@ struct WriteChannelSpec
 {
     std::string fileName; // "01_Yeti-Kitchen", already sanitized per §6.2
     float trimDb = 0.0f;  // §4: affects the mix file only, never the stem
+
+    /// §2.3: the depth THIS stem is written at, which follows the capability of
+    /// the device behind it -- "do not upconvert; it adds file size and no
+    /// information". Per channel, because a rig can mix a 16-bit microphone
+    /// with a 24-bit interface and there is no one answer that serves both:
+    /// picking 24 pads the first, picking 16 discards from the second.
+    ///
+    /// Zero means "use the take's depth", which is what every caller that has
+    /// no per-device answer passes -- the manual override, and the two backends
+    /// that do not report capability yet.
+    int bitDepth = 0;
 };
 
 /// §6.3 write pipeline: the audio callback hands blocks to a lock-free ring

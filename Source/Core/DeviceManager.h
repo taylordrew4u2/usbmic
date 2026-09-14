@@ -58,6 +58,14 @@ struct MicDeviceState
     /// every one of those paths already consults.
     bool userEnabled = true;
 
+    /// §2.3: the depths this device can deliver, as the backend reported them.
+    ///
+    /// Empty means the backend does not report capability rather than that the
+    /// device is limited, and the two are not the same: guessing a low depth
+    /// from silence would halve every recording on a platform that simply has
+    /// not implemented the query.
+    std::vector<int> supportedBitDepths;
+
     /// How many inputs this device presents.
     ///
     /// One device is not one microphone. An interface with four mics plugged

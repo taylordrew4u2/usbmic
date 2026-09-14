@@ -552,9 +552,24 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
         c.fileName = std::string (prefix) + "_" + SessionFolderNaming::sanitizeName (c.displayName);
 
         for (const auto& d : deviceManager.getDevices())
-            if (d.identity.key() == planned.deviceKey)
-                if (const auto persisted = portIdentityStore.get (d.identity))
-                    c.trimDb = persisted->trimDb;
+        {
+            if (d.identity.key() != planned.deviceKey)
+                continue;
+
+            if (const auto persisted = portIdentityStore.get (d.identity))
+                c.trimDb = persisted->trimDb;
+
+            // §2.3: this channel is written at its own device's depth. A rig
+            // can hold a 16-bit microphone and a 24-bit interface at once and
+            // there is no single answer that serves both -- 24 pads the first,
+            // 16 discards from the second.
+            //
+            // currentBitDepth is the fallback, so a backend that reports
+            // nothing keeps exactly today's behaviour, and a user who has set
+            // the depth by hand keeps their choice.
+            c.bitDepth = SampleFormat::chooseRecordingBitDepth (d.supportedBitDepths,
+                                                                currentBitDepth);
+        }
 
         channels.push_back (std::move (c));
     }
@@ -907,6 +922,11 @@ void Application::onDeviceListChanged()
         state.displayName = d.name;
         state.isBuiltIn = d.isBuiltIn;
         state.inputChannelCount = std::max (1, d.maxInputChannels);
+
+        // §2.3: carried through rather than dropped here, which is where it was
+        // being dropped. The field existed on the descriptor, one backend
+        // filled it, and nothing downstream ever saw it.
+        state.supportedBitDepths = d.supportedBitDepths;
 
         // §2.2 prefers a rate the hardware is already on. Advertising a rate is
         // not the same as being willing to switch to it, and the switch is what
