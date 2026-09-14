@@ -21,10 +21,23 @@ test -n "$APP" || { echo "Build the app first"; exit 1; }
 OUT=$(mktemp)
 trap 'rm -f "$OUT"' EXIT
 
+# Bounded, because the interesting failure is the app NOT stopping. If a
+# display-less launch ever starts a full app instead of declining, an unbounded
+# run here would hang the CI job until the runner's own timeout killed it, and
+# the report would be "job cancelled" rather than "the app did not refuse".
+# Ten seconds is far more than an immediate refusal needs.
+KILLED_BY_TIMEOUT=124
+
 set +e
-env -u DISPLAY "./$APP" >"$OUT" 2>&1
+timeout 10 env -u DISPLAY "./$APP" >"$OUT" 2>&1
 STATUS=$?
 set -e
+
+if [ "$STATUS" -eq "$KILLED_BY_TIMEOUT" ]; then
+  echo "FAIL: the app neither refused nor exited on a display-less launch; it kept running."
+  head -5 "$OUT"
+  exit 1
+fi
 
 # 139 is the shell's rendering of SIGSEGV, and 11 is the raw signal: either one
 # means the app died rather than declined.
