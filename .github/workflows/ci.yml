@@ -102,7 +102,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libx11-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev \
-            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev
+            libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev \
+            xvfb xdotool imagemagick
 
       - name: Cache JUCE
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -114,7 +115,7 @@ jobs:
           key: ci-app-juce-4f43011b96eb0636104cb3e433894cda98243626-${{ hashFiles('ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch') }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Configure
-        run: cmake -B build-app -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build-app -DMMA_BUILD_APP=ON -DMMA_ALLOW_TEST_INPUTS=ON -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build-app --config Release -j 4
@@ -123,6 +124,24 @@ jobs:
       # not exist in the headless Core job above. Execute them here instead of
       # treating a successful compile as proof that camera hot-plug and the
       # keyboard/layout regressions still behave correctly.
+      # The app layer was built on every push and executed on none of it.
+      # Application.cpp is five thousand lines, nothing links it but the
+      # SobStage binary, and the only thing that ever ran it end to end was
+      # this gate -- which lived in release.yml, so the real recording path
+      # was proven when someone cut a release and at no other time.
+      #
+      # It drives the actual application: Xvfb, a real window, a real click on
+      # record, the real ALSA backend reading the fixture's virtual
+      # microphones, and verify_take.py opening the files that come out. Three
+      # or four minutes to know that pressing record still writes a playable
+      # take.
+      - name: The app records a real take
+        if: runner.os == 'Linux'
+        run: |
+          ./Tools/setup_alsa_fixture.sh
+          bash Tools/e2e_app_take.sh 8
+          bash Tools/e2e_refusal.sh
+
       - name: App-integrated regression tests
         run: >-
           ctest --test-dir build-app --build-config Release
