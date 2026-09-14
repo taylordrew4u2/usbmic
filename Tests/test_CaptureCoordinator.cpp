@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "Core/CaptureCoordinator.h"
+#include <set>
 #include "Core/PolarPatternDetector.h"
 #include <cmath>
 #include <cstdio>
@@ -46,6 +47,9 @@ public:
     std::string exclusiveReason;
     bool failOutputOpen = false;
     bool failInputOpen = false;
+    /// Devices that refuse to open, by id -- so a test can fail ONE microphone
+    /// of several. failInputOpen fails them all, which is a different question.
+    std::set<std::string> failInputDevices;
     std::string inputOpenError;
 
     int inputStreamsOpened = 0;
@@ -78,9 +82,9 @@ public:
         return true;
     }
 
-    bool openInputStream (const std::string&, double, int, AudioCallback cb) override
+    bool openInputStream (const std::string& deviceId, double, int, AudioCallback cb) override
     {
-        if (failInputOpen)
+        if (failInputOpen || failInputDevices.count (deviceId) > 0)
             return false;
         ++inputStreamsOpened;
         inputCallbacks.push_back (cb);
@@ -152,8 +156,11 @@ TEST_CASE (CaptureCoordinator_OutputFailureFallsBackToInputOnlyRecording)
              != std::string::npos);
 }
 
-TEST_CASE (CaptureCoordinator_ClosesStreamsWhenAnInputFailsToOpen)
+TEST_CASE (CaptureCoordinator_ClosesStreamsWhenEveryInputFailsToOpen)
 {
+    // EVERY input, which is the case this refusal is for: a take now would
+    // write nothing but empty files with the clock running. One microphone of
+    // several failing is a different question and is answered two tests below.
     FakeBackend backend;
     backend.failInputOpen = true;
 
@@ -165,6 +172,61 @@ TEST_CASE (CaptureCoordinator_ClosesStreamsWhenAnInputFailsToOpen)
     // A half-open set of streams would leave the device hogged.
     REQUIRE (backend.closeAllCalls >= 1);
     REQUIRE_FALSE (c.getMonitorProblem().empty());
+}
+
+TEST_CASE (CaptureCoordinator_OneMicThatWillNotOpenDoesNotSilenceTheRest)
+{
+    // §0.1, at its largest: this used to closeAllStreams() and give up the
+    // moment ANY device refused, so a rig with one dead cable recorded NOTHING
+    // -- not the microphones that were working perfectly. Being unable to
+    // record at all is the biggest loss this app can take, and it arrived by
+    // the most ordinary way for a gig to go wrong.
+    FakeBackend backend;
+    backend.failInputDevices.insert ("dev-b");
+    backend.inputOpenError = "This microphone took too long to connect.";
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // The working microphone is open, and nothing closed it on the way past.
+    REQUIRE (backend.inputStreamsOpened == 1);
+    REQUIRE (backend.closeAllCalls == 0);
+
+    // The one that refused is named, so the take's record can say why that
+    // stem is silent rather than leaving it to be found in the files.
+    const auto& failed = c.getDevicesThatFailedToOpen();
+    REQUIRE (failed.size() == 1u);
+    REQUIRE (failed.front() == "dev-b");
+
+    // §6.5: its channel writes silence, the same answer a microphone that goes
+    // away MID-take already gets. The working one is untouched.
+    REQUIRE (c.isChannelLive (0));
+    REQUIRE_FALSE (c.isChannelLive (1));
+
+    // And it is still a visible problem, not a silent degradation.
+    const auto problem = c.getMonitorProblem();
+    REQUIRE (problem.find ("Couch") != std::string::npos);
+    REQUIRE (problem.find ("took too long") != std::string::npos);
+}
+
+TEST_CASE (CaptureCoordinator_ARigWhereOnlyOneMicOpensStillRecordsThatOne)
+{
+    // The same thing from the other side: it is the SURVIVING count that has to
+    // be right. Carrying on without a device must not also mean reporting it as
+    // live -- a count wrong in the user's favour is worse than no count.
+    FakeBackend backend;
+    backend.failInputDevices.insert ("dev-a");
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (backend.inputStreamsOpened == 1);
+    REQUIRE (c.getDevicesThatFailedToOpen().size() == 1u);
+    REQUIRE_FALSE (c.isChannelLive (0));
+    REQUIRE (c.isChannelLive (1));
 }
 
 TEST_CASE (CaptureCoordinator_OpensAMixerThatIsAlsoTheOutputExactlyOnce)

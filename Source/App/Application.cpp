@@ -684,6 +684,7 @@ void Application::restartCapture()
                           "Listening stopped -- there are no microphones switched on.");
 
             journalledMonitorCount = 0;
+            journalledMonitorFailedCount = 0;
             journalledMonitorOk = false;
         }
 
@@ -695,15 +696,34 @@ void Application::restartCapture()
 
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
 
-    const int micCount = static_cast<int> (channels.size());
+    // The microphones that actually OPENED, not the ones that were selected.
+    //
+    // A device that refuses to open no longer takes the whole rig down with it,
+    // so "started" is now true in cases where part of the rig is missing --
+    // and counting the selection here then announced "3 microphones are live"
+    // for a rig with a dead one. A count that is wrong in the user's favour is
+    // worse than no count.
+    const auto& failedToOpen = capture->getDevicesThatFailedToOpen();
+
+    int liveCount = 0;
+    for (const auto& ch : channels)
+        if (std::find (failedToOpen.begin(), failedToOpen.end(), ch.deviceId) == failedToOpen.end())
+            ++liveCount;
+
+    const int failedCount = static_cast<int> (failedToOpen.size());
 
     // Only a change is news. This runs on every rename, hot-plug and output
     // change, and an entry per call would bury everything else under a repeated
-    // "2 microphones are live".
-    const bool worthSaying = started != journalledMonitorOk || micCount != journalledMonitorCount;
+    // "2 microphones are live". The failure count is part of "a change": a
+    // microphone dropping out of a rig that still has the same number selected
+    // is exactly the event worth saying.
+    const bool worthSaying = started != journalledMonitorOk
+                          || liveCount != journalledMonitorCount
+                          || failedCount != journalledMonitorFailedCount;
 
     journalledMonitorOk = started;
-    journalledMonitorCount = micCount;
+    journalledMonitorCount = liveCount;
+    journalledMonitorFailedCount = failedCount;
 
     if (started)
     {
@@ -712,8 +732,17 @@ void Application::restartCapture()
 
         if (worthSaying)
             noteActivity (ActivityLevel::Started, "Monitoring",
-                          juce::String (micCount)
-                          + (micCount == 1 ? " microphone is live." : " microphones are live."));
+                          juce::String (liveCount)
+                          + (liveCount == 1 ? " microphone is live." : " microphones are live."));
+
+        // §0.1: a microphone that would not open is no longer fatal, and that
+        // is precisely why it has to be said out loud here. Before, the failure
+        // reached the journal because it killed monitoring outright and landed
+        // in the [failed] branch below; carrying on without it must not also
+        // mean carrying on quietly.
+        if (failedCount > 0 && worthSaying)
+            noteActivity (ActivityLevel::Warning, "Microphones",
+                          juce::String (capture->getMonitorProblem()));
     }
     else if (worthSaying)
     {
@@ -1793,6 +1822,23 @@ void Application::toggleRecording()
             midTakeDropouts.clear();
             midTakeNotice.clear();
             midTakeNoticeSeconds = 0.0;
+
+            // §0.1: a stem that is silent for the whole take has to say why.
+            //
+            // A microphone that would not open is no longer allowed to stop the
+            // rest of the rig recording, so its track is written as silence
+            // beside working ones -- and silence nobody warned about is the
+            // whole failure this app is built against. "Never opened" is a
+            // different answer from "unplugged part way through", so it is
+            // recorded at zero seconds, before any of the mid-take entries.
+            if (capture != nullptr)
+            {
+                for (const auto& deviceId : capture->getDevicesThatFailedToOpen())
+                    midTakeDropouts.push_back ({ 0.0, deviceId,
+                                                 "This microphone could not be opened when the take "
+                                                 "started, so its track is silent for the whole "
+                                                 "take. The other microphones recorded normally." });
+            }
 
             // §5.4: buffer size is fixed for the duration of a take.
             bufferLadder.setRecording (true);
