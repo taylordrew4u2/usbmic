@@ -48,22 +48,34 @@ jobs:
       # Threads and raw buffers, so the same runs again under sanitizers: a
       # data race or an overrun in the backends is the class of bug that
       # reaches a user as an intermittent crash rather than a failed check.
+      #
+      # Everything that can be built here, not just the two backends. This step
+      # used to sanitize sim_coreaudio and sim_wasapi alone, which left the 547
+      # unit tests and the whole capture path unwatched -- including
+      # DetachedRefreshCache, which exists to own detached threads. Adding
+      # sim_capture_mac found 150 data races on its first run.
       - name: Simulated backends under sanitizers
         if: runner.os == 'Linux'
         run: |
           # -fno-sanitize-recover so a UBSan diagnostic aborts the run:
           # without it the sanitizer prints the error and the binary still
           # exits 0, which is how undefined behaviour rides through a green CI.
+          SANITIZED="sim_coreaudio sim_wasapi sim_capture_mac mma_core_tests"
+
           cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug \
                 -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
-          cmake --build build-asan --target sim_coreaudio sim_wasapi -j 4
+          cmake --build build-asan --target ${SANITIZED} -j 4
           ./build-asan/sim_coreaudio
           ./build-asan/sim_wasapi
+          ./build-asan/sim_capture_mac
+          ./build-asan/Tests/mma_core_tests
 
           cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread"
-          cmake --build build-tsan --target sim_coreaudio sim_wasapi -j 4
+          cmake --build build-tsan --target ${SANITIZED} -j 4
           ./build-tsan/sim_coreaudio
           ./build-tsan/sim_wasapi
+          ./build-tsan/sim_capture_mac
+          ./build-tsan/Tests/mma_core_tests
 
   app:
     name: App (${{ matrix.os }})
