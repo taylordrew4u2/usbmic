@@ -24,6 +24,12 @@ namespace {
 int failures = 0;
 int checks = 0;
 
+/// How long the wedged driver hangs, and what a bounded caller is allowed.
+/// Kept far apart on purpose: a runner under load must not be able to turn
+/// "returned bounded" into "waited for the driver".
+constexpr int kStuckDriverMilliseconds = 8000;
+constexpr auto kBoundedOpen = std::chrono::milliseconds (3000);
+
 void check (bool condition, const std::string& what)
 {
     ++checks;
@@ -764,6 +770,61 @@ void enumerationPreservesEveryInputAndSupportedRate()
     backend.closeAllStreams();
 }
 
+/// Some class-compliant USB drivers block the caller inside the open itself --
+/// on Windows that is IAudioClient::Initialize rather than macOS's
+/// AudioDeviceStart, but it is the same hazard, and SobStage creates its window
+/// only after audio initialisation. An unbounded open therefore makes the whole
+/// application appear never to launch.
+///
+/// This is the Windows half of sim_coreaudio's stuck-start family. Before it
+/// existed, a driver stalling three seconds blocked the caller for three
+/// seconds and then reported success.
+void aStuckOpenIsBoundedRatherThanHoldingLaunch()
+{
+    std::printf ("\nA USB microphone whose driver hangs inside Initialize\n");
+    fakewasapi::reset();
+
+    auto spec = microphone ("stuck-open", "Wedged USB Mic",
+                            { fakewasapi::Format::floatFormat (1, 48000.0) });
+    spec.initializeDelayMilliseconds = kStuckDriverMilliseconds;
+    fakewasapi::addEndpoint (spec);
+
+    fakewasapi::addEndpoint (microphone ("healthy", "Working Mic",
+                                         { fakewasapi::Format::floatFormat (1, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    Capture capture, healthy;
+
+    check (backend.openInputStream ("healthy", 48000.0, 256, healthy.callback()),
+           "a working microphone is already live before the failure");
+
+    const auto began = std::chrono::steady_clock::now();
+    const bool opened = backend.openInputStream ("stuck-open", 48000.0, 256, capture.callback());
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - began);
+
+    std::printf ("  [measured] the open returned in %lld ms (the driver hangs for %d ms)\n",
+                 (long long) took.count(), kStuckDriverMilliseconds);
+
+    check (! opened, "the backend stops waiting for the stalled driver");
+    check (took < kBoundedOpen,
+           "and launch is bounded well below the driver's stall");
+    check (backend.getLastOpenError().find ("took too long") != std::string::npos,
+           "the failure says Windows timed out rather than blaming a cable silently");
+
+    // The point of bounding it: the rig that already worked still works.
+    check (fakewasapi::pushCapture ("healthy", { { 0.25f } }),
+           "the healthy microphone is unaffected by its neighbour hanging");
+
+    backend.closeAllStreams();
+
+    // The worker is still inside the driver. Waiting for it here is not
+    // politeness: the next test calls fakewasapi::reset() and destroys the
+    // endpoint it is reading, which ThreadSanitizer reports as the race it is.
+    check (backend.waitForPendingOpensForTesting (kStuckDriverMilliseconds + 4000),
+           "the abandoned open worker settles on its own once the driver lets go");
+}
+
 int main()
 {
     std::printf ("WASAPI backend, driven against a virtual endpoint layer\n");
@@ -788,6 +849,7 @@ int main()
     closingStopsEveryStream();
     aStalledMicrophoneIsReportedRatherThanSpunOnForever();
     aSessionThatCannotWatchTheRigSaysSo();
+    aStuckOpenIsBoundedRatherThanHoldingLaunch();
 
     // Tear the last scenario down so a leak check sees only what the
     // backend failed to release, not what the harness never cleaned up.

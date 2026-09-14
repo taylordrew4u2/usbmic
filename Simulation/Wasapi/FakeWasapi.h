@@ -54,6 +54,11 @@ struct EndpointSpec
 
     /// Failure injection for the physical-identity path. Every failure must
     /// hide an input rather than falling back to endpoint names or ids.
+    /// A driver that blocks the caller inside IAudioClient::Initialize. This is
+    /// the Windows form of the hazard CoreAudioBackend bounds every HAL call
+    /// against; nothing here could express it before.
+    int initializeDelayMilliseconds = 0;
+
     bool topologyAvailable = true;
     bool connectorAvailable = true;
     bool connectedDeviceIdAvailable = true;

@@ -1,4 +1,8 @@
 #pragma once
+#include <string>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include "IAudioBackend.h"
 #include "PlatformMacros.h"
 
@@ -74,6 +78,27 @@ private:
 
     std::vector<std::unique_ptr<WasapiStream>> openStreams;
 
+    /// Outstanding open workers. Shared rather than owned, because a worker
+    /// the caller stopped waiting for can outlive this backend: it must have
+    /// somewhere to report finishing that is still alive when it does.
+    struct PendingOpens
+    {
+        std::mutex mutex;
+        std::condition_variable changed;
+        int running = 0;
+    };
+
+    std::shared_ptr<PendingOpens> pendingOpens = std::make_shared<PendingOpens>();
+
+public:
+    /// Waits for every abandoned open worker to finish, up to a bound. Only
+    /// harnesses need this: a worker still inside the driver when the next
+    /// test tears the device down is a race, and the test has no other way to
+    /// know it has left.
+    bool waitForPendingOpensForTesting (int timeoutMilliseconds);
+
+private:
+
     /// §2: unregisters and releases the hotplug notification client. Safe to
     /// call when none is registered.
     void unregisterNotificationClient();
@@ -82,6 +107,15 @@ private:
 
     /// Opens a WASAPI stream in AUDCLNT_SHAREMODE_EXCLUSIVE. Never opens
     /// shared mode for the monitor path -- see class doc.
+    /// Does the whole COM open -- Activate, format negotiation, Initialize,
+    /// service acquisition -- and returns the finished stream, or nullptr with
+    /// the reason in `openError`. Deliberately touches no member: it runs on a
+    /// worker that openWasapiExclusiveStream() may stop waiting for.
+    std::unique_ptr<WasapiStream> buildExclusiveStream (const std::string& deviceId,
+                                                        double sampleRate, int bufferSizeSamples,
+                                                        bool isInput, AudioCallback callback,
+                                                        std::string& openError);
+
     bool openWasapiExclusiveStream (const std::string& deviceId, double sampleRate,
                                     int bufferSizeSamples, bool isInput, AudioCallback callback);
 };
