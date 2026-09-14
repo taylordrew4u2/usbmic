@@ -58,6 +58,15 @@ struct DeviceSpec
     /// within the backend's bounded confirmation window.
     int rateChangeDelayReads = 0;
 
+    /// §2.3: the depths this device's stream will actually deliver, as
+    /// CoreAudio would report them through the stream's available physical
+    /// formats. A Blue Yeti (§14.1) is { 16 }; an interface is typically
+    /// { 16, 24 }; empty models a device with no streams to ask.
+    ///
+    /// Default matches the ordinary case so every existing scenario keeps
+    /// reporting what it always did.
+    std::vector<int> bitDepths { 16, 24, 32 };
+
     /// false models a device that will not grant exclusive use -- Bluetooth
     /// output, or a card another process has hogged.
     bool allowHogMode = true;

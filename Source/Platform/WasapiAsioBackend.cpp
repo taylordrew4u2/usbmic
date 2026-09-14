@@ -367,6 +367,43 @@ bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
     return false;
 }
 
+/// §2.3: the depths this endpoint will actually accept exclusively.
+///
+/// The same IsFormatSupported question findExclusiveFormat above already asks,
+/// narrowed to "what widths", because the depth a stem is written at follows
+/// the hardware: "do not upconvert -- it adds file size and no information".
+///
+/// Asked in exclusive mode because that is the only mode this app records in
+/// (§5.4); a shared-mode answer would describe the Windows mixer rather than
+/// the device. 24-bit is accepted in either container a device may offer it
+/// in -- packed 24, or 24 valid bits inside a 32-bit container -- since both
+/// mean the same thing to a listener.
+///
+/// EMPTY when nothing could be asked, which chooseRecordingBitDepth turns into
+/// the caller's fallback rather than a guess.
+std::vector<int> querySupportedBitDepths (IAudioClient* client, double rate, int channels)
+{
+    std::vector<int> depths;
+
+    if (client == nullptr || channels <= 0 || rate <= 0.0)
+        return depths;
+
+    const auto accepts = [client, rate, channels] (int containerBits, int validBits)
+    {
+        const auto candidate = makePcmFormat (rate, channels, containerBits, validBits);
+        return client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                          &candidate.Format, nullptr) == S_OK;
+    };
+
+    if (accepts (16, 16))
+        depths.push_back (16);
+
+    if (accepts (24, 24) || accepts (32, 24))
+        depths.push_back (24);
+
+    return depths;
+}
+
 /// Called when the capture side has failed often enough to be called dead.
 void reportCaptureDeath (WasapiStream* stream)
 {
@@ -656,6 +693,7 @@ std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateWasapiDevices (bo
             if (SUCCEEDED (client->GetMixFormat (&mix)) && mix != nullptr)
             {
                 const int channels = mix->nChannels;
+                const auto mixRate = mix->nSamplesPerSec;
                 d.maxInputChannels = wantInput ? channels : 0;
                 // WASAPI exposes the shared engine rate, not the hardware clock.
                 d.currentSampleRate = mix->nSamplesPerSec;
@@ -672,6 +710,13 @@ std::vector<AudioDeviceDescriptor> WasapiAsioBackend::enumerateWasapiDevices (bo
                     if (channels > 0 && findExclusiveFormat (client.Get(), rate, channels, format))
                         d.supportedSampleRates.push_back (rate);
                 }
+                // §2.3: asked at a rate the device actually accepts, so the
+                // answer describes this device rather than a rate it refused.
+                const double probeRate = ! d.supportedSampleRates.empty()
+                                       ? static_cast<double> (d.supportedSampleRates.front())
+                                       : static_cast<double> (mixRate);
+                d.supportedBitDepths = querySupportedBitDepths (client.Get(), probeRate, channels);
+
                 // A shared mixer can run at a rate the exclusive stream
                 // cannot use. Do not let that rate override the probed list.
                 if (std::find (d.supportedSampleRates.begin(), d.supportedSampleRates.end(),

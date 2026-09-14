@@ -5,6 +5,7 @@
 // the backend once got wrong, or that it must keep getting right.
 
 #include "../Simulation/CoreAudio/FakeCoreAudio.h"
+#include "../Source/Core/SampleFormat.h"
 #include "../Source/Platform/CoreAudioBackend.h"
 
 #include <chrono>
@@ -1463,6 +1464,57 @@ void openingAnInputRechecksTheExternalHardwarePolicy()
            "the refusal explains the external-hardware policy");
 }
 
+void bitDepthFollowsWhatTheDeviceCanActuallyDeliver()
+{
+    // §2.3, which had no implementation at all until the depth was made to
+    // follow the hardware: "do not upconvert -- it adds file size and no
+    // information". §14.1's own hardware is the case that costs, and it is the
+    // case a file-backed ALSA fixture cannot express, because that plugin
+    // accepts every format asked of it. A simulated HAL can simply say 16.
+    std::printf ("\nBit depth follows the device (§2.3)\n");
+    fakeca::reset();
+
+    auto yeti = microphone ("Blue Yeti", "uid-yeti", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    yeti.bitDepths = { 16 };                 // §14.1: verified 16-bit hardware
+    fakeca::addDevice (yeti);
+
+    auto iface = microphone ("Scarlett", "uid-iface", 2, fakeca::BufferShape::oneChannelPerBuffer);
+    iface.bitDepths = { 16, 24 };
+    fakeca::addDevice (iface);
+
+    auto silentOnTheSubject = microphone ("No Streams", "uid-nostream", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    silentOnTheSubject.bitDepths = {};       // a device with nothing to ask
+    fakeca::addDevice (silentOnTheSubject);
+
+    mma::CoreAudioBackend backend;
+    const auto devices = backend.enumerateInputDevices();
+
+    const auto depthsOf = [&devices] (const std::string& name) {
+        for (const auto& d : devices)
+            if (d.name == name)
+                return d.supportedBitDepths;
+        return std::vector<int>{};
+    };
+
+    const auto yetiDepths = depthsOf ("Blue Yeti");
+    check (yetiDepths == std::vector<int> { 16 },
+           "a 16-bit microphone reports 16 and not the old hardcoded list");
+    check (mma::SampleFormat::chooseRecordingBitDepth (yetiDepths, 24) == 16,
+           "so its stem is written at 16, not padded out to 24 for nothing");
+
+    const auto ifaceDepths = depthsOf ("Scarlett");
+    check (mma::SampleFormat::chooseRecordingBitDepth (ifaceDepths, 24) == 24,
+           "an interface that can do 24 still gets 24");
+
+    // The safe direction. A device the HAL cannot be asked about must not be
+    // read as a limited one: empty means "not reported", and guessing low here
+    // would quietly halve the depth of a recording.
+    check (depthsOf ("No Streams").empty(),
+           "a device with no stream to ask reports nothing rather than guessing");
+    check (mma::SampleFormat::chooseRecordingBitDepth (depthsOf ("No Streams"), 24) == 24,
+           "and that falls back to the take's depth, unchanged");
+}
+
 int main()
 {
     std::printf ("CoreAudio backend, driven against a virtual HAL\n");
@@ -1503,6 +1555,7 @@ int main()
     destructionDrainsAnActiveSystemListener();
     aLargerThanRequestedCallbackIsStillDelivered();
     anOversizedBufferKeepsItsPhysicalChannelSlots();
+    bitDepthFollowsWhatTheDeviceCanActuallyDeliver();
     eightMicrophonesEachKeepTheirOwnAudio();
 
     // Tear the last scenario down so a leak check sees only what the
