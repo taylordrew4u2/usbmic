@@ -259,7 +259,24 @@ void aDelayedRateChangeSettlesBeforeTheStreamOpens()
                             fakeca::BufferShape::oneChannelPerBuffer);
     spec.currentRate = 44100.0;
     spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
-    spec.rateChangeDelayReads = 3;
+    // One stale read, not three.
+    //
+    // The claim here is that a rate the HAL applies asynchronously is waited
+    // for rather than read back once and treated as a refusal -- and a single
+    // stale read proves exactly that: the first read after the write still
+    // returns 44.1, so an implementation without the confirmation poll still
+    // fails this test. Three reads proved nothing further and cost three poll
+    // intervals, which is what made this the one test that failed on macOS.
+    //
+    // The poll is 10 ms inside a 50 ms settle window, so five polls are
+    // available -- and that window sits inside the 75 ms HAL transaction
+    // deadline for the whole open, so the real budget is smaller still.
+    // Needing four of those five left nothing for a sleep that overshoots,
+    // which is what sleep_until does on the macOS runners: the open was
+    // refused at 51 ms with the correct rate one read away. Widening the
+    // settle window is not the fix -- it has to stay inside the transaction
+    // that contains it, the way production's 500 ms sits inside 750 ms.
+    spec.rateChangeDelayReads = 1;
     const auto id = fakeca::addDevice (spec);
 
     mma::CoreAudioBackend backend;
