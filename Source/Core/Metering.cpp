@@ -4,9 +4,8 @@
 
 namespace mma {
 
-Metering::Metering (double sampleRateIn) noexcept
-    : sampleRate (sampleRateIn),
-      clipThresholdLinear (std::pow (10.0f, kClipThresholdDb / 20.0f))
+Metering::Metering ([[maybe_unused]] double sampleRateIn) noexcept
+    : clipThresholdLinear (std::pow (10.0f, kClipThresholdDb / 20.0f))
 {
 }
 
