@@ -903,3 +903,49 @@ TEST_CASE (WritePipeline_TwentyFourBitIsTheDepthTheAppShipsAndMustCarrySignal)
     std::remove ((dir + "/depth24.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 }
+
+TEST_CASE (WritePipeline_EachStemIsWrittenAtItsOwnDeviceDepth)
+{
+    // §2.3: "follows device capability PER CHANNEL". A rig can hold a 16-bit
+    // microphone and a 24-bit interface at the same time, and there is no one
+    // depth that serves both -- 24 pads the first with half again its file size
+    // and no information, 16 throws away what the second delivered.
+    //
+    // One SessionWriter already exists per stem, so the depth simply had to
+    // reach it; before this it took the take's single figure and every stem
+    // came out 24-bit regardless of what was plugged in.
+    const auto dir = tempDir();
+    std::vector<WriteChannelSpec> channels = {
+        { "yeti16",     0.0f, 16 },   // a 16-bit microphone (§14.1)
+        { "iface24",    0.0f, 24 },   // a 24-bit interface
+        { "unreported", 0.0f, 0  },   // a backend that does not say: take depth
+    };
+
+    WritePipeline p;
+    REQUIRE (p.start (dir, channels, 48000.0, 24, "2026-09-04T00:00:00Z"));
+
+    std::vector<float> loud (256, 0.5f);
+    const float* chans[] = { loud.data(), loud.data(), loud.data() };
+
+    REQUIRE (p.pushBlock (chans, 3, 256));
+    REQUIRE (waitForWrittenFrames (p, 256));
+    p.stop();
+
+    // The data chunk size is the proof: bytes per frame follows the depth.
+    std::ifstream a (dir + "/yeti16.wav", std::ios::binary);
+    std::ifstream b (dir + "/iface24.wav", std::ios::binary);
+    std::ifstream c (dir + "/unreported.wav", std::ios::binary);
+    REQUIRE (a.is_open());
+    REQUIRE (b.is_open());
+    REQUIRE (c.is_open());
+
+    REQUIRE (readU32LE (a, kDataSizeOffset) == 256 * 2);   // 16-bit, not padded to 24
+    REQUIRE (readU32LE (b, kDataSizeOffset) == 256 * 3);
+    REQUIRE (readU32LE (c, kDataSizeOffset) == 256 * 3);   // falls back to the take's
+
+    // The MIX is the take's depth: it carries every channel, so it cannot be
+    // narrower than the widest of them.
+    std::ifstream mix (dir + "/MIX.wav", std::ios::binary);
+    REQUIRE (mix.is_open());
+    REQUIRE (readU32LE (mix, kDataSizeOffset) == 256 * 3);
+}
