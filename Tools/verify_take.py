@@ -74,6 +74,53 @@ def tone_vote(samples, rate, candidates, block=64):
         votes[best] += 1
     return votes, peak
 
+# The take's own account of what it lost. Everything above checks the bytes that
+# DID reach the disk; §0.1 is about the audio that did not, and the app already
+# writes that down in session.json -- the gate simply never read it, so a take
+# that dropped a second of a performance passed exactly like a clean one.
+#
+# Two of the app's four loss categories are unusable ON THIS FIXTURE, and are
+# exempt by name rather than by silence:
+#
+#   * the ring overrun ("audio arrived faster than it could be taken away")
+#   * the layout mismatch, which on this fixture tracks the overrun almost
+#     sample for sample
+#
+# ALSA's `file` plugin has no clock. It hands over samples as fast as memcpy
+# manages, so the producer free-runs: measured at 4.6e8 samples/s across the
+# fixture's devices, a constant ~9600x real time and independent of take length.
+# The ring therefore overflows continuously by design here and the count is an
+# artifact of the harness, not a property of the app -- the WAV it writes is
+# still correct-rate and tone-pure. Asserting on it would fail every run.
+#
+# What is left is genuinely meaningful and has never once fired in the takes
+# recorded here, so a zero is a real zero rather than a check that cannot fail:
+#
+#   * writer-side loss ("the drive could not keep up") -- audio the app
+#     accepted and could not put on disk
+#   * any mirror failure -- §6.3, the second copy stopping or never starting
+#
+# Rate-limit the fixture and the exempt pair becomes assertable too; until then
+# do not quietly widen this to "no dropouts at all".
+FIXTURE_INFLATED = (
+    'audio arrived faster than it could be taken away',
+    "didn't fit this take's channel layout",
+)
+
+
+def check_reported_losses(dropouts, check):
+    real = [d for d in dropouts
+            if not any(marker in d.get('description', '') for marker in FIXTURE_INFLATED)]
+    # Device loss is reported here too and is a legitimate thing for a take to
+    # survive; the gate's own fixture never unplugs anything, so anything in
+    # this list on a healthy run is a loss the app should not have taken.
+    check(not real, 'take reports no unexplained loss (%s)'
+          % ('none' if not real else '; '.join(d.get('description', '?') for d in real)))
+    for d in dropouts:
+        if any(marker in d.get('description', '') for marker in FIXTURE_INFLATED):
+            print('  NOTE  fixture-inflated, not asserted: %s' % d.get('description', ''))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('folder')
@@ -140,6 +187,7 @@ def main():
     if os.path.exists(meta):
         j = json.load(open(meta))
         check(bool(j.get('stopTimestamp')), 'session.json has a stop timestamp')
+        check_reported_losses(j.get('dropouts') or [], check)
         mirror_ran = bool(j.get('mirrorActive'))
         if j.get('mirrorEnabled') and not mirror_ran:
             print('  NOTE  mirror was enabled but did not run (low space on the internal drive?)')
