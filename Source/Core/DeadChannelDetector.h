@@ -1,4 +1,5 @@
 #pragma once
+#include "Metering.h"
 #include <vector>
 
 namespace mma {
@@ -10,6 +11,14 @@ class DeadChannelDetector
 {
 public:
     static constexpr float kDeadThresholdDb = -60.0f;
+
+    // The threshold has to be REACHABLE by the levels this detector is fed.
+    // Metering floors at kMinDb, so a threshold below that floor can never be
+    // crossed and the detector becomes dead code that still passes its tests.
+    // If either constant moves, this stops the build rather than silently
+    // turning the silent-channel warning off again.
+    static_assert (kDeadThresholdDb >= Metering::kMinDb,
+                   "a dead-channel threshold below the metering floor can never be reached");
     static constexpr float kOtherActiveThresholdDb = -40.0f;
     static constexpr double kSustainSeconds = 20.0;
 
