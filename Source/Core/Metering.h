@@ -18,6 +18,10 @@ public:
     static constexpr double kPeakHoldSeconds = 2.0;
     static constexpr double kPeakDecayDbPerSecond = 20.0;
 
+    /// The ballistics advance on wall-clock dtSeconds in tick(), not on sample
+    /// counts, so nothing here depends on the rate. The argument is kept
+    /// because every caller has it and a meter that one day needs it should
+    /// not change its construction; it is deliberately not stored.
     explicit Metering (double sampleRate) noexcept;
 
     /// Audio-thread call: pass this channel's raw samples for one block. Computes
@@ -44,8 +48,6 @@ public:
     void acknowledgeClip() noexcept;
 
 private:
-    double sampleRate;
-
     // Precomputed at construction rather than evaluated per block on the audio
     // thread. MonitorBus already hoists its ceiling out of the callback for the
     // same reason; this is the same std::pow of the same kind of constant.

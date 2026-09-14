@@ -21,6 +21,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Warnings were off entirely: the build ran at the compiler's defaults, so
+# -Wshadow, unused private state and sign-conversion mistakes in the audio path
+# had nothing watching for them. Enabled here after checking the whole tree
+# compiles clean under them on both GCC and Clang, so the baseline is zero and
+# the next one stands out.
+#
+# Not -Werror: a future compiler is entitled to invent a warning, and a
+# toolchain upgrade should not stop the build of an audio recorder. MSVC is
+# left at its default because /W4 has not been checked against JUCE's headers
+# from here, and a wall of third-party warnings hides our own.
+add_library(mma_warnings INTERFACE)
+target_compile_options(mma_warnings INTERFACE
+    $<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:-Wall;-Wextra;-Wshadow>)
+
 option(MMA_BUILD_APP "Build the JUCE GUI application (requires network fetch of JUCE)" OFF)
 option(MMA_BUILD_TESTS "Build the headless Core/ unit test target" ON)
 option(MMA_ALLOW_TEST_INPUTS
@@ -85,6 +99,11 @@ add_library(mma_core STATIC
 if (MMA_ALLOW_TEST_INPUTS)
     target_compile_definitions(mma_core PRIVATE MMA_ALLOW_TEST_INPUTS=1)
 endif()
+
+# PRIVATE: these are how mma_core's own sources are compiled, not a rule
+# imposed on anything that links it. The targets built from Tools/ and Tests/
+# opt in for themselves below.
+target_link_libraries(mma_core PRIVATE mma_warnings)
 # ALSA on Linux: the backend is part of mma_core rather than the app target so
 # the headless harnesses can drive a REAL OS audio API. It is guarded on
 # __linux__, so on macOS and Windows the translation unit is empty.
@@ -400,6 +419,7 @@ if (MMA_BUILD_TOOLS)
     if (UNIX AND NOT APPLE AND ALSA_FOUND)
         add_executable(live_capture Tools/live_capture.cpp)
         target_link_libraries(live_capture PRIVATE mma_core)
+    target_link_libraries(live_capture PRIVATE mma_warnings)
     endif()
 
     # -----------------------------------------------------------------------
@@ -424,6 +444,7 @@ if (MMA_BUILD_TOOLS)
         Simulation/CoreAudio/FakeCoreAudio.cpp)
     target_compile_definitions(sim_coreaudio PRIVATE MMA_SIMULATE_MAC=1)
     target_include_directories(sim_coreaudio PRIVATE Simulation/CoreAudio Source)
+    target_link_libraries(sim_coreaudio PRIVATE mma_warnings)
 
     # The macOS path, end to end: the real backend, the real coordinator and the
     # real writer, against the virtual HAL. sim_coreaudio checks the backend and
@@ -436,6 +457,7 @@ if (MMA_BUILD_TOOLS)
     target_compile_definitions(sim_capture_mac PRIVATE MMA_SIMULATE_MAC=1)
     target_include_directories(sim_capture_mac PRIVATE Simulation/CoreAudio Source)
     target_link_libraries(sim_capture_mac PRIVATE mma_core)
+    target_link_libraries(sim_capture_mac PRIVATE mma_warnings)
 
     add_executable(sim_wasapi
         Tools/sim_wasapi.cpp
@@ -445,6 +467,7 @@ if (MMA_BUILD_TOOLS)
     target_include_directories(sim_wasapi PRIVATE Simulation/Wasapi Source)
     find_package(Threads REQUIRED)
     target_link_libraries(sim_wasapi PRIVATE Threads::Threads)
+    target_link_libraries(sim_wasapi PRIVATE mma_warnings)
 
     # Registered with ctest rather than run by hand, so they execute on every
     # platform's CI job through the same command as the unit tests -- and so a

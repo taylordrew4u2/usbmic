@@ -797,14 +797,14 @@ void aMicrophoneThatGoesQuietAfterOpeningIsReported()
     // legitimately pause around a device or format change.
     std::this_thread::sleep_for (std::chrono::milliseconds (5400));
 
-    const auto failures = backend.takeStreamFailures();
-    check (failures.size() == 1, "the silent stream is reported once");
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 1, "the silent stream is reported once");
 
-    if (! failures.empty())
+    if (! reported.empty())
     {
-        std::printf ("  reason: %s\n", failures.front().reason.c_str());
-        check (failures.front().deviceId == "uid-quiet", "and names the microphone it happened to");
-        check (failures.front().reason.find ("stopped sending audio") != std::string::npos,
+        std::printf ("  reason: %s\n", reported.front().reason.c_str());
+        check (reported.front().deviceId == "uid-quiet", "and names the microphone it happened to");
+        check (reported.front().reason.find ("stopped sending audio") != std::string::npos,
                "and says what the user can do about it");
     }
 
@@ -840,14 +840,14 @@ void aMicrophoneWhoseFirstCallbackNeverArrivesIsReported()
 
     std::this_thread::sleep_for (std::chrono::milliseconds (5400));
 
-    const auto failures = backend.takeStreamFailures();
-    check (failures.size() == 1, "a missing first callback is reported once");
+    const auto reported = backend.takeStreamFailures();
+    check (reported.size() == 1, "a missing first callback is reported once");
 
-    if (! failures.empty())
+    if (! reported.empty())
     {
-        check (failures.front().deviceId == "uid-never-callback",
+        check (reported.front().deviceId == "uid-never-callback",
                "the first-callback failure names the microphone");
-        check (failures.front().reason.find ("stopped sending audio") != std::string::npos,
+        check (reported.front().reason.find ("stopped sending audio") != std::string::npos,
                "the first-callback failure gives the same recovery guidance");
     }
 
