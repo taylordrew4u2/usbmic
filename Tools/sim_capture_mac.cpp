@@ -162,7 +162,7 @@ int main()
         };
 
         fakeca::pumpInput (id, signal);
-        coordinator.processOutputBlock (outs, 2, block);
+        coordinator.pullOutputBlock (outs, 2, block);
     }
 
     const float arrived = coordinator.getPeakArrived();
@@ -251,7 +251,7 @@ int main()
         };
 
         fakeca::pumpInput (rig, signal);
-        four.processOutputBlock (outs4, 2, block);
+        four.pullOutputBlock (outs4, 2, block);
     }
 
     four.stopRecording();
@@ -331,7 +331,7 @@ int main()
         };
 
         fakeca::pumpInput (pair, signal);
-        two.processOutputBlock (outs2, 2, block);
+        two.pullOutputBlock (outs2, 2, block);
     }
 
     two.stopRecording();

@@ -276,10 +276,18 @@ public:
     ChannelLayoutDecision getChannelLayoutDecision (int index) const noexcept;
     bool isChannelLayoutDecisionPersistable (int index) const noexcept;
 
-    /// The output device's callback, which is the clock everything else is
-    /// pulled onto (§3.1). Sums the drift-corrected mics, meters them, feeds the
-    /// writer, and fills the headphone buffers.
-    void processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept;
+    /// Pulls one block the way the real output callback does, taking the same
+    /// hand-off gate first. Returns false when the software clock already held
+    /// it and this block was therefore left to the clock.
+    ///
+    /// Anything that is not the audio callback or the software clock has to
+    /// come through here. processOutputBlock() assumes the gate is already
+    /// held, and it used to be public: all four harnesses called it directly
+    /// while the software clock thread was running, so a test and the clock
+    /// pulled the same rings at once. ThreadSanitizer reports 150 data races
+    /// in sim_capture_mac for it, and the peaks those tests assert on could be
+    /// written by either puller.
+    bool pullOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept;
 
     /// Aggregate-device path: every channel arriving in one already-aligned
     /// callback, as a CoreAudio aggregate or an ASIO device delivers it. No
@@ -349,6 +357,12 @@ private:
     std::thread softwareClock;
     std::atomic<bool> clockRunning { false };
     std::atomic<bool> pulling { false };
+
+    /// The output device's callback, which is the clock everything else is
+    /// pulled onto (§3.1). Sums the drift-corrected mics, meters them, feeds
+    /// the writer, and fills the headphone buffers. `pulling` must already be
+    /// held: use pullOutputBlock() from anywhere that does not hold it.
+    void processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept;
     std::atomic<bool> outputClockLost { false };
     std::atomic<int64_t> lastOutputCallbackNs { 0 };
     bool outputStreamOpen = false;
