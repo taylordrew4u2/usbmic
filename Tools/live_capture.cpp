@@ -125,15 +125,19 @@ int main (int argc, char** argv)
 
         AlsaBackend one;
         const bool opened = one.openInputStream (device, rate, block,
-            [&] (const float* const* inputs, int numInputs, float* const*, int, int numSamples)
+            // blockInputs, not inputs: an outer local of that name is in scope
+            // here, and a callback that silently reads the wrong one is the
+            // kind of mistake a harness exists to catch rather than commit.
+            [&] (const float* const* blockInputs, int numInputs, float* const*, int, int numSamples)
             {
-                if (inputs == nullptr || numInputs < 1 || inputs[0] == nullptr)
+                if (blockInputs == nullptr || numInputs < 1 || blockInputs[0] == nullptr)
                     return;
 
                 std::lock_guard<std::mutex> guard (lock);
 
                 if (collected.size() < wanted)
-                    collected.insert (collected.end(), inputs[0], inputs[0] + numSamples);
+                    collected.insert (collected.end(), blockInputs[0],
+                                      blockInputs[0] + numSamples);
             });
 
         if (! opened)

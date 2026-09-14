@@ -45,7 +45,7 @@ add_executable(mma_core_tests
     test_StreamFailurePolicy.cpp
 )
 
-target_link_libraries(mma_core_tests PRIVATE mma_core)
+target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)
 target_include_directories(mma_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_test(NAME mma_core_tests COMMAND mma_core_tests)

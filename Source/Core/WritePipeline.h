@@ -169,7 +169,6 @@ private:
     std::vector<std::unique_ptr<SessionWriter>> mirrorStemWriters;
     std::unique_ptr<SessionWriter> mirrorMixWriter;
     std::atomic<bool> mirroring { false };
-    MixBusLimiter mixLimiter;
 
     // Written by the writer thread, read by the UI. Guarded rather than atomic
     // because it is a whole object with vectors in it, and the read is a UI

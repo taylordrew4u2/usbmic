@@ -634,7 +634,8 @@ void CaptureCoordinator::pushDeviceBlock (int deviceIndex, const float* samples,
 }
 
 void CaptureCoordinator::pushDeviceBlockMultiChannel (int deviceIndex, const float* const* inputs,
-                                                      int numInputs, int numSamples) noexcept
+                                                      [[maybe_unused]] int numInputs,
+                                                      int numSamples) noexcept
 {
     // inputs and numInputs are guaranteed by the only caller, which checks both
     // before routing here; the index and sample count are the ones worth
