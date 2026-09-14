@@ -1459,9 +1459,15 @@ bool CoreAudioBackend::openStream (const std::string& deviceId, double sampleRat
     }
 
     std::unique_lock<std::mutex> lock (attempt->mutex);
+
+    // isOutput, not attempt->stream->isOutput. The stream belongs to the worker
+    // from the moment the thread starts, and prepareAndStartStream writes that
+    // same field under the HAL transaction lock -- a different mutex from this
+    // one, so reading it back here was a data race on a live object, which is
+    // what ThreadSanitizer stops the build for. The value is already in hand.
     if (! attempt->changed.wait_for (lock,
-                                     attempt->stream->isOutput ? kOutputHalTransactionTimeout
-                                                               : kHalTransactionTimeout,
+                                     isOutput ? kOutputHalTransactionTimeout
+                                              : kHalTransactionTimeout,
                                      [&attempt] { return attempt->finished; }))
     {
         attempt->abandoned = true;
