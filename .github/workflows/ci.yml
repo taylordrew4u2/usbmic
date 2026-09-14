@@ -160,6 +160,7 @@ jobs:
           bash Tools/e2e_refusal.sh
           bash Tools/e2e_stuck_device.sh
           bash Tools/e2e_headless.sh
+          bash Tools/e2e_two_takes.sh 6
 
       - name: App-integrated regression tests
         run: >-
