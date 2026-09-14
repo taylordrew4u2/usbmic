@@ -6,8 +6,11 @@
 // Simulation/Camera's stand-in juce_video, and DRIVES it: cameras arriving,
 // cameras going away, and two of the same model staying apart.
 //
-// Opening a device is deliberately not covered -- a viewer component needs a
-// message manager, and that tests the harness rather than the controller.
+// Opening is covered too: the fake hands back a live object and counts it, so
+// a camera that is already open when the OS stops listing it -- where a capture
+// card on an HDMI input lands every time its source blinks -- can be driven.
+// Only the viewer component is left alone: that needs a message manager, and
+// would test the harness rather than the controller.
 
 #include "../Simulation/Camera/juce_video/juce_video.h"
 #include "../Source/App/CameraController.h"
@@ -109,6 +112,54 @@ void aCameraThatComesBackKeepsItsIdentity()
         check (before.front().id == after.front().id, "and is the same camera, by id");
 }
 
+/// The HDMI case, and the one that only an app restart used to fix.
+///
+/// A capture card is listed as a camera whether or not anything is feeding its
+/// input. Power the source down, switch the input, change its resolution, reseat
+/// the cable, and the card drops off the bus and comes back seconds later -- an
+/// ordinary evening for anyone shooting into one. The camera has to be open
+/// again when it returns.
+void aCameraThatBlinksIsOpenedAgainWhenItReturns()
+{
+    std::printf ("\nA camera that drops off the bus and comes back\n");
+
+    fakecamera::setOpeningFails (false);
+    fakecamera::resetCounters();
+    fakecamera::setDevices ({ "Cam Link 4K" });
+
+    mma::CameraController controller;
+    controller.refreshCameras();
+
+    const auto cameras = controller.getSelection().getAvailableCameras();
+    check (cameras.size() == 1, "the capture card is listed");
+
+    if (cameras.empty())
+        return;
+
+    const auto id = cameras.front().id;
+    controller.getSelection().setEnabled (id, true);
+    controller.applySelection();
+    check (fakecamera::openCalls() == 1, "and is opened once switched on");
+    check (fakecamera::liveDevices() == 1, "and is held open");
+
+    // The HDMI source goes away. The card stops being listed.
+    fakecamera::setDevices ({});
+    controller.refreshCameras();
+    controller.applySelection();
+    check (fakecamera::liveDevices() == 0,
+           "the handle is let go when the OS stops listing the camera");
+    check (! controller.getProblem().isEmpty(),
+           "and the take is told the camera went away");
+
+    // And it comes back.
+    fakecamera::setDevices ({ "Cam Link 4K" });
+    controller.refreshCameras();
+    controller.applySelection();
+    check (fakecamera::openCalls() == 2, "it is opened again when it comes back");
+    check (fakecamera::liveDevices() == 1, "and there is exactly one handle to it");
+    check (controller.getProblem().isEmpty(), "and nothing is still complaining about it");
+}
+
 } // namespace
 
 int main()
@@ -119,6 +170,7 @@ int main()
     aCameraArrivingAndLeavingMovesTheList();
     twoOfTheSameModelStayApart();
     aCameraThatComesBackKeepsItsIdentity();
+    aCameraThatBlinksIsOpenedAgainWhenItReturns();
 
     std::printf ("\n%s (%d checks, %d failing)\n",
                  failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", checks, failures);

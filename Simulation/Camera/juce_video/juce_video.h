@@ -23,6 +23,7 @@ namespace juce {
 class CameraDevice
 {
 public:
+    CameraDevice();
     virtual ~CameraDevice();
 
     static StringArray getAvailableDevices();
@@ -47,5 +48,17 @@ namespace fakecamera {
 
 /// What CameraDevice::getAvailableDevices() will report from now on.
 void setDevices (const juce::StringArray& names);
+
+/// Make the next openDevice() calls fail, the way a camera another app is
+/// already holding does.
+void setOpeningFails (bool fails);
+
+/// How many times a device has been opened since the last reset, and how many
+/// of those are still alive. A controller that quietly keeps a handle to a
+/// camera the OS has stopped listing shows up here as a live device with no
+/// camera behind it.
+int openCalls();
+int liveDevices();
+void resetCounters();
 
 } // namespace fakecamera

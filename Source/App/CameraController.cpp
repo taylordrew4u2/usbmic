@@ -1,4 +1,5 @@
 #include "CameraController.h"
+#include <set>
 
 namespace mma {
 
@@ -70,19 +71,44 @@ void CameraController::applySelection()
     // Names rather than a count, because "one of your cameras" helps nobody
     // standing in front of three of them. Declared inside the guard so a build
     // without camera support does not carry an unused local.
-    juce::StringArray missingCameras;
 
     // One pass, one verdict. Cleared here rather than inside openCamera(), so a
     // later success in the same pass cannot erase an earlier failure.
     openProblem.clear();
 
+    // What the OS is offering right now. An id that is open but not in here is
+    // a camera that went away while we were holding it.
+    std::set<std::string> stillListed;
+
+    for (const auto& camera : selection.getAvailableCameras())
+        stillListed.insert (camera.id);
+
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
     std::vector<std::string> toClose;
 
+    // A camera that vanishes while it is open used to stay in this map for the
+    // life of the process. Nothing pruned it: the loop below skips any id that
+    // is already open, so when the same camera came back it was never opened
+    // again -- a dead picture, and a take recording through a handle whose
+    // hardware had left, that only quitting the app fixed. A capture card on an
+    // HDMI input lands here every time its source is powered down, its input
+    // switched, or its resolution renegotiated, which is to say several times
+    // an evening.
+    juce::StringArray vanishedCameras;
+
     for (const auto& entry : open)
+    {
         if (! selection.isEnabled (entry.first))
+        {
             toClose.push_back (entry.first);
+        }
+        else if (stillListed.count (entry.first) == 0)
+        {
+            toClose.push_back (entry.first);
+            vanishedCameras.add (juce::String (selection.getDisplayName (entry.first)));
+        }
+    }
 
     for (const auto& id : toClose)
         closeCamera (id);
@@ -94,31 +120,25 @@ void CameraController::applySelection()
 
         const auto index = osIndexById.find (camera.id);
 
+        // Both maps are rebuilt from one enumeration in refreshCameras(), so a
+        // camera that is in the list always has an index. The else this loop
+        // used to carry -- meant to catch a camera the OS had stopped offering
+        // -- could therefore never run, which is why the departure above is
+        // established from the open handles instead.
         if (index != osIndexById.end())
-        {
             openCamera (camera.id, index->second);
-        }
-        else
-        {
-            // A camera the user switched on that the OS is no longer offering.
-            // It was skipped with no else at all, so it was simply absent from
-            // the take -- and a camera you deliberately enabled and then do not
-            // find in the folder is the kind of absence nobody thinks to check
-            // for until the edit.
-            missingCameras.add (juce::String (selection.getDisplayName (camera.id)));
-        }
     }
 
     // Appended, never assigned over: openCamera() may already have recorded a
     // camera that is connected and still would not open, and both facts matter.
-    if (! missingCameras.isEmpty())
+    if (! vanishedCameras.isEmpty())
     {
         if (openProblem.isNotEmpty())
             openProblem += " ";
 
-        openProblem += (missingCameras.size() == 1
-                       ? missingCameras[0] + " isn't connected any more, so it isn't in this take."
-                       : juce::String (missingCameras.size())
+        openProblem += (vanishedCameras.size() == 1
+                       ? vanishedCameras[0] + " isn't connected any more, so it isn't in this take."
+                       : juce::String (vanishedCameras.size())
                              + " of your cameras aren't connected any more, so they aren't in this "
                                "take.")
                  + " The sound is recording either way.";
@@ -155,8 +175,9 @@ void CameraController::openCamera (const std::string& id, int osIndex)
             openProblem += " ";
 
         openProblem += "Couldn't open " + juce::String (selection.getDisplayName (id))
-                + ". Close any other app using it, and check this app is allowed "
-                  "to use the camera in your system privacy settings.";
+                + ". Close any other app using it, check this app is allowed to use "
+                  "the camera in your system privacy settings, and -- if it is a "
+                  "capture card -- that something is plugged into it and switched on.";
         return;
     }
 
