@@ -94,6 +94,18 @@ constexpr AudioObjectPropertySelector kAudioDeviceProcessorOverload = mmaFourCC 
 constexpr AudioObjectPropertySelector kAudioDevicePropertyBufferFrameSize = mmaFourCC ('f', 's', 'i', 'z');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyHogMode = mmaFourCC ('o', 'i', 'n', 'k');
 
+// §2.3: what a device can actually deliver. CoreAudio keeps this on the
+// STREAM, not the device, so finding it is two hops: ask the device for its
+// streams, then ask a stream for its available physical formats. These are
+// Apple's own selector values, as every other one in this file is.
+constexpr AudioObjectPropertySelector kAudioDevicePropertyStreams = mmaFourCC ('s', 't', 'm', '#');
+constexpr AudioObjectPropertySelector kAudioStreamPropertyAvailablePhysicalFormats = mmaFourCC ('p', 'f', 't', 'a');
+
+using AudioFormatID = UInt32;
+using AudioFormatFlags = UInt32;
+
+constexpr AudioFormatID kAudioFormatLinearPCM = mmaFourCC ('l', 'p', 'c', 'm');
+
 struct AudioObjectPropertyAddress
 {
     AudioObjectPropertySelector mSelector;
@@ -105,6 +117,28 @@ struct AudioValueRange
 {
     Float64 mMinimum;
     Float64 mMaximum;
+};
+
+// Apple's field order and widths, because the backend reads mBitsPerChannel out
+// of an array of these by index -- a layout that differs from the real one
+// would read the wrong field and the simulation would prove nothing.
+struct AudioStreamBasicDescription
+{
+    Float64 mSampleRate;
+    AudioFormatID mFormatID;
+    AudioFormatFlags mFormatFlags;
+    UInt32 mBytesPerPacket;
+    UInt32 mFramesPerPacket;
+    UInt32 mBytesPerFrame;
+    UInt32 mChannelsPerFrame;
+    UInt32 mBitsPerChannel;
+    UInt32 mReserved;
+};
+
+struct AudioStreamRangedDescription
+{
+    AudioStreamBasicDescription mFormat;
+    AudioValueRange mSampleRateRange;
 };
 
 // --- Buffers ----------------------------------------------------------------

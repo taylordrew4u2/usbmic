@@ -6,6 +6,7 @@
 // conversion are all exercised rather than reasoned about.
 
 #include "../Simulation/Wasapi/FakeWasapi.h"
+#include "../Source/Core/SampleFormat.h"
 #include "../Source/Platform/WasapiAsioBackend.h"
 
 #include <atomic>
@@ -825,6 +826,51 @@ void aStuckOpenIsBoundedRatherThanHoldingLaunch()
            "the abandoned open worker settles on its own once the driver lets go");
 }
 
+void bitDepthFollowsWhatTheEndpointAccepts()
+{
+    // §2.3: "do not upconvert -- it adds file size and no information." The
+    // depth a stem is written at follows the hardware, and WASAPI can be asked
+    // the question directly -- the same IsFormatSupported the rate probe next
+    // to it already uses, narrowed to widths.
+    std::printf ("\nBit depth follows the endpoint (§2.3)\n");
+    fakewasapi::reset();
+
+    // §14.1's own hardware: 16-bit, and its stem was being written at 24.
+    fakewasapi::addEndpoint (microphone ("mic-yeti", "Blue Yeti",
+                                         { fakewasapi::Format::pcm (1, 16, 48000.0) }));
+
+    // The ordinary USB microphone, which is 24-bit and must stay 24-bit.
+    fakewasapi::addEndpoint (microphone ("mic-24", "24-bit Mic",
+                                         { fakewasapi::Format::pcm (1, 24, 48000.0) }));
+
+    // A device that accepts nothing exclusively -- held by another process --
+    // must report nothing rather than look like a limited one.
+    fakewasapi::addEndpoint (microphone ("mic-busy", "Busy Mic", {}));
+
+    mma::WasapiAsioBackend backend;
+    const auto devices = backend.enumerateInputDevices();
+
+    const auto depthsOf = [&devices] (const std::string& name) {
+        for (const auto& d : devices)
+            if (d.name == name)
+                return d.supportedBitDepths;
+        return std::vector<int>{};
+    };
+
+    check (depthsOf ("Blue Yeti") == std::vector<int> { 16 },
+           "a 16-bit endpoint reports 16");
+    check (mma::SampleFormat::chooseRecordingBitDepth (depthsOf ("Blue Yeti"), 24) == 16,
+           "so its stem is written at 16 rather than padded to 24 for nothing");
+
+    check (mma::SampleFormat::chooseRecordingBitDepth (depthsOf ("24-bit Mic"), 24) == 24,
+           "a 24-bit endpoint still gets 24");
+
+    check (depthsOf ("Busy Mic").empty(),
+           "an endpoint that accepts nothing reports nothing rather than guessing");
+    check (mma::SampleFormat::chooseRecordingBitDepth (depthsOf ("Busy Mic"), 24) == 24,
+           "and that falls back to the take's depth, unchanged");
+}
+
 int main()
 {
     std::printf ("WASAPI backend, driven against a virtual endpoint layer\n");
@@ -835,6 +881,7 @@ int main()
     missingExternalEvidenceFailsClosed();
     openingAnInputRechecksTheExternalHardwarePolicy();
     a24BitOnlyMicrophoneOpensAndDeliversAudio();
+    bitDepthFollowsWhatTheEndpointAccepts();
     a16BitMicrophoneRoundTripsWithinItsQuantisation();
     aFloatCapableDeviceStillGetsFloat();
     aStereoOnlyMicrophoneIsOpenedAsStereo();
