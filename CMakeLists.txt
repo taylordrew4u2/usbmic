@@ -414,6 +414,23 @@ if (MMA_BUILD_TOOLS)
     add_executable(soak_drift Tools/soak_drift.cpp)
     target_link_libraries(soak_drift PRIVATE mma_core)
 
+    # Registered, not merely built. The note above says these take minutes,
+    # which is the reason nothing ever ran them -- and measured, the pair takes
+    # under twenty seconds: e2e_capture 0.09 s, and soak_drift's FULL four-hour
+    # §3.4 acceptance run 16.7 s, because the four hours are simulated rather
+    # than waited out. Two harnesses that between them found integral windup
+    # and a 21 ms pre-roll were compiled on every push and executed on none of
+    # it.
+    #
+    # e2e_capture is given an explicit directory: its default is /tmp/e2e,
+    # which does not exist on Windows, so leaving it implicit would register a
+    # test that could only fail there.
+    add_test(NAME e2e_capture COMMAND e2e_capture "${CMAKE_CURRENT_BINARY_DIR}/e2e-capture-out")
+
+    # Four hours, the §3.4 acceptance figure. Anything less is a different
+    # question from the one the ceiling is written about.
+    add_test(NAME soak_drift COMMAND soak_drift 4)
+
     # Linux only: drives the real ALSA backend against the virtual devices
     # Tools/setup_alsa_fixture.sh creates.
     if (UNIX AND NOT APPLE AND ALSA_FOUND)
