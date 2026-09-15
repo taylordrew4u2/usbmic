@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 #include "Core/CaptureCoordinator.h"
 #include <set>
+#include "Core/StreamingTargets.h"
 #include "Core/PolarPatternDetector.h"
 #include <cmath>
 #include <cstdio>
@@ -1901,4 +1902,91 @@ TEST_CASE (CaptureCoordinator_AGrantedBufferMatchingTheRequestChangesNothing)
 
     const double expected = (256.0 / 48000.0) * 1000.0 * 2.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
+}
+
+TEST_CASE (CaptureCoordinator_TheTakesLoudnessSurvivesTheTake)
+{
+    // §10's delivery advice is read AFTER the take, not during it -- that is
+    // when the user decides whether to re-record or how to master. It was
+    // readable only during: stopRecording moves the WritePipeline out and
+    // destroys it, the getters were pipeline-conditional, and so the block
+    // count fell to zero the instant Stop was pressed and adviseForTarget
+    // reverted to "Not enough sound yet to judge how loud this is."
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-08-27T00:00:00Z"));
+
+    // A real tone, not a constant. BS.1770's K-weighting pre-filter is a
+    // high-pass, so a DC block measures as silence no matter how large it is --
+    // which is a good way to write a loudness test that proves nothing.
+    std::vector<float> a (64, 0.0f), b (64, 0.0f);
+    std::vector<float> outL (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { outL.data() };
+
+    // Four seconds, comfortably past kMinimumBlocksToJudge (30 hops = 3 s),
+    // so the advice would have a verdict to give rather than a shrug.
+    int phase = 0;
+    for (int i = 0; i < 3000; ++i)
+    {
+        for (int f = 0; f < 64; ++f, ++phase)
+        {
+            const auto v = 0.4f * std::sin (6.283185307f * 440.0f
+                                            * static_cast<float> (phase) / 48000.0f);
+            a[static_cast<size_t> (f)] = v;
+            b[static_cast<size_t> (f)] = v;
+        }
+
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+    }
+
+    c.stopRecording();
+
+    // The take is over and the pipeline is gone. These are the figures the
+    // delivery advice reads, and they have to still be here.
+    REQUIRE (c.getLoudnessBlockCount() >= kMinimumBlocksToJudge);
+    REQUIRE (c.getIntegratedLufs() > LoudnessMeter::kAbsoluteGateLufs);
+    REQUIRE (c.getTruePeakDbtp() > LoudnessMeter::kSilenceLufs);
+
+    // And that is enough for the advice itself to say something real rather
+    // than the not-enough-sound line, which is the point of the whole fix.
+    const auto advice = adviseForTarget (streamingTargets().front(),
+                                         c.getIntegratedLufs(),
+                                         c.getTruePeakDbtp(),
+                                         c.getLoudnessBlockCount());
+    REQUIRE (advice.measurable);
+    REQUIRE (advice.summary.find ("Not enough sound") == std::string::npos);
+}
+
+TEST_CASE (CaptureCoordinator_ANewTakeDoesNotInheritTheLastOnesLoudness)
+{
+    // The counterpart. A snapshot that outlived the NEXT take's start would be
+    // worse than none: the user would read take two's number under take three.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-08-27T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), b (64, 0.5f);
+    std::vector<float> outL (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { outL.data() };
+
+    for (int i = 0; i < 3000; ++i)
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+
+    c.stopRecording();
+    REQUIRE (c.getLoudnessBlockCount() > 0);
+
+    const auto second = tempDir();
+    REQUIRE (c.startRecording (second, 16, "2026-08-27T00:01:00Z"));
+    REQUIRE (c.getLoudnessBlockCount() == 0);
+    c.stopRecording();
 }

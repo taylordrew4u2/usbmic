@@ -274,6 +274,13 @@ public:
     /// BS.1770 loudness of the mix as written. What every streaming platform
     /// normalises against, and the only figure that says how loud a take will
     /// actually sound -- peak level says nothing about it.
+    /// The take's loudness figures. During a take these come from the live
+    /// pipeline; after it, from the snapshot taken as the take stopped.
+    ///
+    /// Without that snapshot the pipeline was destroyed by stopRecording and
+    /// the block count fell to zero, so the delivery-target advice reverted to
+    /// "Not enough sound yet to judge how loud this is." the instant the take
+    /// ended -- which is the exact moment the user wants to read it.
     double getIntegratedLufs() const;
     double getTruePeakDbtp() const;
     int getLoudnessBlockCount() const;
@@ -451,6 +458,15 @@ private:
     std::vector<std::string> devicesThatFailedToOpen;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
+
+    // The finished take's loudness, captured while the pipeline was still
+    // alive. Read only after it has gone; cleared when the next take begins so
+    // take three cannot show take two's number.
+    // Silence, not zero: before the first take these are what the getters
+    // return, and zero LUFS would read as a deafening mix rather than nothing.
+    double lastTakeLufs = LoudnessMeter::kSilenceLufs;
+    double lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
+    int lastTakeLoudnessBlocks = 0;
 
     /// The overrun total when the current take began. prepare() zeroes each
     /// stream's counter, but streams are prepared when monitoring starts, not
