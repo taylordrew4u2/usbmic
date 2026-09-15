@@ -560,7 +560,6 @@ TakeAlertCard::Tone toneFor (const TakeAlert& alert)
         case Kind::WriterBehind:
         case Kind::TenMinutesLeft:
         case Kind::MicBack:
-        case Kind::CameraBack:
         case Kind::OutputBack:
             break;
     }
@@ -991,7 +990,20 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setMirrorEnabled (application.isMirrorEnabledByUser());
     advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
                                       application.getDeliveryTarget());
-    advancedPanel.setLoudnessAdvice (application.getLoudnessAdvice());
+    // The measured figure leads the advice it is based on. getLoudnessReading()
+    // was written, and never called from anywhere -- so the panel gave
+    // instructions ("Turn up by 3.2 dB") with no way to see the number behind
+    // them, while its own header promised the line that says what the mix
+    // measures. It returns empty when there is not enough to judge, which is
+    // the same condition under which the advice says so itself.
+    {
+        const auto reading = application.getLoudnessReading();
+        const auto advice = application.getLoudnessAdvice();
+
+        advancedPanel.setLoudnessAdvice (reading.isNotEmpty() && advice.isNotEmpty()
+                                             ? reading + " -- " + advice
+                                             : (reading.isNotEmpty() ? reading : advice));
+    }
     advancedPanel.setActivityLines (application.getRecentActivityLines());
 
     // They are on screen, so they have been shown. Without this the advice line

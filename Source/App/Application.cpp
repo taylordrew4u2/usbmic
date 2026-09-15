@@ -1331,7 +1331,15 @@ TakeHealth Application::snapshotTakeHealth() const
     // unplugged writer stays in that roster as absent; a preview cannot be
     // reopened and mistaken for resumed recording during the same take.
     for (const auto& camera : cameraController.getTakeCameraStates())
-        health.cameras.push_back ({ camera.displayName, camera.recording });
+        // `starting` counts as present. REC is confirmed only by
+        // AVFoundation's didStart, so a camera sits in STARTING for a moment
+        // after the take begins -- and `present` fed from `recording` alone
+        // read that as "not there". If the watchdog's baseline landed inside
+        // that window, the next observation saw the camera appear and
+        // announced "Camera X is back." for a camera that had never gone
+        // anywhere. What `present` means here is "in the take, not lost".
+        health.cameras.push_back ({ camera.displayName,
+                                    camera.recording || camera.starting });
 
     health.cameraProblem = cameraController.getProblem().toStdString();
     health.monitorProblem = getMonitorProblem().toStdString();
@@ -1766,7 +1774,19 @@ void Application::toggleRecording()
         }
         if (recordingEngine.start (std::move (channels)))
         {
-            recordingStartMs = juce::Time::getMillisecondCounterHiRes();
+            // recordingStartMs is NOT taken here. It is the take's audio t=0,
+            // and no audio exists yet: a capacity probe, one or two mkdirs
+            // (including the mirror, possibly on a slow card) and the WAV
+            // headers all happen below before the writer thread has a sample.
+            //
+            // It used to be stamped here, and CameraController measures every
+            // camera's start offset against it, which becomes audioLeadSeconds
+            // and then ffmpeg's -ss on MIX.wav. Too early a t=0 makes the lead
+            // too big, so the combine trimmed MORE off the front of the audio
+            // than it should and the sound in the combined file ran LATE
+            // against the picture. Single-digit milliseconds on an SSD, tens to
+            // low hundreds on the removable cards this app is for -- small
+            // enough to look like nothing, large enough to look wrong.
 
             // §6.3: the mirror decision is taken HERE, before the folders are
             // made, against the free space now. It used to be evaluated after
@@ -1821,6 +1841,14 @@ void Application::toggleRecording()
                 // Cleared only once a take is genuinely under way, so the
                 // reason for the last failure stays on screen until it is
                 // replaced by a success rather than by the next click.
+                // Audio t=0, taken where the audio actually begins: the
+                // writer thread is up and the stem files are open. Every other
+                // reader of this stamp -- the take clock, the dropout and drift
+                // timestamps that reach session.json, the watchdog's repeat
+                // throttle -- wants "seconds since audio began" too, so all of
+                // them get more accurate here, not just the camera offsets.
+                recordingStartMs = juce::Time::getMillisecondCounterHiRes();
+
                 recordStartProblem.clear();
                 mirrorMissingReported = false;
                 backendDropsAtTakeStart = audioBackend != nullptr
