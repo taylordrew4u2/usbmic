@@ -496,13 +496,27 @@ if (MMA_BUILD_TOOLS)
     target_link_libraries(sim_capture_mac PRIVATE mma_core)
     target_link_libraries(sim_capture_mac PRIVATE mma_warnings)
 
+    find_package(Threads REQUIRED)
+
+    # The Windows path, end to end: the real backend, the real coordinator and
+    # the real writer, against the virtual audio service. sim_wasapi checks the
+    # backend and e2e_capture checks the coordinator, and nothing joined them --
+    # the same gap that let a stereo device at 24 bits reach a user untested on
+    # macOS, which is why sim_capture_mac exists.
+    add_executable(sim_capture_win
+        Tools/sim_capture_win.cpp
+        Source/Platform/WasapiAsioBackend.cpp
+        Simulation/Wasapi/FakeWasapi.cpp)
+    target_compile_definitions(sim_capture_win PRIVATE MMA_SIMULATE_WINDOWS=1)
+    target_include_directories(sim_capture_win PRIVATE Simulation/Wasapi Source)
+    target_link_libraries(sim_capture_win PRIVATE mma_core Threads::Threads mma_warnings)
+
     add_executable(sim_wasapi
         Tools/sim_wasapi.cpp
         Source/Platform/WasapiAsioBackend.cpp
         Simulation/Wasapi/FakeWasapi.cpp)
     target_compile_definitions(sim_wasapi PRIVATE MMA_SIMULATE_WINDOWS=1)
     target_include_directories(sim_wasapi PRIVATE Simulation/Wasapi Source)
-    find_package(Threads REQUIRED)
     target_link_libraries(sim_wasapi PRIVATE Threads::Threads)
     target_link_libraries(sim_wasapi PRIVATE mma_warnings)
 
@@ -514,5 +528,6 @@ if (MMA_BUILD_TOOLS)
         add_test(NAME sim_coreaudio COMMAND sim_coreaudio)
         add_test(NAME sim_capture_mac COMMAND sim_capture_mac)
         add_test(NAME sim_wasapi COMMAND sim_wasapi)
+        add_test(NAME sim_capture_win COMMAND sim_capture_win)
     endif()
 endif()
