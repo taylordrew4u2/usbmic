@@ -435,6 +435,10 @@ int main()
     std::remove (singerPath.c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // Frees every endpoint, including any retired by removeEndpoint, so a
+    // sanitiser run ends clean and a real leak has nowhere to hide.
+    fakewasapi::reset();
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }
