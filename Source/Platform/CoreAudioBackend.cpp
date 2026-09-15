@@ -1367,9 +1367,46 @@ ExclusiveModeCapability CoreAudioBackend::checkExclusiveModeCapability (const st
                     }
                     else
                     {
-                        cap.exclusiveModeAvailable = true;
-                        cap.measuredOrEstimatedLatencyMs =
-                            (bufferSizeSamples / sampleRate) * 1000.0 * 2.0;
+                        // The rate, which this never asked about. Hog mode was
+                        // the whole test, so a fixed-rate 44.1 kHz interface --
+                        // ordinary hardware, and most USB mics -- was reported
+                        // as ready for exclusive monitoring and then refused
+                        // the open with a rate-mismatch message. §5.4's
+                        // preflight exists precisely so the user hears that
+                        // while there is still time to act on it, not at the
+                        // top of a take.
+                        //
+                        // Asked the way openStream's failure is reached: it
+                        // writes the nominal rate, so what matters is whether
+                        // the device is already there or lists the rate as one
+                        // it supports.
+                        const auto supported = querySupportedSampleRates (device);
+                        const bool alreadyRunningThere =
+                            std::abs (getNominalSampleRate (device) - sampleRate) < 1.0;
+                        const bool advertisesIt =
+                            std::find (supported.begin(), supported.end(),
+                                       static_cast<uint32_t> (sampleRate)) != supported.end();
+
+                        // An empty list is a property read that told us nothing,
+                        // not a device that supports nothing, so it is not a
+                        // reason to refuse. A preflight may only say no when it
+                        // is sure; the open remains the authority.
+                        if (! supported.empty() && ! alreadyRunningThere && ! advertisesIt)
+                        {
+                            const double actual = getNominalSampleRate (device);
+                            cap.unavailableReason =
+                                "This interface is running at " + formatRate (actual)
+                                    + " and won't change to the " + formatRate (sampleRate)
+                                    + " this recording uses. Set the recording to "
+                                    + formatRate (actual) + " in Settings, or change the interface to "
+                                    + formatRate (sampleRate) + " in Audio MIDI Setup.";
+                        }
+                        else
+                        {
+                            cap.exclusiveModeAvailable = true;
+                            cap.measuredOrEstimatedLatencyMs =
+                                (bufferSizeSamples / sampleRate) * 1000.0 * 2.0;
+                        }
                     }
                 }
             }

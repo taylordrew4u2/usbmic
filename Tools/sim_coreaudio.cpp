@@ -526,6 +526,110 @@ void anOutputWeAlreadyHoldIsStillReportedAsAvailable()
     backend.closeAllStreams();
 }
 
+/// §5.4: the preflight must answer the question the open will ask.
+///
+/// It asked only about hog mode, so a fixed-rate 44.1 kHz interface -- ordinary
+/// hardware, and most USB mics -- was reported as ready for exclusive
+/// monitoring and then refused the open with a rate-mismatch message. The
+/// preflight exists so the user hears that while there is still time to act on
+/// it, not at the top of a take.
+///
+/// This is the third platform to have a defect in checkExclusiveModeCapability:
+/// WASAPI probed a single channel layout and called capable devices incapable,
+/// ALSA accepted only "hw:" names and refused every card its own picker
+/// offered, and this one promised what it could not deliver. Different
+/// polarities, one root -- the capability check not asking what the open asks.
+void aFixedRateOutputIsNotPromisedForMonitoring()
+{
+    std::printf ("\nAn output that cannot run at the take's sample rate\n");
+    fakeca::reset();
+
+    auto spec = headphones ("Fixed 44k1 Out", "uid-44k1", 2,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.rateRanges = { { 44100.0, 44100.0 } };
+    spec.currentRate = 44100.0;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+
+    const auto capability = backend.checkExclusiveModeCapability ("uid-44k1", 48000.0, 256);
+    check (! capability.exclusiveModeAvailable,
+           "the preflight refuses it rather than promising monitoring");
+    check (capability.unavailableReason.find ("44.1 kHz") != std::string::npos,
+           "and names the rate the interface is actually running at");
+    check (capability.unavailableReason.find ("48 kHz") != std::string::npos,
+           "and the rate the recording wants, so both halves of the fix are visible");
+
+    // The preflight and the open must agree. A refusal that the open would have
+    // allowed is its own bug, and this is what says the two are answering the
+    // same question.
+    check (! backend.openExclusiveOutputStream ("uid-44k1", 48000.0, 256,
+                                                [] (const float* const*, int, float* const*, int, int) {}),
+           "and the open refuses it too, so preflight and open agree");
+}
+
+/// The control, and the half that keeps the fix from being a blanket refusal: a
+/// device that can do the rate is still offered. Without this, returning
+/// "unavailable" unconditionally would pass the case above and turn monitoring
+/// off for everybody.
+void anOutputThatSupportsTheRateIsStillOffered()
+{
+    std::printf ("\nAn output that can run at the take's sample rate\n");
+    fakeca::reset();
+
+    // Discrete: the device lists exactly the rate asked for.
+    auto exact = headphones ("48k Out", "uid-48k", 2, fakeca::BufferShape::oneChannelPerBuffer);
+    exact.rateRanges = { { 48000.0, 48000.0 } };
+    exact.currentRate = 48000.0;
+    fakeca::addDevice (exact);
+
+    // Continuous: a device with a sample-rate converter advertises a span, and
+    // 48000 sits inside it without ever appearing as one of its endpoints.
+    // querySupportedSampleRates walks common rates through the span for exactly
+    // this reason, and a capability check that only compared endpoints would
+    // refuse this device.
+    auto span = headphones ("44k1-96k Out", "uid-span", 2, fakeca::BufferShape::oneChannelPerBuffer);
+    span.rateRanges = { { 44100.0, 96000.0 } };
+    span.currentRate = 44100.0;
+    fakeca::addDevice (span);
+
+    mma::CoreAudioBackend backend;
+
+    const auto exactCap = backend.checkExclusiveModeCapability ("uid-48k", 48000.0, 256);
+    check (exactCap.exclusiveModeAvailable, "a device listing the rate is offered");
+    check (exactCap.unavailableReason.empty(), "with no reason attached to a yes");
+
+    const auto spanCap = backend.checkExclusiveModeCapability ("uid-span", 48000.0, 256);
+    check (spanCap.exclusiveModeAvailable,
+           "and so is one whose continuous range merely contains the rate");
+
+    check (backend.openExclusiveOutputStream ("uid-48k", 48000.0, 256,
+                                              [] (const float* const*, int, float* const*, int, int) {}),
+           "and the open agrees with the yes");
+}
+
+/// A preflight may only say no when it is sure. A device whose rate list comes
+/// back empty is a property read that told us nothing, not a device that
+/// supports nothing -- refusing on that would turn one unreadable property into
+/// no monitoring at all, and the open is the authority either way.
+void anOutputThatReportsNoRatesIsNotRefused()
+{
+    std::printf ("\nAn output whose rate list cannot be read\n");
+    fakeca::reset();
+
+    auto spec = headphones ("Silent About Rates", "uid-norates", 2,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.rateRanges = {};
+    spec.currentRate = 48000.0;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+
+    const auto capability = backend.checkExclusiveModeCapability ("uid-norates", 48000.0, 256);
+    check (capability.exclusiveModeAvailable,
+           "an unreadable rate list is not treated as a refusal");
+}
+
 /// §2: hotplug arrives from the OS, never from a timer. The backend registers a
 /// property listener, so adding a device must reach it without anything polling.
 void hotplugArrivesThroughTheOsListener()
@@ -1534,6 +1638,9 @@ int main()
     aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
+    aFixedRateOutputIsNotPromisedForMonitoring();
+    anOutputThatSupportsTheRateIsStillOffered();
+    anOutputThatReportsNoRatesIsNotRefused();
     anOutputWeAlreadyHoldIsStillReportedAsAvailable();
     hotplugArrivesThroughTheOsListener();
     aLiveSampleRateChangeIsReportedAndReenumerated();
