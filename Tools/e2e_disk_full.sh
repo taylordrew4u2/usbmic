@@ -77,4 +77,19 @@ df -h "$MOUNT_POINT" | tail -1
 "./$GATE" "$MOUNT_POINT" start-full
 
 echo
+echo "=== Recording started on a card with room for only some of its files ==="
+# Eight kilobytes: enough for a couple of headers and not for all three files.
+#
+# Its own scenario because it is not the same code path as a card with no room
+# at all, and the difference was a crash -- WritePipeline::start read the mix
+# writer's account after releasing it, and on a completely full card a stem's
+# open fails first, so that branch was never reached by the case it was written
+# for. Reaching it at all took constructing this exact sliver.
+rm -f "$MOUNT_POINT"/*.wav "$MOUNT_POINT"/ballast2
+BYTES_FREE=$(df --output=avail -k "$MOUNT_POINT" | tail -1)
+dd if=/dev/zero of="$MOUNT_POINT/ballast2" bs=1K count=$(( BYTES_FREE - 8 )) 2>/dev/null || true
+df -h "$MOUNT_POINT" | tail -1
+"./$GATE" "$MOUNT_POINT" start-partial
+
+echo
 echo "Disk-full gate passed."
