@@ -125,6 +125,11 @@ struct AlsaStream
     snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
     unsigned int channels = 1;
     snd_pcm_uframes_t periodFrames = 0;
+    /// What the driver actually granted, or 0 when it would not say. Kept
+    /// APART from periodFrames, which sizes the I/O the worker performs: the
+    /// two answer different questions and conflating them changes the shape of
+    /// every read for the sake of a number that is only reported.
+    snd_pcm_uframes_t grantedPeriodFrames = 0;
     bool isInput = true;
 
     AudioCallback callback;
@@ -957,12 +962,15 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
 
     // What the device GRANTED, not what was asked for. snd_pcm_set_params takes
     // a latency hint and ALSA picks its own period from it, so the two are
-    // routinely different -- and this stored the request, which made the §5.4
-    // latency figure a statement about what the app wanted rather than about
-    // what the card agreed to.
+    // routinely different -- and the §5.4 latency figure was computed from the
+    // request, so it described what the app wanted rather than what the card
+    // agreed to.
     //
-    // Falls back to the request when the driver will not say, because a period
-    // of zero would size every buffer below to nothing.
+    // Recorded alongside the request, never in place of it. Resizing the
+    // worker's reads to the granted period is a behaviour change nothing here
+    // asked for: it alters how capture is chunked against the device, and it
+    // cost an end-to-end frequency check on the Linux fixture. The request
+    // still sizes the I/O; the granted figure is only ever reported.
     stream->periodFrames = static_cast<snd_pcm_uframes_t> (std::max (1, bufferSizeSamples));
 
     {
@@ -972,7 +980,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         if (snd_pcm_get_params (stream->pcm, &grantedBuffer, &grantedPeriod) == 0
             && grantedPeriod > 0)
         {
-            stream->periodFrames = grantedPeriod;
+            stream->grantedPeriodFrames = grantedPeriod;
         }
     }
 
@@ -1196,8 +1204,8 @@ uint64_t AlsaBackend::getFramesDroppedByBackend() const
 int AlsaBackend::getGrantedOutputBufferFrames() const
 {
     for (const auto& stream : openStreams)
-        if (stream != nullptr && ! stream->isInput && stream->periodFrames > 0)
-            return static_cast<int> (stream->periodFrames);
+        if (stream != nullptr && ! stream->isInput && stream->grantedPeriodFrames > 0)
+            return static_cast<int> (stream->grantedPeriodFrames);
 
     return 0;
 }

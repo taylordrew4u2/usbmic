@@ -108,6 +108,16 @@ TEST_CASE (SystemPermissions_AWritableDestinationReadsAsGranted)
     std::filesystem::remove_all (dir, ec);
 }
 
+// The live denial probe is POSIX-only, and deliberately so.
+//
+// Windows has no mode bits for this: a directory the CI account cannot write
+// to needs a DENY ACE, and that account may be elevated anyway, so anything
+// arranged here would be a test that passes without ever seeing a denial.
+// Excluded at compile time, where it is visible in the source, rather than
+// returned early at runtime where it would print PASS. fromWriteProbeErrno
+// above still covers the mapping on Windows; only the live probe is skipped.
+#if !defined(_WIN32)
+
 /// Returns a directory this process genuinely cannot create a file in, or an
 /// empty path when the host offers none.
 ///
@@ -118,9 +128,6 @@ TEST_CASE (SystemPermissions_AWritableDestinationReadsAsGranted)
 /// refused with EACCES even to root, which is the property this needs.
 std::string somewhereWeCannotWrite()
 {
-#if defined(_WIN32)
-    return {};
-#else
     std::error_code ec;
 
     if (geteuid() != 0)
@@ -136,7 +143,6 @@ std::string somewhereWeCannotWrite()
         return "/sys";
 
     return {};
-#endif
 }
 
 TEST_CASE (SystemPermissions_AnUnwritableDestinationReadsAsDenied)
@@ -161,6 +167,8 @@ TEST_CASE (SystemPermissions_AnUnwritableDestinationReadsAsDenied)
     // user may still be recording somewhere else entirely.
     REQUIRE_FALSE (problems[0].blocksRecording);
 }
+
+#endif // !_WIN32
 
 TEST_CASE (SystemPermissions_NoDestinationIsNotProbedAtAll)
 {
