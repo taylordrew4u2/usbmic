@@ -125,6 +125,11 @@ struct AlsaStream
     snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
     unsigned int channels = 1;
     snd_pcm_uframes_t periodFrames = 0;
+    /// What the driver actually granted, or 0 when it would not say. Kept
+    /// APART from periodFrames, which sizes the I/O the worker performs: the
+    /// two answer different questions and conflating them changes the shape of
+    /// every read for the sake of a number that is only reported.
+    snd_pcm_uframes_t grantedPeriodFrames = 0;
     bool isInput = true;
 
     AudioCallback callback;
@@ -798,6 +803,35 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
         return cap;
     }
 
+    // The device opened. That says nothing about whether it will run at the
+    // rate the take is being recorded at, and this never asked -- so a card
+    // that is 44100-only was reported as ready for exclusive monitoring at
+    // 48000, and the refusal only surfaced later, from openStream, as a
+    // monitoring failure with no mention of the rate. This is the same hole
+    // CoreAudio had: an open treated as proof of a configuration.
+    {
+        snd_pcm_hw_params_t* hw = nullptr;
+        snd_pcm_hw_params_alloca (&hw);
+
+        const unsigned int wanted = static_cast<unsigned int> (sampleRate + 0.5);
+
+        if (sampleRate > 0.0
+            && snd_pcm_hw_params_any (pcm, hw) >= 0
+            && snd_pcm_hw_params_test_rate (pcm, hw, wanted, 0) < 0)
+        {
+            snd_pcm_close (pcm);
+
+            // Named, because the fix is a setting the user can change: the
+            // sample rate in Advanced. "Monitoring is unavailable" without the
+            // number sends them hunting through cables for a settings problem.
+            cap.unavailableReason =
+                "This sound output can't run at " + std::to_string (wanted)
+                + " Hz, so SobStage can't use it for live monitoring. Choose a different "
+                  "sample rate in Advanced, or a different output.";
+            return cap;
+        }
+    }
+
     snd_pcm_close (pcm);
 
     cap.exclusiveModeAvailable = true;
@@ -926,7 +960,29 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         return false;
     }
 
+    // What the device GRANTED, not what was asked for. snd_pcm_set_params takes
+    // a latency hint and ALSA picks its own period from it, so the two are
+    // routinely different -- and the §5.4 latency figure was computed from the
+    // request, so it described what the app wanted rather than what the card
+    // agreed to.
+    //
+    // Recorded alongside the request, never in place of it. Resizing the
+    // worker's reads to the granted period is a behaviour change nothing here
+    // asked for: it alters how capture is chunked against the device, and it
+    // cost an end-to-end frequency check on the Linux fixture. The request
+    // still sizes the I/O; the granted figure is only ever reported.
     stream->periodFrames = static_cast<snd_pcm_uframes_t> (std::max (1, bufferSizeSamples));
+
+    {
+        snd_pcm_uframes_t grantedBuffer = 0;
+        snd_pcm_uframes_t grantedPeriod = 0;
+
+        if (snd_pcm_get_params (stream->pcm, &grantedBuffer, &grantedPeriod) == 0
+            && grantedPeriod > 0)
+        {
+            stream->grantedPeriodFrames = grantedPeriod;
+        }
+    }
 
     // §11: sized once, here, and never touched again from the audio thread.
     const size_t sampleCount = static_cast<size_t> (stream->periodFrames) * channels;
@@ -1143,6 +1199,15 @@ uint64_t AlsaBackend::getFramesDroppedByBackend() const
             total += stream->framesDropped.load (std::memory_order_relaxed);
 
     return total;
+}
+
+int AlsaBackend::getGrantedOutputBufferFrames() const
+{
+    for (const auto& stream : openStreams)
+        if (stream != nullptr && ! stream->isInput && stream->grantedPeriodFrames > 0)
+            return static_cast<int> (stream->grantedPeriodFrames);
+
+    return 0;
 }
 
 uint64_t AlsaBackend::getOutputGlitchCount() const

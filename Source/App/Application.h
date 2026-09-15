@@ -37,6 +37,7 @@
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
+#include "../Core/PermissionGuidance.h"
 #include "CameraController.h"
 #include "TakeCombiner.h"
 #include "../Platform/IAudioBackend.h"
@@ -78,6 +79,9 @@ public:
     /// Drains camera start/finish callbacks without blocking the message
     /// thread and completes the stopped take only after every movie is closed
     /// (or the controller's bounded fail-closed timeout expires).
+    /// Journals the camera finalization failure, if there is one. Called from
+    /// both stop paths -- the synchronous one used to skip it.
+    void reportCameraFinalizationProblem();
     bool pollCameraFinalization();
 
     /// Starts the ordinary stop path when necessary and returns true once it
@@ -343,6 +347,10 @@ public:
     /// §6.3 redundant local mirror. Default on; turns most card failures from
     /// data loss into inconvenience.
     void setMirrorEnabled (bool enabled);
+    /// What the USER set, not whether a copy is happening right now. The
+    /// panel's toggle shows the setting, so it has to read the setting;
+    /// isMirroring() is false between takes and would flip the box off.
+    bool isMirrorEnabledByUser() const { return mirrorPolicy.isEnabledByUser(); }
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
 
@@ -460,6 +468,7 @@ public:
     void setCameraEnabled (const std::string& id, bool enabled);
     void setCameraName (const std::string& id, const juce::String& name);
     void setCameraPreviewQuality (PreviewQuality quality);
+    PreviewQuality getCameraPreviewQuality() const { return cameraController.getPreviewQuality(); }
 
     /// Opens cameras the user explicitly enabled. A newly discovered camera is
     /// off, so it cannot raise a privacy prompt on its own; that choice is then
@@ -693,6 +702,15 @@ private:
     // Buffer size lives in bufferLadder, which is the only thing allowed to
     // change it (§5.4). Keeping a second copy here would let the two disagree.
     std::string destinationFolder;
+
+    // §10.1/§10.4. What the OS says about our privacy permissions, sampled off
+    // the audio path: the microphone answer at launch (a denial there survives
+    // until the user acts on it and the app restarts), the destination answer
+    // whenever the save location changes.
+    PermissionState microphonePermission = PermissionState::NotApplicable;
+    PermissionState destinationWritePermission = PermissionState::NotApplicable;
+    /// Latched so the journal entry is written once, not on every poll.
+    bool journalledPermissionProblems = false;
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
     mutable ActivityJournal activity;

@@ -19,6 +19,9 @@ constexpr HRESULT AUDCLNT_E_UNSUPPORTED_FORMAT      = static_cast<HRESULT> (0x88
 constexpr HRESULT AUDCLNT_E_DEVICE_IN_USE           = static_cast<HRESULT> (0x8889000A);
 constexpr HRESULT AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED = static_cast<HRESULT> (0x88890019);
 constexpr HRESULT AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED = static_cast<HRESULT> (0x8889000F);
+constexpr HRESULT AUDCLNT_E_NOT_INITIALIZED         = static_cast<HRESULT> (0x88890001);
+constexpr HRESULT AUDCLNT_E_NOT_STOPPED             = static_cast<HRESULT> (0x88890005);
+constexpr HRESULT AUDCLNT_E_EVENTHANDLE_NOT_SET     = static_cast<HRESULT> (0x88890014);
 
 struct IAudioRenderClient : IUnknown
 {
