@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <unistd.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -498,8 +499,15 @@ void hogModeIsTakenAndReleased()
            "the open succeeds");
     check (fakeca::hogModeHeld (id), "hog mode is actually held while open");
 
+    // "Somebody holds it" is not the §5.4 claim. Exclusive monitoring means
+    // THIS process holds it, and a backend that wrote a bogus or stale pid
+    // would satisfy the line above while owning nothing it could release.
+    check (fakeca::hogOwnerPid (id) == static_cast<int> (getpid()),
+           "and it is this process that holds it, not merely someone");
+
     backend.closeAllStreams();
     check (! fakeca::hogModeHeld (id), "and released on close, so other apps get the device back");
+    check (fakeca::hogOwnerPid (id) == -1, "with the owner cleared, not just changed");
 }
 
 /// Re-checking an output this app already holds must report it as available.

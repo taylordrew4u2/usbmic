@@ -146,6 +146,15 @@ double nominalRate (AudioObjectID device);
 /// Whether this process currently owns hog mode on the device.
 bool hogModeHeld (AudioObjectID device);
 
+/// The pid written into kAudioDevicePropertyHogMode, or -1 for nobody.
+///
+/// hogModeHeld only answers "somebody holds it", which is not what §5.4
+/// claims. A backend that wrote a bogus pid -- 0, or a stale one -- would pass
+/// every existing hog-mode assertion while owning nothing it could later
+/// release. The exclusivity claim is about THIS process, so the tests have to
+/// be able to name it.
+int hogOwnerPid (AudioObjectID device);
+
 /// The buffer frame size the device settled on.
 int bufferFrameSize (AudioObjectID device);
 

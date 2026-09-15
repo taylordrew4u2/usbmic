@@ -545,6 +545,24 @@ struct FakeAudioClient : RefCounted<IAudioClient>
             return E_POINTER;
 
         std::lock_guard<std::mutex> lock (endpoint->mutex);
+
+        // Windows refuses all four of these. Returning S_OK regardless meant a
+        // backend that started a stream it had failed to initialise, or never
+        // gave an event handle to, looked exactly like one that did it right --
+        // and isRunning() then read true for a stream that could never deliver
+        // a packet. Every Start-failure recovery path was unreachable too.
+        if (endpoint->invalidated)
+            return AUDCLNT_E_DEVICE_INVALIDATED;
+
+        if (! endpoint->streamOpen)
+            return AUDCLNT_E_NOT_INITIALIZED;
+
+        if (endpoint->clientEvent == nullptr)
+            return AUDCLNT_E_EVENTHANDLE_NOT_SET;
+
+        if (endpoint->started)
+            return AUDCLNT_E_NOT_STOPPED;
+
         endpoint->started = true;
         return S_OK;
     }
@@ -555,6 +573,10 @@ struct FakeAudioClient : RefCounted<IAudioClient>
             return E_POINTER;
 
         std::lock_guard<std::mutex> lock (endpoint->mutex);
+
+        if (! endpoint->streamOpen)
+            return AUDCLNT_E_NOT_INITIALIZED;
+
         endpoint->started = false;
         return S_OK;
     }
