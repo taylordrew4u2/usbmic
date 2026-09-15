@@ -52,15 +52,29 @@ std::string tempDir()
 }
 
 /// Frames in a 24-bit WAV, read from the data chunk rather than guessed from
-/// the file size, and the largest sample in it.
+/// the file size, the largest sample in it, and WHERE THE AUDIO STOPS: one past
+/// the last non-zero sample.
+///
+/// That last number replaces a last-quarter peak, and the reason is worth
+/// keeping. A fraction of the file only means what it is meant to mean while
+/// the file is as long as the audio put into it -- and under this harness it is
+/// not, because the writer's ring drops whatever it cannot take in time. Three
+/// separate assertions in this repository were written against fractions or
+/// callback counts, and all three held on a fast machine and broke on a loaded
+/// CI runner, one of them reporting a defect in code that was behaving
+/// perfectly. The margin here was comfortable -- the unplug lands a third of
+/// the way in, the check looked at the last quarter -- but comfortable margin
+/// is exactly what the other three had.
+///
+/// Asked of the audio, none of that matters.
 bool inspect24BitWav (const std::string& path, uint32_t& frames, int32_t& peak,
-                      int32_t* tailPeak = nullptr, double tailFraction = 0.25)
+                      uint32_t* lastSounding = nullptr)
 {
     frames = 0;
     peak = 0;
 
-    if (tailPeak != nullptr)
-        *tailPeak = 0;
+    if (lastSounding != nullptr)
+        *lastSounding = 0;
 
     std::FILE* f = std::fopen (path.c_str(), "rb");
 
@@ -111,13 +125,79 @@ bool inspect24BitWav (const std::string& path, uint32_t& frames, int32_t& peak,
         const int32_t magnitude = v < 0 ? -v : v;
         peak = std::max (peak, magnitude);
 
-        if (tailPeak != nullptr
-            && i >= static_cast<uint32_t> (static_cast<double> (frames) * (1.0 - tailFraction)))
-            *tailPeak = std::max (*tailPeak, magnitude);
+        if (magnitude != 0 && lastSounding != nullptr)
+            *lastSounding = i + 1;
     }
 
     std::fclose (f);
     return true;
+}
+
+/// The largest sample in [from, to) frames of a 24-bit WAV.
+int32_t peakOfRange (const std::string& path, uint32_t from, uint32_t to)
+{
+    if (to <= from)
+        return 0;
+
+    std::FILE* f = std::fopen (path.c_str(), "rb");
+
+    if (f == nullptr)
+        return -1;
+
+    // Same walk as above: "data" also occurs inside the 602-byte bext chunk,
+    // so the offset is found rather than searched for.
+    std::fseek (f, 12, SEEK_SET);
+    long dataStart = -1;
+
+    for (;;)
+    {
+        unsigned char header[8] {};
+
+        if (std::fread (header, 1, 8, f) != 8)
+            break;
+
+        const uint32_t size = static_cast<uint32_t> (header[4])
+                            | (static_cast<uint32_t> (header[5]) << 8)
+                            | (static_cast<uint32_t> (header[6]) << 16)
+                            | (static_cast<uint32_t> (header[7]) << 24);
+
+        if (std::memcmp (header, "data", 4) == 0)
+        {
+            dataStart = std::ftell (f);
+            break;
+        }
+
+        std::fseek (f, static_cast<long> (size + (size & 1u)), SEEK_CUR);
+    }
+
+    if (dataStart < 0)
+    {
+        std::fclose (f);
+        return -1;
+    }
+
+    std::fseek (f, dataStart + static_cast<long> (from) * 3, SEEK_SET);
+
+    int32_t peak = 0;
+
+    for (uint32_t i = from; i < to; ++i)
+    {
+        unsigned char s[3] {};
+
+        if (std::fread (s, 1, 3, f) != 3)
+            break;
+
+        int32_t v = static_cast<int32_t> (s[0]) | (static_cast<int32_t> (s[1]) << 8)
+                  | (static_cast<int32_t> (s[2]) << 16);
+
+        if (v & 0x800000)
+            v |= ~0xFFFFFF;
+
+        peak = std::max (peak, v < 0 ? -v : v);
+    }
+
+    std::fclose (f);
+    return peak;
 }
 
 } // namespace
@@ -195,16 +275,18 @@ int main()
 
     uint32_t frames1 = 0, frames2 = 0;
     int32_t peak1 = 0, peak2 = 0;
-    int32_t tail1 = 0, tail2 = 0;
+    uint32_t sounding1 = 0, sounding2 = 0;
 
     const auto path1 = dir + "/01_Mic-1.wav";
     const auto path2 = dir + "/02_Mic-2.wav";
 
-    check (inspect24BitWav (path1, frames1, peak1, &tail1), "the first stem exists");
-    check (inspect24BitWav (path2, frames2, peak2, &tail2), "the second stem exists");
+    check (inspect24BitWav (path1, frames1, peak1, &sounding1), "the first stem exists");
+    check (inspect24BitWav (path2, frames2, peak2, &sounding2), "the second stem exists");
 
-    std::printf ("  01_Mic-1.wav: %u frames, peak %d (last quarter %d)\n", frames1, peak1, tail1);
-    std::printf ("  02_Mic-2.wav: %u frames, peak %d (last quarter %d)\n", frames2, peak2, tail2);
+    std::printf ("  01_Mic-1.wav: %u frames, peak %d, sounds to frame %u\n",
+                 frames1, peak1, sounding1);
+    std::printf ("  02_Mic-2.wav: %u frames, peak %d, sounds to frame %u\n",
+                 frames2, peak2, sounding2);
 
     if (dyingDevice != nullptr)
     {
@@ -223,11 +305,26 @@ int main()
         // Equal lengths on their own would also be satisfied by a channel that
         // never actually stopped, so the padding is checked for what it is:
         // silence, while the survivor is still writing audio in the same span.
-        const int32_t survivorTail = firstDies ? tail2 : tail1;
-        const int32_t lostTail = firstDies ? tail1 : tail2;
+        //
+        // The span is taken from where the lost channel actually stops rather
+        // than from a fraction of the file, so nothing here depends on how much
+        // of the take the writer's ring managed to keep.
+        const auto& survivorPath = firstDies ? path2 : path1;
+        const auto& lostPath = firstDies ? path1 : path2;
+        const uint32_t lostStops = firstDies ? sounding1 : sounding2;
+
+        const int32_t lostTail = peakOfRange (lostPath, lostStops, survivorFrames);
+        const int32_t survivorTail = peakOfRange (survivorPath, lostStops, survivorFrames);
 
         check (lostTail == 0, "the lost channel is padded with silence, not stale audio");
         check (survivorTail > 100000, "while the survivor is still writing audio there");
+
+        // And the silence is a real stretch of the take. Without this, a
+        // channel that ran to the very last frame would satisfy "silent after
+        // it stops" trivially -- and a run where the take ended before the
+        // unplug would pass while having observed nothing at all.
+        check (lostStops + 4800 < survivorFrames,
+               "the silence is a tenth of a second or more, not a rounding error");
 
         // The silence is the easy half; saying so is the half that was missing
         // on Windows and Linux both, and it is what the user actually needs.
@@ -239,7 +336,22 @@ int main()
     else
     {
         check (peak1 > 100000 && peak2 > 100000, "both microphones record real audio");
-        check (tail1 > 100000 && tail2 > 100000, "right through to the end of the take");
+
+        // Neither stopped early. A quarter of a second of slack, because the
+        // end of a take is not a clean edge: the writer's final flush leaves a
+        // short silent tail, measured here at about 2000 frames and no doubt
+        // different elsewhere.
+        //
+        // This tolerance was one block on its first writing, which is the very
+        // mistake the rest of this commit removes -- a threshold picked from
+        // what one machine happened to do, and it failed on the tenth run on
+        // that same machine. The claim being made does not need tightness: a
+        // microphone that actually stopped, as the case below arranges, falls
+        // nearly four hundred thousand frames short of this line.
+        constexpr uint32_t kQuarterSecond = 12000;
+
+        check (sounding1 + kQuarterSecond >= frames1 && sounding2 + kQuarterSecond >= frames2,
+               "right through to the end of the take");
         check (frames1 == frames2, "and their stems are the same length");
         check (reported.empty(), "with nothing reported as failing");
     }
