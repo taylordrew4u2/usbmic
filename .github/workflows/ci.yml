@@ -69,13 +69,28 @@ jobs:
       # without it -- the release build above already sets it. Verified not to
       # change anything else in this step: the 547 unit tests and all three
       # simulated backends pass with it on.
+      #
+      # sim_capture_win joins them because it is the most thread-heavy target
+      # in the tree -- a render worker, a capture worker and the coordinator all
+      # running at once -- and it was the one simulated backend no sanitiser
+      # watched. It was added after the list was written and the list was not
+      # updated, which is the same omission the paragraph above describes. The
+      # gap was not theoretical: a use-after-free in the fake audio service,
+      # where a removed endpoint was deleted while the render worker still held
+      # it, was found in exactly this target with exactly this sanitiser.
+      #
+      # alsa_monitor_loss is here for the other half of AlsaBackend.
+      # live_capture opens inputs only -- it passes no output device to
+      # startMonitoring -- so the PLAYBACK worker, snd_pcm_writei and the
+      # output branch of the worker loop, was watched by nothing. This target
+      # is the only one that opens an ALSA output stream at all.
       - name: Simulated backends under sanitizers
         if: runner.os == 'Linux'
         run: |
           # -fno-sanitize-recover so a UBSan diagnostic aborts the run:
           # without it the sanitizer prints the error and the binary still
           # exits 0, which is how undefined behaviour rides through a green CI.
-          SANITIZED="sim_coreaudio sim_wasapi sim_capture_mac mma_core_tests live_capture"
+          SANITIZED="sim_coreaudio sim_wasapi sim_capture_mac sim_capture_win mma_core_tests live_capture alsa_monitor_loss"
 
           cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug -DMMA_ALLOW_TEST_INPUTS=ON \
                 -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
@@ -83,16 +98,20 @@ jobs:
           ./build-asan/sim_coreaudio
           ./build-asan/sim_wasapi
           ./build-asan/sim_capture_mac
+          ./build-asan/sim_capture_win
           ./build-asan/Tests/mma_core_tests
           ./build-asan/live_capture "${RUNNER_TEMP}/live-asan"
+          ./build-asan/alsa_monitor_loss
 
           cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DMMA_ALLOW_TEST_INPUTS=ON -DCMAKE_CXX_FLAGS="-fsanitize=thread"
           cmake --build build-tsan --target ${SANITIZED} -j 4
           ./build-tsan/sim_coreaudio
           ./build-tsan/sim_wasapi
           ./build-tsan/sim_capture_mac
+          ./build-tsan/sim_capture_win
           ./build-tsan/Tests/mma_core_tests
           ./build-tsan/live_capture "${RUNNER_TEMP}/live-tsan"
+          ./build-tsan/alsa_monitor_loss
 
   app:
     name: App (${{ matrix.os }})
