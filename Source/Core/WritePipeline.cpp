@@ -1,4 +1,6 @@
 #include "WritePipeline.h"
+#include <filesystem>
+#include <system_error>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -16,6 +18,30 @@ float dbToGain (float db) noexcept
 /// is not perceptibly slow, long enough not to spin a core.
 constexpr int kWriterIdleMs = 5;
 
+/// Closes writers a failed start had already opened, and removes their files.
+///
+/// §6.5 and the comment this replaces both say a take that failed to start must
+/// not leave half-written headers on the card "for the recovery pass to find" --
+/// but only the close was ever done. A card with room for two stems and not the
+/// third kept two header-only .wav files, which read as tracks that recorded
+/// nothing rather than as a take that never began.
+void discardPartiallyOpenedWriters (std::vector<std::unique_ptr<SessionWriter>>& writers)
+{
+    for (auto& w : writers)
+    {
+        if (w == nullptr)
+            continue;
+
+        const auto path = w->getCurrentFilePath();
+        w->close();
+
+        std::error_code ignored;
+        std::filesystem::remove (path, ignored);
+    }
+
+    writers.clear();
+}
+
 } // namespace
 
 WritePipeline::~WritePipeline()
@@ -32,6 +58,7 @@ bool WritePipeline::start (const std::string& sessionFolder,
     // A fresh take starts with a clean slate: a failure from a previous one
     // must never make this one look doomed before it has written a byte.
     cardWriteFailed.store (false, std::memory_order_release);
+    mirrorOutOfSpace.store (false, std::memory_order_release);
     mirrorWriteFailed.store (false, std::memory_order_release);
     mixOnly.store (false, std::memory_order_release);
 
@@ -60,12 +87,10 @@ bool WritePipeline::start (const std::string& sessionFolder,
 
         if (! writer->open (sessionFolder + "/" + spec.fileName, rate, 1, stemDepth, originTimestamp))
         {
-            // Close what did open. A take that failed to start must not leave
-            // half-written headers on the card for the recovery pass to find.
-            for (auto& opened : stemWriters)
-                opened->close();
-
-            stemWriters.clear();
+            // Close AND remove what did open. A take that failed to start must
+            // not leave half-written headers on the card for the recovery pass
+            // to find -- which this said and did not do.
+            discardPartiallyOpenedWriters (stemWriters);
 
             // §10.6: what happened, then what to do. The file is named because
             // "recording could not start" is not something a user can act on,
@@ -92,11 +117,25 @@ bool WritePipeline::start (const std::string& sessionFolder,
         for (auto& opened : stemWriters)
             opened->close();
 
-        stemWriters.clear();
-        mixWriter.reset();
+        // Read BEFORE the writer is released. Asking a reset unique_ptr for its
+        // account dereferences null, and the only reason that did not crash on
+        // the way in was that a stem's open fails first on a full card, so this
+        // branch was never reached by the case it was written for.
+        auto why = mixWriter->getWriteProblem();
 
-        startProblem = ! mixWriter->getWriteProblem().empty()
-                         ? mixWriter->getWriteProblem()
+        discardPartiallyOpenedWriters (stemWriters);
+
+        {
+            const auto mixPath = mixWriter->getCurrentFilePath();
+            mixWriter->close();
+            mixWriter.reset();
+
+            std::error_code ignored;
+            std::filesystem::remove (mixPath, ignored);
+        }
+
+        startProblem = ! why.empty()
+                         ? std::move (why)
                          : "Couldn't start writing to " + sessionFolder + ". The mixed file "
                              "couldn't be created -- check the card is still plugged in and has "
                              "room, and isn't locked.";
@@ -346,6 +385,15 @@ void WritePipeline::drainOnce (bool finalFlush)
         // not open at all.
         bool finalizeFailed = false;
 
+        // Asked before the writers are released, which is the only moment the
+        // answer still exists.
+        for (const auto& w : mirrorStemWriters)
+            if (w != nullptr && w->ranOutOfSpace())
+                mirrorOutOfSpace.store (true, std::memory_order_release);
+
+        if (mirrorMixWriter != nullptr && mirrorMixWriter->ranOutOfSpace())
+            mirrorOutOfSpace.store (true, std::memory_order_release);
+
         for (auto& w : mirrorStemWriters)
             if (! w->close())
                 finalizeFailed = true;
@@ -423,7 +471,12 @@ void WritePipeline::drainOnce (bool finalFlush)
             // scratch so the copy cannot diverge from the original.
             if (mirrorActiveForThisPass && ch < static_cast<int> (mirrorStemWriters.size()))
                 if (! mirrorStemWriters[static_cast<size_t> (ch)]->writeInterleaved (stemScratch.data(), frames))
+                {
+                    if (mirrorStemWriters[static_cast<size_t> (ch)]->ranOutOfSpace())
+                        mirrorOutOfSpace.store (true, std::memory_order_release);
+
                     mirrorWriteFailed.store (true, std::memory_order_release);
+                }
         }
 
         // §6.1: the mix file gets its own limiter instance at -1 dBFS, separate
@@ -452,7 +505,12 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         if (mirrorActiveForThisPass && mirrorMixWriter != nullptr)
             if (! mirrorMixWriter->writeInterleaved (mixScratch.data(), frames))
+            {
+                if (mirrorMixWriter->ranOutOfSpace())
+                    mirrorOutOfSpace.store (true, std::memory_order_release);
+
                 mirrorWriteFailed.store (true, std::memory_order_release);
+            }
 
         const double elapsed = static_cast<double> (frames) / sampleRate;
 

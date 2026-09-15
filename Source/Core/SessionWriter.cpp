@@ -68,6 +68,7 @@ bool SessionWriter::open (const std::string& basePath, double sampleRateIn, int 
     splitIndex = 0;
     splitSuffixActive = false;
     writeProblem.clear();
+    outOfSpace = false;
     totalFramesWritten = 0;
     secondsSinceLastHeaderRewrite = 0.0;
 
@@ -115,6 +116,7 @@ bool SessionWriter::openNewFile (int index)
         // Said here rather than left to the caller's generic sentence, for the
         // same reason as every other account in this file: "couldn't start
         // recording" is not something anyone can act on.
+        outOfSpace = true;
         writeProblem = "There isn't enough room on the drive to start this take. Free up "
                        "space on it, or record to a bigger card, then try again.";
         file.close();
@@ -305,6 +307,7 @@ void SessionWriter::noteWriteFailureCause()
     // branch in Application.cpp says exactly this; the account it looks for
     // was simply never written for an ordinary failed write, only for a
     // roll-over past 3.9 GB.
+    outOfSpace = true;
     writeProblem = "The drive you were recording to is full, so recording has stopped and "
                    "every file has been closed. Free up space on it, or record to a bigger "
                    "card, then start a new take.";

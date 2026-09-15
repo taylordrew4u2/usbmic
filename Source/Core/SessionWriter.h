@@ -62,6 +62,14 @@ public:
     /// mid-block, and "the card stopped accepting writes" does not describe it.
     const std::string& getWriteProblem() const noexcept { return writeProblem; }
 
+    /// Whether the drive ran out of room, as distinct from the sentence about
+    /// it. The sentence is written for the card -- "recording has stopped and
+    /// every file has been closed" -- and the mirror's failure stops no
+    /// recording at all, so lending it that wording would tell someone their
+    /// take had ended when it had not. Each caller words its own sentence from
+    /// this.
+    bool ranOutOfSpace() const noexcept { return outOfSpace; }
+
     /// Finalizes the current file (writes a final correct header) and closes it.
     ///
     /// Returns false when that final header rewrite or the flush behind it
@@ -88,6 +96,7 @@ private:
     std::fstream file;
     std::string currentFilePath;
     std::string writeProblem;
+    bool outOfSpace = false;
     uint64_t dataBytesWrittenToCurrentFile = 0;
     uint64_t totalFramesWritten = 0;
     uint64_t autoSplitBytes = kAutoSplitBytes;
