@@ -6,6 +6,20 @@
 
 namespace mma {
 
+/// Whether the space left on a drive means it is full, asked as the writer
+/// experiences it: there is no longer room for the audio one more second of
+/// THIS take would need.
+///
+/// A fixed byte count would mean different things at 16 bits mono and 32 bits
+/// across eight channels, and this take's own format is the only figure that is
+/// about this take. Separated from the writer so both answers can be tested:
+/// the interesting half of the full-drive fix needs a filesystem that is
+/// genuinely out of space, which no unit test can conjure.
+bool freeSpaceMeansDriveIsFull (unsigned long long bytesAvailable,
+                                int bytesPerSample,
+                                int numChannels,
+                                double sampleRate) noexcept;
+
 /// §6.1/§6.3/§6.6: a single BWF-tagged WAV (or RF64) file writer with
 /// auto-split at 3.9GB and 5-second header rewrites for crash safety.
 /// Real file I/O -- exercised by Tests/ against tmp files on this Linux
@@ -82,6 +96,12 @@ private:
     // Byte offsets of header fields we rewrite in place.
     std::streampos riffSizeFieldPos {};
     std::streampos dataSizeFieldPos {};
+
+    /// Names why a write failed, when the filesystem can be asked and gives a
+    /// definite answer. Leaves writeProblem empty otherwise, so the caller's
+    /// "the card stopped accepting writes" account stands -- which is the right
+    /// one for a drive that has actually gone.
+    void noteWriteFailureCause();
 
     std::string makePathForSplit (int index) const;
     bool openNewFile (int index);

@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 
 #if defined (_WIN32)
  #ifndef NOMINMAX
@@ -149,6 +151,18 @@ void SessionWriter::writeHeaderPlaceholder()
     writeU32LE (file, 0); // patched as data is written and on close
 }
 
+bool freeSpaceMeansDriveIsFull (unsigned long long bytesAvailable,
+                                int bytesPerSample,
+                                int numChannels,
+                                double sampleRate) noexcept
+{
+    const auto bytesPerSecond = static_cast<unsigned long long> (std::max (1, bytesPerSample))
+                              * static_cast<unsigned long long> (std::max (1, numChannels))
+                              * static_cast<unsigned long long> (std::max (1.0, sampleRate));
+
+    return bytesAvailable < bytesPerSecond;
+}
+
 bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames)
 {
     if (! file.is_open())
@@ -220,7 +234,44 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
         ++frameStart;
     }
 
-    return file.good();
+    if (! file.good())
+    {
+        noteWriteFailureCause();
+        return false;
+    }
+
+    return true;
+}
+
+void SessionWriter::noteWriteFailureCause()
+{
+    // A more specific account already set by the split path wins: it knows
+    // something this cannot work out from free space alone.
+    if (! writeProblem.empty())
+        return;
+
+    std::error_code ec;
+    const auto space = std::filesystem::space (
+        std::filesystem::path (currentFilePath).parent_path(), ec);
+
+    if (ec)
+        return;
+
+    if (! freeSpaceMeansDriveIsFull (static_cast<unsigned long long> (space.available),
+                                     bytesPerSample(), numChannels, sampleRate))
+        return;
+
+    // §10.6: what happened, then what to do. Without this the take stopped
+    // under the card-removal notice, which tells the user the drive "stopped
+    // responding" and to check that it is plugged in properly -- so someone
+    // whose card is merely full spends the one moment they are still next to
+    // the rig re-seating a cable that was never loose. The comment at that
+    // branch in Application.cpp says exactly this; the account it looks for
+    // was simply never written for an ordinary failed write, only for a
+    // roll-over past 3.9 GB.
+    writeProblem = "The drive you were recording to is full, so recording has stopped and "
+                   "every file has been closed. Free up space on it, or record to a bigger "
+                   "card, then start a new take.";
 }
 
 bool SessionWriter::rewriteHeaderSizes()
