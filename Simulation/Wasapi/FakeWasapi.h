@@ -47,6 +47,22 @@ struct EndpointSpec
     /// on this node or an ancestor.
     std::string physicalInstanceId = "USB\\SIMULATED_AUDIO";
 
+    /// What the CONNECTOR reports as the device it is connected to, and what
+    /// the ENDPOINT's own property store reports as its instance id. On
+    /// Windows these are three different strings -- endpoint id, topology
+    /// device id, physical instance id -- and the walk from one to the next is
+    /// the whole of the §2.4 identity path.
+    ///
+    /// They used to be the same string here, which made two links of that walk
+    /// identity functions: a backend that read PKEY_Device_InstanceId straight
+    /// off the endpoint, skipping GetConnector and GetDeviceIdConnectedTo
+    /// entirely, was indistinguishable from one that followed the topology. On
+    /// real Windows that shortcut yields SWD\\MMDEVAPI\\..., which is not an
+    /// eligible transport, so every microphone would be filtered out as
+    /// not-external. Left blank, addEndpoint derives realistic distinct values.
+    std::string connectedDeviceId;
+    std::string endpointInstanceId;
+
     /// Leaf-to-root PnP ancestry. When empty, addEndpoint supplies one removable
     /// node matching physicalInstanceId so older audio-format scenarios keep
     /// modelling an ordinary plug-in USB interface.

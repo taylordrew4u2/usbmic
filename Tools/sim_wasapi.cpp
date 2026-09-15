@@ -557,6 +557,53 @@ void onlyDirectlyAttachedHardwareEnumeratesAsInput()
 /// Every leg of Windows' identity proof can fail in the real world: an old
 /// driver may expose no topology, a filter may omit its instance id, or the PnP
 /// tree may have malformed properties. None may turn into a name-based fallback.
+/// The §2.4 identity walk has to actually be walked.
+///
+/// Windows keeps three distinct strings here -- the endpoint id, the topology
+/// device id the connector names, and the physical filter's PnP instance id --
+/// and only the last one says what the hardware is. The fake used to return the
+/// endpoint id for all three, so a backend that read PKEY_Device_InstanceId
+/// straight off the endpoint, skipping GetConnector and GetDeviceIdConnectedTo
+/// entirely, produced identical output and every check in this file still
+/// passed.
+///
+/// It would not pass on a real machine. The endpoint's own instance id is
+/// SWD\MMDEVAPI\..., which is not an eligible transport, so that shortcut
+/// classifies EVERY microphone as not-external and hides the whole rig.
+///
+/// This pins the three apart by name so the shortcut cannot come back quietly.
+void thePhysicalIdentityComesFromTheConnectedNodeNotTheEndpoint()
+{
+    std::printf ("\nThe identity walk reaches the physical node, not the endpoint\n");
+    fakewasapi::reset();
+
+    auto spec = microphone ("endpoint-id", "USB interface",
+                            { fakewasapi::Format::pcm (1, 24, 48000.0) });
+    spec.deviceNodeChain = { { "USB\\VID_AAAA&PID_BBBB", true, true, true } };
+    spec.physicalInstanceId = "USB\\VID_AAAA&PID_BBBB";
+
+    // Named explicitly rather than derived, so the test states the shape it
+    // depends on instead of trusting a default to stay different.
+    spec.connectedDeviceId = "{2}.\\\\?\\USB#VID_AAAA&PID_BBBB#TOPOLOGY";
+    spec.endpointInstanceId = "SWD\\MMDEVAPI\\endpoint-id";
+
+    fakewasapi::addEndpoint (spec);
+
+    check (spec.connectedDeviceId != spec.id,
+           "the connector names something other than the endpoint id");
+    check (spec.endpointInstanceId != spec.physicalInstanceId,
+           "and the endpoint's own instance id is not the physical one");
+
+    mma::WasapiAsioBackend backend;
+    const auto inputs = backend.enumerateInputDevices();
+
+    // The only route from the endpoint to USB\VID_AAAA... is the topology
+    // walk. Reading the instance id off the endpoint yields SWD\MMDEVAPI\...,
+    // which fails the transport test, and this input disappears.
+    check (inputs.size() == 1,
+           "the interface is offered, which only the full walk can establish");
+}
+
 void missingExternalEvidenceFailsClosed()
 {
     std::printf ("\nMissing Windows external-device evidence fails closed\n");
@@ -1090,6 +1137,7 @@ int main()
 
     enumerationPreservesEveryInputAndSupportedRate();
     onlyDirectlyAttachedHardwareEnumeratesAsInput();
+    thePhysicalIdentityComesFromTheConnectedNodeNotTheEndpoint();
     missingExternalEvidenceFailsClosed();
     openingAnInputRechecksTheExternalHardwarePolicy();
     a24BitOnlyMicrophoneOpensAndDeliversAudio();
