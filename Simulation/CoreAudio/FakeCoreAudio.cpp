@@ -756,6 +756,12 @@ bool hogModeHeld (AudioObjectID device)
     return d != nullptr && d->hogOwner != -1;
 }
 
+int hogOwnerPid (AudioObjectID device)
+{
+    auto* d = find (device);
+    return d == nullptr ? -1 : d->hogOwner;
+}
+
 int bufferFrameSize (AudioObjectID device)
 {
     auto* d = find (device);
