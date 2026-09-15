@@ -149,6 +149,29 @@ bool hogModeHeld (AudioObjectID device);
 /// The buffer frame size the device settled on.
 int bufferFrameSize (AudioObjectID device);
 
+/// How many IOProcs have been CREATED on this device and not destroyed --
+/// that is, how many times something opened it.
+///
+/// §5.2 and CoreAudio both want one. A duplex mixer presents its microphone
+/// inputs and its monitor output as a single device, and asking macOS for a
+/// second IOProc on a device this process has already hog-moded comes back as
+/// "couldn't be opened for recording" against a microphone that is plugged in
+/// and working -- so a four-input interface must be opened once, not four
+/// times.
+///
+/// Exposed because the harness asserted that in words and checked nothing: the
+/// line read `check (true, "one stream opens for the device, not one per
+/// microphone")`, which passes just as happily when four are open.
+///
+/// Registrations rather than RUNNING procs, and the difference matters. This
+/// fake hands back the proc's own function pointer as its AudioDeviceIOProcID,
+/// so several registrations sharing one trampoline -- which is exactly what a
+/// per-channel open would produce -- collide, and AudioDeviceStart marks only
+/// the first of them running before returning. A count of running procs would
+/// therefore read 1 whether one stream or four had been opened: the same
+/// vacuous assertion in a less obvious costume.
+int openIoProcCount (AudioObjectID device);
+
 /// Delivers one input callback carrying `channels` (per-channel, equal length),
 /// packed in whatever shape the device was configured with. Returns false if no
 /// IOProc is running on the device.

@@ -735,6 +735,15 @@ bool isRunning (AudioObjectID device)
                         [] (const IoProcRegistration& r) { return r.running; });
 }
 
+int openIoProcCount (AudioObjectID device)
+{
+    auto* d = find (device);
+    if (d == nullptr)
+        return 0;
+
+    return static_cast<int> (d->procs.size());
+}
+
 double nominalRate (AudioObjectID device)
 {
     auto* d = find (device);

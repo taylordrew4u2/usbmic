@@ -326,7 +326,17 @@ int main()
         return 1;
     }
 
-    check (true, "one stream opens for the device, not one per microphone");
+    // Counted, not asserted in words. This line used to read
+    // `check (true, ...)`: it named the exact failure it was there to catch --
+    // one IOProc per microphone instead of one per device -- and would have
+    // passed just as happily with four open.
+    //
+    // §5.2 and CoreAudio both want one. Asking macOS for a second IOProc on a
+    // device this process has already hog-moded comes back as "couldn't be
+    // opened for recording" against a microphone that is plugged in and
+    // working.
+    check (fakeca::openIoProcCount (rig) == 1,
+           "one stream opens for the device, not one per microphone");
 
     if (! four.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
     {
