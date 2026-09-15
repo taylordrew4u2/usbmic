@@ -79,6 +79,9 @@ public:
     /// Drains camera start/finish callbacks without blocking the message
     /// thread and completes the stopped take only after every movie is closed
     /// (or the controller's bounded fail-closed timeout expires).
+    /// Journals the camera finalization failure, if there is one. Called from
+    /// both stop paths -- the synchronous one used to skip it.
+    void reportCameraFinalizationProblem();
     bool pollCameraFinalization();
 
     /// Starts the ordinary stop path when necessary and returns true once it

@@ -1954,7 +1954,24 @@ void Application::toggleRecording()
                                                      currentBitDepth);
 
             if (plan.hasWork())
+            {
                 takeCombiner.start (juce::File (currentSessionFolder), plan);
+            }
+            else if (! plan.problem.empty())
+            {
+                // The user asked for one file with the sound on it and is not
+                // getting one. buildCombinedTakePlan has always written a
+                // plain-language reason -- "None of the cameras wrote a file,
+                // so there is nothing to combine." -- and nothing in Source/
+                // ever read it, so the plan was dropped in silence and the
+                // user went looking for a file that was never attempted.
+                //
+                // TakeCombiner's own failures were already surfaced; this was
+                // the remaining hole in that chain, and it is the half that
+                // fires when the cameras failed rather than ffmpeg.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              juce::String (plan.problem));
+            }
         }
 
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
@@ -2089,8 +2106,32 @@ void Application::toggleRecording()
             return;
         }
 
+        // Finalization already finished, synchronously, inside stopRecording.
+        //
+        // That is the COMMON case for the failure this sentence exists to
+        // report: a camera unplugged mid-take has its writer finalize with an
+        // error before Stop is even pressed, so every didFinish has already
+        // arrived and isFinalizingRecording() is false here. Only the
+        // asynchronous path below read the problem, so on this one the app
+        // said "Saved to ..." while "X could not finish its video file. The
+        // audio is safe; do not use that movie." was produced and thrown away.
+        //
+        // The string is deliberately not part of getProblem(), so nothing else
+        // -- not the camera panel, not the journal, not the watchdog -- could
+        // pick it up either.
+        reportCameraFinalizationProblem();
+
         completeStoppedTake();
     }
+}
+
+void Application::reportCameraFinalizationProblem()
+{
+    // One reader for both stop paths. Keeping the read inline in each was how
+    // the synchronous one came to be missing it.
+    if (const auto problem = cameraController.getRecordingFinalizationProblem();
+        problem.isNotEmpty())
+        noteActivity (ActivityLevel::Failed, "Cameras", problem);
 }
 
 bool Application::pollCameraFinalization()
@@ -2101,9 +2142,7 @@ bool Application::pollCameraFinalization()
         || cameraController.isFinalizingRecording())
         return pendingStoppedTakeCompletion == nullptr;
 
-    if (const auto problem = cameraController.getRecordingFinalizationProblem();
-        problem.isNotEmpty())
-        noteActivity (ActivityLevel::Failed, "Cameras", problem);
+    reportCameraFinalizationProblem();
 
     // Clear the member before invoking it: completion refreshes cameras and
     // may synchronously publish callbacks, but can never execute this take a
