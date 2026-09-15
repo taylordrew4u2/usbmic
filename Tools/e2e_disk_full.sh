@@ -65,4 +65,16 @@ df -h "$MOUNT_POINT" | tail -1
 "./$GATE" "$MOUNT_POINT"
 
 echo
+echo "=== Recording started on a card that is already full ==="
+# Every last byte taken, so the take is refused rather than recovered from --
+# a different failure with a different right answer.
+# The stems from the run above are cleared FIRST, then every remaining byte is
+# taken -- filling before clearing hands the space straight back and leaves the
+# drive comfortably writable, which passes nothing.
+rm -f "$MOUNT_POINT"/*.wav
+dd if=/dev/zero of="$MOUNT_POINT/ballast2" bs=1K count=8192 2>/dev/null || true
+df -h "$MOUNT_POINT" | tail -1
+"./$GATE" "$MOUNT_POINT" start-full
+
+echo
 echo "Disk-full gate passed."

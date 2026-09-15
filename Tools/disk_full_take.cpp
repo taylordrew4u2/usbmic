@@ -124,11 +124,12 @@ int main (int argc, char** argv)
 {
     if (argc < 2)
     {
-        std::printf ("usage: disk_full_take <directory on a nearly-full filesystem>\n");
+        std::printf ("usage: disk_full_take <directory on a nearly-full filesystem> [start-full]\n");
         return 2;
     }
 
     const std::string dir = argv[1];
+    const bool startsFull = argc > 2 && std::string (argv[2]) == "start-full";
 
     mma::AlsaBackend backend;
     auto devices = backend.enumerateInputDevices();
@@ -160,9 +161,48 @@ int main (int argc, char** argv)
         return 1;
     }
 
+    // Hitting record on a card that is ALREADY full, which is a different
+    // failure from one that fills part way through and has to be refused
+    // rather than recovered from.
+    if (startsFull)
+    {
+        const bool started = coordinator.startRecording (dir, 24, "2026-09-15T00:00:00Z");
+
+        check (! started, "recording refuses to start on a card with no room on it");
+
+        const auto why = coordinator.getRecordingProblem();
+        std::printf ("  Reported: '%s'\n", why.c_str());
+
+        check (! why.empty(), "and says why rather than un-latching the button in silence");
+        check (why.find ("room") != std::string::npos,
+               "naming the lack of room as the reason");
+        check (why.find ("plugged in") == std::string::npos,
+               "and not sending the user to check a cable that was never loose");
+
+        // A zero-byte .wav beside the others reads as a track that recorded
+        // nothing, which is a different and more alarming thing than a take
+        // that never started.
+        for (const auto& channel : mics)
+        {
+            const auto path = dir + "/" + channel.fileName + ".wav";
+            std::FILE* f = std::fopen (path.c_str(), "rb");
+            const bool present = f != nullptr;
+
+            if (f != nullptr)
+                std::fclose (f);
+
+            check (! present, channel.fileName + ".wav is not left behind empty");
+        }
+
+        coordinator.stopMonitoring();
+        std::printf ("%s (%d failing)\n", failures == 0 ? "PASSED" : "FAILED", failures);
+        return failures == 0 ? 0 : 1;
+    }
+
     if (! coordinator.startRecording (dir, 24, "2026-09-15T00:00:00Z"))
     {
-        std::printf ("  FAIL  startRecording into %s\n", dir.c_str());
+        std::printf ("  FAIL  startRecording into %s: %s\n", dir.c_str(),
+                     coordinator.getRecordingProblem().c_str());
         return 1;
     }
 

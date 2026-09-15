@@ -93,6 +93,42 @@ bool SessionWriter::openNewFile (int index)
 
     dataBytesWrittenToCurrentFile = 0;
     writeHeaderPlaceholder();
+
+    // Flushed and checked, because creating the file proves almost nothing on
+    // a card that is out of room: an empty file needs an entry, not a block,
+    // so the open succeeds and the header -- which does need a block -- fails
+    // quietly in the buffer.
+    //
+    // That was the whole of it. open() returned true, startRecording returned
+    // true, and the app said it was recording onto a card that could not take
+    // a single byte. Application.cpp already stops the engine and tells the
+    // user when startRecording fails, with a comment saying that path "used to
+    // return here in silence" -- it simply was never reached for a full card,
+    // so someone hit record, performed, and only learned afterwards.
+    //
+    // A flush per file at open time, once per channel per take, costs nothing
+    // worth measuring.
+    file.flush();
+
+    if (! file.good())
+    {
+        // Said here rather than left to the caller's generic sentence, for the
+        // same reason as every other account in this file: "couldn't start
+        // recording" is not something anyone can act on.
+        writeProblem = "There isn't enough room on the drive to start this take. Free up "
+                       "space on it, or record to a bigger card, then try again.";
+        file.close();
+
+        // The empty file is removed rather than left in the take folder. A
+        // zero-byte .wav sitting beside the others reads as a track that
+        // recorded nothing, which is a different and more alarming thing than
+        // a take that never started.
+        std::error_code ignored;
+        std::filesystem::remove (currentFilePath, ignored);
+
+        return false;
+    }
+
     return true;
 }
 
