@@ -279,6 +279,30 @@ bool SessionWriter::rewriteHeaderSizes()
     if (! file.is_open())
         return false;
 
+    // A stream that has already failed silently discards every later seek and
+    // write, so this patch did nothing on precisely the takes that needed it.
+    //
+    // That is what a full card does. The audio written before the drive gave
+    // out is on the card and perfectly good, but the header still carries its
+    // placeholder zeros -- RIFF size 0, data size 0 -- so every player and DAW
+    // opens the file and sees a recording with nothing in it. Measured on a
+    // real full filesystem: two of three stems held about 2.4 seconds of audio
+    // each and both declared themselves empty, while the app said every file
+    // had been closed.
+    //
+    // The comment on close() in the header names this as the failure it exists
+    // to prevent -- "the file on the card carried a header claiming zero
+    // audio" -- and the return value it added does report it. What was missing
+    // is that the patch can actually succeed: it overwrites four bytes at two
+    // offsets that already exist, so it needs no new space and a full drive
+    // cannot refuse it. It only ever needed to be allowed to try.
+    //
+    // Clearing here cannot hide a genuine failure. Every path that writes
+    // audio judges the stream itself, cardWriteFailed is already latched by
+    // then, and the return below is taken after the patch -- so a device that
+    // really has gone still fails, and still says so.
+    file.clear();
+
     const auto currentPos = file.tellp();
     file.seekp (0, std::ios::end);
     const auto fileEnd = file.tellp();
@@ -355,9 +379,83 @@ bool SessionWriter::close()
 
     file.close();
 
-    // file.good() is false after a successful close on some implementations,
-    // so the close itself is judged by fail(), not good().
-    return headerLanded && ! file.fail();
+    if (headerLanded)
+        // file.good() is false after a successful close on some
+        // implementations, so the close itself is judged by fail(), not good().
+        return ! file.fail();
+
+    // The take's own stream could not be patched, and on a full card that is
+    // the normal outcome rather than a rare one: seeking to the header first
+    // flushes whatever audio is still buffered, that flush has nowhere to go,
+    // and the seek fails with it -- so the four bytes that say how long the
+    // recording is were never written, however many times it was tried.
+    //
+    // The audio itself is on the card and perfectly good. Only the header is
+    // wrong, and it is wrong in the way that matters most: RIFF size 0 and
+    // data size 0 mean every player and DAW opens the file and sees an empty
+    // recording. Measured on a real full filesystem, two of three stems held
+    // about 2.4 seconds each and both declared themselves empty.
+    //
+    // A fresh handle has no failed state and nothing pending, so it can do
+    // what this stream no longer can. Done after close() so there is only ever
+    // one handle on the file and the size on disk is final.
+    return patchHeaderThroughFreshHandle();
+}
+
+bool SessionWriter::patchHeaderThroughFreshHandle()
+{
+    std::error_code ec;
+    const auto onDisk = std::filesystem::file_size (currentFilePath, ec);
+
+    if (ec)
+        return false;
+
+    // Where the audio starts: the data size field, then the four bytes of the
+    // field itself.
+    const auto dataStart = static_cast<uint64_t> (dataSizeFieldPos) + 4;
+
+    if (onDisk < dataStart)
+        return false;
+
+    // Measured from the file, never from dataBytesWrittenToCurrentFile. That
+    // counter says what the writer TRIED to send, and on a full card the last
+    // of it never landed -- a header built from it would overstate the audio
+    // and send a reader off the end of the file, which is a worse failure than
+    // the one being fixed.
+    //
+    // Rounded down to a whole frame, because the drive gave out mid-frame: the
+    // raw figure was one byte past a frame boundary on a 24-bit mono stem, and
+    // a data chunk that is not a multiple of the block alignment is malformed.
+    // The stray bytes are left outside the chunk rather than described.
+    const auto blockAlign = static_cast<uint64_t> (std::max (1, bytesPerSample()))
+                          * static_cast<uint64_t> (std::max (1, numChannels));
+
+    const auto wholeFrameBytes = ((onDisk - dataStart) / blockAlign) * blockAlign;
+
+    if (wholeFrameBytes == 0)
+        return false;
+
+    const auto dataSize = static_cast<uint32_t> (
+        std::min<uint64_t> (wholeFrameBytes, 0xFFFFFFFFull));
+
+    // The file ends where the last whole frame ends, so RIFF describes exactly
+    // what the data chunk describes and nothing dangles past it.
+    const auto describedEnd = dataStart + wholeFrameBytes;
+    const auto riffSize = static_cast<uint32_t> (
+        std::min<uint64_t> (describedEnd >= 8 ? describedEnd - 8 : 0, 0xFFFFFFFFull));
+
+    std::fstream patch (currentFilePath, std::ios::in | std::ios::out | std::ios::binary);
+
+    if (! patch.is_open())
+        return false;
+
+    patch.seekp (riffSizeFieldPos);
+    writeU32LE (patch, riffSize);
+    patch.seekp (dataSizeFieldPos);
+    writeU32LE (patch, dataSize);
+    patch.flush();
+
+    return patch.good();
 }
 
 } // namespace mma

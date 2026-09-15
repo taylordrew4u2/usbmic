@@ -109,6 +109,14 @@ private:
     /// False when the seek/write/flush behind the header patch failed.
     bool rewriteHeaderSizes();
     bool syncCurrentFileToStorage();
+
+    /// Writes the RIFF and data sizes through a FRESH handle, describing what
+    /// actually landed on disk rather than what the writer tried to send.
+    ///
+    /// The last resort when the take's own stream can no longer be patched,
+    /// which is exactly what a full card produces. Needs no new space: it
+    /// overwrites four bytes at two offsets that already exist.
+    bool patchHeaderThroughFreshHandle();
     int bytesPerSample() const { return bitDepth / 8; }
 
     /// Makes the multi-file boundary reachable without writing 3.9 GB in a
