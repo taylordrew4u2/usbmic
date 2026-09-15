@@ -121,6 +121,17 @@ MainComponent::MainComponent (Application& app)
 
     cameraPanel.onPreviewQualityChanged = [this] (PreviewQuality quality) {
         application.setCameraPreviewQuality (quality);
+        mainScreen.setFullPreview (quality == PreviewQuality::Full);
+    };
+
+    // The main screen has the same control beside the camera tiles, and
+    // nothing in the repo ever assigned its callback -- so ticking it did
+    // exactly nothing, and it never reflected the setting either. Both boxes
+    // now drive the one setting and both restate it.
+    mainScreen.onFullPreviewToggled = [this] (bool full) {
+        const auto quality = full ? PreviewQuality::Full : PreviewQuality::Low;
+        application.setCameraPreviewQuality (quality);
+        cameraPanel.setPreviewQuality (quality);
     };
 
     cameraPanel.onCloseClicked = [this] { toggleCameras(); };
@@ -763,6 +774,12 @@ void MainComponent::refreshStatus()
     if (lastMicCount < 0)
         rebindMeters();
 
+    // Two controls that used to open at a hardcoded value and never restate
+    // what was actually saved. The slider ignores this while it is being
+    // dragged, so restating it on the status tick cannot fight the user.
+    mainScreen.setMasterVolume (application.getMasterVolume());
+    mainScreen.setFullPreview (application.getCameraPreviewQuality() == PreviewQuality::Full);
+
     const int micCount = juce::jmax (0, lastMicCount);
 
     // Liveness can change mid-take without rebuilding the frozen channel set.
@@ -971,6 +988,7 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
     advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
                                         application.getCombineUnavailableReason());
+    advancedPanel.setMirrorEnabled (application.isMirrorEnabledByUser());
     advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
                                       application.getDeliveryTarget());
     advancedPanel.setLoudnessAdvice (application.getLoudnessAdvice());

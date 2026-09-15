@@ -347,6 +347,10 @@ public:
     /// §6.3 redundant local mirror. Default on; turns most card failures from
     /// data loss into inconvenience.
     void setMirrorEnabled (bool enabled);
+    /// What the USER set, not whether a copy is happening right now. The
+    /// panel's toggle shows the setting, so it has to read the setting;
+    /// isMirroring() is false between takes and would flip the box off.
+    bool isMirrorEnabledByUser() const { return mirrorPolicy.isEnabledByUser(); }
     bool isMirroring() const { return mirrorPolicy.isMirroring(); }
     MirrorState getMirrorState() const { return mirrorPolicy.getState(); }
 
@@ -464,6 +468,7 @@ public:
     void setCameraEnabled (const std::string& id, bool enabled);
     void setCameraName (const std::string& id, const juce::String& name);
     void setCameraPreviewQuality (PreviewQuality quality);
+    PreviewQuality getCameraPreviewQuality() const { return cameraController.getPreviewQuality(); }
 
     /// Opens cameras the user explicitly enabled. A newly discovered camera is
     /// off, so it cannot raise a privacy prompt on its own; that choice is then
