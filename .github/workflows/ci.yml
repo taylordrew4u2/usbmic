@@ -163,6 +163,7 @@ jobs:
           bash Tools/e2e_two_takes.sh 6
           bash Tools/e2e_bus_power.sh
           bash Tools/alsa_recovery_death.sh
+          bash Tools/alsa_mid_take_loss.sh
 
       - name: App-integrated regression tests
         run: >-
