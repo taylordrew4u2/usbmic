@@ -22,6 +22,7 @@
 #include <alsa/asoundlib.h>
 #include <dlfcn.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -30,58 +31,76 @@ namespace {
 
 enum class Mode { xrun, dead };
 
-Mode mode = Mode::xrun;
-const char* onlyDevice = nullptr;
-long failAfterReads = 0;
-long failAfterMs = 0;
-long reads = 0;
-bool configured = false;
-std::chrono::steady_clock::time_point firstRead {};
-
-snd_pcm_sframes_t (*realReadi) (snd_pcm_t*, void*, snd_pcm_uframes_t) = nullptr;
-
-void configure()
+/// Read once, on first use, and never written again. A function-local static is
+/// initialised exactly once even when several threads arrive together, which
+/// matters here: every open stream has its own ALSA worker thread, and the
+/// mid-take case deliberately runs two of them at once. The earlier version of
+/// this file set plain globals from whichever thread got here first, which is a
+/// data race in the very tooling used to make claims about correctness.
+struct Config
 {
-    if (configured)
-        return;
+    Mode mode = Mode::xrun;
+    const char* onlyDevice = nullptr;
+    long failAfterReads = 0;
+    long failAfterMs = 0;
 
-    configured = true;
+    Config()
+    {
+        if (const char* m = std::getenv ("MMA_SHIM_MODE"); m != nullptr && std::strcmp (m, "dead") == 0)
+            mode = Mode::dead;
 
-    if (const char* m = std::getenv ("MMA_SHIM_MODE"); m != nullptr && std::strcmp (m, "dead") == 0)
-        mode = Mode::dead;
+        onlyDevice = std::getenv ("MMA_SHIM_DEVICE");
 
-    onlyDevice = std::getenv ("MMA_SHIM_DEVICE");
+        if (const char* n = std::getenv ("MMA_SHIM_FAIL_AFTER"); n != nullptr)
+            failAfterReads = std::atol (n);
 
-    if (const char* n = std::getenv ("MMA_SHIM_FAIL_AFTER"); n != nullptr)
-        failAfterReads = std::atol (n);
+        if (const char* n = std::getenv ("MMA_SHIM_FAIL_AFTER_MS"); n != nullptr)
+            failAfterMs = std::atol (n);
+    }
+};
 
-    if (const char* n = std::getenv ("MMA_SHIM_FAIL_AFTER_MS"); n != nullptr)
-        failAfterMs = std::atol (n);
+const Config& config()
+{
+    static const Config c;
+    return c;
 }
+
+std::atomic<long> reads { 0 };
+
+/// Steady-clock nanoseconds of the first read that could fail, or 0 for "not
+/// yet". Set by whichever thread gets there first and left alone after that.
+std::atomic<long long> firstReadNanos { 0 };
+
+std::atomic<snd_pcm_sframes_t (*) (snd_pcm_t*, void*, snd_pcm_uframes_t)> realReadi { nullptr };
 
 bool shouldFail (snd_pcm_t* pcm)
 {
-    configure();
+    const auto& c = config();
 
-    if (onlyDevice != nullptr)
+    if (c.onlyDevice != nullptr)
     {
         const char* name = snd_pcm_name (pcm);
 
-        if (name == nullptr || std::strcmp (name, onlyDevice) != 0)
+        if (name == nullptr || std::strcmp (name, c.onlyDevice) != 0)
             return false;
     }
 
-    if (reads++ < failAfterReads)
+    if (reads.fetch_add (1, std::memory_order_relaxed) < c.failAfterReads)
         return false;
 
-    if (failAfterMs > 0)
+    if (c.failAfterMs > 0)
     {
-        const auto now = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        long long expected = 0;
 
-        if (firstRead.time_since_epoch().count() == 0)
-            firstRead = now;
+        // Only the first thread here writes; every other one reads what it wrote.
+        firstReadNanos.compare_exchange_strong (expected, static_cast<long long> (now),
+                                                std::memory_order_relaxed);
 
-        if (std::chrono::duration_cast<std::chrono::milliseconds> (now - firstRead).count() < failAfterMs)
+        const auto began = firstReadNanos.load (std::memory_order_relaxed);
+        const auto elapsedMs = (static_cast<long long> (now) - began) / 1000000;
+
+        if (elapsedMs < c.failAfterMs)
             return false;
     }
 
@@ -90,10 +109,15 @@ bool shouldFail (snd_pcm_t* pcm)
 
 snd_pcm_sframes_t passThrough (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t frames)
 {
-    if (realReadi == nullptr)
-        realReadi = reinterpret_cast<decltype (realReadi)> (dlsym (RTLD_NEXT, "snd_pcm_readi"));
+    auto fn = realReadi.load (std::memory_order_acquire);
 
-    return realReadi != nullptr ? realReadi (pcm, buffer, frames) : -EPIPE;
+    if (fn == nullptr)
+    {
+        fn = reinterpret_cast<decltype (fn)> (dlsym (RTLD_NEXT, "snd_pcm_readi"));
+        realReadi.store (fn, std::memory_order_release);
+    }
+
+    return fn != nullptr ? fn (pcm, buffer, frames) : -EPIPE;
 }
 
 } // namespace
@@ -107,28 +131,33 @@ snd_pcm_sframes_t snd_pcm_readi (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t
 
     // -EPIPE is an xrun: recoverable, which is what makes the endless-recovery
     // case endless. -ENODEV is a device that is no longer there.
-    return mode == Mode::dead ? -ENODEV : -EPIPE;
+    return config().mode == Mode::dead ? -ENODEV : -EPIPE;
 }
 
 int snd_pcm_recover (snd_pcm_t* pcm, int err, int silent)
 {
-    configure();
+    const auto& c = config();
 
     // In xrun mode recovery always succeeds, which is the whole point: the PCM
     // is runnable again and the loop has no reason to stop. A device that is
     // gone cannot be recovered, and must not pretend otherwise.
-    if (mode == Mode::dead && err == -ENODEV)
+    if (c.mode == Mode::dead && err == -ENODEV)
         return -ENODEV;
 
-    if (mode == Mode::xrun)
+    if (c.mode == Mode::xrun)
         return 0;
 
-    static int (*realRecover) (snd_pcm_t*, int, int) = nullptr;
+    static std::atomic<int (*) (snd_pcm_t*, int, int)> realRecover { nullptr };
 
-    if (realRecover == nullptr)
-        realRecover = reinterpret_cast<decltype (realRecover)> (dlsym (RTLD_NEXT, "snd_pcm_recover"));
+    auto fn = realRecover.load (std::memory_order_acquire);
 
-    return realRecover != nullptr ? realRecover (pcm, err, silent) : err;
+    if (fn == nullptr)
+    {
+        fn = reinterpret_cast<decltype (fn)> (dlsym (RTLD_NEXT, "snd_pcm_recover"));
+        realRecover.store (fn, std::memory_order_release);
+    }
+
+    return fn != nullptr ? fn (pcm, err, silent) : err;
 }
 
 } // extern "C"
