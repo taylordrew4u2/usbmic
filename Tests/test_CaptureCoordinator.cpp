@@ -1577,20 +1577,49 @@ TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
     const float* ins[] = { a.data() };
     float* outs[] = { outL.data() };
 
-    // The output is alive: it pulls, and the software clock stays out of it.
-    for (int i = 0; i < 8; ++i)
+    // Driven until eight blocks have landed, rather than assuming that eight
+    // callbacks deliver eight blocks. They need not, and this test lost that
+    // bet on a CI runner while passing twenty times in a row on a fast one.
+    //
+    // At least two things can make a callback contribute nothing, both of them
+    // shipping behaviour rather than faults. A callback that collides with the
+    // software clock mid-pull fills its headphone buffer with silence and
+    // pulls nothing, because two things must never pull one ring. And a block
+    // the writer's ring has no room for is REJECTED -- counted as dropped and
+    // refused -- so it never reaches the accepted count at all.
+    //
+    // Which of those the runner hit is not established: neither CPU starvation
+    // nor a stall past the loss threshold reproduced it here. So this does not
+    // claim a cause. It removes the assumption instead, and the cap keeps the
+    // assertion's teeth: a take that is genuinely frozen never reaches eight
+    // blocks however long it is driven, and fails here, which is the bug this
+    // whole case exists to catch.
+    constexpr int64_t kEightBlocks = 64 * 8;
+    constexpr int kMostCallbacksAHealthyTakeShouldNeed = 200;
+
+    int callbacks = 0;
+
+    while (c.getFramesAccepted() < kEightBlocks
+           && callbacks < kMostCallbacksAHealthyTakeShouldNeed)
     {
         backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
         backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
         backend.outputCallback (nullptr, 0, outs, 1, 64);
+        ++callbacks;
     }
 
-    // At least the eight blocks the output pulled. Opening the take's files
-    // above can take longer than the loss threshold on a slow disk, in which
-    // case the software clock legitimately pulled a few blocks meanwhile;
-    // the output reclaims the pull as soon as it calls back.
     const auto beforeLoss = c.getFramesAccepted();
-    REQUIRE (beforeLoss >= 64 * 8);
+
+    // Said out loud, because the failure that started this arrived as a bare
+    // "REQUIRE failed: beforeLoss" and cost a long evening of guessing. The
+    // next one names how hard it was driven and what the take did with it.
+    if (beforeLoss < kEightBlocks)
+        std::printf ("  drove %d callbacks; accepted %llu frames of %lld, dropped %llu, "
+                     "output clock lost: %d\n",
+                     callbacks, (unsigned long long) beforeLoss, (long long) kEightBlocks,
+                     (unsigned long long) c.getFramesDropped(), (int) c.isOutputClockLost());
+
+    REQUIRE (beforeLoss >= kEightBlocks);
 
     // Then it stops. Only inputs arrive for a quarter of a second.
     pushInputsForAWhile (backend, 190, 1333);
