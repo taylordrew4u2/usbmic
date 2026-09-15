@@ -79,7 +79,7 @@ private:
     /// thread has a bounded teardown even when no device event ever arrives.
     std::unique_ptr<struct AlsaHotplugWatcher> hotplug;
 
-    std::vector<AudioDeviceDescriptor> enumerate (bool wantInput) const;
+    std::vector<AudioDeviceDescriptor> enumerate (bool wantInput, bool probeCapabilities) const;
     bool openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                      bool isInput, AudioCallback callback);
 };
