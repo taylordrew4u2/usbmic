@@ -121,3 +121,28 @@ TEST_CASE (AlsaInputPolicy_GenericWiredUsbAudioCannotRevealItsFormFactor)
 
     REQUIRE (alsa_detail::deviceAncestryIsUserRemovable (genericUsbAudio));
 }
+
+// A PCM that fails and recovers on every read is not glitching under load, it
+// has stopped working -- and until this rule existed the ALSA worker had no way
+// to tell the two apart, so it spun on the second case for the rest of the take.
+TEST_CASE (AlsaInputPolicy_AnOccasionalRecoveryIsLoadRatherThanDeath)
+{
+    REQUIRE_FALSE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (0));
+    REQUIRE_FALSE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (1));
+    REQUIRE_FALSE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (10));
+
+    // A busy machine can xrun a lot without the device being broken, so the
+    // rule has to sit well clear of anything load alone produces between two
+    // successful reads.
+    REQUIRE_FALSE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (
+                       alsa_detail::kRecoveriesBeforeGivingUp - 1));
+}
+
+TEST_CASE (AlsaInputPolicy_AnUnbrokenRunOfRecoveriesIsADeadDevice)
+{
+    REQUIRE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (
+                 alsa_detail::kRecoveriesBeforeGivingUp));
+    REQUIRE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (
+                 alsa_detail::kRecoveriesBeforeGivingUp + 1));
+    REQUIRE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (100000));
+}

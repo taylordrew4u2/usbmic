@@ -162,6 +162,7 @@ jobs:
           bash Tools/e2e_headless.sh
           bash Tools/e2e_two_takes.sh 6
           bash Tools/e2e_bus_power.sh
+          bash Tools/alsa_recovery_death.sh
 
       - name: App-integrated regression tests
         run: >-
