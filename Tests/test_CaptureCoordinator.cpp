@@ -45,6 +45,10 @@ class FakeBackend : public IAudioBackend
 public:
     bool exclusiveAvailable = true;
     std::string exclusiveReason;
+    /// What the backend says the monitor path costs. Every real backend fills
+    /// this in; the fake did not, which is part of why nothing noticed that the
+    /// coordinator was dropping it.
+    double exclusiveLatencyMs = 0.0;
     bool failOutputOpen = false;
     bool failInputOpen = false;
     /// Devices that refuse to open, by id -- so a test can fail ONE microphone
@@ -69,6 +73,7 @@ public:
         ExclusiveModeCapability c;
         c.exclusiveModeAvailable = exclusiveAvailable;
         c.unavailableReason = exclusiveReason;
+        c.measuredOrEstimatedLatencyMs = exclusiveLatencyMs;
         return c;
     }
 
@@ -1721,4 +1726,100 @@ TEST_CASE (CaptureCoordinator_TheWorstChannelIsWhatBecomesSeconds)
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.getWorstChannelOverrunThisTake() == 0u);
     REQUIRE (c.getOverrunSamplesThisTake() == 0u);
+}
+
+// §5.4: the monitoring latency the backend worked out has to reach the caller.
+//
+// Every backend computes it in checkExclusiveModeCapability, and the
+// coordinator dropped it on the floor -- so Application::measuredLatencyMs was
+// never assigned by anything, the Advanced panel reported "0.0 ms", and every
+// take's session.json recorded 0.0 as a permanent fact about how the take was
+// made. Zero is not a small latency; it is an impossible one.
+TEST_CASE (CaptureCoordinator_TheMonitoringLatencyReachesTheCaller)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) < 1e-9);
+}
+
+// Nothing monitoring means no monitoring latency. A figure left standing would
+// outlive the stream it describes and sit in the panel beside monitoring that
+// is switched off.
+TEST_CASE (CaptureCoordinator_NoMonitorOutputMeansNoLatencyToReport)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    // Recording with no monitor output at all: the capability is never asked.
+    REQUIRE (coordinator.startMonitoring ({ mic }, {}));
+    REQUIRE (coordinator.getMonitoringLatencyMs() == 0.0);
+
+    // And a monitor that opened, then stopped.
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+    REQUIRE (coordinator.getMonitoringLatencyMs() > 0.0);
+    coordinator.stopMonitoring();
+    REQUIRE (coordinator.getMonitoringLatencyMs() == 0.0);
+}
+
+// The preflight said yes and the open said no, so the figure describes a stream
+// that does not exist. Reporting it would put a monitoring latency beside
+// monitoring that is switched off -- the same lie as 0.0, pointing the other
+// way.
+TEST_CASE (CaptureCoordinator_AMonitorThatFailedToOpenReportsNoLatency)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;
+    backend.failOutputOpen = true;
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    // Monitoring is refused but recording carries on, which is the §5.4 rule.
+    coordinator.startMonitoring ({ mic }, "out-1");
+    REQUIRE (! coordinator.getMonitorProblem().empty());
+    REQUIRE (coordinator.getMonitoringLatencyMs() == 0.0);
+}
+
+// An output the preflight refuses never opens, so it has no latency either.
+TEST_CASE (CaptureCoordinator_AnOutputRefusedByThePreflightReportsNoLatency)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;
+    backend.exclusiveAvailable = false;
+    backend.exclusiveReason = "This sound output is shared with other apps.";
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    coordinator.startMonitoring ({ mic }, "out-1");
+    REQUIRE (! coordinator.getMonitorProblem().empty());
+    REQUIRE (coordinator.getMonitoringLatencyMs() == 0.0);
 }

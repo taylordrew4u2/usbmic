@@ -801,8 +801,14 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
     snd_pcm_close (pcm);
 
     cap.exclusiveModeAvailable = true;
+
+    // Round trip -- in and out -- which is what monitoring latency means and
+    // what the other two backends report. This counted one buffer, so Linux
+    // reported half the figure macOS and Windows give for the same hardware
+    // settings. openStream a few lines down already doubles it when it asks
+    // ALSA for a latency, so the file disagreed with itself.
     cap.measuredOrEstimatedLatencyMs = (sampleRate > 0.0)
-        ? (static_cast<double> (bufferSizeSamples) / sampleRate) * 1000.0 : 0.0;
+        ? (static_cast<double> (bufferSizeSamples) / sampleRate) * 1000.0 * 2.0 : 0.0;
     return cap;
 }
 
