@@ -15,6 +15,14 @@ enum class SetupIssue
     ControllerContention, // §14.3
     NonCardioidPattern,   // §14.4
     SilentChannel,        // §8.1 / §10.5 -- usually the hardware mute switch
+
+    /// §10.1: nothing has arrived from ANY microphone since monitoring began.
+    /// DeadChannelDetector cannot report this and should not: a channel counts
+    /// as dead only while another is alive, which is what separates a broken
+    /// mic from a quiet room. When they are all silent there is no contrast to
+    /// find, so the app said nothing at all -- about the one case §10.1 names
+    /// as "the first real obstacle".
+    EverythingSilent,
 };
 
 struct SetupAdvice
@@ -65,6 +73,14 @@ private:
     // Built lazily and rebuilt when the channel count changes, because the
     // detector is fixed-width and mics come and go (§2, hot-plug).
     std::unique_ptr<DeadChannelDetector> deadChannels;
+
+    /// Seconds every channel has been at or under the metering floor together.
+    double allChannelsSilentSeconds = 0.0;
+
+    /// Cleared the instant anything arrives, and never set again for this rig.
+    /// A take that started working and later went quiet is a quiet room, not a
+    /// refused permission, and must not be told otherwise.
+    bool everHeardAudio = false;
 
     std::vector<std::string> channelNames;
     std::string contentionReason;
