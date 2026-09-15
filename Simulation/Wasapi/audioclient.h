@@ -14,6 +14,7 @@ constexpr DWORD AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR    = 0x4;
 
 // The real SDK values, so a backend that special-cases one of them by number
 // behaves identically here.
+constexpr HRESULT AUDCLNT_E_DEVICE_INVALIDATED      = static_cast<HRESULT> (0x88890004);
 constexpr HRESULT AUDCLNT_E_UNSUPPORTED_FORMAT      = static_cast<HRESULT> (0x88890008);
 constexpr HRESULT AUDCLNT_E_DEVICE_IN_USE           = static_cast<HRESULT> (0x8889000A);
 constexpr HRESULT AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED = static_cast<HRESULT> (0x88890019);

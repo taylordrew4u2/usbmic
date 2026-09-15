@@ -696,6 +696,57 @@ void aStalledMicrophoneIsReportedRatherThanSpunOnForever()
     backend.closeAllStreams();
 }
 
+/// §0.1: a microphone whose device is pulled mid-take. Windows answers every
+/// call on the stream with AUDCLNT_E_DEVICE_INVALIDATED from then on -- and on
+/// a driver that goes on signalling the ready event, that lands in the one gap
+/// the worker had no exit from.
+///
+/// The stall timeout cannot see it: the event keeps firing, so the timeout
+/// counter resets on every pass. The GetBuffer failure count cannot see it
+/// either: GetNextPacketSize is what fails, so the loop that counts GetBuffer
+/// failures is never entered. Both of the worker's other two deaths -- the
+/// stalled wait and the dead render -- carry a comment saying this exact shape
+/// of bug was fixed there. This is the same bug through the third door.
+void anInvalidatedMicrophoneIsReportedRatherThanSpunOnForever()
+{
+    std::printf ("\nA microphone whose device is invalidated while its event keeps firing\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (microphone ("mic-gone", "Pulled Mic",
+                                         { fakewasapi::Format::pcm (1, 24, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("mic-gone", 48000.0, 256, capture.callback()),
+           "the stream opens");
+
+    fakewasapi::invalidateEndpoint ("mic-gone");
+
+    // Keeping the event alive is the whole point: a device that stops signalling
+    // is already handled, and testing that again would prove nothing. Six and a
+    // half seconds is past the stall timeout, so anything still spinning here is
+    // spinning for good.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds (6500);
+    while (std::chrono::steady_clock::now() < deadline && fakewasapi::isRunning ("mic-gone"))
+    {
+        fakewasapi::pulseReadyEvent ("mic-gone");
+        std::this_thread::sleep_for (std::chrono::milliseconds (2));
+    }
+
+    const auto failed = backend.takeStreamFailures();
+
+    check (failed.size() == 1, "the loss is reported once");
+    check (failed.size() == 1 && failed[0].deviceId == "mic-gone",
+           "against the device that went away, by id");
+    check (failed.size() == 1 && failed[0].reason.find ("stopped sending audio") != std::string::npos,
+           "in words the user can act on");
+    check (! fakewasapi::isRunning ("mic-gone"),
+           "and the worker stops rather than spinning on a device that is gone");
+
+    backend.closeAllStreams();
+}
+
 // The rig-watch registration is allowed to fail on Windows -- a locked-down
 // session, a dying audio service -- and when it does, a microphone plugged in
 // is never noticed and one pulled out MID-TAKE is never reported. That silence
@@ -895,6 +946,7 @@ int main()
     eightMicrophonesInMixedFormatsStaySeparate();
     closingStopsEveryStream();
     aStalledMicrophoneIsReportedRatherThanSpunOnForever();
+    anInvalidatedMicrophoneIsReportedRatherThanSpunOnForever();
     aSessionThatCannotWatchTheRigSaysSo();
     aStuckOpenIsBoundedRatherThanHoldingLaunch();
 

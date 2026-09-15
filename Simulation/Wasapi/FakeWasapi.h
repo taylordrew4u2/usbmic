@@ -98,6 +98,16 @@ void addEndpoint (const EndpointSpec& spec);
 /// what an unplug looks like to the backend.
 void removeEndpoint (const std::string& id);
 
+/// Makes every IAudioCaptureClient call on this endpoint return
+/// AUDCLNT_E_DEVICE_INVALIDATED, which is what Windows returns once the device
+/// behind an open stream goes away, while leaving the endpoint in the list.
+void invalidateEndpoint (const std::string& id);
+
+/// Signals the endpoint's ready event without delivering a packet. An
+/// invalidated endpoint whose event keeps firing is the case that neither the
+/// stall timeout nor the GetBuffer failure count can see.
+void pulseReadyEvent (const std::string& id);
+
 /// Fires OnDeviceAdded without changing the device list, for testing that the
 /// backend is driven by the OS rather than by a timer.
 void notifyDeviceAdded (const std::string& id);
