@@ -71,6 +71,12 @@ struct World
 {
     std::mutex mutex;
     std::map<std::string, Endpoint*> endpoints;
+
+    /// Endpoints removed while something still held them. A real device that is
+    /// unplugged does not vanish from under a running thread -- the thread goes
+    /// on making calls and they start failing -- so these are retired rather
+    /// than deleted, and freed when the world is reset.
+    std::vector<Endpoint*> retired;
     std::vector<std::string> order;
     std::map<std::wstring, DEVINST> deviceNodeByInstanceId;
     std::map<DEVINST, std::pair<Endpoint*, size_t>> deviceNodes;
@@ -1032,6 +1038,12 @@ void reset()
     for (auto& entry : world().endpoints)
         delete entry.second;
 
+    // Safe here and only here: reset happens between scenarios, with every
+    // stream closed and every worker joined.
+    for (auto* endpoint : world().retired)
+        delete endpoint;
+
+    world().retired.clear();
     world().endpoints.clear();
     world().order.clear();
     world().deviceNodeByInstanceId.clear();
@@ -1111,7 +1123,40 @@ void removeEndpoint (const std::string& id)
                 }
             }
 
-            delete it->second;
+            // Invalidated, signalled, and kept alive.
+            //
+            // This used to `delete` the endpoint here. Every caller until now
+            // removed a device with no stream open, so nothing noticed; the
+            // first test to pull a device that was still RUNNING found that the
+            // backend's worker thread holds this object through its COM
+            // interfaces and goes on using it. That is a use-after-free, and it
+            // surfaced as an abort on macOS while Linux got away with it.
+            //
+            // Retiring instead is also the more honest model: an unplugged
+            // device does not disappear out from under a thread. The thread
+            // keeps calling and the calls start failing, which is exactly what
+            // invalidated gives it -- AUDCLNT_E_DEVICE_INVALIDATED, the same
+            // answer Windows gives.
+            {
+                std::lock_guard<std::mutex> endpointLock (endpoint->mutex);
+                endpoint->invalidated = true;
+                endpoint->streamOpen = false;
+                endpoint->started = false;
+            }
+
+            endpoint->cv.notify_all();
+
+            if (auto* event = endpoint->clientEvent; event != nullptr)
+            {
+                {
+                    std::lock_guard<std::mutex> eventLock (event->mutex);
+                    event->signalled = true;
+                }
+
+                event->cv.notify_all();
+            }
+
+            world().retired.push_back (endpoint);
             world().endpoints.erase (it);
         }
 

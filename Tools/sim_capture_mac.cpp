@@ -20,11 +20,13 @@
 #include "../Source/Platform/CoreAudioBackend.h"
 #include "../Source/Core/CaptureCoordinator.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -59,6 +61,17 @@ fakeca::DeviceSpec microphone (const char* name, const char* uid, int channels,
     spec.name = name;
     spec.uid = uid;
     spec.inputChannels = channels;
+    spec.shape = shape;
+    return spec;
+}
+
+fakeca::DeviceSpec headphones (const char* name, const char* uid, int channels,
+                               fakeca::BufferShape shape)
+{
+    fakeca::DeviceSpec spec;
+    spec.name = name;
+    spec.uid = uid;
+    spec.outputChannels = channels;
     spec.shape = shape;
     return spec;
 }
@@ -641,6 +654,96 @@ int main()
     check (everyInputLanded,
            "each input reaches its own file, at its own level, in the right order");
 
+    std::remove ((dir + "/MIX.wav").c_str());
+
+    // ---------------------------------------------------------------------
+    // The HEADPHONES are unplugged mid-take.
+    //
+    // Everything above is about losing a microphone. This is the other half of
+    // §0.1 and it had never been driven end to end on any platform: the take is
+    // clocked by the output callback, so when the headphones go the clock goes
+    // with them, and a take that stops advancing is a take that is being lost
+    // while the record light is still on.
+    //
+    // CaptureCoordinator has a software clock for exactly this, and it is
+    // tested -- against a FakeBackend, in isolation. No harness had ever opened
+    // a REAL output stream through a real backend and then taken it away, so
+    // the handover was proven as a mechanism and never as an outcome.
+    // ---------------------------------------------------------------------
+    std::printf ("\nThe headphones are unplugged in the middle of a take\n");
+    fakeca::reset();
+
+    const auto singer = fakeca::addDevice (microphone ("Singer", "uid-singer", 1,
+                                                       fakeca::BufferShape::oneChannelPerBuffer));
+    const auto cans = fakeca::addDevice (headphones ("Headphones", "uid-cans", 2,
+                                                     fakeca::BufferShape::interleaved));
+
+    mma::CoreAudioBackend backend6;
+    mma::CaptureCoordinator monitored (backend6, rate, block);
+
+    std::vector<mma::CaptureChannel> singerOnly = { { "uid-singer", "Singer", "01_Singer", 0.0f } };
+    singerOnly[0].bitDepth = 24;
+
+    if (! monitored.startMonitoring (singerOnly, "uid-cans"))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", monitored.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    check (monitored.hasOutputStream(), "the headphones are open and clocking the take");
+
+    if (! monitored.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    // Real audio while the output is alive. The OUTPUT pulls here, not us:
+    // that is the whole point, and pulling by hand would test nothing.
+    std::vector<std::vector<float>> pulled;
+
+    for (int i = 0; i < 24; ++i)
+    {
+        fakeca::pumpInput (singer, { tone (block, 440.0, rate, 0.4f) });
+        fakeca::pumpOutput (cans, block, pulled);
+    }
+
+    const auto framesBefore = monitored.getFramesAccepted();
+    check (framesBefore > 0, "the take is advancing while the headphones are there");
+
+    // And now they are gone.
+    fakeca::removeDevice (cans);
+
+    // Only the microphone is fed from here. Nothing pulls the output, because
+    // there is no output. If the take depends on it, this is where it dies.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds (900);
+
+    while (std::chrono::steady_clock::now() < until)
+    {
+        fakeca::pumpInput (singer, { tone (block, 440.0, rate, 0.4f) });
+        std::this_thread::sleep_for (std::chrono::milliseconds (5));
+    }
+
+    const auto framesAfter = monitored.getFramesAccepted();
+
+    monitored.stopRecording();
+    monitored.stopMonitoring();
+
+    std::printf ("  accepted %llu frames before the unplug, %llu after\n",
+                 (unsigned long long) framesBefore, (unsigned long long) framesAfter);
+
+    check (framesAfter > framesBefore,
+           "the take keeps advancing once the headphones are gone");
+
+    uint32_t singerFrames = 0;
+    const auto singerPeak = peakOf24BitWav (dir + "/01_Singer.wav", singerFrames);
+
+    std::printf ("  01_Singer.wav: %u frames, peak %d\n", singerFrames, singerPeak);
+
+    check (singerFrames > 0, "and the singer still has a file");
+    check (singerPeak > 100000, "with their audio in it, not silence");
+
+    std::remove ((dir + "/01_Singer.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
