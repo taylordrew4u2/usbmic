@@ -108,6 +108,15 @@ target_link_libraries(mma_core PRIVATE mma_warnings)
 # ALSA on Linux: the backend is part of mma_core rather than the app target so
 # the headless harnesses can drive a REAL OS audio API. It is guarded on
 # __linux__, so on macOS and Windows the translation unit is empty.
+# SystemPermissions.cpp reads +[AVCaptureDevice authorizationStatusForMediaType:]
+# through the Objective-C runtime rather than converting a translation unit to
+# Objective-C++ for one enum. That is a link dependency, and mma_core is linked
+# by the unit tests and the headless tools as well as by the app -- so it goes
+# here, PUBLIC, rather than on the app target alone.
+if (APPLE)
+    target_link_libraries(mma_core PUBLIC objc)
+endif()
+
 if (UNIX AND NOT APPLE)
     find_package(ALSA)
 
