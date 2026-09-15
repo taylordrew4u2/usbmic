@@ -333,35 +333,66 @@ int openPcmBounded (snd_pcm_t** pcm, const std::string& deviceId,
 }
 
 
-/// §2.3: the depths this device will actually accept, asked rather than assumed.
+/// What one bounded open can answer about a capture device: how many inputs it
+/// has, and which depths it will accept.
 ///
-/// Both call sites used to state a flat { 16, 24, 32 } for every device on the
-/// machine, which is not a capability report but a placeholder -- and since
-/// nothing downstream read the field, nobody found out. It is read now: the
-/// depth each stem is written at follows it, and "do not upconvert" is only
-/// meaningful if the list is true.
+/// Both questions used to be asked separately, and each one opened the PCM to
+/// ask. That is two bounded opens per device on every enumeration -- and on a
+/// device that is not answering, two full probe timeouts rather than one. With
+/// a wedged microphone attached, enumeration measured 4003 ms, which is exactly
+/// two 2-second deadlines and no actual work.
 ///
-/// Uses the same bounded open as everything else here, and the same
-/// snd_pcm_hw_params_test_format ALSA offers for exactly this question. A
-/// device that cannot be opened to ask returns EMPTY rather than a guess:
-/// empty means "not reported", which the chooser turns into the fallback,
-/// while a wrong list would silently change the depth of a recording.
-std::vector<int> supportedBitDepthsFor (const char* name)
+/// snd_pcm_hw_params_any fills the same parameter set both answers come from,
+/// so there was never a reason to open twice.
+struct CaptureCapabilities
 {
-    snd_pcm_t* pcm = nullptr;
-    bool timedOut = false;
+    unsigned int channels = 1;
+    std::vector<int> bitDepths;
+};
 
+CaptureCapabilities captureCapabilitiesFor (const char* name)
+{
+    // Where a real device stops and a plugin's shrug begins.
+    //
+    // A PCM backed by hardware answers with its actual count -- 2 for a small
+    // interface, 18 for a big one. A plugin PCM (default, plug, file, null)
+    // has no channels of its own and will be configured to whatever it is
+    // asked for, so it answers 1073741823: not "I have a billion inputs" but
+    // "I have no opinion". Read literally that would put a billion tracks --
+    // clamped to some arbitrary ceiling -- on every virtual device on the
+    // machine, which is a worse failure than the one this fixes.
+    //
+    // Anything above this line is taken as the shrug it is, and a device with
+    // no opinion is one microphone.
+    constexpr unsigned int kMostInputsRealHardwareHas = 64;
+
+    CaptureCapabilities caps;
+
+    snd_pcm_t* pcm = nullptr;
+    bool probeTimedOut = false;
+
+    // A device that cannot be opened to ask keeps the defaults: one channel,
+    // and an EMPTY depth list. Empty means "not reported", which the chooser
+    // turns into the fallback, while a wrong list would silently change the
+    // depth of a recording.
     if (openPcmBounded (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK,
-                        kAlsaProbeDeadline, timedOut) < 0)
-        return {};
+                        kAlsaProbeDeadline, probeTimedOut) < 0)
+        return caps;
 
     snd_pcm_hw_params_t* params = nullptr;
     snd_pcm_hw_params_alloca (&params);
 
-    std::vector<int> depths;
-
     if (snd_pcm_hw_params_any (pcm, params) >= 0)
     {
+        unsigned int reported = 0;
+
+        // Zero is success here, not one -- getting that wrong makes the branch
+        // unreachable, and an unreachable probe answers 1 for real hardware too,
+        // which is the bug this function exists to fix wearing a disguise.
+        if (snd_pcm_hw_params_get_channels_max (params, &reported) == 0
+            && reported >= 1 && reported <= kMostInputsRealHardwareHas)
+            caps.channels = reported;
+
         // Only the depths this app can write. S24_3LE is the packed 3-byte
         // layout SessionWriter lays down; S24_LE is the same 24 bits in a
         // 4-byte container, and either one means the device can give 24.
@@ -377,13 +408,14 @@ std::vector<int> supportedBitDepthsFor (const char* name)
             if (snd_pcm_hw_params_test_format (pcm, params, candidate.format) != 0)
                 continue;
 
-            if (std::find (depths.begin(), depths.end(), candidate.depth) == depths.end())
-                depths.push_back (candidate.depth);
+            if (std::find (caps.bitDepths.begin(), caps.bitDepths.end(), candidate.depth)
+                == caps.bitDepths.end())
+                caps.bitDepths.push_back (candidate.depth);
         }
     }
 
     snd_pcm_close (pcm);
-    return depths;
+    return caps;
 }
 
 unsigned int captureChannelsFor (const char* name)
@@ -431,7 +463,17 @@ unsigned int captureChannelsFor (const char* name)
     return most;
 }
 
-std::vector<AudioDeviceDescriptor> enumerateDirectExternalInputs()
+/// `probeCapabilities` false answers the question openInputStream actually
+/// asks -- "is this device one I am allowed to open?" -- without opening any
+/// PCM to describe it. The GATE is unchanged either way: same kernel-card walk,
+/// same removable-ancestry rule, same snd_ctl checks, applied afresh. Only the
+/// descriptive half is skipped, and openInputStream never read it.
+///
+/// It matters because the revalidation runs once per open. With one wedged
+/// microphone attached, opening each HEALTHY microphone measured 4003 ms of
+/// which none was its own: it was re-probing the wedged neighbour, again, per
+/// open. A four-microphone rig paid that four times over.
+std::vector<AudioDeviceDescriptor> enumerateDirectExternalInputs (bool probeCapabilities)
 {
     std::vector<AudioDeviceDescriptor> result;
 
@@ -505,10 +547,14 @@ std::vector<AudioDeviceDescriptor> enumerateDirectExternalInputs()
                                      + ",DEV=" + std::to_string (device);
             descriptor.isMicrophone = true;
             descriptor.hasPhysicalHeadphoneJack = false;
-            descriptor.maxInputChannels = static_cast<int> (
-                captureChannelsFor (descriptor.usbLocationId.c_str()));
             descriptor.supportedSampleRates = { 44100, 48000 };
-            descriptor.supportedBitDepths = supportedBitDepthsFor (descriptor.usbLocationId.c_str());
+
+            if (probeCapabilities)
+            {
+                const auto caps = captureCapabilitiesFor (descriptor.usbLocationId.c_str());
+                descriptor.maxInputChannels = static_cast<int> (caps.channels);
+                descriptor.supportedBitDepths = caps.bitDepths;
+            }
 
             result.push_back (std::move (descriptor));
         }
@@ -529,14 +575,14 @@ AlsaBackend::~AlsaBackend()
     closeAllStreams();
 }
 
-std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
+std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput, bool probeCapabilities) const
 {
     // Shipping input enumeration is deliberately a positive allowlist based
     // on ALSA kernel cards plus sysfs removability. The old hint path remains
     // byte-for-byte available to outputs and to an explicitly compiled test
     // binary so the file-backed Linux fixture can still exercise the stack.
     if (! alsa_detail::shouldUseHintEnumeration (wantInput, kTestInputsCompiledIn))
-        return enumerateDirectExternalInputs();
+        return enumerateDirectExternalInputs (probeCapabilities);
 
     std::vector<AudioDeviceDescriptor> result;
 
@@ -578,9 +624,14 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
             // but the first was unreachable -- and openStream asks the same
             // question the same way, so the take gets the channels the list
             // promised rather than silence where the rest should be.
-            d.maxInputChannels = wantInput ? static_cast<int> (captureChannelsFor (name)) : 0;
             d.supportedSampleRates = { 44100, 48000 };
-            d.supportedBitDepths = supportedBitDepthsFor (name);
+
+            if (wantInput && probeCapabilities)
+            {
+                const auto caps = captureCapabilitiesFor (name);
+                d.maxInputChannels = static_cast<int> (caps.channels);
+                d.supportedBitDepths = caps.bitDepths;
+            }
 
             result.push_back (std::move (d));
         }
@@ -594,8 +645,8 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput) const
     return result;
 }
 
-std::vector<AudioDeviceDescriptor> AlsaBackend::enumerateInputDevices()  { return enumerate (true); }
-std::vector<AudioDeviceDescriptor> AlsaBackend::enumerateOutputDevices() { return enumerate (false); }
+std::vector<AudioDeviceDescriptor> AlsaBackend::enumerateInputDevices()  { return enumerate (true, true); }
+std::vector<AudioDeviceDescriptor> AlsaBackend::enumerateOutputDevices() { return enumerate (false, true); }
 
 void AlsaBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
 {
@@ -1051,7 +1102,7 @@ bool AlsaBackend::openInputStream (const std::string& inputDeviceId, double samp
     // ancestry gate. Test-only builds still revalidate against their explicitly
     // compiled hint enumeration, which keeps the virtual ALSA fixture isolated
     // from downloadable production binaries.
-    const auto currentlyEligible = enumerateInputDevices();
+    const auto currentlyEligible = enumerate (true, false);
     if (std::none_of (currentlyEligible.begin(), currentlyEligible.end(),
                       [&] (const AudioDeviceDescriptor& candidate)
                       { return candidate.usbLocationId == inputDeviceId; }))
