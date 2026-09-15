@@ -13,6 +13,13 @@
  *   MMA_SHIM_DEVICE        only this PCM fails; others read normally
  *   MMA_SHIM_FAIL_AFTER    let this many reads through first
  *   MMA_SHIM_FAIL_AFTER_MS let this many milliseconds of reading through first
+ *   MMA_SHIM_STREAM        capture (default) | playback | both
+ *
+ * MMA_SHIM_STREAM reaches the monitor output. snd_pcm_writei and the whole
+ * playback half of the worker loop had never been run by any test -- the Linux
+ * harness passed no output device at all -- so headphones that stop accepting
+ * audio mid-take was the one §0.1 door still open on the platform whose CI
+ * opens a real device.
  *
  * MMA_SHIM_DEVICE is what makes a mid-take unplug expressible: one microphone
  * of several dies while the rest of the rig keeps working, which is the case
@@ -31,6 +38,10 @@ namespace {
 
 enum class Mode { xrun, dead };
 
+/// Which direction the injected failure applies to. Capture by default, so
+/// every existing caller of this shim keeps its exact behaviour.
+enum class Stream { capture, playback, both };
+
 /// Read once, on first use, and never written again. A function-local static is
 /// initialised exactly once even when several threads arrive together, which
 /// matters here: every open stream has its own ALSA worker thread, and the
@@ -40,6 +51,7 @@ enum class Mode { xrun, dead };
 struct Config
 {
     Mode mode = Mode::xrun;
+    Stream stream = Stream::capture;
     const char* onlyDevice = nullptr;
     long failAfterReads = 0;
     long failAfterMs = 0;
@@ -48,6 +60,14 @@ struct Config
     {
         if (const char* m = std::getenv ("MMA_SHIM_MODE"); m != nullptr && std::strcmp (m, "dead") == 0)
             mode = Mode::dead;
+
+        if (const char* s = std::getenv ("MMA_SHIM_STREAM"); s != nullptr)
+        {
+            if (std::strcmp (s, "playback") == 0)
+                stream = Stream::playback;
+            else if (std::strcmp (s, "both") == 0)
+                stream = Stream::both;
+        }
 
         onlyDevice = std::getenv ("MMA_SHIM_DEVICE");
 
@@ -73,9 +93,15 @@ std::atomic<long long> firstReadNanos { 0 };
 
 std::atomic<snd_pcm_sframes_t (*) (snd_pcm_t*, void*, snd_pcm_uframes_t)> realReadi { nullptr };
 
-bool shouldFail (snd_pcm_t* pcm)
+bool shouldFail (snd_pcm_t* pcm, Stream direction)
 {
     const auto& c = config();
+
+    // A capture-mode shim must leave playback completely alone, and the other
+    // way round: the mid-take cases are about ONE half of the rig failing while
+    // the rest keeps working, and a shim that failed both would prove less.
+    if (c.stream != Stream::both && c.stream != direction)
+        return false;
 
     if (c.onlyDevice != nullptr)
     {
@@ -120,17 +146,40 @@ snd_pcm_sframes_t passThrough (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t f
     return fn != nullptr ? fn (pcm, buffer, frames) : -EPIPE;
 }
 
+std::atomic<snd_pcm_sframes_t (*) (snd_pcm_t*, const void*, snd_pcm_uframes_t)> realWritei { nullptr };
+
+snd_pcm_sframes_t passThroughWrite (snd_pcm_t* pcm, const void* buffer, snd_pcm_uframes_t frames)
+{
+    auto fn = realWritei.load (std::memory_order_acquire);
+
+    if (fn == nullptr)
+    {
+        fn = reinterpret_cast<decltype (fn)> (dlsym (RTLD_NEXT, "snd_pcm_writei"));
+        realWritei.store (fn, std::memory_order_release);
+    }
+
+    return fn != nullptr ? fn (pcm, buffer, frames) : -EPIPE;
+}
+
 } // namespace
 
 extern "C" {
 
 snd_pcm_sframes_t snd_pcm_readi (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t frames)
 {
-    if (! shouldFail (pcm))
+    if (! shouldFail (pcm, Stream::capture))
         return passThrough (pcm, buffer, frames);
 
     // -EPIPE is an xrun: recoverable, which is what makes the endless-recovery
     // case endless. -ENODEV is a device that is no longer there.
+    return config().mode == Mode::dead ? -ENODEV : -EPIPE;
+}
+
+snd_pcm_sframes_t snd_pcm_writei (snd_pcm_t* pcm, const void* buffer, snd_pcm_uframes_t frames)
+{
+    if (! shouldFail (pcm, Stream::playback))
+        return passThroughWrite (pcm, buffer, frames);
+
     return config().mode == Mode::dead ? -ENODEV : -EPIPE;
 }
 
