@@ -111,26 +111,75 @@ int32_t peakOf24BitWav (const std::string& path, uint32_t& framesOut)
     return peak;
 }
 
-/// The largest absolute sample across one fraction of a 24-bit WAV, as a
-/// [from, to) range in eighths of the file. Frame-count equality alone cannot
-/// tell a padded channel from one that kept receiving audio it should not
-/// have; this can.
-int32_t peakOfEighths (const std::string& path, int fromEighth, int toEighth)
+/// Where a 24-bit WAV's audio stops: the index just past the last non-zero
+/// sample, and the largest sample found after it.
+///
+/// Located by CONTENT rather than by fraction of the file, which is what the
+/// first version of this got wrong. It measured eighths of the file on the
+/// assumption that the file was as long as the audio pumped into it -- and it
+/// is not, because the harness pumps blocks back to back with no wall clock
+/// between them and the writer's ring drops what it cannot take in time. On
+/// this machine 16384 frames go in and 16384 come out; on a loaded CI runner
+/// 9728 came out, which slid the unplug from the middle of the file to
+/// two-thirds through it, and a range that had been safely after the event was
+/// suddenly straddling it. The test failed, correctly, on a stack that was
+/// behaving perfectly.
+///
+/// Nothing here depends on how much of the take survived.
+struct AudioExtent
 {
     uint32_t frames = 0;
-    if (peakOf24BitWav (path, frames) < 0 || frames == 0)
-        return -1;
+    uint32_t lastSounding = 0;   ///< one past the last non-zero sample
+    int32_t peakBefore = 0;      ///< largest sample up to that point
+};
+
+AudioExtent extentOf24BitWav (const std::string& path)
+{
+    AudioExtent e;
 
     constexpr std::streamoff kDataOffset = 12 + (8 + 16) + (8 + 602) + 8;
-    const uint32_t eighth = frames / 8;
-    const uint32_t first = eighth * static_cast<uint32_t> (fromEighth);
-    const uint32_t count = eighth * static_cast<uint32_t> (toEighth - fromEighth);
+
+    if (peakOf24BitWav (path, e.frames) < 0 || e.frames == 0)
+        return e;
 
     std::ifstream f (path, std::ios::binary);
-    f.seekg (kDataOffset + static_cast<std::streamoff> (first) * 3);
+    f.seekg (kDataOffset);
+
+    for (uint32_t i = 0; i < e.frames; ++i)
+    {
+        unsigned char s[3] {};
+        f.read (reinterpret_cast<char*> (s), 3);
+
+        int32_t v = static_cast<int32_t> (s[0]) | (static_cast<int32_t> (s[1]) << 8)
+                  | (static_cast<int32_t> (s[2]) << 16);
+
+        if (v & 0x800000)
+            v |= ~0xFFFFFF;
+
+        if (v != 0)
+        {
+            e.lastSounding = i + 1;
+            e.peakBefore = std::max (e.peakBefore, v < 0 ? -v : v);
+        }
+    }
+
+    return e;
+}
+
+/// The largest absolute sample in [from, to) frames.
+int32_t peakOfRange (const std::string& path, uint32_t from, uint32_t to)
+{
+    constexpr std::streamoff kDataOffset = 12 + (8 + 16) + (8 + 602) + 8;
+
+    if (to <= from)
+        return 0;
+
+    std::ifstream f (path, std::ios::binary);
+    f.seekg (kDataOffset + static_cast<std::streamoff> (from) * 3);
 
     int32_t peak = 0;
-    for (uint32_t i = 0; i < count; ++i)
+
+    for (uint32_t i = from; i < to; ++i)
     {
         unsigned char s[3] {};
         f.read (reinterpret_cast<char*> (s), 3);
@@ -474,18 +523,24 @@ int main()
     // And padded with SILENCE, at the right moment: frame-count equality on
     // its own would also be satisfied by a channel that kept receiving audio,
     // or by one filled with whatever was left in a buffer.
-    // The unplug lands at the half-way mark, and §3.2's two-block pre-roll
-    // puts the channel that far behind the clock, so the boundary itself is
-    // not a clean line. These ranges sit either side of it with room to spare.
-    const auto dBefore = peakOfEighths (dir + "/02_Doomed.wav", 1, 4);
-    const auto dAfter  = peakOfEighths (dir + "/02_Doomed.wav", 5, 8);
-    const auto kAfter  = peakOfEighths (dir + "/01_Keeper.wav", 5, 8);
+    // Asked of the audio, not of the clock: where does the lost channel stop
+    // sounding, and is the survivor still sounding after that point?
+    const auto lost = extentOf24BitWav (dir + "/02_Doomed.wav");
+    const auto keptGoing = peakOfRange (dir + "/01_Keeper.wav", lost.lastSounding, kFrames);
+    const auto lostTail = peakOfRange (dir + "/02_Doomed.wav", lost.lastSounding, dFrames);
 
-    std::printf ("  02_Doomed.wav: peak %d before the unplug, %d after\n", dBefore, dAfter);
+    std::printf ("  02_Doomed.wav: sounds up to frame %u of %u, peak %d; after it %d\n",
+                 lost.lastSounding, lost.frames, lost.peakBefore, lostTail);
+    std::printf ("  01_Keeper.wav: peak %d across the same tail\n", keptGoing);
 
-    check (dBefore > 100000, "the lost mic's audio up to the unplug is intact");
-    check (dAfter == 0, "and everything after it is silence, not stale samples");
-    check (kAfter > 100000, "while the surviving mic is still writing real audio there");
+    check (lost.peakBefore > 100000, "the lost mic's audio up to the unplug is intact");
+    check (lostTail == 0, "and everything after it is silence, not stale samples");
+
+    // The tail has to be worth something, or a channel that ran to the very
+    // last frame would satisfy "silence after the end" trivially.
+    check (lost.lastSounding + static_cast<uint32_t> (block) < dFrames,
+           "the silence is a real stretch of the take, not a rounding error");
+    check (keptGoing > 100000, "while the surviving mic is still writing real audio there");
 
     std::remove ((dir + "/01_Keeper.wav").c_str());
     std::remove ((dir + "/02_Doomed.wav").c_str());

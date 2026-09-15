@@ -21,7 +21,14 @@
 set -euo pipefail
 
 DISPLAY_NUM="${MMA_DISPLAY:-:99}"
-WINDOW_DEADLINE="${MMA_WINDOW_DEADLINE:-45}"
+# Measured, not picked: with a wedged device attached the window takes about
+# 24 seconds to appear on an idle machine -- the bounded probe and the bounded
+# open, in sequence, doing exactly what §0.1 asks of them. Against the 45 this
+# used to allow, that is under 2x margin on a shared CI runner, and the gate
+# duly failed once with no evidence of why. The wait costs nothing when it
+# passes, because the loop ends the moment the window appears; the only thing a
+# larger ceiling changes is how long a genuine hang takes to be reported.
+WINDOW_DEADLINE="${MMA_WINDOW_DEADLINE:-120}"
 STUCK_FIFO="${TMPDIR:-/tmp}/mma-stuck-device"
 
 APP=""
@@ -75,19 +82,52 @@ LOG_LINES_BEFORE=0
 DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-stuck.log 2>&1 &
 APP_PID=$!
 
+WAIT_BEGAN=$(date +%s)
+WAITED_TICKS=0
+
+WINDOW_APPEARED=0
+
 for _ in $(seq 1 "$WINDOW_DEADLINE"); do
-  if DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null 2>&1; then break; fi
+  if DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null 2>&1; then
+    WINDOW_APPEARED=1
+    break
+  fi
+  WAITED_TICKS=$((WAITED_TICKS + 1))
   sleep 1
 done
 
-if ! DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null 2>&1; then
+# The loop's own answer, not a second question. Asking xdotool again is a race
+# the gate lost twice in CI, both times at the 27-second mark that matches how
+# long the window actually takes to appear here: the loop saw the window and
+# broke, and the re-query a moment later did not, so a passing run was reported
+# as "the app never opened its window" -- the one message that could not be
+# true, since something had just seen it.
+if [ "$WINDOW_APPEARED" -eq 0 ]; then
   echo "FAIL: the app never opened its window with one wedged device attached."
   echo "      This is the bug: a single microphone that will not finish opening"
-  echo "      holds the whole app closed. Main thread at the time of writing:"
-  cat "/proc/$APP_PID/task/$APP_PID/stack" 2>/dev/null | head -5 || true
+  echo "      holds the whole app closed."
+  echo
+  # Said out loud because a failure here once arrived with none of it, and the
+  # difference between "the app is wedged" and "the wait ended early" is not
+  # something the old message could tell anyone. Guessing between them from
+  # timestamps afterwards is not diagnosis.
+  echo "      waited ${WAITED_TICKS} of ${WINDOW_DEADLINE} ticks, $(( $(date +%s) - WAIT_BEGAN ))s of wall clock"
+  if kill -0 "$APP_PID" 2>/dev/null; then
+    echo "      the app process is still alive (pid $APP_PID)"
+  else
+    wait "$APP_PID" 2>/dev/null || true
+    echo "      the app process is GONE -- it exited rather than hanging, so this"
+    echo "      is a crash or an early exit, not a blocked open"
+  fi
+  echo "      main thread stack:"
+  cat "/proc/$APP_PID/task/$APP_PID/stack" 2>/dev/null | head -5 || echo "      (unavailable)"
+  echo "      last of the app's own output:"
+  tail -20 /tmp/mma-e2e-stuck.log 2>/dev/null | sed 's/^/        /' || true
+  echo "      last of the activity log:"
+  tail -20 "$LOG" 2>/dev/null | sed 's/^/        /' || true
   exit 1
 fi
-echo "PASS: the window opened with a wedged device attached"
+echo "PASS: the window opened with a wedged device attached (after ${WAITED_TICKS}s of the ${WINDOW_DEADLINE}s allowed)"
 
 # Opening is necessary but not sufficient: the app must also SAY which device
 # it gave up on and why, rather than presenting a microphone that silently does

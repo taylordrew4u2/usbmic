@@ -420,6 +420,10 @@ if (MMA_BUILD_TOOLS)
         target_link_libraries(alsa_recovery_death PRIVATE mma_core)
         target_link_libraries(alsa_recovery_death PRIVATE mma_warnings)
 
+        add_executable(alsa_mid_take_loss Tools/alsa_mid_take_loss.cpp)
+        target_link_libraries(alsa_mid_take_loss PRIVATE mma_core)
+        target_link_libraries(alsa_mid_take_loss PRIVATE mma_warnings)
+
         add_library(alsa_readi_shim SHARED Tools/alsa_readi_shim.cpp)
         target_link_libraries(alsa_readi_shim PRIVATE ${CMAKE_DL_LIBS})
         if (ALSA_FOUND)
