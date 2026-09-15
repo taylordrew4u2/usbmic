@@ -747,6 +747,88 @@ void anInvalidatedMicrophoneIsReportedRatherThanSpunOnForever()
     backend.closeAllStreams();
 }
 
+/// §5.4's capability probe, which had no test at all -- and that is how it came
+/// to ask a narrower question than the open it is supposed to predict.
+///
+/// It asked IsFormatSupported for float32 only, while buildExclusiveStream goes
+/// on to try 32/32, 32/24, 24/24 and 16/16. The comment above findExclusiveFormat
+/// says "use the same layouts for capability discovery and stream opening"; this
+/// was the one caller that did not.
+///
+/// The devices that pays for are ordinary ones: plenty of USB interfaces and
+/// DACs accept exclusive output only in their native INTEGER format and refuse
+/// float32. Each was declared incapable, and the user told to turn on exclusive
+/// mode in Windows sound settings -- a setting that was already on, for hardware
+/// the app could have opened on the very next layout it never asked about.
+void anIntegerOnlyOutputIsNotCalledIncapable()
+{
+    std::printf ("\nHeadphones that take 24-bit exclusive but not float\n");
+    fakewasapi::reset();
+
+    // No float32 offered: exactly what a great many interfaces expose.
+    fakewasapi::addEndpoint (headphones ("out-int24", "Integer-only Out",
+                                         { fakewasapi::Format::pcm (2, 24, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    const auto cap = backend.checkExclusiveModeCapability ("out-int24", 48000.0, 256);
+
+    check (cap.exclusiveModeAvailable,
+           "a device that refuses float but takes 24-bit integer is still capable");
+    check (cap.unavailableReason.empty(),
+           "and is not handed advice about a Windows setting that is already right");
+
+    // The claim has to be true, not merely optimistic: the open must succeed
+    // on the same device, or the probe is lying in the other direction.
+    Capture capture;
+    check (backend.openExclusiveOutputStream ("out-int24", 48000.0, 256, capture.callback()),
+           "and the stream the probe promised actually opens");
+    check (fakewasapi::openedExclusive ("out-int24"),
+           "in exclusive mode, as §5.4 requires");
+
+    backend.closeAllStreams();
+}
+
+/// 16-bit-only hardware is the same argument one layout further down.
+void aSixteenBitOnlyOutputIsNotCalledIncapable()
+{
+    std::printf ("\nHeadphones that take only 16-bit exclusive\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (headphones ("out-int16", "16-bit Out",
+                                         { fakewasapi::Format::pcm (2, 16, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    const auto cap = backend.checkExclusiveModeCapability ("out-int16", 48000.0, 256);
+
+    check (cap.exclusiveModeAvailable, "16-bit-only output is capable too");
+
+    Capture capture;
+    check (backend.openExclusiveOutputStream ("out-int16", 48000.0, 256, capture.callback()),
+           "and it opens");
+
+    backend.closeAllStreams();
+}
+
+/// The other direction matters just as much: §5.4 never falls back to shared
+/// mode, so a device that genuinely refuses every exclusive layout must be
+/// reported as unavailable, with the cause named rather than a silent failure.
+void anOutputThatRefusesEveryLayoutIsStillReported()
+{
+    std::printf ("\nHeadphones that refuse exclusive mode altogether\n");
+    fakewasapi::reset();
+
+    // No exclusive formats at all.
+    fakewasapi::addEndpoint (headphones ("out-shared", "Shared-only Out", {}));
+
+    mma::WasapiAsioBackend backend;
+    const auto cap = backend.checkExclusiveModeCapability ("out-shared", 48000.0, 256);
+
+    check (! cap.exclusiveModeAvailable,
+           "a device that refuses every layout is not called capable");
+    check (cap.unavailableReason.find ("exclusive mode") != std::string::npos,
+           "and the reason names what to change");
+}
+
 // The rig-watch registration is allowed to fail on Windows -- a locked-down
 // session, a dying audio service -- and when it does, a microphone plugged in
 // is never noticed and one pulled out MID-TAKE is never reported. That silence
@@ -945,6 +1027,9 @@ int main()
     enumerationReportsNamesAndSeparatesDirections();
     eightMicrophonesInMixedFormatsStaySeparate();
     closingStopsEveryStream();
+    anIntegerOnlyOutputIsNotCalledIncapable();
+    aSixteenBitOnlyOutputIsNotCalledIncapable();
+    anOutputThatRefusesEveryLayoutIsStillReported();
     aStalledMicrophoneIsReportedRatherThanSpunOnForever();
     anInvalidatedMicrophoneIsReportedRatherThanSpunOnForever();
     aSessionThatCannotWatchTheRigSaysSo();

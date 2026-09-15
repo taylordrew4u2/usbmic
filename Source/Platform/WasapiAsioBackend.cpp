@@ -853,11 +853,24 @@ ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const s
         return cap;
     }
 
-    const auto format = makeFloat32Format (sampleRate, 2);
+    // Every layout the OPEN would try, not just the first one.
+    //
+    // This asked IsFormatSupported for float32 alone, while buildExclusiveStream
+    // goes on to try 32/32, 32/24, 24/24 and 16/16 as well -- and the comment
+    // above findExclusiveFormat says, in as many words, "use the same layouts
+    // for capability discovery and stream opening". It was the one caller that
+    // did not.
+    //
+    // What that costs is a real and common device: plenty of USB interfaces and
+    // DACs accept exclusive output only in their native INTEGER format and
+    // refuse float32 outright. Those were declared incapable and the user was
+    // told to "turn on exclusive mode for this device" in Windows sound
+    // settings -- advice about a setting that was already correct, for hardware
+    // the app could have opened on the very next layout it never asked about.
+    // Monitoring simply went off, blamed on Windows.
+    WAVEFORMATEXTENSIBLE format {};
 
-    if (FAILED (client->IsFormatSupported (AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                           reinterpret_cast<const WAVEFORMATEX*> (&format),
-                                           nullptr)))
+    if (! findExclusiveFormat (client.Get(), sampleRate, 2, format))
     {
         // §5.4: shared mode is never the fallback. Name the cause instead.
         cap.unavailableReason = "Your headphones won't accept direct low-latency audio. In Windows sound settings, "
