@@ -711,6 +711,16 @@ void Application::restartCapture()
 
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
 
+    // §5.4: what the monitor path actually costs, taken from the backend that
+    // opened it.
+    //
+    // This member was declared and never assigned by anything, so the Advanced
+    // panel reported monitoring latency as "0.0 ms" and every take's
+    // session.json recorded 0.0 as a permanent fact about how the take was
+    // made. Zero is not a small latency; it is an impossible one. Every backend
+    // had worked the figure out all along and CaptureCoordinator dropped it.
+    measuredLatencyMs = capture->getMonitoringLatencyMs();
+
     // The microphones that actually OPENED, not the ones that were selected.
     //
     // A device that refuses to open no longer takes the whole rig down with it,

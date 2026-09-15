@@ -106,6 +106,8 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // say so and name the cause rather than silently delivering 40 ms. The
     // microphones still reopen input-only; monitoring failure is not recording
     // failure.
+    monitoringLatencyMs = 0.0;
+
     if (! outputDeviceId.empty())
     {
         const auto capability = backend.checkExclusiveModeCapability (outputDeviceId, sampleRate, bufferSize);
@@ -117,6 +119,17 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
                 : capability.unavailableReason;
             return continueInputOnly (monitorProblem);
         }
+
+        // Kept rather than dropped. All three backends work this figure out and
+        // every one of them threw it away here, so Application's
+        // measuredLatencyMs was never assigned by anything: the Advanced panel
+        // reported monitoring latency as "0.0 ms" -- which is not a small
+        // number, it is an impossible one -- and every take's session.json
+        // recorded 0.0 as a permanent fact about how the take was made.
+        //
+        // §5.4 is about this number. It is what someone singing to a click
+        // reads to decide whether they can work through the headphones at all.
+        monitoringLatencyMs = capability.measuredOrEstimatedLatencyMs;
     }
 
     // Grouped before the output opens, because a mixer that is also the
@@ -196,6 +209,11 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             ? std::string ("Couldn't open your headphones for low-latency playback.")
             : backendReason;
         backend.closeAllStreams();
+
+        // The preflight said yes and the open said no, so the figure it
+        // produced describes a stream that does not exist. Reporting it would
+        // put a monitoring latency beside monitoring that is switched off.
+        monitoringLatencyMs = 0.0;
         return continueInputOnly (monitorProblem);
     }
 
@@ -526,6 +544,10 @@ void CaptureCoordinator::stopMonitoring()
     stopSoftwareClock();
     backend.closeAllStreams();
     monitoring = false;
+
+    // Nothing is monitoring, so there is no monitoring latency to report. A
+    // figure left standing here would outlive the stream it describes.
+    monitoringLatencyMs = 0.0;
 }
 
 void CaptureCoordinator::stopMirroring()

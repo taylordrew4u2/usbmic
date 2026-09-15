@@ -526,6 +526,47 @@ void anOutputWeAlreadyHoldIsStillReportedAsAvailable()
     backend.closeAllStreams();
 }
 
+/// §5.4: the latency the preflight reports is the round trip, in and out.
+///
+/// Every backend computes this and nothing read it: CaptureCoordinator dropped
+/// it, so Application::measuredLatencyMs was never assigned by anything and the
+/// Advanced panel reported monitoring latency as "0.0 ms" -- not a small
+/// number, an impossible one -- while every take's session.json recorded 0.0
+/// for good. Now that it reaches the user, the three platforms have to agree on
+/// what it means. ALSA counted a single buffer and reported half.
+void theReportedLatencyIsTheRoundTrip()
+{
+    std::printf ("\nWhat the preflight says the monitor path costs\n");
+    fakeca::reset();
+
+    fakeca::addDevice (headphones ("Latency Out", "uid-lat", 2,
+                                   fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+
+    const auto cap = backend.checkExclusiveModeCapability ("uid-lat", 48000.0, 256);
+
+    check (cap.exclusiveModeAvailable, "the output is capable");
+    check (cap.measuredOrEstimatedLatencyMs > 0.0,
+           "and the preflight reports a latency rather than leaving it at zero");
+
+    const double oneBuffer = (256.0 / 48000.0) * 1000.0;
+    check (std::abs (cap.measuredOrEstimatedLatencyMs - oneBuffer * 2.0) < 1e-9,
+           "which is the round trip -- one buffer in, one buffer out");
+
+    // It has to follow the buffer size, or it is a constant dressed as a
+    // measurement.
+    const auto small = backend.checkExclusiveModeCapability ("uid-lat", 48000.0, 128);
+    const auto large = backend.checkExclusiveModeCapability ("uid-lat", 48000.0, 512);
+
+    check (std::abs (small.measuredOrEstimatedLatencyMs
+                         - cap.measuredOrEstimatedLatencyMs / 2.0) < 1e-9,
+           "halving the buffer halves it");
+    check (std::abs (large.measuredOrEstimatedLatencyMs
+                         - cap.measuredOrEstimatedLatencyMs * 2.0) < 1e-9,
+           "and doubling the buffer doubles it");
+}
+
 /// §5.4: the preflight must answer the question the open will ask.
 ///
 /// It asked only about hog mode, so a fixed-rate 44.1 kHz interface -- ordinary
@@ -1638,6 +1679,7 @@ int main()
     aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
+    theReportedLatencyIsTheRoundTrip();
     aFixedRateOutputIsNotPromisedForMonitoring();
     anOutputThatSupportsTheRateIsStillOffered();
     anOutputThatReportsNoRatesIsNotRefused();

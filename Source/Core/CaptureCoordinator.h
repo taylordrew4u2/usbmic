@@ -106,6 +106,18 @@ public:
     bool isMonitoring() const noexcept { return monitoring; }
     const std::string& getMonitorProblem() const noexcept { return monitorProblem; }
 
+    /// §5.4: round-trip monitoring latency for the open monitor stream, or zero
+    /// when nothing is monitoring.
+    ///
+    /// Every backend works this out in checkExclusiveModeCapability and this
+    /// class used to drop it on the floor, so Application::measuredLatencyMs
+    /// was never assigned by anything: the Advanced panel reported "0.0 ms" and
+    /// every take's session.json recorded 0.0 for good. Zero is not a small
+    /// latency, it is an impossible one -- and this is the number someone
+    /// singing to a click reads to decide whether they can work through the
+    /// headphones at all.
+    double getMonitoringLatencyMs() const noexcept { return monitoringLatencyMs; }
+
     /// Devices that refused to open when monitoring started, by id.
     ///
     /// Their channels are live-false and write silence. §0.1: the take's record
@@ -435,6 +447,7 @@ private:
 
     bool monitoring = false;
     std::string monitorProblem;
+    double monitoringLatencyMs = 0.0;
     std::vector<std::string> devicesThatFailedToOpen;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
