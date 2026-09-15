@@ -3866,9 +3866,22 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (capture != nullptr && capture->hasMirrorWriteFailed()
         && mirrorPolicy.noteWriteFailure())
     {
-        const auto line = juce::String ("The local backup copy stopped -- that drive stopped "
-                                        "accepting writes. The recording itself is unaffected and "
-                                        "is still going to the card.");
+        // The mirror lives on the computer's own disk, so "that drive stopped
+        // accepting writes" is almost always "that disk is full" -- and the
+        // difference is the one thing the user can act on. The generic sentence
+        // stays for anything the writer could not account for.
+        //
+        // Worded here rather than borrowed from the writer: the writer's
+        // sentence is written for the card and says recording has stopped and
+        // every file has been closed, which is true of the card and alarming
+        // nonsense about a backup, whose failure stops no recording at all.
+        const auto line = capture->mirrorRanOutOfSpace()
+            ? juce::String ("The local backup copy stopped -- this computer's disk is full. "
+                            "The recording itself is unaffected and is still going to the "
+                            "card. Free up space to have a backup again.")
+            : juce::String ("The local backup copy stopped -- that drive stopped accepting "
+                            "writes. The recording itself is unaffected and is still going "
+                            "to the card.");
 
         noteActivity (ActivityLevel::Failed, "Local backup", line);
         return line;

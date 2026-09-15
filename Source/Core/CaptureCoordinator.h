@@ -241,6 +241,7 @@ public:
     /// A more specific account of a card write failure than "it stopped
     /// accepting writes", when the writer has one. Empty otherwise.
     std::string getCardWriteProblem() const { return pipeline != nullptr ? pipeline->getCardWriteProblem() : std::string(); }
+    bool mirrorRanOutOfSpace() const { return pipeline != nullptr && pipeline->mirrorRanOutOfSpace(); }
 
     /// §6.3: the mirror's equivalent. The pipeline already stops mirroring on
     /// a failed write and deliberately leaves the card write alone -- what this

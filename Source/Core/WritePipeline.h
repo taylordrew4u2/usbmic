@@ -161,6 +161,21 @@ public:
     /// otherwise, and the general message stands.
     std::string getCardWriteProblem() const;
 
+    /// Whether the backup copy stopped because its drive ran out of room.
+    ///
+    /// The mirror is the computer's own disk, so "full" is the ordinary reason,
+    /// and "that drive stopped accepting writes" leaves someone guessing at the
+    /// one thing they can actually do about it. The fact rather than the card's
+    /// sentence, which says recording has stopped -- true of the card, and
+    /// alarming nonsense about a backup.
+    ///
+    /// Latched when the failure happens rather than read back from the
+    /// writers: §6.3 closes and releases the mirror writers the moment
+    /// mirroring stops, so by the time anyone asks, the one object that knew
+    /// why is already gone. That is why there was never a way to ask.
+    bool mirrorRanOutOfSpace() const noexcept
+    { return mirrorOutOfSpace.load (std::memory_order_acquire); }
+
 private:
     // Constructed small and resized by start(), which is the only place the
     // real channel count and rate are known. RingBuffer::reset reallocates, so
@@ -168,6 +183,7 @@ private:
     std::atomic<bool> mixOnly { false };
     std::atomic<bool> cardWriteFailed { false };
     std::atomic<bool> mirrorWriteFailed { false };
+    std::atomic<bool> mirrorOutOfSpace { false };
     std::atomic<bool> mirrorFailedToOpen { false };
     std::string startProblem;
 
