@@ -111,6 +111,42 @@ int32_t peakOf24BitWav (const std::string& path, uint32_t& framesOut)
     return peak;
 }
 
+/// The largest absolute sample across one fraction of a 24-bit WAV, as a
+/// [from, to) range in eighths of the file. Frame-count equality alone cannot
+/// tell a padded channel from one that kept receiving audio it should not
+/// have; this can.
+int32_t peakOfEighths (const std::string& path, int fromEighth, int toEighth)
+{
+    uint32_t frames = 0;
+    if (peakOf24BitWav (path, frames) < 0 || frames == 0)
+        return -1;
+
+    constexpr std::streamoff kDataOffset = 12 + (8 + 16) + (8 + 602) + 8;
+    const uint32_t eighth = frames / 8;
+    const uint32_t first = eighth * static_cast<uint32_t> (fromEighth);
+    const uint32_t count = eighth * static_cast<uint32_t> (toEighth - fromEighth);
+
+    std::ifstream f (path, std::ios::binary);
+    f.seekg (kDataOffset + static_cast<std::streamoff> (first) * 3);
+
+    int32_t peak = 0;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        unsigned char s[3] {};
+        f.read (reinterpret_cast<char*> (s), 3);
+
+        int32_t v = static_cast<int32_t> (s[0]) | (static_cast<int32_t> (s[1]) << 8)
+                  | (static_cast<int32_t> (s[2]) << 16);
+
+        if (v & 0x800000)
+            v |= ~0xFFFFFF;
+
+        peak = std::max (peak, v < 0 ? -v : v);
+    }
+
+    return peak;
+}
+
 } // namespace
 
 int main()
@@ -349,6 +385,110 @@ int main()
 
     std::remove ((dir + "/01_Person-1.wav").c_str());
     std::remove ((dir + "/02_Person-2.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+
+
+    // ---------------------------------------------------------------------
+    // A microphone unplugged in the MIDDLE of a take.
+    //
+    // §0.1's hardest case, and the one no harness could reach: the ALSA `file`
+    // plugin free-runs and loops its infile, so on Linux a mid-stream device
+    // loss cannot be expressed at all. The virtual HAL can: removeDevice()
+    // erases the device and fires the system list listener, which is exactly
+    // what the OS does when someone pulls the cable.
+    //
+    // What must survive it: the take. The other person keeps recording, the
+    // take stays valid, and the lost channel is padded rather than truncated,
+    // so the two stems still line up frame for frame.
+    // ---------------------------------------------------------------------
+    std::printf ("\nOne of two microphones unplugged mid-take\n");
+    fakeca::reset();
+
+    const auto keeper = fakeca::addDevice (microphone ("Keeper", "uid-keeper", 1,
+                                                       fakeca::BufferShape::oneChannelPerBuffer));
+    const auto doomed = fakeca::addDevice (microphone ("Doomed", "uid-doomed", 1,
+                                                       fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend4;
+    mma::CaptureCoordinator loss (backend4, rate, block);
+
+    std::vector<mma::CaptureChannel> both = {
+        { "uid-keeper", "Keeper", "01_Keeper", 0.0f },
+        { "uid-doomed", "Doomed", "02_Doomed", 0.0f },
+    };
+
+    if (! loss.startMonitoring (both, {}))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", loss.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    if (! loss.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    std::vector<float> outLoss (static_cast<size_t> (block) * 2, 0.0f);
+    float* outsLoss[] = { outLoss.data(), outLoss.data() + block };
+
+    // Short enough that the writer's ring keeps up with a harness that pumps
+    // blocks back to back with no wall clock between them: a longer free-run
+    // overruns the ring and fills the stem's head with silence, which would
+    // drown the very thing this case is looking at.
+    const int lossBlocks = 64;
+    const int unplugAt = lossBlocks / 2;
+
+    for (int i = 0; i < lossBlocks; ++i)
+    {
+        if (i == unplugAt)
+            fakeca::removeDevice (doomed);
+
+        const std::vector<std::vector<float>> signal { tone (block, 440.0, rate, 0.5f) };
+
+        fakeca::pumpInput (keeper, signal);
+
+        if (i < unplugAt)
+            fakeca::pumpInput (doomed, signal);
+
+        loss.pullOutputBlock (outsLoss, 2, block);
+    }
+
+    loss.stopRecording();
+    loss.stopMonitoring();
+
+    uint32_t kFrames = 0, dFrames = 0;
+    const auto kPeak = peakOf24BitWav (dir + "/01_Keeper.wav", kFrames);
+    const auto dPeak = peakOf24BitWav (dir + "/02_Doomed.wav", dFrames);
+
+    std::printf ("  01_Keeper.wav: %u frames, peak %d\n", kFrames, kPeak);
+    std::printf ("  02_Doomed.wav: %u frames, peak %d\n", dFrames, dPeak);
+
+    check (kPeak > 100000, "the surviving mic keeps recording through the unplug");
+    check (kFrames >= static_cast<uint32_t> (lossBlocks) * static_cast<uint32_t> (block) / 2,
+           "and its stem runs past the moment the other cable was pulled");
+    check (dPeak > 100000, "what the lost mic did record is still in its stem");
+    check (dFrames == kFrames,
+           "the lost channel is padded to the take length, not truncated");
+
+    // And padded with SILENCE, at the right moment: frame-count equality on
+    // its own would also be satisfied by a channel that kept receiving audio,
+    // or by one filled with whatever was left in a buffer.
+    // The unplug lands at the half-way mark, and §3.2's two-block pre-roll
+    // puts the channel that far behind the clock, so the boundary itself is
+    // not a clean line. These ranges sit either side of it with room to spare.
+    const auto dBefore = peakOfEighths (dir + "/02_Doomed.wav", 1, 4);
+    const auto dAfter  = peakOfEighths (dir + "/02_Doomed.wav", 5, 8);
+    const auto kAfter  = peakOfEighths (dir + "/01_Keeper.wav", 5, 8);
+
+    std::printf ("  02_Doomed.wav: peak %d before the unplug, %d after\n", dBefore, dAfter);
+
+    check (dBefore > 100000, "the lost mic's audio up to the unplug is intact");
+    check (dAfter == 0, "and everything after it is silence, not stale samples");
+    check (kAfter > 100000, "while the surviving mic is still writing real audio there");
+
+    std::remove ((dir + "/01_Keeper.wav").c_str());
+    std::remove ((dir + "/02_Doomed.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);

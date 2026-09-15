@@ -58,6 +58,7 @@ struct Endpoint
     int pendingCaptureFrames = 0;
     bool pendingCaptureSilent = false;
     bool captureConsumed = false;
+    bool invalidated = false;
 
     // Render: the worker fills this, then acknowledges.
     bool renderRequested = false;
@@ -298,6 +299,10 @@ struct FakeCaptureClient : RefCounted<IAudioCaptureClient>
             return E_POINTER;
 
         std::lock_guard<std::mutex> lock (endpoint->mutex);
+
+        if (endpoint->invalidated)
+            return AUDCLNT_E_DEVICE_INVALIDATED;
+
         *frames = static_cast<UINT32> (endpoint->captureConsumed ? 0 : endpoint->pendingCaptureFrames);
         return S_OK;
     }
@@ -309,6 +314,9 @@ struct FakeCaptureClient : RefCounted<IAudioCaptureClient>
             return E_POINTER;
 
         std::lock_guard<std::mutex> lock (endpoint->mutex);
+
+        if (endpoint->invalidated)
+            return AUDCLNT_E_DEVICE_INVALIDATED;
 
         if (endpoint->captureConsumed || endpoint->pendingCaptureFrames == 0)
             return E_FAIL;
@@ -1115,6 +1123,26 @@ void removeEndpoint (const std::string& id)
 }
 
 void notifyDeviceAdded (const std::string& id) { fireDeviceAdded (id); }
+
+void invalidateEndpoint (const std::string& id)
+{
+    auto* endpoint = findEndpoint (id);
+    if (endpoint == nullptr)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock (endpoint->mutex);
+        endpoint->invalidated = true;
+    }
+
+    signalEvent (endpoint);
+}
+
+void pulseReadyEvent (const std::string& id)
+{
+    if (auto* endpoint = findEndpoint (id); endpoint != nullptr)
+        signalEvent (endpoint);
+}
 
 void setAsioDriverInstalled (bool installed)
 {
