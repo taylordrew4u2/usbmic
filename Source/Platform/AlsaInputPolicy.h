@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace mma::alsa_detail {
 
@@ -41,5 +42,29 @@ inline constexpr int kRecoveriesBeforeGivingUp = 200;
 // same three-strikes shape the other two backends use: only an unbroken run,
 // with no successful read to reset it, is a death.
 bool alsaRecoveryRunMeansDeviceIsDead (int consecutiveRecoveries) noexcept;
+
+// Whether an ALSA output name denotes a card this app can open exclusively, as
+// §5.4 monitoring requires, or one shared through a mixing plugin.
+//
+// This used to accept only names beginning "hw:", and that rejected almost
+// every output the app itself lists. The picker is filled from
+// snd_device_name_hint, and no pcm definition alsa-lib ships emits a bare
+// "hw:" hint -- what it emits for a card is "front:CARD=...", "hdmi:CARD=...",
+// "iec958:CARD=...", "surround51:CARD=..." and so on. Every one of those
+// resolves to `type hw`: a direct hardware PCM with no dmix in front of it.
+// USB-Audio.conf, the definition covering the interfaces this app exists for,
+// defines pcm.front.0 as `type hw` itself.
+//
+// So the user plugged in their interface, picked it in Advanced, and was told
+// the output was "shared with other apps" and to choose a specific sound card
+// -- which is exactly what they had just done, and there was no other entry
+// that would have worked. Monitoring was off on Linux for the app's own
+// hardware.
+//
+// It stays an allowlist, so an unrecognised name is still refused rather than
+// opened hopefully; the list is simply the one alsa-lib actually produces.
+// default, sysdefault, dmix, dsnoop, plug, pulse, pipewire and jack are all
+// genuinely shared and are still refused.
+bool alsaOutputNameIsExclusiveCapable (const std::string& outputName) noexcept;
 
 } // namespace mma::alsa_detail

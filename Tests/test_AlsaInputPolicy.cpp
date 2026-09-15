@@ -146,3 +146,63 @@ TEST_CASE (AlsaInputPolicy_AnUnbrokenRunOfRecoveriesIsADeadDevice)
                  alsa_detail::kRecoveriesBeforeGivingUp + 1));
     REQUIRE (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (100000));
 }
+
+// §5.4 monitoring was off on Linux for the hardware this app is named for.
+//
+// The picker is filled from snd_device_name_hint, and no pcm definition
+// alsa-lib ships emits a bare "hw:" hint -- a USB interface's outputs come
+// through as "front:CARD=...", "hdmi:CARD=...", "iec958:CARD=...". The old
+// predicate accepted "hw:" and nothing else, so every one of them was refused
+// with a message telling the user to choose a specific sound card, which is
+// what they had just done.
+//
+// These names are not invented for the test: they are the forms alsa-lib's own
+// front.conf, hdmi.conf and iec958.conf produce, and USB-Audio.conf defines
+// pcm.front.0 as `type hw`.
+TEST_CASE (AlsaInputPolicy_AnInterfacesOwnOutputCanBeMonitoredExclusively)
+{
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("front:CARD=USB,DEV=0"));
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("hdmi:CARD=HDMI,DEV=0"));
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("iec958:CARD=USB,DEV=0"));
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("surround51:CARD=PCH,DEV=0"));
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("rear:CARD=PCH,DEV=0"));
+
+    // The two that always worked, kept so widening the list cannot drop them.
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("hw:CARD=USB,DEV=0"));
+    REQUIRE (alsa_detail::alsaOutputNameIsExclusiveCapable ("plughw:CARD=USB,DEV=0"));
+}
+
+// The half that matters more, because widening an allowlist is how a real
+// shared device gets opened and 40 ms of delay reaches someone's headphones
+// with nothing said about it. Every name here routes through a mixing or
+// resampling plugin and must still be refused.
+TEST_CASE (AlsaInputPolicy_ASharedOutputIsStillRefused)
+{
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("default"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("sysdefault:CARD=USB"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("dmix:CARD=USB,DEV=0"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("dsnoop:CARD=USB,DEV=0"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("plug:dmix"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("pulse"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("pipewire"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("jack"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("null"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("modem:CARD=PCH"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable (""));
+
+    // A user-defined .asoundrc alias says nothing about what it wraps, so it
+    // stays refused rather than opened hopefully -- this is still an allowlist.
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("mma_out"));
+}
+
+// Prefix matching, not substring matching. "surround51" must not be reached by
+// anything that merely contains it, and a device whose name begins with an
+// accepted word but is a different PCM must not slip through on the strength of
+// the letters alone -- which is why every prefix carries its colon.
+TEST_CASE (AlsaInputPolicy_TheExclusiveNamesAreMatchedAsPrefixesWithTheirSeparator)
+{
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("myhw:CARD=USB"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("front"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("fronting:CARD=USB"));
+    REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("not-hw:CARD=USB"));
+}
