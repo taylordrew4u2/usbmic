@@ -1,5 +1,7 @@
 #include "SetupAdvisor.h"
 
+#include <algorithm>
+
 namespace mma {
 
 void SetupAdvisor::noteDeviceDropout (double nowSeconds, int micsAttached)
@@ -31,6 +33,42 @@ void SetupAdvisor::updateChannelLevels (const std::vector<float>& peaksDb, doubl
 
     if (incoming > 0)
         deadChannels->processBlock (peaksDb, blockSeconds);
+
+    // Every channel at or under the metering floor, together, since the take
+    // began. DeadChannelDetector deliberately cannot see this -- it requires
+    // another channel to be ALIVE before calling one dead, which is what keeps
+    // a quiet room from being reported as a rig full of broken microphones.
+    // Correct, and it leaves exactly one case unreported: all of them at once.
+    if (incoming > 0)
+    {
+        const bool anythingArrived =
+            std::any_of (peaksDb.begin(), peaksDb.end(),
+                         [] (float db) { return db > DeadChannelDetector::kDeadThresholdDb; });
+
+        // The distinction this rests on, stated rather than buried: a connected
+        // microphone in a silent room is not at the metering floor. It has a
+        // noise floor -- preamp hiss, the room itself -- and reads somewhere
+        // above -60. EXACTLY the floor means literal zero samples, which is
+        // what a refused permission and a powered-off interface both deliver.
+        //
+        // That is an assumption about real hardware, and it is the one thing
+        // here no fixture can confirm. If it is ever wrong for some device,
+        // the symptom is this advice appearing for a rig that works -- which
+        // is why it takes forty seconds of NOTHING, and why a single arriving
+        // sample retires it for the rest of the session.
+        if (anythingArrived)
+        {
+            everHeardAudio = true;
+            allChannelsSilentSeconds = 0.0;
+        }
+        else if (! everHeardAudio)
+        {
+            // Only counted while NOTHING has ever arrived. A rig that worked
+            // and then went quiet is a pause between takes; this is about a
+            // rig that has never once produced a sample.
+            allChannelsSilentSeconds += blockSeconds;
+        }
+    }
 }
 
 void SetupAdvisor::updatePolarPattern (float correlationAB, float thirdChannelPeakDb, double blockSeconds)
@@ -80,6 +118,36 @@ std::vector<SetupAdvice> SetupAdvisor::getActiveAdvice (double nowSeconds) const
 
     // §10.5: a silent channel is most often the hardware mute switch, which is
     // the single most common failure, so name it rather than being vague.
+    //
+    // Unless they are ALL silent. §10.1 calls permissions "the first real
+    // obstacle" and says a denied microphone "looks exactly like broken
+    // hardware to a novice" -- and that is precisely the shape it arrives in,
+    // because macOS answers a refused microphone with SILENCE rather than an
+    // error. The device still lists, the stream still opens, and every channel
+    // reads dead at once.
+    //
+    // Told per channel, that came out as "Person 1 isn't sending sound. Check
+    // the mute button on the mic." repeated for everyone in the room: the app
+    // pointing confidently at hardware that is working perfectly, which is
+    // worse than saying nothing. Several mute switches do not get pressed
+    // simultaneously; one cause upstream of all of them does.
+    // Twice the per-channel window, and only when not a single sample has ever
+    // arrived. A quiet room eventually speaks; a refused microphone never does.
+    constexpr double kNothingAtAllSeconds = DeadChannelDetector::kSustainSeconds * 2.0;
+
+    if (numChannels > 0 && ! everHeardAudio
+        && allChannelsSilentSeconds >= kNothingAtAllSeconds)
+    {
+        advice.push_back ({ SetupIssue::EverythingSilent,
+                            "No sound is arriving from any microphone. On a Mac, check that "
+                            "SobStage is allowed to use the microphone in System Settings under "
+                            "Privacy & Security; otherwise check that the interface they share "
+                            "is switched on and connected.",
+                            -1 });
+
+        return advice;
+    }
+
     for (int ch = 0; ch < numChannels; ++ch)
         if (deadChannels != nullptr && deadChannels->isChannelDead (ch))
             advice.push_back ({ SetupIssue::SilentChannel,
@@ -91,6 +159,8 @@ std::vector<SetupAdvice> SetupAdvisor::getActiveAdvice (double nowSeconds) const
 
 void SetupAdvisor::reset()
 {
+    allChannelsSilentSeconds = 0.0;
+    everHeardAudio = false;
     deadChannels.reset();
     polarPattern.reset();
     contentionReason.clear();
