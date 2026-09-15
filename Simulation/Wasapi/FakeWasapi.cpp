@@ -99,6 +99,19 @@ Endpoint* findEndpoint (const std::string& id)
     return it == world().endpoints.end() ? nullptr : it->second;
 }
 
+/// The endpoint id owning this connector device id, or empty. Separate from
+/// findEndpoint because the two id spaces are deliberately disjoint.
+std::string findEndpointByConnectedDeviceId (const std::string& connectedDeviceId)
+{
+    std::lock_guard<std::mutex> lock (world().mutex);
+
+    for (const auto& entry : world().endpoints)
+        if (entry.second != nullptr && entry.second->spec.connectedDeviceId == connectedDeviceId)
+            return entry.first;
+
+    return {};
+}
+
 // Explicit element-wise conversion. The iterator-pair constructors narrow
 // implicitly, which MSVC rightly warns about; the endpoint ids and device names
 // here are ASCII, so a byte-for-byte widening is the whole of what is needed.
@@ -217,7 +230,10 @@ struct FakeConnector : RefCounted<IConnector>
             return E_FAIL;
         }
 
-        const auto wide = toWide (endpointId);
+        // NOT the endpoint id. The connector names the topology device behind
+        // the endpoint, which is a different string, and only a backend that
+        // actually follows it can reach the physical instance id.
+        const auto wide = toWide (endpoint->spec.connectedDeviceId);
         const auto bytes = (wide.size() + 1) * sizeof (wchar_t);
         auto* copy = static_cast<wchar_t*> (CoTaskMemAlloc (bytes));
         if (copy == nullptr)
@@ -551,6 +567,12 @@ struct FakeDevice : RefCounted<IMMDevice>
 {
     std::string id;
 
+    /// True when this handle came from resolving a connector's device id
+    /// rather than from enumeration. The physical node reports the PnP
+    /// instance id; the endpoint reports its own SWD\MMDEVAPI\ id, which is
+    /// not an eligible transport -- exactly as Windows does it.
+    bool isPhysicalNode = false;
+
     HRESULT STDMETHODCALLTYPE Activate (REFIID riid, DWORD, void*, void** out) override
     {
         if (out == nullptr)
@@ -601,7 +623,8 @@ struct FakeDevice : RefCounted<IMMDevice>
 
         auto* store = new FakePropertyStore();
         store->name = toWide (endpoint->spec.friendlyName);
-        store->instanceId = toWide (endpoint->spec.physicalInstanceId);
+        store->instanceId = toWide (isPhysicalNode ? endpoint->spec.physicalInstanceId
+                                                   : endpoint->spec.endpointInstanceId);
         store->instanceIdAvailable = endpoint->spec.instanceIdPropertyAvailable;
         *out = store;
         return S_OK;
@@ -697,16 +720,28 @@ struct FakeEnumerator : RefCounted<IMMDeviceEnumerator>
 
         const auto narrow = toNarrow (std::wstring (id));
 
-        if (findEndpoint (narrow) == nullptr)
+        if (findEndpoint (narrow) != nullptr)
         {
-            *device = nullptr;
-            return E_FAIL;
+            auto* d = new FakeDevice();
+            d->id = narrow;
+            *device = d;
+            return S_OK;
         }
 
-        auto* d = new FakeDevice();
-        d->id = narrow;
-        *device = d;
-        return S_OK;
+        // A connector's device id resolves to the physical node behind the
+        // endpoint, which is a different object with a different property
+        // store. Nothing but following the topology can get here.
+        if (const auto owner = findEndpointByConnectedDeviceId (narrow); ! owner.empty())
+        {
+            auto* d = new FakeDevice();
+            d->id = owner;
+            d->isPhysicalNode = true;
+            *device = d;
+            return S_OK;
+        }
+
+        *device = nullptr;
+        return E_FAIL;
     }
 
     HRESULT STDMETHODCALLTYPE RegisterEndpointNotificationCallback (IMMNotificationClient* client) override
@@ -1079,6 +1114,15 @@ void addEndpoint (const EndpointSpec& spec)
 
             endpoint->spec.physicalInstanceId = endpoint->spec.deviceNodeChain.front().instanceId;
         }
+
+        // Three distinct strings, the way Windows has them. A scenario may set
+        // either explicitly; left blank they are derived so that no two links
+        // of the topology walk can be satisfied by the same value.
+        if (endpoint->spec.connectedDeviceId.empty())
+            endpoint->spec.connectedDeviceId = "{2}.\\\\?\\" + endpoint->spec.physicalInstanceId;
+
+        if (endpoint->spec.endpointInstanceId.empty())
+            endpoint->spec.endpointInstanceId = "SWD\\MMDEVAPI\\" + endpoint->spec.id;
 
         endpoint->bufferFrames = spec.bufferFrames;
         world().endpoints[spec.id] = endpoint;
