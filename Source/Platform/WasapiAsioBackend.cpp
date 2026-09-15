@@ -495,8 +495,37 @@ void runStreamThread (WasapiStream* stream)
         {
             UINT32 packetFrames = 0;
 
-            while (SUCCEEDED (stream->capture->GetNextPacketSize (&packetFrames)) && packetFrames > 0)
+            // Taken rather than tested inline, because a FAILING one is the
+            // one that matters. Once the device behind the stream goes away,
+            // Windows answers AUDCLNT_E_DEVICE_INVALIDATED here, not in
+            // GetBuffer -- and a driver that goes on signalling the ready
+            // event then walks past both of the other exits: the wait never
+            // times out, and the GetBuffer failure count below is never
+            // reached because this loop is never entered. That left the
+            // worker spinning for the rest of the session on a microphone
+            // that had been unplugged: no audio, no error, no end, exactly
+            // the shape of bug the wait above and the render side below each
+            // carry a comment about having fixed.
+            for (;;)
             {
+                if (FAILED (stream->capture->GetNextPacketSize (&packetFrames)))
+                {
+                    if (consecutiveCaptureFailures == 0)
+                        stream->framesDropped.fetch_add (stream->bufferFrames,
+                                                         std::memory_order_relaxed);
+
+                    if (++consecutiveCaptureFailures >= kCaptureFailuresBeforeGivingUp)
+                    {
+                        reportCaptureDeath (stream);
+                        return;
+                    }
+
+                    break;
+                }
+
+                if (packetFrames == 0)
+                    break;
+
                 BYTE* data = nullptr;
                 UINT32 frames = 0;
                 DWORD flags = 0;
