@@ -812,6 +812,48 @@ void aSixteenBitOnlyOutputIsNotCalledIncapable()
 /// The other direction matters just as much: §5.4 never falls back to shared
 /// mode, so a device that genuinely refuses every exclusive layout must be
 /// reported as unavailable, with the cause named rather than a silent failure.
+/// §5.4: the latency the probe reports is the round trip, in and out.
+///
+/// Every backend computes this figure, and until recently nothing read it --
+/// CaptureCoordinator dropped it, so Application::measuredLatencyMs was never
+/// assigned and the Advanced panel reported "0.0 ms". Now that it reaches the
+/// user, what it says has to be right, and the three platforms have to agree:
+/// ALSA counted a single buffer and so reported half of what this and macOS
+/// give for identical settings.
+void theReportedLatencyIsTheRoundTrip()
+{
+    std::printf ("\nWhat the probe says the monitor path costs\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (headphones ("out-lat", "Latency Out",
+                                         { fakewasapi::Format::floatFormat (2, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+
+    // One buffer at 48 kHz: 256 frames is 5.333 ms, so the round trip is 10.667.
+    const auto cap = backend.checkExclusiveModeCapability ("out-lat", 48000.0, 256);
+
+    check (cap.exclusiveModeAvailable, "the output is capable");
+    check (cap.measuredOrEstimatedLatencyMs > 0.0,
+           "and the probe reports a latency rather than leaving it at zero");
+
+    const double oneBuffer = (256.0 / 48000.0) * 1000.0;
+    check (std::abs (cap.measuredOrEstimatedLatencyMs - oneBuffer * 2.0) < 1e-9,
+           "which is the round trip -- one buffer in, one buffer out");
+
+    // It has to follow the buffer size, or it is a constant dressed as a
+    // measurement.
+    const auto small = backend.checkExclusiveModeCapability ("out-lat", 48000.0, 128);
+    const auto large = backend.checkExclusiveModeCapability ("out-lat", 48000.0, 512);
+
+    check (std::abs (small.measuredOrEstimatedLatencyMs
+                         - cap.measuredOrEstimatedLatencyMs / 2.0) < 1e-9,
+           "halving the buffer halves it");
+    check (std::abs (large.measuredOrEstimatedLatencyMs
+                         - cap.measuredOrEstimatedLatencyMs * 2.0) < 1e-9,
+           "and doubling the buffer doubles it");
+}
+
 void anOutputThatRefusesEveryLayoutIsStillReported()
 {
     std::printf ("\nHeadphones that refuse exclusive mode altogether\n");
@@ -1030,6 +1072,7 @@ int main()
     anIntegerOnlyOutputIsNotCalledIncapable();
     aSixteenBitOnlyOutputIsNotCalledIncapable();
     anOutputThatRefusesEveryLayoutIsStillReported();
+    theReportedLatencyIsTheRoundTrip();
     aStalledMicrophoneIsReportedRatherThanSpunOnForever();
     anInvalidatedMicrophoneIsReportedRatherThanSpunOnForever();
     aSessionThatCannotWatchTheRigSaysSo();
