@@ -235,6 +235,102 @@ int main()
     std::remove (pathR.c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // -----------------------------------------------------------------------
+    // A four-input interface, one performer per input.
+    //
+    // This is #94's case -- "a mixer or interface gave you input one and
+    // nothing else" -- asked of the third platform. That bug was ALSA's, and
+    // CoreAudio was shown clean; WASAPI had never been asked at all, because
+    // until this harness existed there was nothing on Windows that could carry
+    // an interface's inputs all the way to files.
+    //
+    // Four distinct amplitudes again. Four identical tones would be satisfied
+    // by a fan-out that gave everyone input four, which is the same failure
+    // #94 fixed wearing better clothes.
+    // -----------------------------------------------------------------------
+    std::printf ("\nA four-input interface with four people on it\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (microphone ("mic-rig", "4-in Interface", 4, 24));
+
+    mma::WasapiAsioBackend backend2;
+    mma::CaptureCoordinator rig (backend2, rate, block);
+
+    std::vector<mma::CaptureChannel> four;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        mma::CaptureChannel c;
+        c.deviceId = "mic-rig";
+        c.deviceChannel = i;
+        c.displayName = "Person " + std::to_string (i + 1);
+        c.fileName = "0" + std::to_string (i + 1) + "_Person-" + std::to_string (i + 1);
+        c.bitDepth = 24;
+        four.push_back (c);
+    }
+
+    if (! rig.startMonitoring (four, {}))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", rig.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    check (fakewasapi::negotiatedFormat ("mic-rig").channels == 4,
+           "all four inputs were negotiated, not one");
+
+    if (! rig.startRecording (dir, 24, "2026-09-15T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    std::vector<float> outRig (static_cast<size_t> (block) * 2, 0.0f);
+    float* outsRig[] = { outRig.data(), outRig.data() + block };
+
+    const float amplitudes[] = { 0.1f, 0.2f, 0.3f, 0.4f };
+
+    for (int i = 0; i < blocks; ++i)
+    {
+        std::vector<std::vector<float>> signal;
+
+        for (const float amplitude : amplitudes)
+            signal.push_back (tone (block, 440.0, rate, amplitude));
+
+        fakewasapi::pushCapture ("mic-rig", signal);
+        rig.pullOutputBlock (outsRig, 2, block);
+    }
+
+    rig.stopRecording();
+    rig.stopMonitoring();
+
+    bool everyoneLanded = true;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto path = dir + "/0" + std::to_string (i + 1) + "_Person-"
+                        + std::to_string (i + 1) + ".wav";
+
+        uint32_t frames = 0;
+        int32_t peak = 0;
+        const bool read = inspect24BitWav (path, frames, peak);
+
+        const int32_t expected = static_cast<int32_t> (amplitudes[static_cast<size_t> (i)] * 8388607.0f);
+        const bool right = read && frames > 0 && std::abs (peak - expected) < 84000;
+
+        std::printf ("  0%d_Person-%d.wav: %u frames, peak %d (expected about %d)%s\n",
+                     i + 1, i + 1, frames, peak, expected, right ? "" : "   <-- wrong input");
+
+        if (! right)
+            everyoneLanded = false;
+
+        std::remove (path.c_str());
+    }
+
+    check (everyoneLanded,
+           "each person reaches their own file, at their own level, in the right order");
+
+    std::remove ((dir + "/MIX.wav").c_str());
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }
