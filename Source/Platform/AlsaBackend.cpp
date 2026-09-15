@@ -926,7 +926,26 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         return false;
     }
 
+    // What the device GRANTED, not what was asked for. snd_pcm_set_params takes
+    // a latency hint and ALSA picks its own period from it, so the two are
+    // routinely different -- and this stored the request, which made the §5.4
+    // latency figure a statement about what the app wanted rather than about
+    // what the card agreed to.
+    //
+    // Falls back to the request when the driver will not say, because a period
+    // of zero would size every buffer below to nothing.
     stream->periodFrames = static_cast<snd_pcm_uframes_t> (std::max (1, bufferSizeSamples));
+
+    {
+        snd_pcm_uframes_t grantedBuffer = 0;
+        snd_pcm_uframes_t grantedPeriod = 0;
+
+        if (snd_pcm_get_params (stream->pcm, &grantedBuffer, &grantedPeriod) == 0
+            && grantedPeriod > 0)
+        {
+            stream->periodFrames = grantedPeriod;
+        }
+    }
 
     // §11: sized once, here, and never touched again from the audio thread.
     const size_t sampleCount = static_cast<size_t> (stream->periodFrames) * channels;
@@ -1143,6 +1162,15 @@ uint64_t AlsaBackend::getFramesDroppedByBackend() const
             total += stream->framesDropped.load (std::memory_order_relaxed);
 
     return total;
+}
+
+int AlsaBackend::getGrantedOutputBufferFrames() const
+{
+    for (const auto& stream : openStreams)
+        if (stream != nullptr && ! stream->isInput && stream->periodFrames > 0)
+            return static_cast<int> (stream->periodFrames);
+
+    return 0;
 }
 
 uint64_t AlsaBackend::getOutputGlitchCount() const

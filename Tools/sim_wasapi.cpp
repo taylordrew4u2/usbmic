@@ -274,6 +274,43 @@ void aBufferAlignmentRejectionIsRetried()
     backend.closeAllStreams();
 }
 
+/// §5.4 quotes the singer a monitoring latency. Quoting it from the period we
+/// ASKED for is a lie whenever the device names its own: the app must report
+/// the granted size. Nothing else in this file opens an output at a size the
+/// device refuses, so without this the reporting path is untested on Windows.
+void theGrantedOutputPeriodIsWhatTheBackendReports()
+{
+    std::printf ("\nAn output that rejects the period and names its own\n");
+    fakewasapi::reset();
+
+    auto spec = headphones ("out-align", "Picky Out",
+                            { fakewasapi::Format::pcm (2, 24, 48000.0) });
+    spec.alignedFrames = 480;
+    fakewasapi::addEndpoint (spec);
+
+    mma::WasapiAsioBackend backend;
+
+    check (backend.getGrantedOutputBufferFrames() == 0,
+           "with nothing open the backend says it cannot tell");
+
+    auto writer = [] (const float* const*, int, float* const* outputs, int numOutputs, int numSamples)
+    {
+        for (int ch = 0; ch < numOutputs; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                outputs[ch][i] = 0.0f;
+    };
+
+    check (backend.openExclusiveOutputStream ("out-align", 48000.0, 256, writer),
+           "the retry at the device's own size succeeds");
+    check (backend.getGrantedOutputBufferFrames() == 480,
+           "and the backend reports 480, not the 256 we asked for");
+
+    backend.closeAllStreams();
+
+    check (backend.getGrantedOutputBufferFrames() == 0,
+           "once it is closed there is nothing to report again");
+}
+
 /// AUDCLNT_BUFFERFLAGS_SILENT means the buffer contents are undefined. Reading
 /// it anyway turns a dropout into full-scale noise.
 void aSilentFlaggedPacketIsTreatedAsSilence()
@@ -1069,6 +1106,7 @@ int main()
     enumerationReportsNamesAndSeparatesDirections();
     eightMicrophonesInMixedFormatsStaySeparate();
     closingStopsEveryStream();
+    theGrantedOutputPeriodIsWhatTheBackendReports();
     anIntegerOnlyOutputIsNotCalledIncapable();
     aSixteenBitOnlyOutputIsNotCalledIncapable();
     anOutputThatRefusesEveryLayoutIsStillReported();
