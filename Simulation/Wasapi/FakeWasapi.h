@@ -75,6 +75,21 @@ struct EndpointSpec
     /// against; nothing here could express it before.
     int initializeDelayMilliseconds = 0;
 
+    /// The endpoint's Windows device state: DEVICE_STATE_ACTIVE,
+    /// DEVICE_STATE_DISABLED, DEVICE_STATE_NOTPRESENT or
+    /// DEVICE_STATE_UNPLUGGED.
+    ///
+    /// A disabled or unplugged endpoint is still in the registry and still
+    /// enumerable — it just must not be offered as a working microphone. The
+    /// fake reported ACTIVE for everything and discarded the state mask that
+    /// EnumAudioEndpoints is given, so a backend asking for every state got the
+    /// same answer as one asking for active devices only, and unplugged
+    /// hardware appearing in the picker was untestable.
+    ///
+    /// Declared as unsigned long rather than DWORD so this header stays free of
+    /// the Windows headers, as the rest of it is.
+    unsigned long deviceState = 1; // DEVICE_STATE_ACTIVE
+
     bool topologyAvailable = true;
     bool connectorAvailable = true;
     bool connectedDeviceIdAvailable = true;

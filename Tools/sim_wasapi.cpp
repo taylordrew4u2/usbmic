@@ -557,6 +557,42 @@ void onlyDirectlyAttachedHardwareEnumeratesAsInput()
 /// Every leg of Windows' identity proof can fail in the real world: an old
 /// driver may expose no topology, a filter may omit its instance id, or the PnP
 /// tree may have malformed properties. None may turn into a name-based fallback.
+/// An unplugged or disabled interface is still in the Windows registry.
+///
+/// EnumAudioEndpoints takes a state mask, and the backend asks for
+/// DEVICE_STATE_ACTIVE. The fake discarded that mask and reported ACTIVE for
+/// every endpoint, so asking for active devices and asking for all of them
+/// returned the same list -- and a backend that passed the wrong mask would
+/// have offered the user a microphone that is unplugged, disabled, or gone.
+/// Picking it produces a take of silence, which is the §0.1 failure.
+void onlyActiveEndpointsAreOffered()
+{
+    std::printf ("\nInterfaces Windows still lists but will not open\n");
+    fakewasapi::reset();
+
+    const auto add = [] (const char* id, unsigned long state)
+    {
+        auto spec = microphone (id, id, { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.deviceNodeChain = { { std::string ("USB\\") + id, true, true, true } };
+        spec.deviceState = state;
+        fakewasapi::addEndpoint (spec);
+    };
+
+    // The numeric values of the DEVICE_STATE_* flags, spelled out because this
+    // file does not include the Windows headers.
+    add ("live", 0x1);        // ACTIVE
+    add ("unplugged", 0x8);   // UNPLUGGED
+    add ("disabled", 0x2);    // DISABLED
+    add ("gone", 0x4);        // NOTPRESENT
+
+    mma::WasapiAsioBackend backend;
+    const auto inputs = backend.enumerateInputDevices();
+
+    check (inputs.size() == 1, "only the active interface is offered");
+    check (! inputs.empty() && inputs[0].name == "live",
+           "and it is the one that is actually plugged in");
+}
+
 /// The §2.4 identity walk has to actually be walked.
 ///
 /// Windows keeps three distinct strings here -- the endpoint id, the topology
@@ -1137,6 +1173,7 @@ int main()
 
     enumerationPreservesEveryInputAndSupportedRate();
     onlyDirectlyAttachedHardwareEnumeratesAsInput();
+    onlyActiveEndpointsAreOffered();
     thePhysicalIdentityComesFromTheConnectedNodeNotTheEndpoint();
     missingExternalEvidenceFailsClosed();
     openingAnInputRechecksTheExternalHardwarePolicy();

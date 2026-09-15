@@ -670,7 +670,9 @@ struct FakeDevice : RefCounted<IMMDevice>
         if (state == nullptr)
             return E_POINTER;
 
-        *state = DEVICE_STATE_ACTIVE;
+        auto* endpoint = findEndpoint (id);
+        *state = endpoint == nullptr ? DEVICE_STATE_NOTPRESENT
+                                     : static_cast<DWORD> (endpoint->spec.deviceState);
         return S_OK;
     }
 };
@@ -705,7 +707,8 @@ struct FakeCollection : RefCounted<IMMDeviceCollection>
 
 struct FakeEnumerator : RefCounted<IMMDeviceEnumerator>
 {
-    HRESULT STDMETHODCALLTYPE EnumAudioEndpoints (EDataFlow flow, DWORD, IMMDeviceCollection** out) override
+    HRESULT STDMETHODCALLTYPE EnumAudioEndpoints (EDataFlow flow, DWORD stateMask,
+                                                  IMMDeviceCollection** out) override
     {
         if (out == nullptr)
             return E_POINTER;
@@ -717,8 +720,15 @@ struct FakeEnumerator : RefCounted<IMMDeviceEnumerator>
             for (const auto& id : world().order)
             {
                 auto* endpoint = world().endpoints[id];
-                if (endpoint != nullptr && endpoint->spec.isCapture == (flow == eCapture))
-                    collection->ids.push_back (id);
+                if (endpoint == nullptr || endpoint->spec.isCapture != (flow == eCapture))
+                    continue;
+
+                // The mask used to be discarded, so asking for active devices
+                // and asking for every device returned the same list.
+                if ((static_cast<DWORD> (endpoint->spec.deviceState) & stateMask) == 0)
+                    continue;
+
+                collection->ids.push_back (id);
             }
         }
 
