@@ -217,6 +217,24 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         return continueInputOnly (monitorProblem);
     }
 
+    // The estimate above came from the buffer size we ASKED for. Now that the
+    // stream exists, the device can be asked what it actually granted -- which
+    // is routinely different, since a driver is free to align the request up to
+    // its own period. CoreAudio already tells the user there is "a little more
+    // delay than usual" when that happens; the number beside that sentence was
+    // still the figure for the buffer the device had refused.
+    //
+    // Zero means the backend cannot say, and then the estimate stands: a
+    // latency of nothing is the one answer that is certainly wrong.
+    if (! outputDeviceId.empty())
+    {
+        if (const int granted = backend.getGrantedOutputBufferFrames();
+            granted > 0 && sampleRate > 0.0)
+        {
+            monitoringLatencyMs = (static_cast<double> (granted) / sampleRate) * 1000.0 * 2.0;
+        }
+    }
+
     // One stream per remaining DEVICE, not per channel.
     //
     // An audio interface with four microphones plugged into it is one device

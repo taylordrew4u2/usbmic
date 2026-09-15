@@ -218,6 +218,20 @@ public:
     /// Message thread only.
     virtual uint64_t getOutputGlitchCount() const { return 0; }
 
+    /// Frames per callback the monitor output actually GRANTED, or 0 when the
+    /// backend cannot say.
+    ///
+    /// §5.4's latency figure was worked out from the size that was ASKED for,
+    /// which is what the app wanted rather than what the device agreed to. A
+    /// device is free to hand back a different buffer -- CoreAudio already
+    /// notices and tells the user there is "a little more delay than usual" --
+    /// and the number beside that sentence was still the figure for the buffer
+    /// it refused.
+    ///
+    /// Zero means "unknown", and the caller keeps its estimate rather than
+    /// reporting a latency of nothing.
+    virtual int getGrantedOutputBufferFrames() const { return 0; }
+
     /// Empty unless this backend cannot watch for microphones being plugged in
     /// or pulled out. Then it says so in the user's words: nothing about the
     /// rig will be noticed until the app is restarted, and §6.5's mid-take

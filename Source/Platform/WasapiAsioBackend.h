@@ -56,6 +56,7 @@ public:
     std::vector<StreamFailure> takeStreamFailures() override { return streamFailures.take(); }
 
     uint64_t getFramesDroppedByBackend() const override;
+    int getGrantedOutputBufferFrames() const override;
 
 private:
     std::string lastOpenError;

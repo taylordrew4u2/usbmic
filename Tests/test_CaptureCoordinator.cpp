@@ -49,6 +49,9 @@ public:
     /// this in; the fake did not, which is part of why nothing noticed that the
     /// coordinator was dropping it.
     double exclusiveLatencyMs = 0.0;
+    /// What the device GRANTS, as distinct from what was asked for. Zero means
+    /// "cannot say", which is what every backend returned before this existed.
+    int grantedOutputBufferFrames = 0;
     bool failOutputOpen = false;
     bool failInputOpen = false;
     /// Devices that refuse to open, by id -- so a test can fail ONE microphone
@@ -64,6 +67,7 @@ public:
     std::vector<AudioCallback> inputCallbacks; // one per device, in open order
 
     std::string getBackendName() const override { return "Fake"; }
+    int getGrantedOutputBufferFrames() const override { return grantedOutputBufferFrames; }
     std::vector<AudioDeviceDescriptor> enumerateInputDevices() override { return {}; }
     std::vector<AudioDeviceDescriptor> enumerateOutputDevices() override { return {}; }
     void setDeviceChangeCallback (DeviceChangeCallback) override {}
@@ -1822,4 +1826,79 @@ TEST_CASE (CaptureCoordinator_AnOutputRefusedByThePreflightReportsNoLatency)
     coordinator.startMonitoring ({ mic }, "out-1");
     REQUIRE (! coordinator.getMonitorProblem().empty());
     REQUIRE (coordinator.getMonitoringLatencyMs() == 0.0);
+}
+
+// §5.4: the latency has to describe the buffer the device GRANTED, not the one
+// it was asked for.
+//
+// The figure came from checkExclusiveModeCapability, which runs before the
+// stream exists and can only estimate. A driver is free to align a request up
+// to its own period -- CoreAudio already tells the user there is "a little more
+// delay than usual" when that happens -- and the number printed beside that
+// sentence was still the one for the buffer the device had just refused.
+TEST_CASE (CaptureCoordinator_TheLatencyDescribesTheBufferTheDeviceGranted)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;      // the estimate for the 256 asked for
+    backend.grantedOutputBufferFrames = 512; // what the device actually handed back
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+
+    // 512 frames at 48 kHz is 10.667 ms one way, so the round trip is 21.333 --
+    // twice the estimate, because the device gave twice the buffer.
+    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0;
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
+
+    // And it is emphatically not the estimate any more.
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) > 1.0);
+}
+
+// A backend that cannot say keeps the estimate. Zero is not a small latency,
+// and reporting one would be worse than reporting an approximate one.
+TEST_CASE (CaptureCoordinator_ABackendThatCannotSayKeepsTheEstimate)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;
+    backend.grantedOutputBufferFrames = 0;   // every backend, before this existed
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) < 1e-9);
+}
+
+// A device that granted exactly what was asked for reports exactly the
+// estimate, so the new path cannot quietly shift a correct figure.
+TEST_CASE (CaptureCoordinator_AGrantedBufferMatchingTheRequestChangesNothing)
+{
+    FakeBackend backend;
+    backend.exclusiveLatencyMs = 10.67;
+    backend.grantedOutputBufferFrames = 256;  // exactly what was requested
+
+    CaptureCoordinator coordinator (backend, 48000.0, 256);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+
+    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0;
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 }
