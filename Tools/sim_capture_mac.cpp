@@ -546,6 +546,103 @@ int main()
     std::remove ((dir + "/02_Doomed.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // ---------------------------------------------------------------------
+    // The same interface, handing its inputs over as SEPARATE BUFFERS.
+    //
+    // Every multi-input case above uses one interleaved buffer carrying N
+    // channels. A class-compliant USB interface commonly does the other thing
+    // -- one mono buffer per input -- and that layout had been proven only as
+    // far as the backend's callback, never through the coordinator and the
+    // writer into files. Each side of that boundary was tested; the join was
+    // not, which is where every bug found tonight was living.
+    //
+    // Each input carries a DIFFERENT amplitude, so this cannot pass while the
+    // channels are transposed. Four identical tones would be satisfied by a
+    // fan-out that put input four into everyone's file.
+    // ---------------------------------------------------------------------
+    std::printf ("\nAn interface that hands over one buffer per input\n");
+    fakeca::reset();
+
+    const auto split = fakeca::addDevice (microphone ("Split 4-in", "uid-split", 4,
+                                                      fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend5;
+    mma::CaptureCoordinator perBuffer (backend5, rate, block);
+
+    std::vector<mma::CaptureChannel> splitMics;
+    for (int i = 0; i < 4; ++i)
+    {
+        mma::CaptureChannel c;
+        c.deviceId = "uid-split";
+        c.deviceChannel = i;
+        c.displayName = "Input " + std::to_string (i + 1);
+        c.fileName = "0" + std::to_string (i + 1) + "_Input-" + std::to_string (i + 1);
+        c.bitDepth = 24;
+        splitMics.push_back (c);
+    }
+
+    if (! perBuffer.startMonitoring (splitMics, {}))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", perBuffer.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    if (! perBuffer.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    std::vector<float> outSplit (static_cast<size_t> (block) * 2, 0.0f);
+    float* outsSplit[] = { outSplit.data(), outSplit.data() + block };
+
+    // 0.1, 0.2, 0.3, 0.4 -- far enough apart that a swap is unmistakable.
+    const float amplitudes[] = { 0.1f, 0.2f, 0.3f, 0.4f };
+
+    for (int i = 0; i < 64; ++i)
+    {
+        std::vector<std::vector<float>> signal;
+        for (const float amplitude : amplitudes)
+            signal.push_back (tone (block, 440.0, rate, amplitude));
+
+        fakeca::pumpInput (split, signal);
+        perBuffer.pullOutputBlock (outsSplit, 2, block);
+    }
+
+    perBuffer.stopRecording();
+    perBuffer.stopMonitoring();
+
+    bool everyInputLanded = true;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto path = dir + "/0" + std::to_string (i + 1) + "_Input-"
+                        + std::to_string (i + 1) + ".wav";
+
+        uint32_t frames = 0;
+        const auto peak = peakOf24BitWav (path, frames);
+
+        // 24-bit full scale is 8388607, so 0.1 lands near 838860 and each step
+        // is about that much again. A tolerance of a tenth of a step is ample
+        // and still cannot confuse one input with its neighbour.
+        const int32_t expected = static_cast<int32_t> (amplitudes[static_cast<size_t> (i)] * 8388607.0f);
+        const int32_t slack = 83886;
+        const bool right = frames > 0 && std::abs (peak - expected) < slack;
+
+        std::printf ("  0%d_Input-%d.wav: %u frames, peak %d (expected about %d)%s\n",
+                     i + 1, i + 1, frames, peak, expected, right ? "" : "   <-- wrong input");
+
+        if (! right)
+            everyInputLanded = false;
+
+        std::remove (path.c_str());
+    }
+
+    check (everyInputLanded,
+           "each input reaches its own file, at its own level, in the right order");
+
+    std::remove ((dir + "/MIX.wav").c_str());
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }
