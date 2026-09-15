@@ -385,7 +385,9 @@ public:
 
     /// How many entries the user has not been shown yet. What a badge counts.
     size_t getUnseenActivityCount() const { return activity.getUnseenCount(); }
-    void markActivitySeen() { activity.markAllSeen(); }
+    /// Informational only: a warning or failure that arrives while the panel
+    /// is open still owes the user its line above the record button.
+    void markActivitySeen() { activity.markInformationalSeen(); }
 
     /// Records one thing that happened, on the app's own clock. Public because
     /// the UI layer owns some of the events worth recording (a camera the user

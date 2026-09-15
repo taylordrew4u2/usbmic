@@ -1168,7 +1168,10 @@ void MainComponent::refreshCameras()
                              takeState != takeCameraStates.end() && takeState->second.starting,
                              controller.getPlannedFileNameFor (camera.id),
                              controller.getViewerRevision (camera.id),
-                             {} });
+                             // Was hardcoded empty, which is what stopped the
+                             // incomplete-file warning reaching an unplugged
+                             // camera -- the one case that truncates a movie.
+                             controller.getSignalStatusText (camera.id) });
     }
 
     // Only the visible surface owns preview hosts. Keeping CameraPanel rows
