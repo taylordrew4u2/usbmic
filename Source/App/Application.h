@@ -37,6 +37,7 @@
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
+#include "../Core/PermissionGuidance.h"
 #include "CameraController.h"
 #include "TakeCombiner.h"
 #include "../Platform/IAudioBackend.h"
@@ -693,6 +694,15 @@ private:
     // Buffer size lives in bufferLadder, which is the only thing allowed to
     // change it (§5.4). Keeping a second copy here would let the two disagree.
     std::string destinationFolder;
+
+    // §10.1/§10.4. What the OS says about our privacy permissions, sampled off
+    // the audio path: the microphone answer at launch (a denial there survives
+    // until the user acts on it and the app restarts), the destination answer
+    // whenever the save location changes.
+    PermissionState microphonePermission = PermissionState::NotApplicable;
+    PermissionState destinationWritePermission = PermissionState::NotApplicable;
+    /// Latched so the journal entry is written once, not on every poll.
+    bool journalledPermissionProblems = false;
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
     mutable ActivityJournal activity;

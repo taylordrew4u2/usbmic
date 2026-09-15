@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "../Platform/SystemPermissions.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemThermalState.h"
@@ -235,6 +236,12 @@ void Application::initialise()
         noteActivity (ActivityLevel::Warning, "Settings",
                       "Couldn't move your saved settings over from the app's old name, so your "
                       "microphone names and destination may have been forgotten.");
+
+    // §10.1: asked BEFORE the backend enumerates, because on macOS a denial is
+    // what makes enumeration come back empty. Without this the app told a user
+    // with a microphone plugged in to "plug in a USB microphone" -- advice for
+    // a problem they did not have, about the one thing they had already done.
+    microphonePermission = queryMicrophonePermission();
 
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
@@ -2413,6 +2420,15 @@ juce::String Application::getRecordDisabledReason() const
         || cameraController.isFinalizingRecording())
         return "Finishing the camera files from the last take. Record will be ready when they are safely closed.";
 
+    // Ahead of the microphone count on purpose. A denied microphone permission
+    // is invisible to enumeration: the count is zero for the same reason it
+    // would be with nothing plugged in, and the two need different fixes.
+    for (const auto& problem : PermissionGuidance::evaluate (microphonePermission,
+                                                             destinationWritePermission,
+                                                             ! destinationFolder.empty()))
+        if (problem.blocksRecording)
+            return juce::String (problem.message);
+
     if (getIncludedMicCount() == 0)
         return "Plug in a USB microphone or audio interface first.";
 
@@ -3034,6 +3050,12 @@ void Application::applyDestinationFolder (const juce::File& folder)
 
     beginPreflightForDestination();
 
+    // §10.4. There is no query API for this on macOS; the only truthful answer
+    // comes from trying, so it is asked here -- once, when the location
+    // changes -- rather than anywhere near arming or the audio path.
+    destinationWritePermission = queryVolumeWritePermission (destinationFolder);
+    journalledPermissionProblems = false;
+
     saveSettings();
 }
 
@@ -3456,6 +3478,25 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // warning returns early below, and a stale index would leave one skull
     // lit indefinitely.
     tappedChannel = -1;
+
+    // §10.6: the blocking problems already gate the record button, but a
+    // save-location denial does not block anything -- it just means the take
+    // will fail later -- so it has to reach the user some other way. The
+    // journal is that way, and it also puts the reason in the take's own log.
+    if (! journalledPermissionProblems)
+    {
+        const auto permissionProblems =
+            PermissionGuidance::evaluate (microphonePermission, destinationWritePermission,
+                                          ! destinationFolder.empty());
+
+        journalledPermissionProblems = true;
+
+        for (const auto& problem : permissionProblems)
+            noteActivity (problem.blocksRecording ? ActivityLevel::Failed : ActivityLevel::Warning,
+                          problem.kind == PermissionKind::Microphone ? "Microphones"
+                                                                     : "Save location",
+                          juce::String (problem.message));
+    }
 
     // §8.1: the detectors only see anything if the per-block peaks reach them,
     // so this is where the §10.5 advice actually gets its input.

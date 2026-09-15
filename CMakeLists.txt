@@ -92,6 +92,7 @@ add_library(mma_core STATIC
     Source/Core/FilesystemStatusProbe.cpp
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
+    Source/Platform/SystemPermissions.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
