@@ -64,6 +64,18 @@ fakewasapi::EndpointSpec microphone (const std::string& id, const std::string& n
     return spec;
 }
 
+fakewasapi::EndpointSpec headphones (const std::string& id, const std::string& name,
+                                     int channels, int bits)
+{
+    fakewasapi::EndpointSpec spec;
+    spec.id = id;
+    spec.friendlyName = name;
+    spec.isCapture = false;
+    spec.exclusiveFormats = { fakewasapi::Format::pcm (channels, bits, 48000.0) };
+    spec.mixFormat = spec.exclusiveFormats.front();
+    return spec;
+}
+
 std::vector<float> tone (int frames, double hz, double rate, float amplitude)
 {
     std::vector<float> v (static_cast<size_t> (frames));
@@ -329,6 +341,98 @@ int main()
     check (everyoneLanded,
            "each person reaches their own file, at their own level, in the right order");
 
+    std::remove ((dir + "/MIX.wav").c_str());
+
+    // -----------------------------------------------------------------------
+    // The headphones are unplugged mid-take, on Windows this time.
+    //
+    // The take is clocked by the output callback on every platform, so losing
+    // the headphones stops the clock on every platform. The coordinator's
+    // software clock is what picks it up, and it is shared -- but the half that
+    // is NOT shared is the backend: WASAPI's render thread has to die and let
+    // go rather than wedge, and until this harness existed nothing joined that
+    // to a real take.
+    // -----------------------------------------------------------------------
+    std::printf ("\nThe headphones are unplugged in the middle of a take\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (microphone ("mic-singer", "Singer", 1, 24));
+    fakewasapi::addEndpoint (headphones ("out-cans", "Headphones", 2, 24));
+
+    mma::WasapiAsioBackend backend3;
+    mma::CaptureCoordinator monitored (backend3, rate, block);
+
+    std::vector<mma::CaptureChannel> singerOnly;
+    {
+        mma::CaptureChannel c;
+        c.deviceId = "mic-singer";
+        c.deviceChannel = 0;
+        c.displayName = "Singer";
+        c.fileName = "01_Singer";
+        c.bitDepth = 24;
+        singerOnly.push_back (c);
+    }
+
+    if (! monitored.startMonitoring (singerOnly, "out-cans"))
+    {
+        std::printf ("  FAIL  startMonitoring: %s\n", monitored.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    check (monitored.hasOutputStream(), "the headphones are open and clocking the take");
+
+    if (! monitored.startRecording (dir, 24, "2026-09-15T00:00:00Z"))
+    {
+        std::printf ("  FAIL  startRecording\n");
+        return 1;
+    }
+
+    // The OUTPUT pulls, as it does in the app.
+    std::vector<std::vector<float>> rendered;
+
+    for (int i = 0; i < 24; ++i)
+    {
+        fakewasapi::pushCapture ("mic-singer", { tone (block, 440.0, rate, 0.4f) });
+        fakewasapi::pullRender ("out-cans", rendered);
+    }
+
+    const auto framesBefore = monitored.getFramesAccepted();
+    check (framesBefore > 0, "the take is advancing while the headphones are there");
+
+    fakewasapi::removeEndpoint ("out-cans");
+
+    // Only the microphone from here. Nothing pulls the output, because there
+    // is no output; if the take depends on it, this is where it dies.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds (900);
+
+    while (std::chrono::steady_clock::now() < until)
+    {
+        fakewasapi::pushCapture ("mic-singer", { tone (block, 440.0, rate, 0.4f) });
+        std::this_thread::sleep_for (std::chrono::milliseconds (5));
+    }
+
+    const auto framesAfter = monitored.getFramesAccepted();
+
+    monitored.stopRecording();
+    monitored.stopMonitoring();
+
+    std::printf ("  accepted %llu frames before the unplug, %llu after\n",
+                 (unsigned long long) framesBefore, (unsigned long long) framesAfter);
+
+    check (framesAfter > framesBefore,
+           "the take keeps advancing once the headphones are gone");
+
+    uint32_t singerFrames = 0;
+    int32_t singerPeak = 0;
+    const auto singerPath = dir + "/01_Singer.wav";
+
+    check (inspect24BitWav (singerPath, singerFrames, singerPeak),
+           "and the singer still has a file");
+
+    std::printf ("  01_Singer.wav: %u frames, peak %d\n", singerFrames, singerPeak);
+    check (singerPeak > 100000, "with their audio in it, not silence");
+
+    std::remove (singerPath.c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
