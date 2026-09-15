@@ -107,14 +107,6 @@ void fromFloat (const float* src, unsigned char* dest, snd_pcm_format_t format, 
     }
 }
 
-/// §5.4: only a `hw:` device is handed to one client by the kernel. Everything
-/// else routes through dmix/plug, which resamples and mixes -- exactly the
-/// silent 40 ms path the spec refuses.
-bool isExclusiveCapableName (const std::string& name) noexcept
-{
-    return name.rfind ("hw:", 0) == 0;
-}
-
 /// Best effort: RT scheduling needs privileges this process may not have.
 /// Failing is not fatal -- it costs latency headroom, not correctness -- so it
 /// is neither retried nor reported as an error.
@@ -761,13 +753,20 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
 {
     ExclusiveModeCapability cap;
 
-    if (! isExclusiveCapableName (outputDeviceId))
+    if (! alsa_detail::alsaOutputNameIsExclusiveCapable (outputDeviceId))
     {
         // §5.4: name the cause. "default" is the common case and the message
         // has to make sense to someone who has never heard of dmix.
+        //
+        // It no longer says "choose a specific sound card", because the names
+        // that reach here after the allowlist widened are the shared ones --
+        // default, dmix, pulse -- and the card entries the picker offers
+        // alongside them are the answer. Telling someone who had already
+        // picked their interface to pick their interface was the old bug's
+        // most confusing half.
         cap.unavailableReason =
             "This sound output is shared with other apps, which adds too much delay for live monitoring. "
-            "Choose a specific sound card in Advanced.";
+            "In Advanced, pick the entry named after your audio interface rather than the system default.";
         return cap;
     }
 
@@ -776,11 +775,26 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
     // Opening it is the only honest test: another client may already hold it.
     bool capabilityProbeTimedOut = false;
 
-    if (openPcmBounded (&pcm, outputDeviceId, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK,
-                        kAlsaProbeDeadline, capabilityProbeTimedOut) < 0)
+    if (const int err = openPcmBounded (&pcm, outputDeviceId, SND_PCM_STREAM_PLAYBACK,
+                                        SND_PCM_NONBLOCK, kAlsaProbeDeadline,
+                                        capabilityProbeTimedOut); err < 0)
     {
+        // Three causes with three different answers, where this said "another
+        // app is using it" to all of them -- including to someone whose
+        // headphones were simply unplugged, who would then go looking for an
+        // app that was never there. openStream a few lines down has told these
+        // apart all along; only the capability check collapsed them.
+        //
+        // capabilityProbeTimedOut was computed here and never read, so a device
+        // that hung on open was reported as busy too.
         cap.unavailableReason =
-            "Another app is using this sound output. Close it, or choose a different output in Advanced.";
+            capabilityProbeTimedOut
+                ? "This sound output took too long to respond, so SobStage couldn't set up "
+                  "monitoring on it. Pick it again in Advanced, or choose a different one."
+                : (err == -EBUSY
+                       ? "Another app is using this sound output. Close it, or choose a different "
+                         "output in Advanced."
+                       : "This sound output isn't there any more. Pick a different one in Advanced.");
         return cap;
     }
 
