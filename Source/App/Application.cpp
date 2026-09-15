@@ -3577,14 +3577,34 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         toggleRecording();
 
         // The writer's own account when it has one -- a roll-over past 3.9 GB
-        // that could not create the next file is not "the card was removed",
-        // and sending someone to check a cable for a card that is simply full
-        // wastes the one moment they are still next to the rig.
-        if (const auto why = capture->getCardWriteProblem(); ! why.empty())
-            noteActivity (ActivityLevel::Failed, "Card", juce::String (why));
+        // that could not create the next file, or a drive that is simply full
+        // -- is not "the card was removed", and sending someone to check a
+        // cable for a card that is simply full wastes the one moment they are
+        // still next to the rig.
+        //
+        // It now LEADS rather than being journalled underneath the removal
+        // notice and then contradicted by it. The headline is the sentence the
+        // user acts on, and it went on saying the drive had stopped responding
+        // and to check it was plugged in properly even when the writer knew
+        // perfectly well that the drive was merely full. The guard above was
+        // written for exactly this and could not fire, because an ordinary
+        // failed write left no account at all -- only the roll-over path set
+        // one.
+        auto headline = juce::String (cardRemovalNotice.message);
 
-        noteActivity (ActivityLevel::Failed, "Card", juce::String (cardRemovalNotice.message));
-        return juce::String (cardRemovalNotice.message);
+        if (const auto why = capture->getCardWriteProblem(); ! why.empty())
+        {
+            headline = juce::String (why);
+
+            // §6.5: pointing at the surviving copy is the whole point of the
+            // notice's second sentence, so it outlives the swap.
+            if (cardRemovalNotice.aCompleteCopySurvives)
+                headline += " A complete backup copy is safe on this computer: "
+                          + juce::String (cardRemovalNotice.survivingFolder);
+        }
+
+        noteActivity (ActivityLevel::Failed, "Card", headline);
+        return headline;
     }
 
     // §6.5: the drive is full, so the take stops -- here, before any of the

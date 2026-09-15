@@ -252,3 +252,63 @@ TEST_CASE (SessionWriter_AHealthyWriterHasNoWriteProblemToReport)
     REQUIRE (w.close());
     REQUIRE (w.getWriteProblem().empty());
 }
+
+// The full-drive decision, both ways.
+//
+// Its two answers have very different consequences. Say "full" when the drive
+// is not, and someone whose card was pulled out is told to free up space; stay
+// silent when it is, and they are told the drive "stopped responding" and to
+// check it is plugged in properly -- so they spend the one moment they are
+// still next to the rig re-seating a cable that was never loose. That second
+// case is the bug this exists for: an ordinary failed write left no account at
+// all, so the card-removal notice spoke for every failure including a full
+// card.
+//
+// Measured in this take's own format rather than as a fixed byte count,
+// because 200 kB is a comfortable margin at 16 bits mono and less than a
+// tenth of a second at 32 bits across eight channels.
+TEST_CASE (SessionWriter_ADriveWithNoRoomForMoreAudioIsFull)
+{
+    // 24-bit stereo at 48 kHz needs 288,000 bytes for a second.
+    REQUIRE (freeSpaceMeansDriveIsFull (0, 3, 2, 48000.0));
+    REQUIRE (freeSpaceMeansDriveIsFull (1024, 3, 2, 48000.0));
+    REQUIRE (freeSpaceMeansDriveIsFull (287999, 3, 2, 48000.0));
+
+    // The same free space is NOT full for a smaller format: 200 kB is over two
+    // seconds at 16 bits mono. A fixed threshold would have got one of these
+    // two lines wrong whichever number it picked.
+    REQUIRE_FALSE (freeSpaceMeansDriveIsFull (200000, 2, 1, 48000.0));
+    REQUIRE (freeSpaceMeansDriveIsFull (200000, 3, 2, 48000.0));
+}
+
+TEST_CASE (SessionWriter_ADriveWithRoomLeftIsNotCalledFull)
+{
+    REQUIRE_FALSE (freeSpaceMeansDriveIsFull (288000, 3, 2, 48000.0));
+    REQUIRE_FALSE (freeSpaceMeansDriveIsFull (10ull * 1024 * 1024 * 1024, 3, 2, 48000.0));
+    REQUIRE_FALSE (freeSpaceMeansDriveIsFull (1ull << 40, 4, 8, 96000.0));
+}
+
+// Nonsense arguments must not make an empty drive look roomy: a zero or
+// negative format would collapse bytesPerSecond and report "not full" for a
+// drive with nothing on it, which is the silent-loss direction.
+TEST_CASE (SessionWriter_AnImpossibleFormatStillTreatsAnEmptyDriveAsFull)
+{
+    REQUIRE (freeSpaceMeansDriveIsFull (0, 0, 0, 0.0));
+    REQUIRE (freeSpaceMeansDriveIsFull (0, -1, -1, -1.0));
+}
+
+// A healthy writer with room left says nothing, so the caller's "the card
+// stopped accepting writes" account stands -- which is the right answer for a
+// drive that has actually been pulled out.
+TEST_CASE (SessionWriter_AHealthyWriteLeavesNoFullDriveClaim)
+{
+    SessionWriter w;
+    REQUIRE (w.open (tempBasePath ("room-left"), 48000.0, 1, 16, "2026-09-15T00:00:00Z"));
+
+    std::vector<float> block (128, 0.25f);
+    REQUIRE (w.writeInterleaved (block.data(), 128));
+    REQUIRE (w.getWriteProblem().empty());
+
+    REQUIRE (w.close());
+    REQUIRE (w.getWriteProblem().empty());
+}

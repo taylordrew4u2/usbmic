@@ -70,9 +70,14 @@ bool WritePipeline::start (const std::string& sessionFolder,
             // §10.6: what happened, then what to do. The file is named because
             // "recording could not start" is not something a user can act on,
             // and the folder is what they need to look at.
-            startProblem = "Couldn't start writing to " + sessionFolder + ". The file "
-                         + spec.fileName + " couldn't be created -- check the card is "
-                           "still plugged in and has room, and isn't locked.";
+            // The writer's own account when it has one -- it knows whether the
+            // drive was out of room, and "check the card is plugged in" sends
+            // someone to the wrong place when it is merely full.
+            startProblem = ! writer->getWriteProblem().empty()
+                             ? writer->getWriteProblem()
+                             : "Couldn't start writing to " + sessionFolder + ". The file "
+                                 + spec.fileName + " couldn't be created -- check the card is "
+                                   "still plugged in and has room, and isn't locked.";
             return false;
         }
 
@@ -90,9 +95,11 @@ bool WritePipeline::start (const std::string& sessionFolder,
         stemWriters.clear();
         mixWriter.reset();
 
-        startProblem = "Couldn't start writing to " + sessionFolder + ". The mixed file "
-                       "couldn't be created -- check the card is still plugged in and has "
-                       "room, and isn't locked.";
+        startProblem = ! mixWriter->getWriteProblem().empty()
+                         ? mixWriter->getWriteProblem()
+                         : "Couldn't start writing to " + sessionFolder + ". The mixed file "
+                             "couldn't be created -- check the card is still plugged in and has "
+                             "room, and isn't locked.";
         return false;
     }
 

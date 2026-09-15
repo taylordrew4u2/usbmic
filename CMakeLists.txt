@@ -424,6 +424,10 @@ if (MMA_BUILD_TOOLS)
         target_link_libraries(alsa_mid_take_loss PRIVATE mma_core)
         target_link_libraries(alsa_mid_take_loss PRIVATE mma_warnings)
 
+        add_executable(disk_full_take Tools/disk_full_take.cpp)
+        target_link_libraries(disk_full_take PRIVATE mma_core)
+        target_link_libraries(disk_full_take PRIVATE mma_warnings)
+
         add_executable(alsa_monitor_loss Tools/alsa_monitor_loss.cpp)
         target_link_libraries(alsa_monitor_loss PRIVATE mma_core)
         target_link_libraries(alsa_monitor_loss PRIVATE mma_warnings)
