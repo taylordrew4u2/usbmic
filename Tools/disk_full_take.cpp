@@ -131,6 +131,14 @@ int main (int argc, char** argv)
     const std::string dir = argv[1];
     const bool startsFull = argc > 2 && std::string (argv[2]) == "start-full";
 
+    // A card with room for SOME of the take's files and not all of them. Its
+    // own scenario because it is not the same code path as a card with no room
+    // at all, and the difference was a crash: WritePipeline::start read the mix
+    // writer's account AFTER releasing it, and on a completely full card a
+    // stem's open fails first, so the mix branch was never reached by the very
+    // case it was written for. Six green CI jobs said nothing about it.
+    const bool startsPartial = argc > 2 && std::string (argv[2]) == "start-partial";
+
     mma::AlsaBackend backend;
     auto devices = backend.enumerateInputDevices();
 
@@ -164,11 +172,15 @@ int main (int argc, char** argv)
     // Hitting record on a card that is ALREADY full, which is a different
     // failure from one that fills part way through and has to be refused
     // rather than recovered from.
-    if (startsFull)
+    if (startsFull || startsPartial)
     {
+        // Reaching this line at all is half the point of the partial case: the
+        // branch it exercises used to take the process down with it.
         const bool started = coordinator.startRecording (dir, 24, "2026-09-15T00:00:00Z");
 
-        check (! started, "recording refuses to start on a card with no room on it");
+        check (! started, startsPartial
+                            ? "recording refuses to start when only some of the take's files fit"
+                            : "recording refuses to start on a card with no room on it");
 
         const auto why = coordinator.getRecordingProblem();
         std::printf ("  Reported: '%s'\n", why.c_str());
