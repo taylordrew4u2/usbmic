@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 
 #if defined (_WIN32)
  #ifndef NOMINMAX
@@ -91,6 +93,42 @@ bool SessionWriter::openNewFile (int index)
 
     dataBytesWrittenToCurrentFile = 0;
     writeHeaderPlaceholder();
+
+    // Flushed and checked, because creating the file proves almost nothing on
+    // a card that is out of room: an empty file needs an entry, not a block,
+    // so the open succeeds and the header -- which does need a block -- fails
+    // quietly in the buffer.
+    //
+    // That was the whole of it. open() returned true, startRecording returned
+    // true, and the app said it was recording onto a card that could not take
+    // a single byte. Application.cpp already stops the engine and tells the
+    // user when startRecording fails, with a comment saying that path "used to
+    // return here in silence" -- it simply was never reached for a full card,
+    // so someone hit record, performed, and only learned afterwards.
+    //
+    // A flush per file at open time, once per channel per take, costs nothing
+    // worth measuring.
+    file.flush();
+
+    if (! file.good())
+    {
+        // Said here rather than left to the caller's generic sentence, for the
+        // same reason as every other account in this file: "couldn't start
+        // recording" is not something anyone can act on.
+        writeProblem = "There isn't enough room on the drive to start this take. Free up "
+                       "space on it, or record to a bigger card, then try again.";
+        file.close();
+
+        // The empty file is removed rather than left in the take folder. A
+        // zero-byte .wav sitting beside the others reads as a track that
+        // recorded nothing, which is a different and more alarming thing than
+        // a take that never started.
+        std::error_code ignored;
+        std::filesystem::remove (currentFilePath, ignored);
+
+        return false;
+    }
+
     return true;
 }
 
@@ -147,6 +185,18 @@ void SessionWriter::writeHeaderPlaceholder()
     writeTag (file, "data");
     dataSizeFieldPos = file.tellp();
     writeU32LE (file, 0); // patched as data is written and on close
+}
+
+bool freeSpaceMeansDriveIsFull (unsigned long long bytesAvailable,
+                                int bytesPerSample,
+                                int numChannels,
+                                double sampleRate) noexcept
+{
+    const auto bytesPerSecond = static_cast<unsigned long long> (std::max (1, bytesPerSample))
+                              * static_cast<unsigned long long> (std::max (1, numChannels))
+                              * static_cast<unsigned long long> (std::max (1.0, sampleRate));
+
+    return bytesAvailable < bytesPerSecond;
 }
 
 bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames)
@@ -220,13 +270,74 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
         ++frameStart;
     }
 
-    return file.good();
+    if (! file.good())
+    {
+        noteWriteFailureCause();
+        return false;
+    }
+
+    return true;
+}
+
+void SessionWriter::noteWriteFailureCause()
+{
+    // A more specific account already set by the split path wins: it knows
+    // something this cannot work out from free space alone.
+    if (! writeProblem.empty())
+        return;
+
+    std::error_code ec;
+    const auto space = std::filesystem::space (
+        std::filesystem::path (currentFilePath).parent_path(), ec);
+
+    if (ec)
+        return;
+
+    if (! freeSpaceMeansDriveIsFull (static_cast<unsigned long long> (space.available),
+                                     bytesPerSample(), numChannels, sampleRate))
+        return;
+
+    // §10.6: what happened, then what to do. Without this the take stopped
+    // under the card-removal notice, which tells the user the drive "stopped
+    // responding" and to check that it is plugged in properly -- so someone
+    // whose card is merely full spends the one moment they are still next to
+    // the rig re-seating a cable that was never loose. The comment at that
+    // branch in Application.cpp says exactly this; the account it looks for
+    // was simply never written for an ordinary failed write, only for a
+    // roll-over past 3.9 GB.
+    writeProblem = "The drive you were recording to is full, so recording has stopped and "
+                   "every file has been closed. Free up space on it, or record to a bigger "
+                   "card, then start a new take.";
 }
 
 bool SessionWriter::rewriteHeaderSizes()
 {
     if (! file.is_open())
         return false;
+
+    // A stream that has already failed silently discards every later seek and
+    // write, so this patch did nothing on precisely the takes that needed it.
+    //
+    // That is what a full card does. The audio written before the drive gave
+    // out is on the card and perfectly good, but the header still carries its
+    // placeholder zeros -- RIFF size 0, data size 0 -- so every player and DAW
+    // opens the file and sees a recording with nothing in it. Measured on a
+    // real full filesystem: two of three stems held about 2.4 seconds of audio
+    // each and both declared themselves empty, while the app said every file
+    // had been closed.
+    //
+    // The comment on close() in the header names this as the failure it exists
+    // to prevent -- "the file on the card carried a header claiming zero
+    // audio" -- and the return value it added does report it. What was missing
+    // is that the patch can actually succeed: it overwrites four bytes at two
+    // offsets that already exist, so it needs no new space and a full drive
+    // cannot refuse it. It only ever needed to be allowed to try.
+    //
+    // Clearing here cannot hide a genuine failure. Every path that writes
+    // audio judges the stream itself, cardWriteFailed is already latched by
+    // then, and the return below is taken after the patch -- so a device that
+    // really has gone still fails, and still says so.
+    file.clear();
 
     const auto currentPos = file.tellp();
     file.seekp (0, std::ios::end);
@@ -304,9 +415,83 @@ bool SessionWriter::close()
 
     file.close();
 
-    // file.good() is false after a successful close on some implementations,
-    // so the close itself is judged by fail(), not good().
-    return headerLanded && ! file.fail();
+    if (headerLanded)
+        // file.good() is false after a successful close on some
+        // implementations, so the close itself is judged by fail(), not good().
+        return ! file.fail();
+
+    // The take's own stream could not be patched, and on a full card that is
+    // the normal outcome rather than a rare one: seeking to the header first
+    // flushes whatever audio is still buffered, that flush has nowhere to go,
+    // and the seek fails with it -- so the four bytes that say how long the
+    // recording is were never written, however many times it was tried.
+    //
+    // The audio itself is on the card and perfectly good. Only the header is
+    // wrong, and it is wrong in the way that matters most: RIFF size 0 and
+    // data size 0 mean every player and DAW opens the file and sees an empty
+    // recording. Measured on a real full filesystem, two of three stems held
+    // about 2.4 seconds each and both declared themselves empty.
+    //
+    // A fresh handle has no failed state and nothing pending, so it can do
+    // what this stream no longer can. Done after close() so there is only ever
+    // one handle on the file and the size on disk is final.
+    return patchHeaderThroughFreshHandle();
+}
+
+bool SessionWriter::patchHeaderThroughFreshHandle()
+{
+    std::error_code ec;
+    const auto onDisk = std::filesystem::file_size (currentFilePath, ec);
+
+    if (ec)
+        return false;
+
+    // Where the audio starts: the data size field, then the four bytes of the
+    // field itself.
+    const auto dataStart = static_cast<uint64_t> (dataSizeFieldPos) + 4;
+
+    if (onDisk < dataStart)
+        return false;
+
+    // Measured from the file, never from dataBytesWrittenToCurrentFile. That
+    // counter says what the writer TRIED to send, and on a full card the last
+    // of it never landed -- a header built from it would overstate the audio
+    // and send a reader off the end of the file, which is a worse failure than
+    // the one being fixed.
+    //
+    // Rounded down to a whole frame, because the drive gave out mid-frame: the
+    // raw figure was one byte past a frame boundary on a 24-bit mono stem, and
+    // a data chunk that is not a multiple of the block alignment is malformed.
+    // The stray bytes are left outside the chunk rather than described.
+    const auto blockAlign = static_cast<uint64_t> (std::max (1, bytesPerSample()))
+                          * static_cast<uint64_t> (std::max (1, numChannels));
+
+    const auto wholeFrameBytes = ((onDisk - dataStart) / blockAlign) * blockAlign;
+
+    if (wholeFrameBytes == 0)
+        return false;
+
+    const auto dataSize = static_cast<uint32_t> (
+        std::min<uint64_t> (wholeFrameBytes, 0xFFFFFFFFull));
+
+    // The file ends where the last whole frame ends, so RIFF describes exactly
+    // what the data chunk describes and nothing dangles past it.
+    const auto describedEnd = dataStart + wholeFrameBytes;
+    const auto riffSize = static_cast<uint32_t> (
+        std::min<uint64_t> (describedEnd >= 8 ? describedEnd - 8 : 0, 0xFFFFFFFFull));
+
+    std::fstream patch (currentFilePath, std::ios::in | std::ios::out | std::ios::binary);
+
+    if (! patch.is_open())
+        return false;
+
+    patch.seekp (riffSizeFieldPos);
+    writeU32LE (patch, riffSize);
+    patch.seekp (dataSizeFieldPos);
+    writeU32LE (patch, dataSize);
+    patch.flush();
+
+    return patch.good();
 }
 
 } // namespace mma

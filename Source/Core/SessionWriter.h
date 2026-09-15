@@ -6,6 +6,20 @@
 
 namespace mma {
 
+/// Whether the space left on a drive means it is full, asked as the writer
+/// experiences it: there is no longer room for the audio one more second of
+/// THIS take would need.
+///
+/// A fixed byte count would mean different things at 16 bits mono and 32 bits
+/// across eight channels, and this take's own format is the only figure that is
+/// about this take. Separated from the writer so both answers can be tested:
+/// the interesting half of the full-drive fix needs a filesystem that is
+/// genuinely out of space, which no unit test can conjure.
+bool freeSpaceMeansDriveIsFull (unsigned long long bytesAvailable,
+                                int bytesPerSample,
+                                int numChannels,
+                                double sampleRate) noexcept;
+
 /// §6.1/§6.3/§6.6: a single BWF-tagged WAV (or RF64) file writer with
 /// auto-split at 3.9GB and 5-second header rewrites for crash safety.
 /// Real file I/O -- exercised by Tests/ against tmp files on this Linux
@@ -83,12 +97,26 @@ private:
     std::streampos riffSizeFieldPos {};
     std::streampos dataSizeFieldPos {};
 
+    /// Names why a write failed, when the filesystem can be asked and gives a
+    /// definite answer. Leaves writeProblem empty otherwise, so the caller's
+    /// "the card stopped accepting writes" account stands -- which is the right
+    /// one for a drive that has actually gone.
+    void noteWriteFailureCause();
+
     std::string makePathForSplit (int index) const;
     bool openNewFile (int index);
     void writeHeaderPlaceholder();
     /// False when the seek/write/flush behind the header patch failed.
     bool rewriteHeaderSizes();
     bool syncCurrentFileToStorage();
+
+    /// Writes the RIFF and data sizes through a FRESH handle, describing what
+    /// actually landed on disk rather than what the writer tried to send.
+    ///
+    /// The last resort when the take's own stream can no longer be patched,
+    /// which is exactly what a full card produces. Needs no new space: it
+    /// overwrites four bytes at two offsets that already exist.
+    bool patchHeaderThroughFreshHandle();
     int bytesPerSample() const { return bitDepth / 8; }
 
     /// Makes the multi-file boundary reachable without writing 3.9 GB in a
