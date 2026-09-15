@@ -798,6 +798,35 @@ ExclusiveModeCapability AlsaBackend::checkExclusiveModeCapability (const std::st
         return cap;
     }
 
+    // The device opened. That says nothing about whether it will run at the
+    // rate the take is being recorded at, and this never asked -- so a card
+    // that is 44100-only was reported as ready for exclusive monitoring at
+    // 48000, and the refusal only surfaced later, from openStream, as a
+    // monitoring failure with no mention of the rate. This is the same hole
+    // CoreAudio had: an open treated as proof of a configuration.
+    {
+        snd_pcm_hw_params_t* hw = nullptr;
+        snd_pcm_hw_params_alloca (&hw);
+
+        const unsigned int wanted = static_cast<unsigned int> (sampleRate + 0.5);
+
+        if (sampleRate > 0.0
+            && snd_pcm_hw_params_any (pcm, hw) >= 0
+            && snd_pcm_hw_params_test_rate (pcm, hw, wanted, 0) < 0)
+        {
+            snd_pcm_close (pcm);
+
+            // Named, because the fix is a setting the user can change: the
+            // sample rate in Advanced. "Monitoring is unavailable" without the
+            // number sends them hunting through cables for a settings problem.
+            cap.unavailableReason =
+                "This sound output can't run at " + std::to_string (wanted)
+                + " Hz, so SobStage can't use it for live monitoring. Choose a different "
+                  "sample rate in Advanced, or a different output.";
+            return cap;
+        }
+    }
+
     snd_pcm_close (pcm);
 
     cap.exclusiveModeAvailable = true;

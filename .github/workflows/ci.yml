@@ -101,7 +101,7 @@ jobs:
           # -fno-sanitize-recover so a UBSan diagnostic aborts the run:
           # without it the sanitizer prints the error and the binary still
           # exits 0, which is how undefined behaviour rides through a green CI.
-          SANITIZED="sim_coreaudio sim_wasapi sim_capture_mac sim_capture_win mma_core_tests live_capture alsa_monitor_loss alsa_readi_shim"
+          SANITIZED="sim_coreaudio sim_wasapi sim_capture_mac sim_capture_win mma_core_tests live_capture alsa_monitor_loss alsa_rate_refusal alsa_readi_shim"
 
           cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug -DMMA_ALLOW_TEST_INPUTS=ON \
                 -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
@@ -117,6 +117,9 @@ jobs:
           MMA_SHIM_FAIL_AFTER_MS=2000 \
           LD_PRELOAD="$(gcc -print-file-name=libasan.so):${PWD}/build-asan/libalsa_readi_shim.so" \
             ./build-asan/alsa_monitor_loss
+          MMA_SHIM_OPEN_MATCH=plughw:99 MMA_SHIM_OPEN_AS=mma_out MMA_SHIM_REFUSE_RATE=48000 \
+          LD_PRELOAD="$(gcc -print-file-name=libasan.so):${PWD}/build-asan/libalsa_readi_shim.so" \
+            ./build-asan/alsa_rate_refusal 48000 44100
 
           cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DMMA_ALLOW_TEST_INPUTS=ON -DCMAKE_CXX_FLAGS="-fsanitize=thread"
           cmake --build build-tsan --target ${SANITIZED} -j 4
@@ -131,6 +134,9 @@ jobs:
           MMA_SHIM_FAIL_AFTER_MS=2000 \
           LD_PRELOAD="$(gcc -print-file-name=libtsan.so):${PWD}/build-tsan/libalsa_readi_shim.so" \
             ./build-tsan/alsa_monitor_loss
+          MMA_SHIM_OPEN_MATCH=plughw:99 MMA_SHIM_OPEN_AS=mma_out MMA_SHIM_REFUSE_RATE=48000 \
+          LD_PRELOAD="$(gcc -print-file-name=libtsan.so):${PWD}/build-tsan/libalsa_readi_shim.so" \
+            ./build-tsan/alsa_rate_refusal 48000 44100
 
   app:
     name: App (${{ matrix.os }})
@@ -203,6 +209,7 @@ jobs:
           bash Tools/alsa_recovery_death.sh
           bash Tools/alsa_mid_take_loss.sh
           bash Tools/alsa_monitor_loss.sh
+          bash Tools/alsa_rate_refusal.sh
           bash Tools/e2e_disk_full.sh
 
       - name: App-integrated regression tests
