@@ -60,4 +60,9 @@ bool shouldUseHintEnumeration (bool wantInput, bool testInputsCompiledIn) noexce
     return ! wantInput || testInputsCompiledIn;
 }
 
+bool alsaRecoveryRunMeansDeviceIsDead (int consecutiveRecoveries) noexcept
+{
+    return consecutiveRecoveries >= kRecoveriesBeforeGivingUp;
+}
+
 } // namespace mma::alsa_detail

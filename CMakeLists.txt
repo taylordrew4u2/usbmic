@@ -411,6 +411,22 @@ if (MMA_BUILD_TOOLS)
     add_executable(e2e_capture Tools/e2e_capture.cpp)
     target_link_libraries(e2e_capture PRIVATE mma_core)
 
+    # The ALSA worker's recovery path, driven against a real libasound with one
+    # symbol interposed. Linux only: it is the only platform with an ALSA
+    # backend to drive, and LD_PRELOAD is how the one unreachable branch is
+    # reached without faking the other thirty-seven calls around it.
+    if (UNIX AND NOT APPLE AND MMA_ALLOW_TEST_INPUTS)
+        add_executable(alsa_recovery_death Tools/alsa_recovery_death.cpp)
+        target_link_libraries(alsa_recovery_death PRIVATE mma_core)
+        target_link_libraries(alsa_recovery_death PRIVATE mma_warnings)
+
+        add_library(alsa_readi_shim SHARED Tools/alsa_readi_shim.cpp)
+        target_link_libraries(alsa_readi_shim PRIVATE ${CMAKE_DL_LIBS})
+        if (ALSA_FOUND)
+            target_link_libraries(alsa_readi_shim PRIVATE ALSA::ALSA)
+        endif()
+    endif()
+
     add_executable(soak_drift Tools/soak_drift.cpp)
     target_link_libraries(soak_drift PRIVATE mma_core)
 

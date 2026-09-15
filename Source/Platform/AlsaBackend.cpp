@@ -896,6 +896,9 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         const auto frames = raw->periodFrames;
         const auto channelCount = raw->channels;
 
+        // Reset by every successful read, so only an unbroken run counts.
+        int consecutiveRecoveries = 0;
+
         while (raw->running.load (std::memory_order_acquire))
         {
             if (raw->isInput)
@@ -923,8 +926,24 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                     // read was for, and what the device dropped on the floor.
                     raw->framesDropped.fetch_add (static_cast<uint64_t> (frames),
                                                   std::memory_order_relaxed);
+
+                    // Recovering is not the same as working. A PCM that fails
+                    // and recovers on every read reaches neither of this
+                    // loop's exits -- the failure is recoverable, and no read
+                    // ever returns zero -- so it spun here for the rest of the
+                    // take: the mic written as silence with only a rising
+                    // dropped-frame number to show for it, which is exactly
+                    // the case the other two backends' counters exist to end.
+                    if (alsa_detail::alsaRecoveryRunMeansDeviceIsDead (++consecutiveRecoveries))
+                    {
+                        died = true;
+                        break;
+                    }
+
                     continue;
                 }
+
+                consecutiveRecoveries = 0;
 
                 if (got == 0)
                     break; // end of a file-backed device: nothing more will arrive
