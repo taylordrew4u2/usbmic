@@ -370,3 +370,39 @@ TEST_CASE (ActivityJournal_AnEntryCanAskToReachTheScreen)
     REQUIRE (journal.getMostSeriousUnseen (unseen));
     REQUIRE (unseen.onTheLine);
 }
+
+TEST_CASE (ActivityJournal_MarkingThePanelSeenLeavesWarningsToBeAnnounced)
+{
+    // The settings panel lists a dozen entries at once, so marking them shown
+    // is right for the chatter. It was marking EVERYTHING, though -- including
+    // a microphone that dropped out while the panel happened to be open. That
+    // entry then never got its line above the record button and survived only
+    // as a row near the bottom of a scrolling list.
+    ActivityJournal j;
+
+    j.note (1.0, ActivityLevel::Started, "Take", "Recording started.");
+    j.note (2.0, ActivityLevel::Warning, "Alex", "Alex has gone quiet.");
+    j.note (3.0, ActivityLevel::Failed, "Cameras", "A camera stopped.");
+
+    j.markInformationalSeen();
+
+    // The two that still need saying are still unseen, most serious first.
+    REQUIRE (j.getUnseenCount() == 2);
+
+    ActivityEntry worst;
+    REQUIRE (j.getMostSeriousUnseen (worst));
+    REQUIRE (worst.level == ActivityLevel::Failed);
+
+    j.markSeen (worst.id);
+    REQUIRE (j.getMostSeriousUnseen (worst));
+    REQUIRE (worst.level == ActivityLevel::Warning);
+
+    j.markSeen (worst.id);
+    REQUIRE_FALSE (j.getMostSeriousUnseen (worst));
+
+    // And markAllSeen still means all of it, for callers that really have
+    // shown everything.
+    j.note (4.0, ActivityLevel::Failed, "Card", "The card went away.");
+    j.markAllSeen();
+    REQUIRE (j.getUnseenCount() == 0);
+}

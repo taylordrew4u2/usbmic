@@ -4313,8 +4313,14 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 
     if (out.openedOk() && builder.writeToStream (out, nullptr))
     {
+        // onTheLine, because the user pressed a button and nothing else
+        // happens: the level alone would have kept this out of the advice line,
+        // so a successful export looked identical to nothing happening and the
+        // path to the file was never shown anywhere they would look. The
+        // failure branch below already reaches the line by virtue of its level.
         noteActivity (ActivityLevel::Stopped, "Diagnostics",
-                      "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".");
+                      "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".",
+                      true);
     }
     else
     {

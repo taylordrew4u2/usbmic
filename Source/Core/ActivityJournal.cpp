@@ -152,6 +152,15 @@ void ActivityJournal::markAllSeen()
         e.seen = true;
 }
 
+void ActivityJournal::markInformationalSeen()
+{
+    std::lock_guard<std::mutex> guard (lock);
+
+    for (auto& e : entries)
+        if (e.level != ActivityLevel::Warning && e.level != ActivityLevel::Failed)
+            e.seen = true;
+}
+
 size_t ActivityJournal::getUnseenCount() const
 {
     std::lock_guard<std::mutex> guard (lock);
