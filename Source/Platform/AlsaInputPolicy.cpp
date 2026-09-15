@@ -65,4 +65,30 @@ bool alsaRecoveryRunMeansDeviceIsDead (int consecutiveRecoveries) noexcept
     return consecutiveRecoveries >= kRecoveriesBeforeGivingUp;
 }
 
+bool alsaOutputNameIsExclusiveCapable (const std::string& outputName) noexcept
+{
+    // Every prefix here resolves to `type hw` in the pcm definitions alsa-lib
+    // ships: a direct hardware PCM with no mixing plugin in front of it. The
+    // colon is part of each one, because alsa-lib's hints carry arguments
+    // ("front:CARD=USB,DEV=0") and the bare forms are marked omit_noargs.
+    //
+    // Deliberately absent: default, sysdefault, dmix, dsnoop, dshare, plug,
+    // pulse, pipewire, jack, null, modem. Those really are shared -- a card's
+    // pcm.default routes through dmix whenever use_dmix is on -- and opening
+    // one exclusively is the delay §5.4 exists to avoid.
+    static constexpr const char* kDirectHardwarePrefixes[] = {
+        "hw:", "plughw:",
+        "front:", "rear:", "center_lfe:", "side:",
+        "surround21:", "surround40:", "surround41:",
+        "surround50:", "surround51:", "surround71:",
+        "hdmi:", "iec958:", "spdif:"
+    };
+
+    for (const char* prefix : kDirectHardwarePrefixes)
+        if (outputName.rfind (prefix, 0) == 0)
+            return true;
+
+    return false;
+}
+
 } // namespace mma::alsa_detail
