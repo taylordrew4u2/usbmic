@@ -633,6 +633,56 @@ void anOpenedCaptureCardWithoutAFrameIsNotRecordable()
     fakecamera::setAutoFrameOnListener (true);
 }
 
+/// When some cameras start and some do not, the problem has to say WHICH.
+///
+/// It used to say "1 of your cameras couldn't start recording." -- a count, to
+/// someone looking at a rig of several, with the roster of display names
+/// sitting in takePlans the whole time. Knowing which one is the difference
+/// between checking one cable and checking all of them.
+void aCameraThatCannotStartIsNamedNotCounted()
+{
+    std::printf ("\nOne camera of two cannot start\n");
+
+    fakecamera::setDevices ({ "Good Camera", "Signal-less HDMI" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Good Camera", true);
+    controller.getSelection().setEnabled ("Signal-less HDMI", true);
+    controller.applySelection (true);
+
+    // Take the frame away from one of them only, then re-open it so it sits
+    // there with no first frame while its neighbour is fine.
+    fakecamera::setAutoFrameOnListener (false);
+    controller.getSelection().setEnabled ("Signal-less HDMI", false);
+    controller.applySelection (true);
+    controller.getSelection().setEnabled ("Signal-less HDMI", true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-partial-start", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a partial-start take folder is available");
+    check (controller.startRecording (takeFolder), "the take begins on the camera that works");
+
+    const auto problem = controller.getProblem();
+    check (problem.contains ("Signal-less HDMI"),
+           "the problem names the camera that could not start");
+    check (! problem.contains ("Good Camera"),
+           "and does not name the one that did");
+    check (! problem.contains ("1 of your cameras"),
+           "it is a name, not a count");
+    check (problem.contains ("sound is recording"),
+           "and it still says the sound is safe");
+
+    controller.stopRecording();
+    takeFolder.deleteRecursively();
+    fakecamera::setAutoFrameOnListener (true);
+}
+
 /// No-frame timeout is actionable, but not terminal. Some HDMI sources become
 /// valid only after a resolution/HDCP handshake; their first late frame should
 /// promote the same open generation without a destructive reopen.
@@ -1374,6 +1424,7 @@ int main()
     oneNativeViewerMovesBetweenScreens();
     aFailedViewerCanRecoverWithTheSameId();
     anOpenedCaptureCardWithoutAFrameIsNotRecordable();
+    aCameraThatCannotStartIsNamedNotCounted();
     aLateFirstFrameRecoversAfterTheSignalTimeout();
     aStaleGenerationFrameCannotCertifyAReopenedCamera();
     aRuntimeCameraErrorInvalidatesThePreview();

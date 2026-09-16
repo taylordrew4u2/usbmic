@@ -1141,13 +1141,23 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     for (const auto& camera : selection.getAvailableCameras())
         ++takeDeviceNameCounts[camera.displayName];
 
+    // Collected so the problem below can NAME the cameras that did not start.
+    // It used to say "2 of your cameras couldn't start recording" -- a count,
+    // to someone looking at a rig of four, with the roster of display names
+    // sitting right here in takePlans. Knowing which two is the whole
+    // difference between checking one cable and checking all of them.
+    juce::StringArray couldNotStart;
+
     for (const auto& plan : takePlans)
     {
         const auto entry = open.find (plan.deviceId);
 
         if (entry == open.end() || entry->second.device == nullptr
             || ! entry->second.firstFrameReceived || entry->second.signalTimedOut)
+        {
+            couldNotStart.add (juce::String (plan.displayName));
             continue;
+        }
 
         // §6.2: the picture goes in the same session folder as the sound, under
         // the same naming rules, so one folder is still the whole take.
@@ -1207,9 +1217,23 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     applyPendingRuntimeEvents();
 
     if (! takePlans.empty() && startRequests < static_cast<int> (takePlans.size()))
-        recordProblem = juce::String (static_cast<int> (takePlans.size()) - startRequests)
-                        + " of your cameras couldn't start "
-                        "recording. The sound is recording either way.";
+    {
+        // Named, in the same voice as the finalization failure above. The
+        // count alone sent someone round every camera on the rig.
+        recordProblem = (couldNotStart.size() == 1
+                             ? couldNotStart[0] + " couldn't start recording."
+                             : couldNotStart.joinIntoString (", ")
+                                   + " couldn't start recording.")
+                      + " The sound is recording either way.";
+
+        // Belt and braces: if the roster and the request count ever disagree
+        // -- a plan that reached startRecordingToFile and still did not count
+        // -- fall back to the number rather than naming the wrong cameras.
+        if (couldNotStart.isEmpty())
+            recordProblem = juce::String (static_cast<int> (takePlans.size()) - startRequests)
+                            + " of your cameras couldn't start "
+                            "recording. The sound is recording either way.";
+    }
 
     return startRequests > 0;
 #else
