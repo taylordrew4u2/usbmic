@@ -598,7 +598,8 @@ std::string WritePipeline::getCardWriteProblem() const
         if (w != nullptr && ! w->getWriteProblem().empty())
             return w->getWriteProblem();
 
-    return {};
+    // The writers are gone after stop(); what they said is not.
+    return cardWriteProblemAtStop;
 }
 
 void WritePipeline::stop()
@@ -619,6 +620,11 @@ void WritePipeline::stop()
     // away, and closing was the one write that had never been checked: a card
     // pulled during the stop left files whose headers say they hold no audio,
     // under a take the app had already reported as saved.
+    // Latched before the writers are destroyed, because that is where the
+    // account lives. Without this the sentence exists only while the take is
+    // running and is gone by the time anyone asks what went wrong.
+    cardWriteProblemAtStop = getCardWriteProblem();
+
     bool cardFinalizeFailed = false;
 
     for (auto& w : stemWriters)

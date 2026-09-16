@@ -3718,6 +3718,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                                                       capture->isMirroring());
         cardRemovalPending = true;
 
+
         // The ordinary stop path: it finalizes every open file (§6.5 "finalize
         // every open file"), writes session.json and raises the saved-take
         // notice, which is what shows the user whatever did survive.
@@ -3740,6 +3741,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // one.
         auto headline = juce::String (cardRemovalNotice.message);
 
+        // Safe to read AFTER the stop now: the coordinator keeps the take's
+        // account past the pipeline's destruction, and reading it here rather
+        // than before stop() also picks up a final close() that failed.
         if (const auto why = capture->getCardWriteProblem(); ! why.empty())
         {
             headline = juce::String (why);
