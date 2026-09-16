@@ -187,7 +187,6 @@ public:
 
     /// §6.2: the take in progress, and its §6.3 second copy. Empty when idle.
     juce::String getCurrentSessionFolder() const { return currentSessionFolder; }
-    juce::String getCurrentMirrorFolder() const { return currentMirrorFolder; }
 
     /// One file in a session folder, as it stands on disk right now.
     struct SavedFile
@@ -337,9 +336,6 @@ public:
     bool noteCallbackOverrun();
     int getCurrentBufferSize() const { return desiredBufferSize(); }
 
-    /// §5.4 requires every buffer step logged in session.json.
-    const std::vector<BufferSizeChange>& getBufferSizeChanges() const { return bufferLadder.getChangeLog(); }
-
     /// §6.6: called with the current load so pressure is warned about before it
     /// causes dropouts rather than after.
     PerformanceWarning updatePerformance (double cpuLoad, bool thermallyThrottled);
@@ -369,16 +365,6 @@ public:
     /// serious thing worth saying right now -- empty when there is nothing.
     /// §10.6: what happened then what to do, never a code.
     juce::String pollStatusAdvice (double sinceLastCallSeconds);
-
-    /// Everything the app has done and everything that has gone wrong this
-    /// session, newest first.
-    ///
-    /// pollStatusAdvice above is the loud channel and it holds one sentence.
-    /// This is the record, so that a mic that dropped and came back while a
-    /// disk warning held the line still left a trace somewhere the user can
-    /// look. It is also what goes into the take's session.json, so a take
-    /// carries the story of how it went.
-    const ActivityJournal& getActivityJournal() const noexcept { return activity; }
 
     /// The recent activity as lines for a panel, newest first, at most `limit`.
     juce::StringArray getRecentActivityLines (int limit = 12) const;
@@ -426,12 +412,6 @@ public:
                                         std::map<std::string, std::string>& known,
                                         bool& seeded,
                                         const std::set<std::string>& saidElsewhere) const;
-
-    /// §6.5: "New microphone plugged in mid-take -- do not add to the
-    /// in-progress recording. State in one line." That line, for the few
-    /// seconds after it happens, or empty. RecordingEngine has always had the
-    /// sentence; nothing had ever asked it for one.
-    juce::String getMidTakeNotice() const { return midTakeNotice; }
 
         /// §14.2: report an enumeration failure or a device dropping off the bus,
     /// which is how bus-power exhaustion actually presents.
@@ -490,9 +470,6 @@ public:
     /// and both files are already saved and already aligned.
     void setCombineVideoAndAudio (bool shouldCombine);
     bool getCombineVideoAndAudio() const noexcept { return combineVideoAndAudio; }
-
-    /// How the combining of the last take is going, for the line that says so.
-    TakeCombiner::Status getCombineStatus() const { return takeCombiner.getStatus(); }
 
     /// Empty unless the machine has no ffmpeg and the setting is on -- the one
     /// thing this feature needs that the app cannot install for the user.

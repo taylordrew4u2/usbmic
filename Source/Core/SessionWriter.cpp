@@ -66,7 +66,6 @@ bool SessionWriter::open (const std::string& basePath, double sampleRateIn, int 
     bitDepth = bitDepthIn;
     originTimestamp = originTimestampIso;
     splitIndex = 0;
-    splitSuffixActive = false;
     writeProblem.clear();
     outOfSpace = false;
     totalFramesWritten = 0;
@@ -227,7 +226,6 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
             const auto previousFilePath = currentFilePath;
 
             splitIndex = std::max (1, splitIndex + 1);
-            splitSuffixActive = true;
 
             if (! openNewFile (splitIndex))
             {

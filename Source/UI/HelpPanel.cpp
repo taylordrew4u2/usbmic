@@ -111,7 +111,6 @@ void HelpPanel::resized()
     // The buttons sit under the last topic, which is the one that names them.
     settingsButton.setBounds (x, y, 130, kButtonRow);
     diagnosticsButton.setBounds (x + 130 + 10, y, 170, kButtonRow);
-    contentBottom = y + kButtonRow;
 }
 
 void HelpPanel::paint (juce::Graphics& g)
