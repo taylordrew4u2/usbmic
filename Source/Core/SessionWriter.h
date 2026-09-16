@@ -91,7 +91,6 @@ private:
     int numChannels = 1;
     int bitDepth = 24;
     int splitIndex = 0; // 0 = no split suffix yet; becomes 1 ("_001") on first split
-    bool splitSuffixActive = false;
 
     std::fstream file;
     std::string currentFilePath;

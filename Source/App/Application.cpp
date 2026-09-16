@@ -3,7 +3,6 @@
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemThermalState.h"
-#include "../Core/ClockMasterResolver.h"
 #include "../Core/CombinedTakePlan.h"
 #include "../Core/LoudnessMeter.h"
 #include "../Core/SampleRateNegotiator.h"

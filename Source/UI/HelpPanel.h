@@ -48,7 +48,6 @@ private:
     struct Block { int headingY = 0, ruleY = 0, bodyY = 0, bodyHeight = 0; };
     std::vector<Block> blocks;
     int introHeight = 0;
-    int contentBottom = 0;
 
     static juce::Font headingFont();
     static juce::Font bodyFont();
