@@ -2,6 +2,12 @@
 #include "../Source/Core/ClockMasterResolver.h"
 #include "../Source/Core/DeviceManager.h"
 
+// These tests cover a component the shipping app does not call. Application
+// hard-codes the clock master to the computer (see applyClockMaster), so
+// nothing here proves anything about what a take actually does -- see the note
+// at the top of ClockMasterResolver.h. They are kept against that decision
+// being revisited.
+
 using namespace mma;
 
 namespace {
