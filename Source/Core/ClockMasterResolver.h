@@ -5,6 +5,22 @@
 
 namespace mma {
 
+/// NOT CURRENTLY WIRED. Read this before trusting the tests below it.
+///
+/// Application::applyClockMaster() hard-codes setMasterChannel(-1) -- the clock
+/// master is the computer, always -- and that is a deliberate product decision,
+/// explained where it is made. §3.2 already corrects every microphone onto the
+/// output clock, so naming a microphone "master" only moved which crystal the
+/// drift figures were quoted against, and handed the user a picker for a choice
+/// with no audible consequence.
+///
+/// So nothing in Source/ calls resolveMasterChannel, and the same is true of
+/// DeviceManager's selectDefaultMaster / rankMasterCandidates /
+/// setPreferredMaster / getPreferredMaster. The logic and its test suite are
+/// correct and are kept against the decision being revisited -- but a passing
+/// test here says nothing about what the app does, and that is exactly the
+/// impression this note exists to prevent.
+///
 /// §3.3 master failover, expressed over the *take's* channel list rather than
 /// the device list.
 ///
