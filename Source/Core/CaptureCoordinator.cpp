@@ -625,6 +625,9 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 
     // Same reasoning as the counter above: without this, the figures from the
     // previous take would stand as this one's until enough blocks had gone by.
+    lastTakeCardWriteProblem.clear();
+    lastTakeCardWriteFailed = false;
+    lastTakeMirrorWriteFailed = false;
     lastTakeLufs = LoudnessMeter::kSilenceLufs;
     lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
     lastTakeLoudnessBlocks = 0;
@@ -673,6 +676,13 @@ void CaptureCoordinator::stopRecording()
     // fell to zero the instant Stop was pressed, and §10's delivery advice
     // reverted to "Not enough sound yet to judge how loud this is." at exactly
     // the moment the user goes to read it.
+    // After stop(), which is where the final close() of every writer happens --
+    // so a header rewrite that failed at the very end is included here rather
+    // than dying with the object that noticed it.
+    lastTakeCardWriteProblem = p->getCardWriteProblem();
+    lastTakeCardWriteFailed = p->hasCardWriteFailed();
+    lastTakeMirrorWriteFailed = p->hasMirrorWriteFailed();
+
     lastTakeLufs = p->getIntegratedLufs();
     lastTakeTruePeakDbtp = p->getTruePeakDbtp();
     lastTakeLoudnessBlocks = p->getLoudnessBlockCount();

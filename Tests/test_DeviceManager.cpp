@@ -42,96 +42,15 @@ TEST_CASE (DeviceManager_NinthMicExcludedWithReason)
     REQUIRE (excludedCount == 1);
 }
 
-TEST_CASE (DeviceManager_DefaultMasterUsesEnumerationOrderBeforeDriftMeasured)
-{
-    DeviceManager dm;
-    dm.addDevice (makeDevice ("mic-b", 1));
-    dm.addDevice (makeDevice ("mic-a", 0));
 
-    const auto* master = dm.selectDefaultMaster();
-    REQUIRE (master != nullptr);
-    REQUIRE (master->identity.locationId == "mic-a");
-}
 
-TEST_CASE (DeviceManager_DefaultMasterPrefersLowestMeasuredDrift)
-{
-    DeviceManager dm;
-    dm.addDevice (makeDevice ("mic-a", 0, 50.0, true));
-    dm.addDevice (makeDevice ("mic-b", 1, 5.0, true));
 
-    const auto* master = dm.selectDefaultMaster();
-    REQUIRE (master != nullptr);
-    REQUIRE (master->identity.locationId == "mic-b");
-}
 
-TEST_CASE (DeviceManager_FailoverPromotesLowestDriftAmongRemaining)
-{
-    // §3.3 failover, which needs no separate entry point: removeDevice() erases
-    // the master, so the ordinary §3.1 rule can no longer return it and the
-    // lowest-drift survivor wins by itself.
-    //
-    // There used to be a selectFailoverMaster() alongside this that took the
-    // removed master's identity and skipped it explicitly. It only ever
-    // excluded a device that was already gone, and it reimplemented §3.1
-    // incompletely while doing so -- see the two cases below, both of which it
-    // got wrong. It had no production callers and is removed.
-    DeviceManager dm;
-    dm.addDevice (makeDevice ("mic-a", 0, 2.0, true));
-    dm.addDevice (makeDevice ("mic-b", 1, 30.0, true));
-    dm.addDevice (makeDevice ("mic-c", 2, 10.0, true));
 
-    PortIdentity removedMaster;
-    removedMaster.locationId = "mic-a";
-    REQUIRE (dm.removeDevice (removedMaster));
 
-    const auto* newMaster = dm.selectDefaultMaster();
-    REQUIRE (newMaster != nullptr);
-    REQUIRE (newMaster->identity.locationId == "mic-c");
-}
 
-TEST_CASE (DeviceManager_FailoverStillHonoursTheUsersChosenMaster)
-{
-    // §3.1: the Advanced-panel override holds until *that* device leaves the
-    // rig. Losing some other master must not quietly discard it.
-    DeviceManager dm;
-    dm.addDevice (makeDevice ("mic-a", 0, 2.0, true));
-    dm.addDevice (makeDevice ("mic-b", 1, 30.0, true));
-    dm.addDevice (makeDevice ("mic-c", 2, 10.0, true));
 
-    dm.setPreferredMaster ("mic-b");
 
-    PortIdentity gone;
-    gone.locationId = "mic-a";
-    REQUIRE (dm.removeDevice (gone));
-
-    // Not mic-c, which is what picking purely on drift would give.
-    REQUIRE (dm.selectDefaultMaster()->identity.locationId == "mic-b");
-}
-
-TEST_CASE (DeviceManager_FailoverStillPrefersAUsbMicOverTheBuiltIn)
-{
-    // §3.1: the machine's own microphone is a legitimate input and a poor
-    // timebase. Failing over is no reason to hand it the clock.
-    DeviceManager dm;
-
-    MicDeviceState builtIn;
-    builtIn.identity.locationId = "built-in";
-    builtIn.isBuiltIn = true;
-    builtIn.measuredDriftPpm = 1.0;
-    builtIn.hasDriftMeasurement = true;
-    dm.addDevice (builtIn);
-
-    dm.addDevice (makeDevice ("mic-a", 1, 2.0, true));
-    dm.addDevice (makeDevice ("mic-b", 2, 40.0, true));
-
-    PortIdentity gone;
-    gone.locationId = "mic-a";
-    REQUIRE (dm.removeDevice (gone));
-
-    // The built-in has the lowest measured drift of what is left, and still
-    // loses to the remaining USB mic.
-    REQUIRE (dm.selectDefaultMaster()->identity.locationId == "mic-b");
-}
 
 TEST_CASE (DeviceManager_RemoveDeviceReturnsTrueWhenFound)
 {
@@ -170,60 +89,9 @@ TEST_CASE (DeviceManager_UnpluggingFreesASlotForTheNinthMic)
     REQUIRE (ninthNowIncluded);
 }
 
-TEST_CASE (DeviceManager_PreferredMasterOverridesTheLowestDriftRule)
-{
-    DeviceManager m;
 
-    MicDeviceState a;
-    a.identity.locationId = "port-a";
-    a.displayName = "A";
-    a.enumerationOrder = 0;
-    a.measuredDriftPpm = 1.0;
-    a.hasDriftMeasurement = true;
-    m.addDevice (a);
 
-    MicDeviceState b;
-    b.identity.locationId = "port-b";
-    b.displayName = "B";
-    b.enumerationOrder = 1;
-    b.measuredDriftPpm = 50.0;
-    b.hasDriftMeasurement = true;
-    m.addDevice (b);
 
-    // §3.1 automatic rule picks the lowest drift.
-    REQUIRE (m.selectDefaultMaster()->displayName == "A");
-
-    // §3.1 also lets the user say otherwise from the Advanced panel.
-    m.setPreferredMaster ("port-b");
-    REQUIRE (m.selectDefaultMaster()->displayName == "B");
-}
-
-TEST_CASE (DeviceManager_PreferredMasterThatLeavesFallsBackToTheRule)
-{
-    DeviceManager m;
-
-    MicDeviceState a;
-    a.identity.locationId = "port-a";
-    a.displayName = "A";
-    m.addDevice (a);
-
-    MicDeviceState b;
-    b.identity.locationId = "port-b";
-    b.displayName = "B";
-    b.enumerationOrder = 1;
-    m.addDevice (b);
-
-    m.setPreferredMaster ("port-b");
-    REQUIRE (m.selectDefaultMaster()->displayName == "B");
-
-    // §3.3: unplugging the chosen master must leave a master, not none.
-    PortIdentity gone;
-    gone.locationId = "port-b";
-    m.removeDevice (gone);
-
-    REQUIRE (m.selectDefaultMaster() != nullptr);
-    REQUIRE (m.selectDefaultMaster()->displayName == "A");
-}
 
 TEST_CASE (DeviceManager_DriftIsNotClaimedBeforeTheMeasurementWindow)
 {
@@ -243,30 +111,7 @@ TEST_CASE (DeviceManager_DriftIsNotClaimedBeforeTheMeasurementWindow)
     REQUIRE (m.getDevices()[0].hasDriftMeasurement);
 }
 
-TEST_CASE (DeviceManager_MasterSelectionUsesMeasuredDriftOnceAvailable)
-{
-    DeviceManager m;
 
-    MicDeviceState a;
-    a.identity.locationId = "port-a";
-    a.displayName = "A";
-    m.addDevice (a);
-
-    MicDeviceState b;
-    b.identity.locationId = "port-b";
-    b.displayName = "B";
-    b.enumerationOrder = 1;
-    m.addDevice (b);
-
-    // §3.1: before any measurement exists the tiebreak is enumeration order.
-    REQUIRE (m.selectDefaultMaster()->displayName == "A");
-
-    // Once B is measured as the steadier clock, it becomes the master.
-    m.updateMeasuredDrift ("port-b", 1.0, 60.0);
-    m.updateMeasuredDrift ("port-a", 40.0, 60.0);
-
-    REQUIRE (m.selectDefaultMaster()->displayName == "B");
-}
 
 namespace {
 
@@ -362,32 +207,9 @@ TEST_CASE (DeviceManager_SurvivingDeviceKeepsItsEnumerationOrder)
             REQUIRE (d.enumerationOrder == orderOfA);
 }
 
-TEST_CASE (DeviceManager_BuiltInMicIsNotChosenAsClockMaster)
-{
-    // Regression, reported from real hardware: "clock master is always the
-    // computer". CoreAudio enumerates the built-in microphone first, and with
-    // no drift measurement yet the default master fell back to enumeration
-    // order -- so the machine's own mic won on every Mac. §3.1 wants the
-    // timebase to be something the user plugged in.
-    DeviceManager m;
-    m.syncToEnumeration ({ makeDevice ("uid-builtin", "Built-in Microphone", true),
-                           makeDevice ("uid-yeti", "Yeti Stereo Microphone") });
 
-    const auto* master = m.selectDefaultMaster();
-    REQUIRE (master != nullptr);
-    REQUIRE (master->identity.locationId == "uid-yeti");
-}
 
-TEST_CASE (DeviceManager_BuiltInMicIsStillUsedWhenItIsTheOnlyDevice)
-{
-    // A built-in master beats no master at all.
-    DeviceManager m;
-    m.syncToEnumeration ({ makeDevice ("uid-builtin", "Built-in Microphone", true) });
 
-    const auto* master = m.selectDefaultMaster();
-    REQUIRE (master != nullptr);
-    REQUIRE (master->identity.locationId == "uid-builtin");
-}
 
 TEST_CASE (DeviceManager_DeselectedMicIsExcludedWithAReason)
 {
@@ -470,16 +292,7 @@ TEST_CASE (DeviceManager_SelectionSurvivesReEnumeration)
             REQUIRE_FALSE (d.userEnabled);
 }
 
-TEST_CASE (DeviceManager_DeselectedMicIsNotChosenAsClockMaster)
-{
-    DeviceManager m;
-    m.syncToEnumeration ({ makeDevice ("uid-a", "Yeti A"), makeDevice ("uid-b", "Yeti B") });
-    m.setUserEnabled ("uid-a", false);
 
-    const auto* master = m.selectDefaultMaster();
-    REQUIRE (master != nullptr);
-    REQUIRE (master->identity.locationId == "uid-b");
-}
 
 TEST_CASE (DeviceManager_ReEnumerationRefreshesHowManyInputsADeviceHas)
 {

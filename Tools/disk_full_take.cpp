@@ -260,6 +260,21 @@ int main (int argc, char** argv)
            "and saying what to do about it");
 
     coordinator.stopRecording();
+
+    // The sequence the APP actually performs, which this gate did not.
+    //
+    // Application reads the account AFTER stopping the take, and stopRecording
+    // destroyed the pipeline that held it -- so the sentence checked above was
+    // reachable here and nowhere else, and every full card in the field
+    // produced the generic "the drive stopped responding, check it is plugged
+    // in properly" instead. A green gate over a sequence nobody performs.
+    check (coordinator.hasCardWriteFailed(),
+           "the failure is still known after the take has stopped");
+
+    const auto afterStop = coordinator.getCardWriteProblem();
+    check (afterStop == problem,
+           "and so is the account of it, unchanged, which is when the app asks");
+
     coordinator.stopMonitoring();
 
     // §6.5 "finalize every open file", asked of the files rather than of the

@@ -66,7 +66,6 @@ bool SessionWriter::open (const std::string& basePath, double sampleRateIn, int 
     bitDepth = bitDepthIn;
     originTimestamp = originTimestampIso;
     splitIndex = 0;
-    splitSuffixActive = false;
     writeProblem.clear();
     outOfSpace = false;
     totalFramesWritten = 0;
@@ -222,8 +221,11 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
                 return false;
             }
 
+            // The file we are rolling over FROM, captured before openNewFile
+            // reassigns currentFilePath to the one it is about to create.
+            const auto previousFilePath = currentFilePath;
+
             splitIndex = std::max (1, splitIndex + 1);
-            splitSuffixActive = true;
 
             if (! openNewFile (splitIndex))
             {
@@ -231,8 +233,16 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
                 // writes", which is true but not what happened: the take ran
                 // past 3.9 GB and the next file could not be created. Same
                 // outcome, different thing to check.
-                writeProblem = "Couldn't start the next file after " + currentFilePath
-                             + ". The card may be full, or may not allow files this large.";
+                //
+                // openNewFile sets currentFilePath to the NEW path before it
+                // can fail, so this used to name the file that does not exist
+                // as the one it came after. It also overwrote the more
+                // specific out-of-space sentence openNewFile had just set, so
+                // the vaguer message won whenever the drive was simply full.
+                if (writeProblem.empty())
+                    writeProblem = "Couldn't start the next file after " + previousFilePath
+                                 + ". The card may be full, or may not allow files this large.";
+
                 return false;
             }
         }

@@ -831,6 +831,46 @@ TEST_CASE (WritePipeline_AMirrorThatNeverOpenedIsReportedRatherThanAssumed)
     p.stop();
 }
 
+TEST_CASE (WritePipeline_AMirrorThatFailsPartWayThroughLeavesNoStubsBehind)
+{
+    // The case the test above does not reach: the mirror folder EXISTS and the
+    // stems open, and only the mix fails. Releasing the stem writers then ran
+    // ~SessionWriter -> close() on each, which finalizes the file and leaves
+    // it -- so the backup folder ended up holding a full set of header-only
+    // .wav files. A backup that looks present and holds nothing is worse than
+    // an absent one; the card path has discarded rather than released for
+    // exactly this reason since it was written.
+    WritePipeline p;
+
+    const auto mirror = std::filesystem::path (tempDir()) / "mma-mirror-partial-3f2a";
+    std::error_code ec;
+    std::filesystem::remove_all (mirror, ec);
+    std::filesystem::create_directories (mirror, ec);
+
+    // A DIRECTORY where the mix file needs to be, so the stems open and the
+    // mix cannot. Works regardless of who is running the test, which a
+    // permission trick would not.
+    std::filesystem::create_directory (mirror / "MIX.wav", ec);
+
+    REQUIRE (p.start (tempDir(), twoChannels(), 48000.0, 16, "2026-08-27T00:00:00Z",
+                      mirror.string()));
+
+    REQUIRE (p.isRunning());          // §6.3: the take never fails over the safety net
+    REQUIRE (p.hasMirrorFailedToOpen());
+    REQUIRE_FALSE (p.isMirroring());
+
+    // Nothing left behind but the obstruction we put there.
+    int strays = 0;
+    for (const auto& entry : std::filesystem::directory_iterator (mirror))
+        if (entry.path().filename() != "MIX.wav")
+            ++strays;
+
+    REQUIRE (strays == 0);
+
+    p.stop();
+    std::filesystem::remove_all (mirror, ec);
+}
+
 TEST_CASE (WritePipeline_NoMirrorAskedForIsNotAMirrorFailure)
 {
     // Card-only is a choice, not a fault. Reporting one here would tell the

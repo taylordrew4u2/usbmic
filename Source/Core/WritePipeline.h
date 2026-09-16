@@ -159,6 +159,14 @@ public:
     /// is more specific than "the card stopped accepting writes" -- a
     /// roll-over past 3.9 GB that could not create the next file, say. Empty
     /// otherwise, and the general message stands.
+    /// The card's own account of why writing stopped. Survives stop().
+    ///
+    /// It is assembled from the writers, and stop() destroys them -- so this
+    /// used to go empty exactly when the take ended, which is when the app
+    /// asks. Every full card therefore produced the generic "the drive stopped
+    /// responding, check it is plugged in properly" instead of the sentence
+    /// naming it as full. Latched in stop() before the writers go, the same
+    /// way mirrorOutOfSpace is latched below and for the same reason.
     std::string getCardWriteProblem() const;
 
     /// Whether the backup copy stopped because its drive ran out of room.
@@ -183,6 +191,8 @@ private:
     std::atomic<bool> mixOnly { false };
     std::atomic<bool> cardWriteFailed { false };
     std::atomic<bool> mirrorWriteFailed { false };
+    std::string cardWriteProblemAtStop;
+
     std::atomic<bool> mirrorOutOfSpace { false };
     std::atomic<bool> mirrorFailedToOpen { false };
     std::string startProblem;
