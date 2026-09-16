@@ -216,7 +216,18 @@ public:
 
     /// §6.5 "target card removed": the destination stopped accepting writes.
     /// The take is over -- the owner stops and finalizes, and tells the user.
-    bool hasCardWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasCardWriteFailed(); }
+    /// True while the take's card writes are failing, and still true after the
+    /// take has stopped -- the failure and its account outlive the pipeline.
+    ///
+    /// They did not, and that cost the user the only sentence that told them
+    /// what was actually wrong. stopRecording() destroys the WritePipeline, so
+    /// every one of these read as "nothing wrong" the moment a take ended,
+    /// and a caller reading them after the stop -- which the card-failure path
+    /// in Application did -- could never see anything.
+    bool hasCardWriteFailed() const noexcept
+    {
+        return pipeline != nullptr ? pipeline->hasCardWriteFailed() : lastTakeCardWriteFailed;
+    }
 
     /// The worst single channel's overrun since the take began, in frames.
     ///
@@ -252,14 +263,20 @@ public:
 
     /// A more specific account of a card write failure than "it stopped
     /// accepting writes", when the writer has one. Empty otherwise.
-    std::string getCardWriteProblem() const { return pipeline != nullptr ? pipeline->getCardWriteProblem() : std::string(); }
+    std::string getCardWriteProblem() const
+    {
+        return pipeline != nullptr ? pipeline->getCardWriteProblem() : lastTakeCardWriteProblem;
+    }
     bool mirrorRanOutOfSpace() const { return pipeline != nullptr && pipeline->mirrorRanOutOfSpace(); }
 
     /// §6.3: the mirror's equivalent. The pipeline already stops mirroring on
     /// a failed write and deliberately leaves the card write alone -- what this
     /// exposes is the fact that it happened, so the take's owner can say so and
     /// put it in the record.
-    bool hasMirrorWriteFailed() const noexcept { return pipeline != nullptr && pipeline->hasMirrorWriteFailed(); }
+    bool hasMirrorWriteFailed() const noexcept
+    {
+        return pipeline != nullptr ? pipeline->hasMirrorWriteFailed() : lastTakeMirrorWriteFailed;
+    }
 
     /// §6.3: a mirror was asked for and could not be opened, so this take has
     /// no second copy at all. Distinct from a mirror that stopped mid-take.
@@ -464,6 +481,12 @@ private:
     // take three cannot show take two's number.
     // Silence, not zero: before the first take these are what the getters
     // return, and zero LUFS would read as a deafening mix rather than nothing.
+    // The take's write outcome, captured as it stopped. Cleared when the next
+    // take begins. See the note on hasCardWriteFailed().
+    std::string lastTakeCardWriteProblem;
+    bool lastTakeCardWriteFailed = false;
+    bool lastTakeMirrorWriteFailed = false;
+
     double lastTakeLufs = LoudnessMeter::kSilenceLufs;
     double lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
     int lastTakeLoudnessBlocks = 0;

@@ -287,3 +287,20 @@ TEST_CASE (AppSettings_ATruncationThatSavedNothingIsUnreadable)
     REQUIRE (settings.wasUnreadable);
     REQUIRE (settings.destinationFolder.empty());
 }
+
+TEST_CASE (AppSettings_TheSecondSmallestCameraTileSurvivesARoundTrip)
+{
+    // cameraTileScale parsed with a fallback of 1 while the struct default was
+    // 5, and Application compensated by rewriting any stored 1 back to 5 --
+    // which made the second-smallest tile the one setting a user could not
+    // keep. Pick it, relaunch, and the tiles came back at their largest.
+    AppSettings s;
+    s.cameraTileScale = 1;
+
+    const auto parsed = AppSettings::fromJson (s.toJson());
+    REQUIRE (parsed.cameraTileScale == 1);
+
+    // An absent key still lands on the shipped default rather than the
+    // smallest tile.
+    REQUIRE (AppSettings::fromJson ("{}").cameraTileScale == AppSettings{}.cameraTileScale);
+}

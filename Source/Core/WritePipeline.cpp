@@ -333,7 +333,13 @@ bool WritePipeline::openMirrorWriters (const std::string& mirrorFolder,
 
         if (! writer->open (mirrorFolder + "/" + spec.fileName, rate, 1, stemDepth, originTimestamp))
         {
-            mirrorStemWriters.clear();
+            // Discarded, not merely released. Letting the unique_ptrs die runs
+            // ~SessionWriter -> close(), which FINALIZES each file and leaves
+            // it -- so a mirror that failed to open left a full set of
+            // header-only .wav stubs in the backup folder. A backup that looks
+            // present and holds nothing is worse than an absent one, which is
+            // why the card path has used this helper all along.
+            discardPartiallyOpenedWriters (mirrorStemWriters);
             return false;
         }
 
@@ -344,7 +350,20 @@ bool WritePipeline::openMirrorWriters (const std::string& mirrorFolder,
 
     if (! mix->open (mirrorFolder + "/MIX", rate, 1, bitDepth, originTimestamp))
     {
-        mirrorStemWriters.clear();
+        // The stems opened; only the mix did not. Both go, and so does the
+        // half-opened mix itself, which the old code let fall out of scope
+        // still holding whatever it had managed to create.
+        discardPartiallyOpenedWriters (mirrorStemWriters);
+
+        if (mix != nullptr)
+        {
+            const auto path = mix->getCurrentFilePath();
+            mix->close();
+
+            std::error_code ignored;
+            std::filesystem::remove (path, ignored);
+        }
+
         return false;
     }
 
@@ -598,7 +617,8 @@ std::string WritePipeline::getCardWriteProblem() const
         if (w != nullptr && ! w->getWriteProblem().empty())
             return w->getWriteProblem();
 
-    return {};
+    // The writers are gone after stop(); what they said is not.
+    return cardWriteProblemAtStop;
 }
 
 void WritePipeline::stop()
@@ -619,6 +639,11 @@ void WritePipeline::stop()
     // away, and closing was the one write that had never been checked: a card
     // pulled during the stop left files whose headers say they hold no audio,
     // under a take the app had already reported as saved.
+    // Latched before the writers are destroyed, because that is where the
+    // account lives. Without this the sentence exists only while the take is
+    // running and is gone by the time anyone asks what went wrong.
+    cardWriteProblemAtStop = getCardWriteProblem();
+
     bool cardFinalizeFailed = false;
 
     for (auto& w : stemWriters)

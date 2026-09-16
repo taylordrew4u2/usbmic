@@ -189,11 +189,6 @@ bool DeviceManager::lowerDrift (const MicDeviceState& a, const MicDeviceState& b
     return a.enumerationOrder < b.enumerationOrder; // tiebreak
 }
 
-void DeviceManager::setPreferredMaster (const std::string& identityKey)
-{
-    preferredMasterKey = identityKey;
-}
-
 void DeviceManager::updateMeasuredDrift (const std::string& identityKey, double driftPpm,
                                          double measuredForSeconds)
 {
@@ -209,64 +204,6 @@ void DeviceManager::updateMeasuredDrift (const std::string& identityKey, double 
         d.hasDriftMeasurement = measuredForSeconds >= kDriftMeasurementSeconds;
         return;
     }
-}
-
-std::vector<const MicDeviceState*> DeviceManager::rankMasterCandidates() const
-{
-    std::vector<const MicDeviceState*> ranked;
-    ranked.reserve (devices.size());
-
-    // §3.1: an explicit choice wins over the lowest-drift rule, but only while
-    // that device is actually present and included -- otherwise the rig would
-    // have no master at all.
-    const MicDeviceState* preferred = nullptr;
-
-    if (! preferredMasterKey.empty())
-        for (const auto& d : devices)
-            if (d.included && d.identity.key() == preferredMasterKey)
-                preferred = &d;
-
-    if (preferred != nullptr)
-        ranked.push_back (preferred);
-
-    // §3.1: prefer something the user plugged in. A machine's built-in
-    // microphone is a legitimate input but a poor timebase, and CoreAudio
-    // enumerates it first, so before any drift measurement exists it would win
-    // on enumeration order alone -- which is why the clock master read as the
-    // computer on every Mac regardless of how many USB mics were attached.
-    //
-    // Built-ins are not dropped, only ranked last: one is still a better
-    // timebase than none at all.
-    for (int pass = 0; pass < 2; ++pass)
-    {
-        std::vector<const MicDeviceState*> group;
-
-        for (const auto& d : devices)
-        {
-            if (! d.included || &d == preferred)
-                continue;
-            if (d.isBuiltIn != (pass == 1))
-                continue;
-
-            group.push_back (&d);
-        }
-
-        std::stable_sort (group.begin(), group.end(),
-                          [] (const MicDeviceState* a, const MicDeviceState* b)
-                          { return lowerDrift (*a, *b); });
-
-        ranked.insert (ranked.end(), group.begin(), group.end());
-    }
-
-    return ranked;
-}
-
-const MicDeviceState* DeviceManager::selectDefaultMaster() const
-{
-    // One ordering, used both here and by the mid-take failover, so the rule a
-    // take falls back to is the same rule that chose the master to begin with.
-    const auto ranked = rankMasterCandidates();
-    return ranked.empty() ? nullptr : ranked.front();
 }
 
 } // namespace mma

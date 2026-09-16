@@ -86,7 +86,12 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("masterVolume")) s.masterVolume = p->asDouble (s.masterVolume);
     if (auto* p = v.find ("rememberedOutputDeviceId")) s.rememberedOutputDeviceId = p->asString();
     if (auto* p = v.find ("cameraPreviewFullQuality")) s.cameraPreviewFullQuality = p->asBool (false);
-    if (auto* p = v.find ("cameraTileScale")) s.cameraTileScale = static_cast<int> (p->asDouble (1.0));
+    // The fallback is the struct default, not 1. It only applies when the key
+    // is present but unparsable; an absent key already leaves the default
+    // standing. A fallback of 1 meant a corrupt value silently became the
+    // smallest tile rather than the one the app ships with.
+    if (auto* p = v.find ("cameraTileScale"))
+        s.cameraTileScale = static_cast<int> (p->asDouble (static_cast<double> (AppSettings{}.cameraTileScale)));
     if (auto* p = v.find ("combineVideoAndAudio")) s.combineVideoAndAudio = p->asBool (false);
     if (auto* p = v.find ("deliveryTarget")) s.deliveryTarget = p->asString ("");
     if (auto* p = v.find ("sampleRateOverride"))

@@ -22,6 +22,12 @@ public:
     /// True if the sustained-power-exhaustion condition currently holds.
     bool isBusPowerExhausted (double nowSeconds) const;
 
+    /// Forgets every recorded event. SetupAdvisor::reset() cleared its other
+    /// detectors and not this one, so events from a rig that has since been
+    /// unplugged could still produce "use a powered hub" for five minutes
+    /// against hardware that does not need one.
+    void reset() { events.clear(); }
+
 private:
     struct Event { double timestamp; int micsAttached; };
     std::deque<Event> events;

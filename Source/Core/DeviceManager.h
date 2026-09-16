@@ -105,37 +105,11 @@ public:
     /// Returns true if the set of devices actually changed, so callers can skip
     /// the work a no-op notification does not require.
     bool syncToEnumeration (const std::vector<MicDeviceState>& seen);
-
-    /// Removes a device (unplug). Returns true if the device was found.
-    ///
-    /// §3.3 failover needs nothing further: the device is gone from the list,
-    /// so selectDefaultMaster() can no longer return it and already promotes
     /// the lowest-drift survivor -- while still honouring the user's override
     /// and still declining to hand the clock to a built-in microphone.
     bool removeDevice (const PortIdentity& identity);
 
     const std::vector<MicDeviceState>& getDevices() const { return devices; }
-
-    /// §3.1: default master is the included device with the lowest measured
-    /// drift once available; before any measurement exists, enumeration order.
-    /// Returns nullptr if there are no included devices.
-    const MicDeviceState* selectDefaultMaster() const;
-
-    /// The same §3.1 ordering, but every candidate rather than only the winner:
-    /// the user's override first, then the USB microphones by drift, then the
-    /// built-in as a last resort.
-    ///
-    /// A take needs the whole ranking, not just the front of it. The best
-    /// device overall may be one this take is not recording -- plugged in after
-    /// the channel list was frozen (§6.5) -- and picking it would lock the rig
-    /// to a channel that does not exist. The caller walks the list until it
-    /// finds one that is actually in the take and still live.
-    std::vector<const MicDeviceState*> rankMasterCandidates() const;
-
-    /// §3.1: the user may override the automatic choice from the Advanced
-    /// panel. The override holds until that device leaves the rig, at which
-    /// point §3.3 failover takes over again from the automatic rule.
-    void setPreferredMaster (const std::string& identityKey);
 
     /// §3.1: drift is only claimed once 60 seconds of running measurement
     /// exists -- before that the loop is still settling and the number is
@@ -144,7 +118,6 @@ public:
     static constexpr double kDriftMeasurementSeconds = 60.0;
     void updateMeasuredDrift (const std::string& identityKey, double driftPpm,
                               double measuredForSeconds);
-    const std::string& getPreferredMaster() const { return preferredMasterKey; }
 
     /// Re-evaluates the 8-mic-cap inclusion flags after an add/remove, in
     /// enumeration order (earliest 8 included mics win; opt-out is never used
@@ -158,7 +131,6 @@ public:
 
 private:
     std::vector<MicDeviceState> devices;
-    std::string preferredMasterKey;
 
     // Monotonic, so a device unplugged and replugged sorts after the ones that
     // stayed rather than reclaiming its old priority.

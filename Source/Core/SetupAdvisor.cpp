@@ -163,6 +163,7 @@ void SetupAdvisor::reset()
     everHeardAudio = false;
     deadChannels.reset();
     polarPattern.reset();
+    busPower.reset();
     contentionReason.clear();
     numChannels = 0;
 }

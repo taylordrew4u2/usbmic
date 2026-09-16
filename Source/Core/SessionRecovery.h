@@ -40,6 +40,16 @@ struct RecoveredSession
     /// and calling it empty sends someone away from a recording that may be
     /// perfectly intact on a card that has gone read-only.
     int keptFileCount() const;
+
+    /// Files that were repaired AND can actually be opened.
+    ///
+    /// keptFileCount() counts everything not reported empty, and a file whose
+    /// repair failed deliberately sets reportedEmpty = false -- so it counts
+    /// there too. The recovery headline said "its 8 files have been repaired
+    /// and can be played" over a folder holding one good stem, six stubs and a
+    /// file the card would not open, contradicting the per-file warning
+    /// printed directly above it.
+    int playableFileCount() const;
     /// Files that were there but held less than a second.
     int emptyFileCount() const;
     double longestSeconds() const;
