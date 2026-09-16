@@ -64,6 +64,13 @@ int RecoveredSession::keptFileCount() const
                                             [] (const RecoveredFile& f) { return ! f.reportedEmpty; }));
 }
 
+int RecoveredSession::playableFileCount() const
+{
+    return static_cast<int> (std::count_if (files.begin(), files.end(),
+                                            [] (const RecoveredFile& f)
+                                            { return ! f.reportedEmpty && ! f.repairFailed; }));
+}
+
 int RecoveredSession::emptyFileCount() const
 {
     return static_cast<int> (std::count_if (files.begin(), files.end(),

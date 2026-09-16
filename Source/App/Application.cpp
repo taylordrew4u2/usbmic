@@ -1881,6 +1881,7 @@ void Application::toggleRecording()
 
                 recordStartProblem.clear();
                 mirrorMissingReported = false;
+                mirrorFinalizeFailureReported = false;
                 backendDropsAtTakeStart = audioBackend != nullptr
                                               ? audioBackend->getFramesDroppedByBackend() : 0;
 
@@ -4015,7 +4016,24 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // dead code and left the report resting on a proxy: it only fires while a
     // take is running AND the policy still says Active, so a mirror that failed
     // to open in a take the policy had already given up on said nothing.
+    // A mirror that BROKE is not a mirror that never opened, and this branch
+    // was catching both.
+    //
+    // WritePipeline sets mirrorWriteFailed and calls stopMirroring() in the
+    // same pass, so a mid-take write failure leaves capture->isMirroring()
+    // false while the policy still says Active -- which matched the second
+    // disjunct below and produced "that folder couldn't be opened" for a
+    // backup drive that had filled up ninety minutes into a take, with a
+    // ninety-minute copy sitting on disk.
+    //
+    // It also consumed mirrorPolicy.noteWriteFailure(), which is one-shot, so
+    // the branch further down written for exactly this case could never fire
+    // -- taking its out-of-space wording with it, the only consumer of the
+    // flag WritePipeline latches for it.
+    //
+    // Write failures are excluded here and fall through to that branch.
     if (capture != nullptr && capture->isRecording() && ! mirrorMissingReported
+        && ! capture->hasMirrorWriteFailed()
         && (capture->hasMirrorFailedToOpen()
             || (mirrorPolicy.isMirroring() && ! capture->isMirroring())))
     {
@@ -4074,6 +4092,28 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             : juce::String ("The local backup copy stopped -- that drive stopped accepting "
                             "writes. The recording itself is unaffected and is still going "
                             "to the card.");
+
+        noteActivity (ActivityLevel::Failed, "Local backup", line);
+        return line;
+    }
+
+    // §6.3: a backup that stopped for space and then could not close its files.
+    //
+    // The low-space stop below calls stopMirroring(), which makes the writer
+    // thread finalize the mirror -- and if one of those closes fails, the
+    // pipeline latches mirrorWriteFailed a poll or two later. By then the
+    // policy is StoppedLowSpace, so noteWriteFailure() returns false and the
+    // branch above says nothing. The user was told the backup stopped early,
+    // which sounds like a short file that plays; what they actually have is
+    // one whose header says it holds no audio.
+    if (capture != nullptr && ! mirrorFinalizeFailureReported
+        && mirrorPolicy.wasStoppedForSpace() && capture->hasMirrorWriteFailed())
+    {
+        mirrorFinalizeFailureReported = true;
+
+        const auto line = juce::String ("The local backup copy stopped for space and its files "
+                                        "could not be closed properly, so they may not open. The "
+                                        "recording on the card is unaffected.");
 
         noteActivity (ActivityLevel::Failed, "Local backup", line);
         return line;
@@ -5122,12 +5162,23 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
 
         if (session.isWorthPresenting())
         {
-            report (ActivityLevel::Recovered,
-                    folder.getFileName()
-                    + " was interrupted, and its "
-                    + juce::String (static_cast<int> (session.files.size()))
-                    + (session.files.size() == 1 ? " file has" : " files have")
-                    + " been repaired and can be played.");
+            // The playable count, not every file in the folder. The headline
+            // used to announce files the warning directly above it had just
+            // said could not be opened.
+            const int playable = session.playableFileCount();
+
+            if (playable > 0)
+                report (ActivityLevel::Recovered,
+                        folder.getFileName()
+                        + " was interrupted, and "
+                        + juce::String (playable)
+                        + (playable == 1 ? " of its files has" : " of its files have")
+                        + " been repaired and can be played.");
+            else
+                report (ActivityLevel::Warning,
+                        folder.getFileName()
+                        + " was interrupted, and none of its files could be repaired. "
+                          "Copy them somewhere else before trying to play them.");
             result.sessions.push_back (std::move (session));
         }
         else

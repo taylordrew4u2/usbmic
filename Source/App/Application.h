@@ -800,6 +800,9 @@ private:
     /// True once the mirror-never-opened line has been said for this take, so
     /// it is said once rather than on every poll.
     bool mirrorMissingReported = false;
+    /// Said once per take: a backup that stopped for space and then failed to
+    /// close its files, which the low-space notice alone does not convey.
+    bool mirrorFinalizeFailureReported = false;
 
     /// The journal entry currently being shown on the advice line, and how much
     /// longer it stays there. This is what makes "nothing is silent" true on
