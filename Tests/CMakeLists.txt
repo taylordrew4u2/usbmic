@@ -33,6 +33,7 @@ add_executable(mma_core_tests
     test_Loudness.cpp
     test_TapToNameDetector.cpp
     test_PermissionGuidance.cpp
+    test_SystemPermissions.cpp
     test_HelpTopics.cpp
     test_TakeWatchdog.cpp
     test_RecordingProof.cpp

@@ -1227,6 +1227,19 @@ bool WasapiAsioBackend::waitForPendingOpensForTesting (int timeoutMilliseconds)
                                       [&pending] { return pending->running == 0; });
 }
 
+int WasapiAsioBackend::getGrantedOutputBufferFrames() const
+{
+    // GetBufferSize already told us at open time what the endpoint granted;
+    // exclusive mode routinely aligns a requested size up to the device's own
+    // period, so this is often not what was asked for. It was stored and never
+    // read, while §5.4's latency figure went on describing the request.
+    for (const auto& stream : openStreams)
+        if (stream != nullptr && ! stream->isInput && stream->bufferFrames > 0)
+            return static_cast<int> (stream->bufferFrames);
+
+    return 0;
+}
+
 uint64_t WasapiAsioBackend::getFramesDroppedByBackend() const
 {
     uint64_t total = 0;

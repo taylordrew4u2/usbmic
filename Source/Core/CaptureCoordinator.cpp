@@ -217,6 +217,24 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         return continueInputOnly (monitorProblem);
     }
 
+    // The estimate above came from the buffer size we ASKED for. Now that the
+    // stream exists, the device can be asked what it actually granted -- which
+    // is routinely different, since a driver is free to align the request up to
+    // its own period. CoreAudio already tells the user there is "a little more
+    // delay than usual" when that happens; the number beside that sentence was
+    // still the figure for the buffer the device had refused.
+    //
+    // Zero means the backend cannot say, and then the estimate stands: a
+    // latency of nothing is the one answer that is certainly wrong.
+    if (! outputDeviceId.empty())
+    {
+        if (const int granted = backend.getGrantedOutputBufferFrames();
+            granted > 0 && sampleRate > 0.0)
+        {
+            monitoringLatencyMs = (static_cast<double> (granted) / sampleRate) * 1000.0 * 2.0;
+        }
+    }
+
     // One stream per remaining DEVICE, not per channel.
     //
     // An audio interface with four microphones plugged into it is one device
@@ -605,6 +623,12 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     framesMissedByLayout.store (0, std::memory_order_relaxed);
     overrunAtTakeStart = getOverrunSamples();
 
+    // Same reasoning as the counter above: without this, the figures from the
+    // previous take would stand as this one's until enough blocks had gone by.
+    lastTakeLufs = LoudnessMeter::kSilenceLufs;
+    lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
+    lastTakeLoudnessBlocks = 0;
+
     overrunBaselinePerStream.clear();
     overrunBaselinePerStream.reserve (deviceStreams.size());
 
@@ -638,6 +662,20 @@ void CaptureCoordinator::stopRecording()
 
     auto p = std::move (pipeline);
     p->stop();
+
+    // AFTER stop(), and before p goes out of scope and takes the meter with it.
+    //
+    // The order matters: the loudness meter is fed on the WRITER thread inside
+    // drainOnce, and stop() performs the final flush, so a snapshot taken
+    // before it would miss the end of the take -- on a short take, most of it.
+    //
+    // Without any snapshot the figures died with the pipeline, the block count
+    // fell to zero the instant Stop was pressed, and §10's delivery advice
+    // reverted to "Not enough sound yet to judge how loud this is." at exactly
+    // the moment the user goes to read it.
+    lastTakeLufs = p->getIntegratedLufs();
+    lastTakeTruePeakDbtp = p->getTruePeakDbtp();
+    lastTakeLoudnessBlocks = p->getLoudnessBlockCount();
 }
 
 void CaptureCoordinator::setChannelLive (const std::string& deviceId, bool live)
@@ -1206,17 +1244,17 @@ void CaptureCoordinator::measurePolarPattern (const float* const* inputs, int ch
 
 double CaptureCoordinator::getIntegratedLufs() const
 {
-    return pipeline != nullptr ? pipeline->getIntegratedLufs() : LoudnessMeter::kSilenceLufs;
+    return pipeline != nullptr ? pipeline->getIntegratedLufs() : lastTakeLufs;
 }
 
 double CaptureCoordinator::getTruePeakDbtp() const
 {
-    return pipeline != nullptr ? pipeline->getTruePeakDbtp() : LoudnessMeter::kSilenceLufs;
+    return pipeline != nullptr ? pipeline->getTruePeakDbtp() : lastTakeTruePeakDbtp;
 }
 
 int CaptureCoordinator::getLoudnessBlockCount() const
 {
-    return pipeline != nullptr ? pipeline->getLoudnessBlockCount() : 0;
+    return pipeline != nullptr ? pipeline->getLoudnessBlockCount() : lastTakeLoudnessBlocks;
 }
 
 void CaptureCoordinator::setMasterChannel (int index) noexcept

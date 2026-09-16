@@ -6,6 +6,7 @@
 #include "UI/AdvancedPanel.h"
 #include "UI/SaveLocationPrompt.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -386,6 +387,39 @@ int main()
                      m.label, s.getMonitorProblemBandHeight(),
                      s.getRequiredHeight(), grown,
                      s.getRequiredHeight() > grown ? "  OVERFLOWS WINDOW" : "");
+    }
+
+    // --- Controls that must show what was SAVED, not a constant ------------
+    //
+    // Three controls opened at a hardcoded value with no setter at all: the
+    // monitor volume slider at 70, the backup-copy box ticked, and the full-
+    // preview box unticked. Each therefore described a state the app might not
+    // be in. The backup one is the dangerous member of the set -- it told
+    // someone who had switched the second copy off that it was on.
+    {
+        mma::MainScreen screen;
+        mma::AdvancedPanel panel;
+
+        screen.setMasterVolume (15.0);
+        const bool volumeRoundTrips = std::abs (screen.getMasterVolume() - 15.0) < 1.0e-9;
+
+        screen.setFullPreview (true);
+        const bool previewRoundTrips = screen.isFullPreview();
+
+        panel.setMirrorEnabled (false);
+        const bool mirrorRoundTrips = ! panel.isMirrorEnabled();
+
+        std::printf ("\nControls restate what was saved\n");
+        std::printf ("  %s  the volume slider shows the saved volume, not 70\n",
+                     volumeRoundTrips ? "PASS" : "FAIL");
+        std::printf ("  %s  the full-preview box shows the saved quality\n",
+                     previewRoundTrips ? "PASS" : "FAIL");
+        std::printf ("  %s  the backup-copy box shows the saved setting, not always on\n",
+                     mirrorRoundTrips ? "PASS" : "FAIL");
+
+        failures += volumeRoundTrips ? 0 : 1;
+        failures += previewRoundTrips ? 0 : 1;
+        failures += mirrorRoundTrips ? 0 : 1;
     }
 
     return failures == 0 ? 0 : 1;

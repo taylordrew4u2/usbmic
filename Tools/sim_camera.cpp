@@ -633,6 +633,56 @@ void anOpenedCaptureCardWithoutAFrameIsNotRecordable()
     fakecamera::setAutoFrameOnListener (true);
 }
 
+/// When some cameras start and some do not, the problem has to say WHICH.
+///
+/// It used to say "1 of your cameras couldn't start recording." -- a count, to
+/// someone looking at a rig of several, with the roster of display names
+/// sitting in takePlans the whole time. Knowing which one is the difference
+/// between checking one cable and checking all of them.
+void aCameraThatCannotStartIsNamedNotCounted()
+{
+    std::printf ("\nOne camera of two cannot start\n");
+
+    fakecamera::setDevices ({ "Good Camera", "Signal-less HDMI" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Good Camera", true);
+    controller.getSelection().setEnabled ("Signal-less HDMI", true);
+    controller.applySelection (true);
+
+    // Take the frame away from one of them only, then re-open it so it sits
+    // there with no first frame while its neighbour is fine.
+    fakecamera::setAutoFrameOnListener (false);
+    controller.getSelection().setEnabled ("Signal-less HDMI", false);
+    controller.applySelection (true);
+    controller.getSelection().setEnabled ("Signal-less HDMI", true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-partial-start", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a partial-start take folder is available");
+    check (controller.startRecording (takeFolder), "the take begins on the camera that works");
+
+    const auto problem = controller.getProblem();
+    check (problem.contains ("Signal-less HDMI"),
+           "the problem names the camera that could not start");
+    check (! problem.contains ("Good Camera"),
+           "and does not name the one that did");
+    check (! problem.contains ("1 of your cameras"),
+           "it is a name, not a count");
+    check (problem.contains ("sound is recording"),
+           "and it still says the sound is safe");
+
+    controller.stopRecording();
+    takeFolder.deleteRecursively();
+    fakecamera::setAutoFrameOnListener (true);
+}
+
 /// No-frame timeout is actionable, but not terminal. Some HDMI sources become
 /// valid only after a resolution/HDCP handshake; their first late frame should
 /// promote the same open generation without a destructive reopen.
@@ -1203,6 +1253,61 @@ void aSynchronousWriterStartFailureNeverClaimsAFile()
     fakecamera::setStartRecordingSucceeds (true);
 }
 
+/// A writer that fails its finalization IMMEDIATELY, which is the common shape
+/// of the failure and the one nothing here had ever produced.
+///
+/// FinalizationMode::ImmediateError existed in the camera stand-in and no
+/// scenario used it. That matters beyond coverage: when every didFinish has
+/// already arrived by the time stopRecording returns, isFinalizingRecording()
+/// is false, and Application's stop took its SYNCHRONOUS branch -- which never
+/// read getRecordingFinalizationProblem(). So the one sentence warning that a
+/// movie is unusable was produced and dropped precisely when it was true, and
+/// the app said "Saved to ..." over the top of it.
+///
+/// This pins the state that made that possible: finalization already finished,
+/// and a problem waiting to be read. Application now reads it on both paths.
+void anImmediateFinalizationErrorIsReadyBeforeTheStopReturns()
+{
+    std::printf ("\nA camera writer which fails its finalization at once\n");
+
+    fakecamera::setDevices ({ "Failing Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateError);
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Failing Camera", true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-immediate-error", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "an immediate-error folder is available");
+    check (controller.startRecording (takeFolder), "the writer begins");
+
+    controller.stopRecording();
+
+    // The two halves of the hazard, asserted together. Either alone is
+    // harmless; it is the combination that the old stop path threw away.
+    check (! controller.isFinalizingRecording(),
+           "finalization is already over when stopRecording returns");
+    check (controller.getRecordingFinalizationState()
+               == mma::CameraController::RecordingFinalizationState::Failed,
+           "and it ended in failure");
+    check (controller.getRecordingFinalizationProblem().isNotEmpty(),
+           "with a problem waiting to be read, on the path that used to drop it");
+    check (controller.getRecordingFinalizationProblem().containsIgnoreCase ("do not use"),
+           "and it tells the user not to trust the movie");
+    check (controller.getTakeVideoRecords().empty(),
+           "and no movie is claimed for the take");
+
+    takeFolder.deleteRecursively();
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
+}
+
 /// A missing didFinish is bounded. Once timed out, the unsafe device generation
 /// stays closed through periodic discovery and only an explicit retry can open
 /// it again.
@@ -1319,6 +1424,7 @@ int main()
     oneNativeViewerMovesBetweenScreens();
     aFailedViewerCanRecoverWithTheSameId();
     anOpenedCaptureCardWithoutAFrameIsNotRecordable();
+    aCameraThatCannotStartIsNamedNotCounted();
     aLateFirstFrameRecoversAfterTheSignalTimeout();
     aStaleGenerationFrameCannotCertifyAReopenedCamera();
     aRuntimeCameraErrorInvalidatesThePreview();
@@ -1330,6 +1436,7 @@ int main()
     delayedFinalizationBlocksClaimsAndTheNextTake();
     finishWithoutStartIsAStartFailure();
     aSynchronousWriterStartFailureNeverClaimsAFile();
+    anImmediateFinalizationErrorIsReadyBeforeTheStopReturns();
     aNeverFinishingWriterFailsClosedAndDoesNotAutoReopen();
     shutdownDuringFinalizationIsBoundedAndLifetimeSafe();
 

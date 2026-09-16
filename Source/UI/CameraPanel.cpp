@@ -249,8 +249,14 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         row.fileName = std::make_unique<juce::Label>();
         row.fileName->setFont (juce::Font (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
         row.fileName->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+        // A camera that was recording this take and is no longer available has
+        // been unplugged mid-take, and its movie is certainly truncated -- no
+        // signal-status text required, and none was ever supplied for those
+        // rows, so this warning could not reach the one case that actually
+        // cuts a file short. The row read "Recording to V01_....mov" for a
+        // camera that had been pulled out of the machine.
         row.fileName->setText (recording && camera.recordingThisTake
-                                  && camera.signalStatusText.isNotEmpty()
+                                  && (camera.signalStatusText.isNotEmpty() || ! camera.available)
                                   ? "Video signal lost -- this file may be incomplete"
                               : recording && camera.recordingThisTake
                                   ? "Recording to " + camera.fileName

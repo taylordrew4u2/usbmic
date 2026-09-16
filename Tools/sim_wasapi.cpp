@@ -274,6 +274,43 @@ void aBufferAlignmentRejectionIsRetried()
     backend.closeAllStreams();
 }
 
+/// §5.4 quotes the singer a monitoring latency. Quoting it from the period we
+/// ASKED for is a lie whenever the device names its own: the app must report
+/// the granted size. Nothing else in this file opens an output at a size the
+/// device refuses, so without this the reporting path is untested on Windows.
+void theGrantedOutputPeriodIsWhatTheBackendReports()
+{
+    std::printf ("\nAn output that rejects the period and names its own\n");
+    fakewasapi::reset();
+
+    auto spec = headphones ("out-align", "Picky Out",
+                            { fakewasapi::Format::pcm (2, 24, 48000.0) });
+    spec.alignedFrames = 480;
+    fakewasapi::addEndpoint (spec);
+
+    mma::WasapiAsioBackend backend;
+
+    check (backend.getGrantedOutputBufferFrames() == 0,
+           "with nothing open the backend says it cannot tell");
+
+    auto writer = [] (const float* const*, int, float* const* outputs, int numOutputs, int numSamples)
+    {
+        for (int ch = 0; ch < numOutputs; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                outputs[ch][i] = 0.0f;
+    };
+
+    check (backend.openExclusiveOutputStream ("out-align", 48000.0, 256, writer),
+           "the retry at the device's own size succeeds");
+    check (backend.getGrantedOutputBufferFrames() == 480,
+           "and the backend reports 480, not the 256 we asked for");
+
+    backend.closeAllStreams();
+
+    check (backend.getGrantedOutputBufferFrames() == 0,
+           "once it is closed there is nothing to report again");
+}
+
 /// AUDCLNT_BUFFERFLAGS_SILENT means the buffer contents are undefined. Reading
 /// it anyway turns a dropout into full-scale noise.
 void aSilentFlaggedPacketIsTreatedAsSilence()
@@ -520,6 +557,89 @@ void onlyDirectlyAttachedHardwareEnumeratesAsInput()
 /// Every leg of Windows' identity proof can fail in the real world: an old
 /// driver may expose no topology, a filter may omit its instance id, or the PnP
 /// tree may have malformed properties. None may turn into a name-based fallback.
+/// An unplugged or disabled interface is still in the Windows registry.
+///
+/// EnumAudioEndpoints takes a state mask, and the backend asks for
+/// DEVICE_STATE_ACTIVE. The fake discarded that mask and reported ACTIVE for
+/// every endpoint, so asking for active devices and asking for all of them
+/// returned the same list -- and a backend that passed the wrong mask would
+/// have offered the user a microphone that is unplugged, disabled, or gone.
+/// Picking it produces a take of silence, which is the §0.1 failure.
+void onlyActiveEndpointsAreOffered()
+{
+    std::printf ("\nInterfaces Windows still lists but will not open\n");
+    fakewasapi::reset();
+
+    const auto add = [] (const char* id, unsigned long state)
+    {
+        auto spec = microphone (id, id, { fakewasapi::Format::pcm (1, 24, 48000.0) });
+        spec.deviceNodeChain = { { std::string ("USB\\") + id, true, true, true } };
+        spec.deviceState = state;
+        fakewasapi::addEndpoint (spec);
+    };
+
+    // The numeric values of the DEVICE_STATE_* flags, spelled out because this
+    // file does not include the Windows headers.
+    add ("live", 0x1);        // ACTIVE
+    add ("unplugged", 0x8);   // UNPLUGGED
+    add ("disabled", 0x2);    // DISABLED
+    add ("gone", 0x4);        // NOTPRESENT
+
+    mma::WasapiAsioBackend backend;
+    const auto inputs = backend.enumerateInputDevices();
+
+    check (inputs.size() == 1, "only the active interface is offered");
+    check (! inputs.empty() && inputs[0].name == "live",
+           "and it is the one that is actually plugged in");
+}
+
+/// The §2.4 identity walk has to actually be walked.
+///
+/// Windows keeps three distinct strings here -- the endpoint id, the topology
+/// device id the connector names, and the physical filter's PnP instance id --
+/// and only the last one says what the hardware is. The fake used to return the
+/// endpoint id for all three, so a backend that read PKEY_Device_InstanceId
+/// straight off the endpoint, skipping GetConnector and GetDeviceIdConnectedTo
+/// entirely, produced identical output and every check in this file still
+/// passed.
+///
+/// It would not pass on a real machine. The endpoint's own instance id is
+/// SWD\MMDEVAPI\..., which is not an eligible transport, so that shortcut
+/// classifies EVERY microphone as not-external and hides the whole rig.
+///
+/// This pins the three apart by name so the shortcut cannot come back quietly.
+void thePhysicalIdentityComesFromTheConnectedNodeNotTheEndpoint()
+{
+    std::printf ("\nThe identity walk reaches the physical node, not the endpoint\n");
+    fakewasapi::reset();
+
+    auto spec = microphone ("endpoint-id", "USB interface",
+                            { fakewasapi::Format::pcm (1, 24, 48000.0) });
+    spec.deviceNodeChain = { { "USB\\VID_AAAA&PID_BBBB", true, true, true } };
+    spec.physicalInstanceId = "USB\\VID_AAAA&PID_BBBB";
+
+    // Named explicitly rather than derived, so the test states the shape it
+    // depends on instead of trusting a default to stay different.
+    spec.connectedDeviceId = "{2}.\\\\?\\USB#VID_AAAA&PID_BBBB#TOPOLOGY";
+    spec.endpointInstanceId = "SWD\\MMDEVAPI\\endpoint-id";
+
+    fakewasapi::addEndpoint (spec);
+
+    check (spec.connectedDeviceId != spec.id,
+           "the connector names something other than the endpoint id");
+    check (spec.endpointInstanceId != spec.physicalInstanceId,
+           "and the endpoint's own instance id is not the physical one");
+
+    mma::WasapiAsioBackend backend;
+    const auto inputs = backend.enumerateInputDevices();
+
+    // The only route from the endpoint to USB\VID_AAAA... is the topology
+    // walk. Reading the instance id off the endpoint yields SWD\MMDEVAPI\...,
+    // which fails the transport test, and this input disappears.
+    check (inputs.size() == 1,
+           "the interface is offered, which only the full walk can establish");
+}
+
 void missingExternalEvidenceFailsClosed()
 {
     std::printf ("\nMissing Windows external-device evidence fails closed\n");
@@ -1053,6 +1173,8 @@ int main()
 
     enumerationPreservesEveryInputAndSupportedRate();
     onlyDirectlyAttachedHardwareEnumeratesAsInput();
+    onlyActiveEndpointsAreOffered();
+    thePhysicalIdentityComesFromTheConnectedNodeNotTheEndpoint();
     missingExternalEvidenceFailsClosed();
     openingAnInputRechecksTheExternalHardwarePolicy();
     a24BitOnlyMicrophoneOpensAndDeliversAudio();
@@ -1069,6 +1191,7 @@ int main()
     enumerationReportsNamesAndSeparatesDirections();
     eightMicrophonesInMixedFormatsStaySeparate();
     closingStopsEveryStream();
+    theGrantedOutputPeriodIsWhatTheBackendReports();
     anIntegerOnlyOutputIsNotCalledIncapable();
     aSixteenBitOnlyOutputIsNotCalledIncapable();
     anOutputThatRefusesEveryLayoutIsStillReported();

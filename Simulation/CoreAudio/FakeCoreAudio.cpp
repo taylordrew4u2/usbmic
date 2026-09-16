@@ -160,8 +160,16 @@ void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector se
     // like the system device-list notification path above.
     const auto snapshot = state().listeners;
 
+    // Scope and element are matched here because AudioObjectRemovePropertyListener
+    // below matches them. While delivery ignored them the two halves disagreed,
+    // and a registration added under one scope and removed under another would
+    // silently leak -- the removal a no-op, the listener still firing, and
+    // nothing able to tell. A real HAL matches on both sides; so does this now.
     for (const auto& l : snapshot)
-        if (l.object == object && l.address.mSelector == selector)
+        if (l.object == object
+            && l.address.mSelector == selector
+            && l.address.mScope == address.mScope
+            && l.address.mElement == address.mElement)
             l.proc (object, 1, &address, l.clientData);
 }
 
@@ -735,6 +743,15 @@ bool isRunning (AudioObjectID device)
                         [] (const IoProcRegistration& r) { return r.running; });
 }
 
+int openIoProcCount (AudioObjectID device)
+{
+    auto* d = find (device);
+    if (d == nullptr)
+        return 0;
+
+    return static_cast<int> (d->procs.size());
+}
+
 double nominalRate (AudioObjectID device)
 {
     auto* d = find (device);
@@ -745,6 +762,12 @@ bool hogModeHeld (AudioObjectID device)
 {
     auto* d = find (device);
     return d != nullptr && d->hogOwner != -1;
+}
+
+int hogOwnerPid (AudioObjectID device)
+{
+    auto* d = find (device);
+    return d == nullptr ? -1 : d->hogOwner;
 }
 
 int bufferFrameSize (AudioObjectID device)

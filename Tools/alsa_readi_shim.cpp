@@ -14,6 +14,16 @@
  *   MMA_SHIM_FAIL_AFTER    let this many reads through first
  *   MMA_SHIM_FAIL_AFTER_MS let this many milliseconds of reading through first
  *   MMA_SHIM_STREAM        capture (default) | playback | both
+ *   MMA_SHIM_OPEN_MATCH    snd_pcm_open of a name with this prefix is...
+ *   MMA_SHIM_OPEN_AS       ...redirected to this name instead
+ *   MMA_SHIM_REFUSE_RATE   hw_params_test_rate says no to this rate, always
+ *
+ * The last three exist for one reason. AlsaBackend's exclusive-mode capability
+ * check refuses any output name that is not direct hardware, so nothing named
+ * after the `file` plugin can reach the code past that gate -- and there is no
+ * real card in CI. Redirecting an allowlisted hw: name onto the fixture lets
+ * the REAL capability check run, against a device that then refuses the rate,
+ * which is the configuration no fixture on this machine can otherwise produce.
  *
  * MMA_SHIM_STREAM reaches the monitor output. snd_pcm_writei and the whole
  * playback half of the worker loop had never been run by any test -- the Linux
@@ -55,6 +65,9 @@ struct Config
     const char* onlyDevice = nullptr;
     long failAfterReads = 0;
     long failAfterMs = 0;
+    const char* openMatch = nullptr;
+    const char* openAs = nullptr;
+    long refuseRate = 0;
 
     Config()
     {
@@ -76,6 +89,12 @@ struct Config
 
         if (const char* n = std::getenv ("MMA_SHIM_FAIL_AFTER_MS"); n != nullptr)
             failAfterMs = std::atol (n);
+
+        openMatch = std::getenv ("MMA_SHIM_OPEN_MATCH");
+        openAs = std::getenv ("MMA_SHIM_OPEN_AS");
+
+        if (const char* n = std::getenv ("MMA_SHIM_REFUSE_RATE"); n != nullptr)
+            refuseRate = std::atol (n);
     }
 };
 
@@ -164,6 +183,53 @@ snd_pcm_sframes_t passThroughWrite (snd_pcm_t* pcm, const void* buffer, snd_pcm_
 } // namespace
 
 extern "C" {
+
+int snd_pcm_open (snd_pcm_t** pcm, const char* name, snd_pcm_stream_t stream, int mode)
+{
+    static std::atomic<int (*) (snd_pcm_t**, const char*, snd_pcm_stream_t, int)> real { nullptr };
+
+    auto fn = real.load (std::memory_order_acquire);
+
+    if (fn == nullptr)
+    {
+        fn = reinterpret_cast<decltype (fn)> (dlsym (RTLD_NEXT, "snd_pcm_open"));
+        real.store (fn, std::memory_order_release);
+    }
+
+    if (fn == nullptr)
+        return -ENODEV;
+
+    const auto& c = config();
+
+    if (c.openMatch != nullptr && c.openAs != nullptr && name != nullptr
+        && std::strncmp (name, c.openMatch, std::strlen (c.openMatch)) == 0)
+        return fn (pcm, c.openAs, stream, mode);
+
+    return fn (pcm, name, stream, mode);
+}
+
+int snd_pcm_hw_params_test_rate (snd_pcm_t* pcm, snd_pcm_hw_params_t* params,
+                                 unsigned int rate, int dir)
+{
+    const auto& c = config();
+
+    // Unconditional for the named rate. The point is a card that cannot run at
+    // it at all, which is exactly what a 44100-only interface is.
+    if (c.refuseRate > 0 && rate == static_cast<unsigned int> (c.refuseRate))
+        return -EINVAL;
+
+    static std::atomic<int (*) (snd_pcm_t*, snd_pcm_hw_params_t*, unsigned int, int)> real { nullptr };
+
+    auto fn = real.load (std::memory_order_acquire);
+
+    if (fn == nullptr)
+    {
+        fn = reinterpret_cast<decltype (fn)> (dlsym (RTLD_NEXT, "snd_pcm_hw_params_test_rate"));
+        real.store (fn, std::memory_order_release);
+    }
+
+    return fn != nullptr ? fn (pcm, params, rate, dir) : -EINVAL;
+}
 
 snd_pcm_sframes_t snd_pcm_readi (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t frames)
 {

@@ -63,6 +63,7 @@ public:
 
     uint64_t getFramesDroppedByBackend() const override;
     uint64_t getOutputGlitchCount() const override;
+    int getGrantedOutputBufferFrames() const override;
 
 private:
     std::string lastOpenError;

@@ -169,6 +169,18 @@ public:
     /// opens the panel where cameras are switched on and named.
     std::function<void (bool)> onFullPreviewToggled;
     void setFullPreview (bool on) { fullPreviewToggle.setToggleState (on, juce::dontSendNotification); }
+    bool isFullPreview() const { return fullPreviewToggle.getToggleState(); }
+    double getMasterVolume() const { return volumeSlider.getValue(); }
+
+    /// The slider opened at a hardcoded 70 whatever the saved volume was, so
+    /// the room could be at 15 while the control said 70 -- and the first
+    /// nudge jumped the headphones up to meet it. Never applied while the user
+    /// is dragging.
+    void setMasterVolume (double volume0to100)
+    {
+        if (! volumeSlider.isMouseButtonDown())
+            volumeSlider.setValue (volume0to100, juce::dontSendNotification);
+    }
 
     std::function<void()> onRecordButtonClicked;
     std::function<void (double)> onVolumeChanged; // 0-100

@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "../Platform/SystemPermissions.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemThermalState.h"
@@ -235,6 +236,12 @@ void Application::initialise()
         noteActivity (ActivityLevel::Warning, "Settings",
                       "Couldn't move your saved settings over from the app's old name, so your "
                       "microphone names and destination may have been forgotten.");
+
+    // §10.1: asked BEFORE the backend enumerates, because on macOS a denial is
+    // what makes enumeration come back empty. Without this the app told a user
+    // with a microphone plugged in to "plug in a USB microphone" -- advice for
+    // a problem they did not have, about the one thing they had already done.
+    microphonePermission = queryMicrophonePermission();
 
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
@@ -1324,7 +1331,15 @@ TakeHealth Application::snapshotTakeHealth() const
     // unplugged writer stays in that roster as absent; a preview cannot be
     // reopened and mistaken for resumed recording during the same take.
     for (const auto& camera : cameraController.getTakeCameraStates())
-        health.cameras.push_back ({ camera.displayName, camera.recording });
+        // `starting` counts as present. REC is confirmed only by
+        // AVFoundation's didStart, so a camera sits in STARTING for a moment
+        // after the take begins -- and `present` fed from `recording` alone
+        // read that as "not there". If the watchdog's baseline landed inside
+        // that window, the next observation saw the camera appear and
+        // announced "Camera X is back." for a camera that had never gone
+        // anywhere. What `present` means here is "in the take, not lost".
+        health.cameras.push_back ({ camera.displayName,
+                                    camera.recording || camera.starting });
 
     health.cameraProblem = cameraController.getProblem().toStdString();
     health.monitorProblem = getMonitorProblem().toStdString();
@@ -1759,7 +1774,19 @@ void Application::toggleRecording()
         }
         if (recordingEngine.start (std::move (channels)))
         {
-            recordingStartMs = juce::Time::getMillisecondCounterHiRes();
+            // recordingStartMs is NOT taken here. It is the take's audio t=0,
+            // and no audio exists yet: a capacity probe, one or two mkdirs
+            // (including the mirror, possibly on a slow card) and the WAV
+            // headers all happen below before the writer thread has a sample.
+            //
+            // It used to be stamped here, and CameraController measures every
+            // camera's start offset against it, which becomes audioLeadSeconds
+            // and then ffmpeg's -ss on MIX.wav. Too early a t=0 makes the lead
+            // too big, so the combine trimmed MORE off the front of the audio
+            // than it should and the sound in the combined file ran LATE
+            // against the picture. Single-digit milliseconds on an SSD, tens to
+            // low hundreds on the removable cards this app is for -- small
+            // enough to look like nothing, large enough to look wrong.
 
             // §6.3: the mirror decision is taken HERE, before the folders are
             // made, against the free space now. It used to be evaluated after
@@ -1814,6 +1841,14 @@ void Application::toggleRecording()
                 // Cleared only once a take is genuinely under way, so the
                 // reason for the last failure stays on screen until it is
                 // replaced by a success rather than by the next click.
+                // Audio t=0, taken where the audio actually begins: the
+                // writer thread is up and the stem files are open. Every other
+                // reader of this stamp -- the take clock, the dropout and drift
+                // timestamps that reach session.json, the watchdog's repeat
+                // throttle -- wants "seconds since audio began" too, so all of
+                // them get more accurate here, not just the camera offsets.
+                recordingStartMs = juce::Time::getMillisecondCounterHiRes();
+
                 recordStartProblem.clear();
                 mirrorMissingReported = false;
                 backendDropsAtTakeStart = audioBackend != nullptr
@@ -1947,7 +1982,24 @@ void Application::toggleRecording()
                                                      currentBitDepth);
 
             if (plan.hasWork())
+            {
                 takeCombiner.start (juce::File (currentSessionFolder), plan);
+            }
+            else if (! plan.problem.empty())
+            {
+                // The user asked for one file with the sound on it and is not
+                // getting one. buildCombinedTakePlan has always written a
+                // plain-language reason -- "None of the cameras wrote a file,
+                // so there is nothing to combine." -- and nothing in Source/
+                // ever read it, so the plan was dropped in silence and the
+                // user went looking for a file that was never attempted.
+                //
+                // TakeCombiner's own failures were already surfaced; this was
+                // the remaining hole in that chain, and it is the half that
+                // fires when the cameras failed rather than ffmpeg.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              juce::String (plan.problem));
+            }
         }
 
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
@@ -2082,8 +2134,32 @@ void Application::toggleRecording()
             return;
         }
 
+        // Finalization already finished, synchronously, inside stopRecording.
+        //
+        // That is the COMMON case for the failure this sentence exists to
+        // report: a camera unplugged mid-take has its writer finalize with an
+        // error before Stop is even pressed, so every didFinish has already
+        // arrived and isFinalizingRecording() is false here. Only the
+        // asynchronous path below read the problem, so on this one the app
+        // said "Saved to ..." while "X could not finish its video file. The
+        // audio is safe; do not use that movie." was produced and thrown away.
+        //
+        // The string is deliberately not part of getProblem(), so nothing else
+        // -- not the camera panel, not the journal, not the watchdog -- could
+        // pick it up either.
+        reportCameraFinalizationProblem();
+
         completeStoppedTake();
     }
+}
+
+void Application::reportCameraFinalizationProblem()
+{
+    // One reader for both stop paths. Keeping the read inline in each was how
+    // the synchronous one came to be missing it.
+    if (const auto problem = cameraController.getRecordingFinalizationProblem();
+        problem.isNotEmpty())
+        noteActivity (ActivityLevel::Failed, "Cameras", problem);
 }
 
 bool Application::pollCameraFinalization()
@@ -2094,9 +2170,7 @@ bool Application::pollCameraFinalization()
         || cameraController.isFinalizingRecording())
         return pendingStoppedTakeCompletion == nullptr;
 
-    if (const auto problem = cameraController.getRecordingFinalizationProblem();
-        problem.isNotEmpty())
-        noteActivity (ActivityLevel::Failed, "Cameras", problem);
+    reportCameraFinalizationProblem();
 
     // Clear the member before invoking it: completion refreshes cameras and
     // may synchronously publish callbacks, but can never execute this take a
@@ -2412,6 +2486,15 @@ juce::String Application::getRecordDisabledReason() const
     if (pendingStoppedTakeCompletion != nullptr
         || cameraController.isFinalizingRecording())
         return "Finishing the camera files from the last take. Record will be ready when they are safely closed.";
+
+    // Ahead of the microphone count on purpose. A denied microphone permission
+    // is invisible to enumeration: the count is zero for the same reason it
+    // would be with nothing plugged in, and the two need different fixes.
+    for (const auto& problem : PermissionGuidance::evaluate (microphonePermission,
+                                                             destinationWritePermission,
+                                                             ! destinationFolder.empty()))
+        if (problem.blocksRecording)
+            return juce::String (problem.message);
 
     if (getIncludedMicCount() == 0)
         return "Plug in a USB microphone or audio interface first.";
@@ -3034,6 +3117,12 @@ void Application::applyDestinationFolder (const juce::File& folder)
 
     beginPreflightForDestination();
 
+    // §10.4. There is no query API for this on macOS; the only truthful answer
+    // comes from trying, so it is asked here -- once, when the location
+    // changes -- rather than anywhere near arming or the audio path.
+    destinationWritePermission = queryVolumeWritePermission (destinationFolder);
+    journalledPermissionProblems = false;
+
     saveSettings();
 }
 
@@ -3456,6 +3545,25 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // warning returns early below, and a stale index would leave one skull
     // lit indefinitely.
     tappedChannel = -1;
+
+    // §10.6: the blocking problems already gate the record button, but a
+    // save-location denial does not block anything -- it just means the take
+    // will fail later -- so it has to reach the user some other way. The
+    // journal is that way, and it also puts the reason in the take's own log.
+    if (! journalledPermissionProblems)
+    {
+        const auto permissionProblems =
+            PermissionGuidance::evaluate (microphonePermission, destinationWritePermission,
+                                          ! destinationFolder.empty());
+
+        journalledPermissionProblems = true;
+
+        for (const auto& problem : permissionProblems)
+            noteActivity (problem.blocksRecording ? ActivityLevel::Failed : ActivityLevel::Warning,
+                          problem.kind == PermissionKind::Microphone ? "Microphones"
+                                                                     : "Save location",
+                          juce::String (problem.message));
+    }
 
     // §8.1: the detectors only see anything if the per-block peaks reach them,
     // so this is where the §10.5 advice actually gets its input.
@@ -4205,8 +4313,14 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 
     if (out.openedOk() && builder.writeToStream (out, nullptr))
     {
+        // onTheLine, because the user pressed a button and nothing else
+        // happens: the level alone would have kept this out of the advice line,
+        // so a successful export looked identical to nothing happening and the
+        // path to the file was never shown anywhere they would look. The
+        // failure branch below already reaches the line by virtue of its level.
         noteActivity (ActivityLevel::Stopped, "Diagnostics",
-                      "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".");
+                      "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".",
+                      true);
     }
     else
     {
