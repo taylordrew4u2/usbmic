@@ -696,6 +696,10 @@ private:
     OutputDeviceTracker outputDeviceTracker;
     CapacityMonitor capacityMonitor;
     BufferLadder bufferLadder;
+
+    /// The device identity keys as of the last enumeration, so §5.4's ladder
+    /// can tell a real hot-plug from this handler simply running again.
+    std::string lastDeviceSignature;
     CpuPressureMonitor cpuPressureMonitor;
 
     double recordingStartMs = 0.0;

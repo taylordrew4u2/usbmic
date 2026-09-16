@@ -350,3 +350,26 @@ TEST_CASE (SetupAdvisor_SilenceIsGivenTimeBeforeItIsCalledAProblem)
     const auto advice = advisor.getActiveAdvice (25.0);
     REQUIRE (find (advice, SetupIssue::EverythingSilent) == nullptr);
 }
+
+TEST_CASE (SetupAdvisor_ResetForgetsBusPowerEventsToo)
+{
+    // reset() cleared the polar, dead-channel and contention state and left
+    // busPower alone, so events from a rig that had since been unplugged could
+    // still produce "use a powered hub" for five minutes against hardware that
+    // does not need one.
+    SetupAdvisor a;
+
+    a.noteDeviceDropout (1.0, 4);
+    a.noteDeviceDropout (2.0, 4);
+
+    bool sawPowerAdvice = false;
+    for (const auto& advice : a.getActiveAdvice (3.0))
+        if (advice.issue == SetupIssue::BusPowerExhausted)
+            sawPowerAdvice = true;
+    REQUIRE (sawPowerAdvice);
+
+    a.reset();
+
+    for (const auto& advice : a.getActiveAdvice (4.0))
+        REQUIRE (advice.issue != SetupIssue::BusPowerExhausted);
+}

@@ -960,6 +960,26 @@ void Application::onDeviceListChanged()
     // per device per firing -- which is why one Yeti showed up five times.
     deviceManager.syncToEnumeration (seen);
 
+    // §5.4: the ladder re-evaluates on a DEVICE CHANGE (and, by construction,
+    // on next launch). resetToLowest() had no caller at all, so once it had
+    // stepped up it stayed up for the life of the process -- a rig that was
+    // struggling with one bad interface kept the bigger buffer, and its added
+    // delay, after that interface was unplugged.
+    //
+    // Gated on the device set genuinely differing, not merely on this handler
+    // running. It is also the path used to reopen streams after a step UP, and
+    // resetting there would undo the step the moment it was taken.
+    {
+        std::string signature;
+        for (const auto& state : seen)
+            signature += state.identity.key() + "\n";
+
+        if (haveEnumeratedDevicesOnce && signature != lastDeviceSignature)
+            bufferLadder.resetToLowest();
+
+        lastDeviceSignature = signature;
+    }
+
     // §2.4: a microphone remembered from last week is only matchable once it is
     // actually plugged in, so this runs after every enumeration rather than
     // once at launch.
@@ -1383,8 +1403,18 @@ bool Application::isMicLive (int index) const
 
 void Application::noteDeviceDropout()
 {
+    // §14.2 is about three or more separate boxes drawing power from the bus,
+    // so this counts DEVICES. It passed getIncludedMicCount(), which counts
+    // take CHANNELS -- so one four-input interface on one port reported four
+    // and tripped a heuristic written for four microphones on four ports,
+    // telling someone to buy a powered hub for a rig that does not need one.
+    int attachedDevices = 0;
+    for (const auto& d : deviceManager.getDevices())
+        if (d.included)
+            ++attachedDevices;
+
     setupAdvisor.noteDeviceDropout (juce::Time::getMillisecondCounterHiRes() / 1000.0,
-                                    getIncludedMicCount());
+                                    attachedDevices);
 }
 
 void Application::updateSetupAdvisorLevels (const std::vector<float>& peaksDb, double blockSeconds)
@@ -3783,6 +3813,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         juce::String firstFailure;
         juce::String firstWarning;
+        bool bufferLadderStepped = false;
 
         for (const auto& failure : audioBackend->takeStreamFailures())
         {
@@ -3800,6 +3831,21 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                     if (d.identity.key() == failure.deviceId)
                         subject = juce::String (d.displayName);
             }
+
+            // §5.4's buffer ladder lives or dies here. noteCallbackOverrun()
+            // existed, was correct, and was called from NOWHERE -- so the
+            // ladder never counted an overrun, never stepped, and the user
+            // stayed pinned at 64 samples on a machine that was dropping audio
+            // with no automatic relief. session.json's buffer-change log was
+            // always empty for the same reason, so the take's own record could
+            // not say why it glitched.
+            //
+            // A processor overload IS the callback missing its deadline, which
+            // is exactly what the ladder is counting. Three inside 30 seconds
+            // steps it up.
+            if (failure.kind == StreamFailureKind::processorOverload
+                && noteCallbackOverrun())
+                bufferLadderStepped = true;
 
             auto line = subject + " " + juce::String (failure.reason);
             const bool stopForSafety = streamFailureRequiresRecordingStop (failure.kind)
@@ -3831,6 +3877,30 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 stopReason = "an audio device changed sample rate";
                 toggleRecording();
             }
+        }
+
+        // Acted on after the loop, so one batch of overloads produces one step
+        // rather than one per report.
+        //
+        // §5.4 forbids a change mid-take: a buffer change during a recording is
+        // itself a dropout risk, and §0.1 puts not losing audio first. The
+        // ladder refuses to step while recording for the same reason, so this
+        // can only be reached between takes.
+        if (bufferLadderStepped)
+        {
+            const auto line = juce::String ("This computer could not keep up, so the audio buffer "
+                                            "has been increased to ")
+                            + juce::String (bufferLadder.getCurrentSize())
+                            + " samples. You may notice slightly more delay in the headphones.";
+
+            noteActivity (ActivityLevel::Warning, "Performance", line);
+
+            // Fixed for the life of a stream, so the streams are reopened
+            // through the same path a hot-plug takes -- the same one
+            // setBufferSizeOverride uses.
+            onDeviceListChanged();
+
+            return line;
         }
 
         if (firstFailure.isNotEmpty())
@@ -4148,6 +4218,21 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             if (result == TapResult::ChannelIdentified)
                 tappedChannel = tapDetector->getTappedChannel();
 
+            // §14.6's other half. Ambiguous was produced, latched, reset and
+            // shown to nobody: the sentence it exists for lived only in a
+            // comment on the enumerator. So a novice with four identical Yetis
+            // taps one, two mics hear it, and the app does nothing at all --
+            // which is indistinguishable from tap-to-name being broken, and
+            // tap-to-name is the answer to the first-run blocker of not being
+            // able to tell four identical microphones apart.
+            //
+            // onTheLine because the user just did something physical and is
+            // waiting to see what it did. noteActivity collapses the repeat, so
+            // tapping again while it is still up does not stack.
+            if (result == TapResult::Ambiguous)
+                noteActivity (ActivityLevel::Started, "Microphones",
+                              "Two mics heard that -- try tapping closer to one.", true);
+
             // Latch consumed; listen for the next tap. The meter's 2-second
             // peak hold keeps re-identifying while the sound decays, which is
             // what makes the highlight linger long enough to see.
@@ -4408,8 +4493,13 @@ void Application::loadSettings()
     //
     // Any other remembered value was somebody moving the arrows on purpose, and
     // it is kept: the same index is a much larger picture now anyway.
-    cameraTileScale = rememberedSettings.cameraTileScale == 1 ? 5
-                                                             : rememberedSettings.cameraTileScale;
+    // Restored as stored. It used to rewrite any 1 into 5, which made the
+    // second-smallest tile the one setting a user could not keep: pick it,
+    // relaunch, and the tiles came back at their largest. The rewrite was
+    // guarding against an old parse fallback of 1 that is now the struct
+    // default, so a missing or unreadable value already lands on 5 without
+    // destroying a deliberate choice.
+    cameraTileScale = rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
     sampleRateOverride = rememberedSettings.sampleRateOverride;
