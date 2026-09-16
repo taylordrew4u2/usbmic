@@ -263,3 +263,31 @@ TEST_CASE (SessionRecovery_OddExtendedFmtAndUnknownChunksKeepTheirPadding)
     REQUIRE_FALSE (result.reportedEmpty);
     std::remove (path.c_str());
 }
+
+TEST_CASE (RecoveredSession_APlayableCountExcludesWhatCouldNotBeRepaired)
+{
+    // The recovery headline announced session.files.size() -- every file in the
+    // folder -- as "repaired and can be played", directly under a warning
+    // saying a particular file could not be opened. keptFileCount() is no help
+    // either: a failed repair deliberately sets reportedEmpty = false, so it
+    // counts as kept.
+    RecoveredSession s;
+
+    RecoveredFile good;
+    good.fileName = "01_Alex.wav";
+
+    RecoveredFile empty;
+    empty.fileName = "02_Sam.wav";
+    empty.reportedEmpty = true;
+
+    RecoveredFile broken;
+    broken.fileName = "03_Jo.wav";
+    broken.repairFailed = true;   // reportedEmpty stays false, deliberately
+
+    s.files = { good, empty, broken };
+
+    REQUIRE (s.files.size() == 3);
+    REQUIRE (s.keptFileCount() == 2);      // the broken one still counts here
+    REQUIRE (s.playableFileCount() == 1);  // and must not count here
+    REQUIRE (s.emptyFileCount() == 1);
+}
