@@ -326,7 +326,17 @@ int main()
         return 1;
     }
 
-    check (true, "one stream opens for the device, not one per microphone");
+    // Counted, not asserted in words. This line used to read
+    // `check (true, ...)`: it named the exact failure it was there to catch --
+    // one IOProc per microphone instead of one per device -- and would have
+    // passed just as happily with four open.
+    //
+    // §5.2 and CoreAudio both want one. Asking macOS for a second IOProc on a
+    // device this process has already hog-moded comes back as "couldn't be
+    // opened for recording" against a microphone that is plugged in and
+    // working.
+    check (fakeca::openIoProcCount (rig) == 1,
+           "one stream opens for the device, not one per microphone");
 
     if (! four.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
     {
@@ -675,8 +685,14 @@ int main()
 
     const auto singer = fakeca::addDevice (microphone ("Singer", "uid-singer", 1,
                                                        fakeca::BufferShape::oneChannelPerBuffer));
-    const auto cans = fakeca::addDevice (headphones ("Headphones", "uid-cans", 2,
-                                                     fakeca::BufferShape::interleaved));
+    auto cansSpec = headphones ("Headphones", "uid-cans", 2,
+                                fakeca::BufferShape::interleaved);
+    // This card runs its own period and will not be talked into ours. The app
+    // asks for `block`; the device keeps 192. Whatever latency we then report
+    // has to describe 192, because that is the buffer the singer hears through.
+    cansSpec.allowBufferSizeChange = false;
+    cansSpec.bufferFrameSize = 192;
+    const auto cans = fakeca::addDevice (cansSpec);
 
     mma::CoreAudioBackend backend6;
     mma::CaptureCoordinator monitored (backend6, rate, block);
@@ -691,6 +707,16 @@ int main()
     }
 
     check (monitored.hasOutputStream(), "the headphones are open and clocking the take");
+
+    check (backend6.getGrantedOutputBufferFrames() == 192,
+           "the backend reports the period the card granted, not the one we asked for");
+    check (192 != block, "the granted period really does differ from the request");
+    {
+        const double expected = (192.0 / rate) * 1000.0 * 2.0;
+        const double reported = monitored.getMonitoringLatencyMs();
+        check (std::fabs (reported - expected) < 0.001,
+               "the monitoring latency describes the granted period, not the asked-for one");
+    }
 
     if (! monitored.startRecording (dir, 24, "2026-09-04T00:00:00Z"))
     {

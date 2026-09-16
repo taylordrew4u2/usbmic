@@ -92,6 +92,7 @@ add_library(mma_core STATIC
     Source/Core/FilesystemStatusProbe.cpp
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
+    Source/Platform/SystemPermissions.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
@@ -107,6 +108,15 @@ target_link_libraries(mma_core PRIVATE mma_warnings)
 # ALSA on Linux: the backend is part of mma_core rather than the app target so
 # the headless harnesses can drive a REAL OS audio API. It is guarded on
 # __linux__, so on macOS and Windows the translation unit is empty.
+# SystemPermissions.cpp reads +[AVCaptureDevice authorizationStatusForMediaType:]
+# through the Objective-C runtime rather than converting a translation unit to
+# Objective-C++ for one enum. That is a link dependency, and mma_core is linked
+# by the unit tests and the headless tools as well as by the app -- so it goes
+# here, PUBLIC, rather than on the app target alone.
+if (APPLE)
+    target_link_libraries(mma_core PUBLIC objc)
+endif()
+
 if (UNIX AND NOT APPLE)
     find_package(ALSA)
 
@@ -431,6 +441,10 @@ if (MMA_BUILD_TOOLS)
         add_executable(alsa_monitor_loss Tools/alsa_monitor_loss.cpp)
         target_link_libraries(alsa_monitor_loss PRIVATE mma_core)
         target_link_libraries(alsa_monitor_loss PRIVATE mma_warnings)
+
+        add_executable(alsa_rate_refusal Tools/alsa_rate_refusal.cpp)
+        target_link_libraries(alsa_rate_refusal PRIVATE mma_core)
+        target_link_libraries(alsa_rate_refusal PRIVATE mma_warnings)
 
         add_library(alsa_readi_shim SHARED Tools/alsa_readi_shim.cpp)
         target_link_libraries(alsa_readi_shim PRIVATE ${CMAKE_DL_LIBS})

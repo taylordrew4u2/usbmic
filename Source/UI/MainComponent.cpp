@@ -121,6 +121,17 @@ MainComponent::MainComponent (Application& app)
 
     cameraPanel.onPreviewQualityChanged = [this] (PreviewQuality quality) {
         application.setCameraPreviewQuality (quality);
+        mainScreen.setFullPreview (quality == PreviewQuality::Full);
+    };
+
+    // The main screen has the same control beside the camera tiles, and
+    // nothing in the repo ever assigned its callback -- so ticking it did
+    // exactly nothing, and it never reflected the setting either. Both boxes
+    // now drive the one setting and both restate it.
+    mainScreen.onFullPreviewToggled = [this] (bool full) {
+        const auto quality = full ? PreviewQuality::Full : PreviewQuality::Low;
+        application.setCameraPreviewQuality (quality);
+        cameraPanel.setPreviewQuality (quality);
     };
 
     cameraPanel.onCloseClicked = [this] { toggleCameras(); };
@@ -549,7 +560,6 @@ TakeAlertCard::Tone toneFor (const TakeAlert& alert)
         case Kind::WriterBehind:
         case Kind::TenMinutesLeft:
         case Kind::MicBack:
-        case Kind::CameraBack:
         case Kind::OutputBack:
             break;
     }
@@ -763,6 +773,12 @@ void MainComponent::refreshStatus()
     if (lastMicCount < 0)
         rebindMeters();
 
+    // Two controls that used to open at a hardcoded value and never restate
+    // what was actually saved. The slider ignores this while it is being
+    // dragged, so restating it on the status tick cannot fight the user.
+    mainScreen.setMasterVolume (application.getMasterVolume());
+    mainScreen.setFullPreview (application.getCameraPreviewQuality() == PreviewQuality::Full);
+
     const int micCount = juce::jmax (0, lastMicCount);
 
     // Liveness can change mid-take without rebuilding the frozen channel set.
@@ -971,9 +987,23 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setDestinationFolderText ("Destination folder: " + application.getDestinationFolder());
     advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
                                         application.getCombineUnavailableReason());
+    advancedPanel.setMirrorEnabled (application.isMirrorEnabledByUser());
     advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
                                       application.getDeliveryTarget());
-    advancedPanel.setLoudnessAdvice (application.getLoudnessAdvice());
+    // The measured figure leads the advice it is based on. getLoudnessReading()
+    // was written, and never called from anywhere -- so the panel gave
+    // instructions ("Turn up by 3.2 dB") with no way to see the number behind
+    // them, while its own header promised the line that says what the mix
+    // measures. It returns empty when there is not enough to judge, which is
+    // the same condition under which the advice says so itself.
+    {
+        const auto reading = application.getLoudnessReading();
+        const auto advice = application.getLoudnessAdvice();
+
+        advancedPanel.setLoudnessAdvice (reading.isNotEmpty() && advice.isNotEmpty()
+                                             ? reading + " -- " + advice
+                                             : (reading.isNotEmpty() ? reading : advice));
+    }
     advancedPanel.setActivityLines (application.getRecentActivityLines());
 
     // They are on screen, so they have been shown. Without this the advice line
@@ -1138,7 +1168,10 @@ void MainComponent::refreshCameras()
                              takeState != takeCameraStates.end() && takeState->second.starting,
                              controller.getPlannedFileNameFor (camera.id),
                              controller.getViewerRevision (camera.id),
-                             {} });
+                             // Was hardcoded empty, which is what stopped the
+                             // incomplete-file warning reaching an unplugged
+                             // camera -- the one case that truncates a movie.
+                             controller.getSignalStatusText (camera.id) });
     }
 
     // Only the visible surface owns preview hosts. Keeping CameraPanel rows

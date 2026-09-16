@@ -117,6 +117,16 @@ public:
     /// one of them.
     void markAllSeen();
 
+    /// Marks everything shown EXCEPT unseen warnings and failures.
+    ///
+    /// For the settings panel. It lists a dozen entries at once, so marking
+    /// them shown is right for the chatter -- but it was marking everything,
+    /// including a microphone that dropped out while the panel happened to be
+    /// open. That entry then never got its line above the record button, and
+    /// survived only as a row near the bottom of a scrolling list. A problem
+    /// the user has to go looking for has not been reported.
+    void markInformationalSeen();
+
     /// How many entries the user has not been shown. What a badge counts.
     size_t getUnseenCount() const;
 

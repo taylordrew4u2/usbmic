@@ -135,6 +135,16 @@ public:
     /// when the machine can actually do this, and otherwise says what is
     /// missing -- named here, before a take, rather than in an alert after one.
     void setCombineVideoState (bool on, const juce::String& unavailableReason);
+
+    /// The backup-copy box was fixed ON at construction with no setter, so it
+    /// read "ticked" to someone who had turned it off -- telling them a second
+    /// copy was being written when none was. §6.3 exists to prevent exactly
+    /// that belief.
+    void setMirrorEnabled (bool enabled)
+    {
+        mirrorToggle.setToggleState (enabled, juce::dontSendNotification);
+    }
+    bool isMirrorEnabled() const { return mirrorToggle.getToggleState(); }
     std::function<void()> onDestinationFolderClicked;
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
     /// (device name, physical input, enabled)

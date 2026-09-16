@@ -70,6 +70,15 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
         if (lostCamerasThisTake.count (cam.name) > 0)
             continue;
 
+        // There is no "and it came back" branch, and there cannot be one. The
+        // latch above skips any camera already recorded as lost, so a genuine
+        // return could never reach it; the only transition that could was
+        // STARTING -> recording, which is a camera that never left. It said
+        // "Camera X is back." at the top of a take, about nothing.
+        //
+        // A camera really cannot rejoin an interrupted movie -- see the note
+        // above on why the loss is latched for the whole take -- so the honest
+        // thing is that the message does not exist.
         if (wasPresent && ! cam.present)
         {
             lostCamerasThisTake.insert (cam.name);
@@ -78,8 +87,6 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
                                 "The sound carries on; this camera stays out for the rest of this take "
                                 "and can be used again on the next take.", false });
         }
-        else if (! wasPresent && cam.present)
-            alerts.push_back ({ TakeAlert::Kind::CameraBack, "Camera " + cam.name + " is back.", true });
     }
 
     for (auto& cam : cameras)

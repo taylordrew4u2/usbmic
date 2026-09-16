@@ -50,6 +50,28 @@ void MixBarComponent::paint (juce::Graphics& g)
         g.fillRoundedRectangle (bounds, kRadius);
     }
 
+    // Peak hold. currentPeakDb was sampled every frame and never drawn, so the
+    // mix bus was the one meter with no trace of a transient: a passage that
+    // peaked and fell back left nothing on it, while every skull meter beside
+    // it showed its "pk" figure. A transient on the MIX is exactly the thing
+    // worth seeing, because it is what the limiter is catching.
+    //
+    // Drawn before the outline so the frame stays on top of it.
+    if (currentPeakDb > Metering::kMinDb)
+    {
+        const float peakNorm = juce::jlimit (0.0f, 1.0f,
+            (currentPeakDb - Metering::kMinDb) / (Metering::kMaxDb - Metering::kMinDb));
+
+        // Inset by the line width so a full-scale peak lands on the track
+        // rather than half outside it.
+        const float x = bounds.getX()
+                      + juce::jlimit (1.0f, bounds.getWidth() - 1.0f,
+                                      bounds.getWidth() * peakNorm);
+
+        g.setColour (currentPeakDb >= -3.0f ? kFillHigh : kBone.withAlpha (0.7f));
+        g.fillRect (x - 1.0f, bounds.getY() + 1.0f, 2.0f, bounds.getHeight() - 2.0f);
+    }
+
     // A hairline in the outline tone. At full-strength bone the frame was the
     // brightest thing in the row, competing with the fill it contains.
     g.setColour (kOutline);

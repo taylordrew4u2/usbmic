@@ -108,6 +108,37 @@ TEST_CASE (TakeWatchdog_ACameraGoingAwayIsNamed)
     REQUIRE (w.observe (healthyRig()).empty());
 }
 
+TEST_CASE (TakeWatchdog_ACameraStillStartingIsNotAnAbsentCamera)
+{
+    // The bug this replaces: REC is confirmed only by AVFoundation's didStart,
+    // so a camera sits in STARTING for a moment after Record. `present` was
+    // fed from the recording flag alone, which read that as "not there" -- and
+    // if the baseline landed inside the window, the next observation saw the
+    // camera appear and announced a recovery for a camera that never left.
+    //
+    // Application now feeds `present` from recording OR starting. This is the
+    // watchdog's half of that contract: a camera which is present at the
+    // baseline and stays present says nothing, and a camera which is absent at
+    // the baseline and then appears says nothing either, because there is no
+    // longer any branch that could speak.
+    TakeWatchdog w;
+
+    auto starting = healthyRig();
+    starting.cameras[0].present = false;   // baseline taken mid-STARTING
+    w.beginTake (starting);
+
+    const auto confirmed = w.observe (healthyRig());
+    REQUIRE (confirmed.empty());
+
+    // And it is still watched: a real loss after that is still reported once.
+    auto lost = healthyRig();
+    lost.cameras[0].present = false;
+
+    const auto alerts = w.observe (lost);
+    REQUIRE (alerts.size() == 1);
+    REQUIRE (alerts[0].kind == TakeAlert::Kind::CameraLost);
+}
+
 TEST_CASE (TakeWatchdog_ACameraThatVanishesFromTheListIsGoneToo)
 {
     // The OS stops listing an unplugged camera; it does not list it as absent.

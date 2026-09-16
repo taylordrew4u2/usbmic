@@ -57,6 +57,7 @@ public:
 
     std::vector<StreamFailure> takeStreamFailures() override;
     uint64_t getFramesDroppedByBackend() const override;
+    int getGrantedOutputBufferFrames() const override;
     uint64_t getOutputGlitchCount() const override;
 
 private:

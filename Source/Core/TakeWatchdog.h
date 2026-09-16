@@ -57,7 +57,12 @@ struct TakeAlert
 {
     enum class Kind
     {
-        MicLost, MicBack, CameraLost, CameraBack, CameraTrouble,
+        // No CameraBack. A camera cannot rejoin an interrupted movie, so the
+        // loss is latched for the whole take -- which made the "is back"
+        // branch unreachable for a genuine return, and reachable only by a
+        // camera that had not gone anywhere. The message is gone rather than
+        // left in place looking like a feature.
+        MicLost, MicBack, CameraLost, CameraTrouble,
         AudioDropped, WriterBehind, MixOnly, MonitorTrouble,
         OutputLost, OutputBack,
         TenMinutesLeft, TwoMinutesLeft,

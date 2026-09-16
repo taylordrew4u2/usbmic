@@ -1769,6 +1769,21 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
     return failures;
 }
 
+int CoreAudioBackend::getGrantedOutputBufferFrames() const
+{
+    // Asked of the device rather than remembered from the request. This backend
+    // already notices when a device refuses the size it was given -- it tells
+    // the user there is "a little more delay than usual" -- and the latency
+    // figure printed beside that sentence was still the one for the buffer the
+    // device had just refused.
+    for (const auto& stream : openStreams)
+        if (stream != nullptr && stream->isOutput && stream->deviceId != kAudioObjectUnknown)
+            if (const int granted = getBufferFrameSize (stream->deviceId); granted > 0)
+                return granted;
+
+    return 0;
+}
+
 uint64_t CoreAudioBackend::getFramesDroppedByBackend() const
 {
     uint64_t total = 0;
