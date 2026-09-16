@@ -229,10 +229,39 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   kills its child and removes an incomplete combined file; the original video
   and WAV files remain untouched.
 
+### Fixed after the 2026-09-12 candidate cut
+
+- The §5.4 buffer ladder had never counted a single overrun: it is now fed from
+  the backend's processor-overload signal, and only resets to its lowest rung
+  when the device signature actually changes.
+- macOS, Windows and Linux now ask the operating system for the microphone and
+  camera privacy decision and report exactly what it answers, instead of
+  assuming permission was granted.
+- Linux asks ALSA whether the card can run at the take's rate before promising
+  monitoring, and reports the monitoring latency and buffer size the device
+  granted rather than the one that was requested.
+- Several messages the user could never actually see are now delivered: the
+  camera that failed to start is named, a movie that did not finish is called
+  out, an ambiguous tap-to-name result is surfaced, a mirror-copy write failure
+  is routed to the user, and the card's account of why it stopped is captured
+  before the writers are destroyed instead of dying with the take.
+- Interrupted-take recovery counts only files that are actually playable,
+  excluding empty and unrepairable ones, so the headline no longer overstates
+  what was salvaged.
+- A/V synchronisation drift, a false camera alert, and loudness advice that was
+  discarded at Stop are fixed; three controls now show the value that was saved
+  rather than a constant.
+- The CoreAudio and WASAPI fakes now refuse what the real APIs refuse: distinct
+  endpoint and physical-device identities, unplugged and disabled endpoints,
+  scope- and element-matched property-listener delivery, and real `Start()`
+  refusals. The one-IOProc-per-device check now checks something.
+- The unwired clock-master chain and its dead accessors were removed rather
+  than left looking implemented.
+
 ### Verification baseline
 
-The candidate contains 547 unit tests, 179 CoreAudio simulator checks, 70
-WASAPI simulator checks, 247 camera simulator checks, a seven-check synchronous
+The candidate contains 574 unit tests, 201 CoreAudio simulator checks, 108
+WASAPI simulator checks, 262 camera simulator checks, a seven-check synchronous
 camera-lifecycle probe and an 11-check take-combiner probe, plus the capture,
 refusal and end-to-end harnesses. These numbers describe automated coverage,
 not physical-hardware certification.
