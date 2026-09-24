@@ -45,9 +45,35 @@ export MMA_SETTLE_SECONDS="${MMA_SETTLE_SECONDS:-45}"
 
 # The fixture's tone files are 30 s long and the `file` plugin loops them, so a
 # longer take is fine; verify_take.py only needs each tone present.
-bash Tools/e2e_app_take.sh "$SECONDS_TO_RECORD"
+TAKE_FAILED=0
+bash Tools/e2e_app_take.sh "$SECONDS_TO_RECORD" || TAKE_FAILED=1
 
 TAKE="$HOME/RECORDINGS/$(find "$HOME/RECORDINGS" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | LC_ALL=C sort | tail -1)"
+
+# What the take looked like, whatever verify_take.py made of it: a stem whose
+# tone the per-block vote could not recognise on a CI runner is nothing to
+# reason about from the share alone. The vote per second and a block map of
+# the first seconds, plus the app's own account of the take, go in the log.
+echo
+echo "=== Tone timeline: $(basename "$TAKE") ==="
+python3 Tools/tone_timeline.py "$TAKE/01_mma_mic1.wav" 440 1000 6 | sed -n '1,12p;/map/,$p'
+python3 Tools/tone_timeline.py "$TAKE/02_mma_mic2.wav" 1000 440 6 | sed -n '1,12p;/map/,$p'
+echo "--- activity.log ---"
+cat "$TAKE/activity.log" 2>/dev/null || true
+echo "--- session.json dropouts and buffer ---"
+python3 - "$TAKE/session.json" <<'PY' || true
+import json, sys
+j = json.load(open(sys.argv[1]))
+print("  bufferSizeSamples:", j.get("bufferSizeSamples"), " changes:", j.get("bufferSizeChanges"))
+for d in j.get("dropouts", []):
+    print("  dropout:", d)
+PY
+
+if [ "$TAKE_FAILED" != 0 ]; then
+  echo "The take itself failed verification (above)."
+  exit 1
+fi
+
 echo
 echo "=== Real-time clocks: $(basename "$TAKE") ==="
 
