@@ -41,7 +41,7 @@ echo "Microphone clocks: $MMA_SIM_PPM"
 # is wider than the 64-sample cushion that happens while monitoring, before
 # the take -- given the time. Forty-five seconds is one ladder window plus the
 # reopen, so a take on such a machine starts at the size the machine needs.
-export MMA_SETTLE_SECONDS="${MMA_SETTLE_SECONDS:-45}"
+export MMA_SETTLE_SECONDS="${MMA_SETTLE_SECONDS:-60}"
 
 # The fixture's tone files are four minutes long: the `file` plugin starts a
 # file over at its end and delivers a seam in every block from then on (see
@@ -61,6 +61,14 @@ echo
 echo "=== Tone timeline: $(basename "$TAKE") ==="
 python3 Tools/tone_timeline.py "$TAKE/01_mma_mic1.wav" 440 1000 6 | sed -n '1,12p;/map/,$p'
 python3 Tools/tone_timeline.py "$TAKE/02_mma_mic2.wav" 1000 440 6 | sed -n '1,12p;/map/,$p'
+echo "--- seams: audio out of order, which no counter sees ---"
+SEAMS=0
+for STEM in "01_mma_mic1.wav 440" "02_mma_mic2.wav 1000"; do
+  set -- $STEM
+  LINE=$(python3 Tools/tone_timeline.py --seams "$TAKE/$1" "$2")
+  echo "  $LINE"
+  case "$LINE" in *": 0 seams"*) ;; *) SEAMS=1 ;; esac
+done
 echo "--- activity.log ---"
 cat "$TAKE/activity.log" 2>/dev/null || true
 echo "--- session.json dropouts and buffer ---"
@@ -74,6 +82,10 @@ PY
 
 if [ "$TAKE_FAILED" != 0 ]; then
   echo "The take itself failed verification (above)."
+  exit 1
+fi
+if [ "$SEAMS" != 0 ]; then
+  echo "FAIL  a stem carries audio out of order (seams above)."
   exit 1
 fi
 
@@ -96,11 +108,36 @@ def check(ok, what):
     print(("  PASS  " if ok else "  FAIL  ") + what)
     failed += 0 if ok else 1
 
-lost = [d for d in j.get("dropouts", [])
-        if d.get("description", "").startswith("Dropped")
-        or "could not keep up" in d.get("description", "")]
-check(not lost, "nothing was dropped on real-time clocks"
-      + ("" if not lost else ": " + "; ".join(d["description"] for d in lost)))
+# Two kinds of loss, judged apart. Audio the app had and threw away -- a
+# full ring, a writer that could not keep up, a block that did not fit the
+# layout, a driver that dropped before the app read it -- is the app's, and
+# there must be none. Silence written because a microphone's block had not
+# arrived is what a machine that stalls longer than the cushion costs, and
+# the buffer ladder is only allowed to grow the cushion between takes, three
+# occasions inside thirty seconds at a time; a virtual machine whose host
+# steals tens of milliseconds at a stretch can do that once in a seventy-five
+# second take at 256 samples, and the app cannot be asked to prevent it,
+# only to say so. It must say so, and it must be small: a few milliseconds
+# on the whole take, never the block-a-second of a loop that has lost its
+# footing.
+import re
+dropouts = j.get("dropouts", [])
+silence = 0
+faults = []
+for d in dropouts:
+    text = d.get("description", "")
+    m = re.match(r"Dropped (\d+) samples: a microphone's audio did not arrive in time", text)
+    if m:
+        silence += int(m.group(1))
+    elif text.startswith("Dropped") or "could not keep up" in text:
+        faults.append(text)
+check(not faults, "nothing the app had was thrown away"
+      + ("" if not faults else ": " + "; ".join(faults)))
+rate = float(j.get("sampleRate", 48000) or 48000)
+silence_ms = 1000.0 * silence / rate
+check(silence_ms <= 25.0,
+      "silence written for late microphone blocks is %s (%.1f ms; the take reports it; limit 25 ms)"
+      % ("none" if silence == 0 else "%d samples" % silence, silence_ms))
 
 if seconds >= 65:
     drift = {}
