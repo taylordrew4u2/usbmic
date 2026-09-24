@@ -688,7 +688,10 @@ void MainComponent::showSavedTake()
     {
         take.folder = juce::String (removal.survivingFolder);
         take.mirrorFolder = {};
-        take.files = Application::listSessionFiles (take.folder);
+        // The mirror is on the internal drive, but a listing is still never
+        // allowed to hold the window open indefinitely.
+        bool listed = false;
+        take.files = Application::listSessionFilesWithin (take.folder, 5000, listed);
     }
 
     savedTakePanel.setProblem (driveWentAway ? juce::String (removal.message) : juce::String());

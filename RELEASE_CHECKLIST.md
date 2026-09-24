@@ -66,9 +66,15 @@ release until every **GA blocker** below is closed with evidence.
   partial combined file is presented, and the replacement medium is rescanned.
 - [ ] **GA blocker:** Pull or wedge the removable recording volume precisely
   during Record start, Stop/finalization, saved-take listing and diagnostics
-  export. None of those message-thread paths may freeze the window or shutdown;
-  the candidate currently has detached launch, polling, preflight and recovery
-  work, but this remaining hostile-timing matrix is not yet closed.
+  export. None of those message-thread paths may freeze the window or shutdown.
+  Launch, polling, preflight and recovery are detached; diagnostics export now
+  runs on a detached worker; take-folder creation at Record start and the
+  folder listing at Stop (reused by the saved-take card) are bounded to five
+  seconds and report a card that stopped answering. Still on the message
+  thread and unbounded: opening the stem files at Record start, draining the
+  writer at Stop, and the stop-time `session.json` and activity-log rewrites.
+  Close this only after those are bounded and the hostile-timing matrix has
+  been run on hardware.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
   reports 1.12.0 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.

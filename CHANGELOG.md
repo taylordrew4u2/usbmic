@@ -258,6 +258,14 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
 - The unwired clock-master chain and its dead accessors were removed rather
   than left looking implemented.
 
+- A removable volume pulled or wedged at the wrong moment can no longer
+  freeze the window during diagnostics export (now a detached worker, one at a
+  time), take-folder creation at Record start or the file listing at Stop
+  (both bounded to five seconds, with a plain message naming the card that
+  stopped answering). A take whose folder could not be listed is no longer
+  called empty; the saved-take card reuses the Stop listing instead of
+  reading the card a second time.
+
 ### Verification baseline
 
 The candidate contains 574 unit tests, 201 CoreAudio simulator checks, 108
