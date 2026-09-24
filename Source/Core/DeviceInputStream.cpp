@@ -358,6 +358,25 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
 
             if (! readOne (currentSample))
             {
+                // Only the sample this block's LAST output would have leaned
+                // on is missing: the ring held exactly this block's worth,
+                // and the pair the interpolator carries between blocks needs
+                // one more. Hold the sample it has for that one output and
+                // keep the pair, with the crossing still pending, so the next
+                // block's first read completes it. De-priming here was a
+                // trap: the next block primed again, which costs the same
+                // extra sample, ran one short again, and so on -- a sample
+                // of silence and a restart in every block for as long as the
+                // ring sat one block deep, which the loop, at 200 PPM, took
+                // half a minute to lift it out of. One held sample, once,
+                // against a step to zero and a phase reset every block.
+                if (i == numSamples - 1 && i > 0)
+                {
+                    currentSample = previousSample;
+                    destination[i] = previousSample;
+                    return;
+                }
+
                 // Nothing left to interpolate towards. The source did not
                 // provide the remainder of this block, so write silence for
                 // exactly that missing span, count it once, and stop. Holding
