@@ -489,6 +489,62 @@ TEST_CASE (CaptureCoordinator_RecordsAudioThroughToTheFiles)
     REQUIRE (sample > 12000);
 }
 
+TEST_CASE (CaptureCoordinator_ACardThatStopsAnsweringAtStartDoesNotHoldTheCaller)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    c.setFilesystemDeadline (std::chrono::milliseconds (50));
+    c.setFilesystemStallForTesting ([] { std::this_thread::sleep_for (std::chrono::milliseconds (400)); });
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    const auto before = std::chrono::steady_clock::now();
+    REQUIRE_FALSE (c.startRecording (tempDir(), 16, "2026-09-24T00:00:00Z"));
+    const auto waited = std::chrono::steady_clock::now() - before;
+
+    REQUIRE (waited < std::chrono::milliseconds (300));
+    REQUIRE_FALSE (c.isRecording());
+    REQUIRE (c.getRecordingProblem().find ("stopped answering") != std::string::npos);
+
+    // The abandoned worker finishes on its own and releases what it opened;
+    // a later take on a card that answers starts normally.
+    std::this_thread::sleep_for (std::chrono::milliseconds (500));
+    c.setFilesystemStallForTesting ({});
+    c.setFilesystemDeadline (std::chrono::milliseconds (5000));
+    REQUIRE (c.startRecording (tempDir(), 16, "2026-09-24T00:00:01Z"));
+    c.stopRecording();
+    REQUIRE_FALSE (c.didLastStopTimeOut());
+}
+
+TEST_CASE (CaptureCoordinator_ACardThatStopsAnsweringAtStopIsReportedNotWaitedOn)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (tempDir(), 16, "2026-09-24T00:00:00Z"));
+
+    c.setFilesystemDeadline (std::chrono::milliseconds (50));
+    c.setFilesystemStallForTesting ([] { std::this_thread::sleep_for (std::chrono::milliseconds (400)); });
+
+    const auto before = std::chrono::steady_clock::now();
+    c.stopRecording();
+    const auto waited = std::chrono::steady_clock::now() - before;
+
+    REQUIRE (waited < std::chrono::milliseconds (300));
+    REQUIRE (c.didLastStopTimeOut());
+    REQUIRE_FALSE (c.isRecording());
+    REQUIRE (c.hasCardWriteFailed());
+    REQUIRE (c.getCardWriteProblem().find ("stopped answering") != std::string::npos);
+
+    // Monitoring is untouched (§5.1), and the abandoned writer is left to
+    // finish on its own worker.
+    REQUIRE (c.isMonitoring());
+    std::this_thread::sleep_for (std::chrono::milliseconds (500));
+}
+
 TEST_CASE (CaptureCoordinator_MixFileIsWrittenAlongsideTheStems)
 {
     const auto dir = tempDir();

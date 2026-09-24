@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <atomic>
 #include <memory>
 #include "../Core/DeviceManager.h"
 #include "../Core/ChannelPlan.h"
@@ -200,6 +201,15 @@ public:
     /// files can be watched growing, and again at stop so what is shown is
     /// what was written rather than what was meant to be.
     static std::vector<SavedFile> listSessionFiles (const juce::String& folder);
+
+    /// listSessionFiles on a disposable detached worker, waited on for at most
+    /// `limitMs`. A card pulled or wedged at the wrong moment can leave a
+    /// directory read blocked forever; the message thread gives up instead.
+    /// `completed` is false when the folder did not answer in time, which is
+    /// different from a folder that answered with nothing in it.
+    static std::vector<SavedFile> listSessionFilesWithin (const juce::String& folder,
+                                                          int limitMs,
+                                                          bool& completed);
 
     /// §6.2: "on stop, show the location and offer to open the containing
     /// folder." Set when a take finishes and consumed once by the UI that
@@ -564,6 +574,13 @@ private:
     juce::String currentSessionFolder, currentMirrorFolder, sessionStartIso;
     juce::String sessionName;      // §6.2, set by the user before a take
     juce::String lastSessionFolder;
+    // What the last take's folder held at stop, listed once with a deadline.
+    // The saved-take card reuses it rather than reading the card a second time.
+    std::vector<SavedFile> lastSessionFiles;
+    bool lastSessionFilesListed = false;
+    // One export at a time; the flag is shared with its detached worker.
+    std::shared_ptr<std::atomic<bool>> diagnosticsExportRunning
+        = std::make_shared<std::atomic<bool>> (false);
     juce::String lastMirrorFolder;
     double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
 
@@ -860,8 +877,9 @@ private:
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
-    /// §11: the newest session.json files under the destination, newest first.
-    juce::Array<juce::File> findRecentSessionMetadata (int maximum) const;
+    /// §11: the newest session.json files under `root`, newest first. Static
+    /// because it runs on the diagnostics export's detached worker.
+    static juce::Array<juce::File> findRecentSessionMetadata (const juce::String& root, int maximum);
     void onDeviceListChanged();
     void chooseInitialDestination();
 
