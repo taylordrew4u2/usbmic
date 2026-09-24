@@ -692,6 +692,7 @@ void MainComponent::showSavedTake()
         // allowed to hold the window open indefinitely.
         bool listed = false;
         take.files = Application::listSessionFilesWithin (take.folder, 5000, listed);
+        take.filesListed = listed;
     }
 
     savedTakePanel.setProblem (driveWentAway ? juce::String (removal.message) : juce::String());
@@ -704,7 +705,7 @@ void MainComponent::showSavedTake()
     for (const auto& file : take.files)
         rows.push_back ({ file.name, file.sizeBytes });
 
-    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows, take.verdict);
+    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows, take.verdict, take.filesListed);
     growWindowToFit (savedTakePanel.getRequiredHeight() + 32);
 
     savedTakePanel.setBounds (getLocalBounds());

@@ -270,6 +270,16 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   card that stops answering there stops the take from starting, or is
   reported as a Stop whose end may not have reached the card, instead of
   freezing the window. The abandoned write finishes on its own worker.
+- Once a card step times out, the rest of that take skip the card instead of
+  each waiting out its own deadline, so a card that dies at Stop costs one
+  five-second pause rather than half a minute. A take whose card stopped
+  answering is no longer reported as "Saved to" or "the audio itself is
+  saved"; the saved-take card says the end may be missing and points at the
+  backup. A refused start gives one reason instead of two.
+- `Tools/e2e_card_stall.sh` makes the recording folder stop answering inside
+  the real app (via `Tools/fs_stall_shim.cpp`) at Record and at Stop, and
+  measures how long the window stopped responding with a test-build-only
+  message-thread meter. It runs in CI and in the release workflow.
 
 ### Verification baseline
 

@@ -201,7 +201,7 @@ jobs:
             -DMMA_ALLOW_TEST_INPUTS=ON \
             -DCMAKE_BUILD_TYPE=Release \
             "-DFETCHCONTENT_SOURCE_DIR_JUCE=${GITHUB_WORKSPACE}/build/_deps/juce-src"
-          cmake --build build-app --config Release --target SobStage -j 4
+          cmake --build build-app --config Release --target SobStage fs_stall_shim -j 4
 
       - name: End-to-end recording gates
         if: runner.os == 'Linux'
@@ -225,6 +225,9 @@ jobs:
 
           bash Tools/e2e_app_take.sh 15
           bash Tools/e2e_refusal.sh
+          # A card that stops answering at Record and at Stop: the window must
+          # keep answering and nothing may be called saved.
+          bash Tools/e2e_card_stall.sh
 
           restore_shipping_app
           trap - EXIT
@@ -1080,6 +1083,27 @@ jobs:
           cd release-assets
           sha256sum --check SHA256SUMS
 
+      # The written notes for this version, from the exact candidate commit.
+      # Only that folder is checked out; everything else stays untouched.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: notes-src
+          sparse-checkout: docs/release-notes
+          persist-credentials: false
+
+      - name: Require release notes for this version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          notes="notes-src/docs/release-notes/${RELEASE_TAG}.md"
+          if [[ ! -s "$notes" ]]; then
+            echo "::error::Missing $notes. Write the release notes for ${RELEASE_TAG} before publishing it."
+            exit 1
+          fi
+
       - name: Refuse to replace an existing release
         shell: bash
         env:
@@ -1103,6 +1127,7 @@ jobs:
             release-assets/*.zip
             release-assets/*.dmg
             release-assets/SHA256SUMS
+          body_path: notes-src/docs/release-notes/${{ needs.prepare.outputs.release_tag }}.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           overwrite_files: false

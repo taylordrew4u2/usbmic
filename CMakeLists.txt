@@ -244,6 +244,13 @@ if (MMA_BUILD_APP)
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:SobStage,JUCE_PRODUCT_NAME>"
     )
 
+    # Test builds only: lets Tools/e2e_card_stall.sh measure how long the
+    # window stops answering. Never in a production package, which is built
+    # without MMA_ALLOW_TEST_INPUTS.
+    if (MMA_ALLOW_TEST_INPUTS)
+        target_compile_definitions(SobStage PRIVATE MMA_STALL_METER=1)
+    endif()
+
     # Camera capture, on the two desktop targets §11 names. JUCE implements
     # CameraDevice on macOS and Windows only, so elsewhere -- a Linux build,
     # which is what the headless checks compile -- CameraController compiles to
@@ -444,6 +451,10 @@ if (MMA_BUILD_TOOLS)
         add_executable(alsa_rate_refusal Tools/alsa_rate_refusal.cpp)
         target_link_libraries(alsa_rate_refusal PRIVATE mma_core)
         target_link_libraries(alsa_rate_refusal PRIVATE mma_warnings)
+
+        # A recording card that stops answering on demand; see the file.
+        add_library(fs_stall_shim SHARED Tools/fs_stall_shim.cpp)
+        target_link_libraries(fs_stall_shim PRIVATE ${CMAKE_DL_LIBS})
 
         add_library(alsa_readi_shim SHARED Tools/alsa_readi_shim.cpp)
         target_link_libraries(alsa_readi_shim PRIVATE ${CMAKE_DL_LIBS})
