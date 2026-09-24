@@ -34,6 +34,21 @@
  * MMA_SHIM_DEVICE is what makes a mid-take unplug expressible: one microphone
  * of several dies while the rest of the rig keeps working, which is the case
  * §0.1 is actually about.
+ *
+ * Real-time clocks (the microphone simulator):
+ *
+ *   MMA_SIM_REALTIME   1 = every PCM runs at its sample rate in wall-clock time
+ *   MMA_SIM_PPM        per-device crystal error, e.g. "mma_mic1=+150,mma_mic2=-150"
+ *
+ * The fixture's `file` plugin sits on the `null` slave, which has no clock: a
+ * read returns as fast as the file can be copied, so every fixture "microphone"
+ * delivered audio many times faster than real time. Every take overflowed,
+ * the dropped-sound card fired on every take, and drift -- the problem this app
+ * exists to solve -- could not be exercised at all, because nothing ran on a
+ * clock. With MMA_SIM_REALTIME each PCM is paced the way hardware paces it:
+ * a read or write of N frames returns when N frames of that device's own
+ * clock have elapsed, and a device given +150 ppm runs 150 ppm fast, like an
+ * independent USB microphone's crystal.
  */
 #define _GNU_SOURCE
 #include <alsa/asoundlib.h>
@@ -43,6 +58,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
 
 namespace {
 
@@ -69,8 +88,22 @@ struct Config
     const char* openAs = nullptr;
     long refuseRate = 0;
 
+    /// False only for the microphone simulator on its own: MMA_SIM_REALTIME
+    /// with none of the failure settings. Every older caller loads this shim to
+    /// make reads fail and relies on that being the default, so the default
+    /// stays exactly as it was for them.
+    bool injectFailures = true;
+
     Config()
     {
+        const bool anyFailureSetting = std::getenv ("MMA_SHIM_MODE") != nullptr
+                                    || std::getenv ("MMA_SHIM_DEVICE") != nullptr
+                                    || std::getenv ("MMA_SHIM_STREAM") != nullptr
+                                    || std::getenv ("MMA_SHIM_FAIL_AFTER") != nullptr
+                                    || std::getenv ("MMA_SHIM_FAIL_AFTER_MS") != nullptr;
+        const char* realtime = std::getenv ("MMA_SIM_REALTIME");
+        injectFailures = anyFailureSetting || realtime == nullptr || std::strcmp (realtime, "0") == 0;
+
         if (const char* m = std::getenv ("MMA_SHIM_MODE"); m != nullptr && std::strcmp (m, "dead") == 0)
             mode = Mode::dead;
 
@@ -104,6 +137,112 @@ const Config& config()
     return c;
 }
 
+/// Real-time pacing. Keyed by PCM handle; a handle is paced from its first
+/// transfer, and re-anchored whenever it falls far behind (a stream that was
+/// stopped, drained or re-prepared), so a restart is not "caught up" in one
+/// burst that would look like the very overflow this exists to remove.
+struct PacingState
+{
+    std::chrono::steady_clock::time_point anchor {};
+    double framesSinceAnchor = 0.0;
+    double framesPerSecond = 0.0;
+};
+
+bool realtimeEnabled()
+{
+    static const bool on = [] {
+        const char* v = std::getenv ("MMA_SIM_REALTIME");
+        return v != nullptr && std::strcmp (v, "0") != 0;
+    }();
+    return on;
+}
+
+double ppmFor (const char* name)
+{
+    const char* spec = std::getenv ("MMA_SIM_PPM");
+    if (spec == nullptr || name == nullptr)
+        return 0.0;
+
+    const std::string all (spec), want (name);
+    size_t start = 0;
+
+    while (start < all.size())
+    {
+        auto end = all.find (',', start);
+        if (end == std::string::npos)
+            end = all.size();
+
+        const auto item = all.substr (start, end - start);
+        const auto eq = item.find ('=');
+
+        if (eq != std::string::npos && item.substr (0, eq) == want)
+            return std::atof (item.c_str() + eq + 1);
+
+        start = end + 1;
+    }
+
+    return 0.0;
+}
+
+double nominalRate (snd_pcm_t* pcm)
+{
+    snd_pcm_hw_params_t* params = nullptr;
+    unsigned int rate = 0;
+    int dir = 0;
+
+    if (snd_pcm_hw_params_malloc (&params) != 0)
+        return 0.0;
+
+    if (snd_pcm_hw_params_current (pcm, params) == 0)
+        snd_pcm_hw_params_get_rate (params, &rate, &dir);
+
+    snd_pcm_hw_params_free (params);
+    return static_cast<double> (rate);
+}
+
+void pace (snd_pcm_t* pcm, snd_pcm_sframes_t transferred)
+{
+    if (! realtimeEnabled() || transferred <= 0)
+        return;
+
+    static std::mutex mutex;
+    static std::map<snd_pcm_t*, PacingState> states;
+
+    const auto now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point due;
+
+    {
+        const std::lock_guard<std::mutex> lock (mutex);
+        auto& st = states[pcm];
+
+        if (st.framesPerSecond <= 0.0)
+        {
+            const auto rate = nominalRate (pcm);
+            if (rate <= 0.0)
+                return;
+
+            st.framesPerSecond = rate * (1.0 + ppmFor (snd_pcm_name (pcm)) * 1.0e-6);
+            st.anchor = now;
+            st.framesSinceAnchor = 0.0;
+        }
+
+        st.framesSinceAnchor += static_cast<double> (transferred);
+        due = st.anchor + std::chrono::duration_cast<std::chrono::steady_clock::duration> (
+                              std::chrono::duration<double> (st.framesSinceAnchor / st.framesPerSecond));
+
+        // More than a quarter of a second behind: the stream was idle, not
+        // slow. Start its clock again from here.
+        if (now - due > std::chrono::milliseconds (250))
+        {
+            st.anchor = now;
+            st.framesSinceAnchor = 0.0;
+            return;
+        }
+    }
+
+    std::this_thread::sleep_until (due);
+}
+
 std::atomic<long> reads { 0 };
 
 /// Steady-clock nanoseconds of the first read that could fail, or 0 for "not
@@ -115,6 +254,9 @@ std::atomic<snd_pcm_sframes_t (*) (snd_pcm_t*, void*, snd_pcm_uframes_t)> realRe
 bool shouldFail (snd_pcm_t* pcm, Stream direction)
 {
     const auto& c = config();
+
+    if (! c.injectFailures)
+        return false;
 
     // A capture-mode shim must leave playback completely alone, and the other
     // way round: the mid-take cases are about ONE half of the rig failing while
@@ -234,7 +376,11 @@ int snd_pcm_hw_params_test_rate (snd_pcm_t* pcm, snd_pcm_hw_params_t* params,
 snd_pcm_sframes_t snd_pcm_readi (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t frames)
 {
     if (! shouldFail (pcm, Stream::capture))
-        return passThrough (pcm, buffer, frames);
+    {
+        const auto got = passThrough (pcm, buffer, frames);
+        pace (pcm, got);
+        return got;
+    }
 
     // -EPIPE is an xrun: recoverable, which is what makes the endless-recovery
     // case endless. -ENODEV is a device that is no longer there.
@@ -244,7 +390,11 @@ snd_pcm_sframes_t snd_pcm_readi (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t
 snd_pcm_sframes_t snd_pcm_writei (snd_pcm_t* pcm, const void* buffer, snd_pcm_uframes_t frames)
 {
     if (! shouldFail (pcm, Stream::playback))
-        return passThroughWrite (pcm, buffer, frames);
+    {
+        const auto put = passThroughWrite (pcm, buffer, frames);
+        pace (pcm, put);
+        return put;
+    }
 
     return config().mode == Mode::dead ? -ENODEV : -EPIPE;
 }

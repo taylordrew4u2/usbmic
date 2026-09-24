@@ -7,6 +7,11 @@
 #include <mutex>
 #include <thread>
 
+#if defined (__linux__) || defined (__APPLE__)
+ #include <pthread.h>
+ #include <sched.h>
+#endif
+
 namespace mma {
 
 CaptureCoordinator::CaptureCoordinator (IAudioBackend& b, double rate, int bufferSizeSamples)
@@ -348,6 +353,19 @@ void CaptureCoordinator::runSoftwareClock()
 {
     using clock = std::chrono::steady_clock;
 
+    // The same scheduling class as the device threads that fill the rings this
+    // drains. Left at normal priority, the consumer was the one thread in the
+    // audio path the producers could preempt: with an 8 ms margin in each
+    // ring, an ordinary scheduling delay overflowed it, and the delays read as
+    // drift. Best effort -- where the OS refuses, the clock runs as before.
+   #if defined (__linux__) || defined (__APPLE__)
+    {
+        sched_param param {};
+        param.sched_priority = std::min (80, sched_get_priority_max (SCHED_FIFO));
+        pthread_setschedparam (pthread_self(), SCHED_FIFO, &param);
+    }
+   #endif
+
     const auto period = std::chrono::nanoseconds (
         static_cast<int64_t> (1.0e9 * static_cast<double> (std::max (1, bufferSize)) / std::max (1.0, sampleRate)));
 
@@ -355,6 +373,10 @@ void CaptureCoordinator::runSoftwareClock()
     // declare a healthy output dead on scheduler jitter. A real output that
     // has not called back for a tenth of a second has stopped.
     const auto lostAfter = std::max (period * 8, std::chrono::nanoseconds (100'000'000));
+
+    // How far behind the clock may fall and still be caught up: well past
+    // scheduler jitter, well inside the rings' capacity.
+    constexpr auto kMaxCatchUp = std::chrono::milliseconds (100);
 
     auto next = clock::now() + period;
 
@@ -382,11 +404,23 @@ void CaptureCoordinator::runSoftwareClock()
             continue;
         }
 
-        // Absolute deadlines: a late wake does not shorten the next period,
-        // and a run of late wakes does not pile up.
+        // Absolute deadlines, and a late wake is caught up rather than
+        // forgiven. This used to restart the schedule whenever a wake came
+        // more than one period late -- routine at a 1.3 ms period on a busy
+        // machine -- which silently threw those ticks away. The clock then ran
+        // slow against real time, so every microphone measured fast, drift
+        // correction sat pinned at its +200 ppm clamp, and the rings
+        // overflowed for as long as the take lasted. Found by running the app
+        // against microphones on real, independent clocks
+        // (Tools/e2e_realtime_mics.sh).
+        //
+        // Missed ticks are pulled back to back instead: the audio they stand
+        // for is already waiting in the rings. Only a stall far beyond any
+        // scheduling jitter -- the process suspended, the machine asleep -- is
+        // treated as a new start, since catching that up would be a burst.
         std::this_thread::sleep_until (next);
         next += period;
-        if (next < clock::now())
+        if (clock::now() - next > kMaxCatchUp)
             next = clock::now() + period;
 
         if (pulling.exchange (true, std::memory_order_acq_rel))

@@ -280,6 +280,20 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   the real app (via `Tools/fs_stall_shim.cpp`) at Record and at Stop, and
   measures how long the window stopped responding with a test-build-only
   message-thread meter. It runs in CI and in the release workflow.
+- The software clock (used when no monitor output is running, and when one is
+  lost mid-take) no longer throws away ticks after a late wake. It restarted
+  its schedule whenever a wake was more than one 1.3 ms period late, so on a
+  busy machine it ran slow, every microphone measured fast, drift correction
+  pinned at its clamp and the rings overflowed. Missed ticks are now caught up;
+  only a stall over 100 ms resynchronises. The clock thread also asks for the
+  same real-time scheduling as the device threads that feed it.
+- A microphone simulator: `Tools/alsa_readi_shim.cpp` can pace every ALSA
+  device to its own clock (`MMA_SIM_REALTIME`, `MMA_SIM_PPM`), so virtual
+  microphones behave like independent USB crystals instead of delivering audio
+  as fast as a file can be read. `Tools/e2e_realtime_mics.sh` records a take on
+  them with the real app and checks the tracks, the loss and the app's own
+  drift measurement. It found the software-clock bug above, and an open finding
+  recorded in `RELEASE_CHECKLIST.md`.
 
 ### Verification baseline
 
