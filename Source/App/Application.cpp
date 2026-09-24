@@ -3480,6 +3480,22 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                              "taken away, so the buffer overflowed." });
     }
 
+    // §0.1: the pull came and the microphone's block had not, so its stem got
+    // silence. The stream has counted this since the first day; nothing wrote
+    // it down. A take whose microphone ran dry every other block -- a machine
+    // whose scheduling is wider than the cushion -- was recorded as lossless,
+    // with half its blocks holding a step down to zero.
+    if (capture != nullptr)
+    {
+        const auto underrun = capture->getUnderrunSamplesThisTake();
+
+        if (underrun > 0)
+            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                       "Dropped " + std::to_string (underrun)
+                                           + " samples: a microphone's audio did not arrive in time, "
+                                             "so silence was written in its place." });
+    }
+
     // §0.1: audio the device delivered that did not fit the take's layout, so
     // a channel wrote silence instead. Recorded beside the other two losses.
     if (capture != nullptr)
