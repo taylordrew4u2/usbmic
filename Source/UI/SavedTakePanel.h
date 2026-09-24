@@ -32,7 +32,8 @@ public:
     void setTake (const juce::String& folder,
                   const juce::String& mirrorFolder,
                   const std::vector<FileRow>& files,
-                  TakeAudioVerdict verdict);
+                  TakeAudioVerdict verdict,
+                  bool filesListed = true);
 
     /// §6.5: the take was stopped by the drive going away rather than by the
     /// user. Shown loudly above the file list, and the heading stops claiming

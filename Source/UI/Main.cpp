@@ -3,6 +3,9 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#if defined (MMA_STALL_METER)
+ #include "MessageThreadStallMeter.h"
+#endif
 
 namespace mma {
 
@@ -73,6 +76,10 @@ public:
         juce::Logger::setCurrentLogger (logger.get());
         juce::Logger::writeToLog ("Starting up.");
 
+       #if defined (MMA_STALL_METER)
+        stallMeter = std::make_unique<MessageThreadStallMeter>();
+       #endif
+
         // A machine with no display cannot show a recording screen, and this is
         // the last moment at which that can be said rather than crashed on.
         // JUCE's centreWithSize goes through getParentOrMainMonitorBounds,
@@ -110,6 +117,11 @@ public:
     void shutdown() override
     {
         stopTimer();
+
+       #if defined (MMA_STALL_METER)
+        stallMeter.reset();
+       #endif
+
         mainWindow.reset();
 
         // Cleared before the look-and-feel goes out of scope: JUCE asserts if a
@@ -170,6 +182,10 @@ private:
     AppLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
     bool quitPending = false;
+
+   #if defined (MMA_STALL_METER)
+    std::unique_ptr<MessageThreadStallMeter> stallMeter;
+   #endif
 };
 
 } // namespace mma

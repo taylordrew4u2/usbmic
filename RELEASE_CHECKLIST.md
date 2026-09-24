@@ -72,8 +72,15 @@ release until every **GA blocker** below is closed with evidence.
   the writer's final drain at Stop, the Stop folder listing and the
   `session.json`/activity-log writes each wait at most five seconds, then
   report the card that stopped answering and abandon the call to its own
-  worker. Unit tests cover a stalled start and stop in `CaptureCoordinator`.
-  Close this only after the hostile-timing matrix has been run on hardware.
+  worker. Once one card step times out, the rest of that take skip the card
+  instead of each waiting again. Unit tests cover a stalled start and stop in
+  `CaptureCoordinator`, and `Tools/e2e_card_stall.sh` (CI and the release
+  workflow) makes the destination stop answering inside the real Linux app at
+  Record and at Stop: it measures the longest the window stopped answering
+  (one five-second deadline, limit 9 s), requires the window to answer while
+  the card is still dead, and fails if anything is called saved afterwards.
+  Close this only after the same moments have been run with a real card
+  pulled on macOS and Windows.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
   reports 1.12.0 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.

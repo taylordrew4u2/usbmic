@@ -201,7 +201,7 @@ jobs:
             -DMMA_ALLOW_TEST_INPUTS=ON \
             -DCMAKE_BUILD_TYPE=Release \
             "-DFETCHCONTENT_SOURCE_DIR_JUCE=${GITHUB_WORKSPACE}/build/_deps/juce-src"
-          cmake --build build-app --config Release --target SobStage -j 4
+          cmake --build build-app --config Release --target SobStage fs_stall_shim -j 4
 
       - name: End-to-end recording gates
         if: runner.os == 'Linux'
@@ -225,6 +225,9 @@ jobs:
 
           bash Tools/e2e_app_take.sh 15
           bash Tools/e2e_refusal.sh
+          # A card that stops answering at Record and at Stop: the window must
+          # keep answering and nothing may be called saved.
+          bash Tools/e2e_card_stall.sh
 
           restore_shipping_app
           trap - EXIT
