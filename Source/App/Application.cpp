@@ -148,11 +148,12 @@ bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
 
 // replaceWithTextChecked for files on the card, from the message thread. A
 // card pulled mid-write can hold the write forever; past the deadline this
-// reports failure and the write is left to finish (or not) on its own worker.
-bool replaceWithTextWithin (const juce::File& file, const juce::String& text)
+// gives up, leaving the write to finish (or not) on its own worker. Empty means
+// the deadline passed, which is different from a write that answered "failed".
+std::optional<bool> replaceWithTextWithin (const juce::File& file, const juce::String& text)
 {
     return runWithDeadline<bool> ([file, text] { return replaceWithTextChecked (file, text); },
-                                  kRemovableVolumeDeadline).value_or (false);
+                                  kRemovableVolumeDeadline);
 }
 
 std::vector<juce::File> directChildDirectories (const juce::File& root)
@@ -1873,7 +1874,8 @@ void Application::toggleRecording()
             if (capture != nullptr)
             {
                 const auto now = juce::Time::getCurrentTime();
-                const auto folder = createSessionFolder (now);
+                juce::String folderProblem;
+                const auto folder = createSessionFolder (now, folderProblem);
 
                 // §6.3: the mirror decision was made just above, at arm time.
                 const auto mirror = mirrorPolicy.isMirroring()
@@ -1894,8 +1896,7 @@ void Application::toggleRecording()
                     // anywhere, and the only difference between "the card is
                     // full" and "the app is broken" was that neither was said.
                     recordStartProblem = folder.isEmpty()
-                        ? juce::String ("Couldn't make a folder for this take. Check the card is "
-                                        "plugged in, has room, and isn't locked.")
+                        ? folderProblem
                         : juce::String (capture->getRecordingProblem());
 
                     if (recordStartProblem.isEmpty())
@@ -1918,6 +1919,7 @@ void Application::toggleRecording()
                 recordingStartMs = juce::Time::getMillisecondCounterHiRes();
 
                 recordStartProblem.clear();
+                takeCardUnresponsive = false;
                 mirrorMissingReported = false;
                 mirrorFinalizeFailureReported = false;
                 backendDropsAtTakeStart = audioBackend != nullptr
@@ -2019,8 +2021,11 @@ void Application::toggleRecording()
             // Bounded inside the coordinator; said here, because a Stop that
             // could not finish the files must not read like a clean one.
             if (capture->didLastStopTimeOut())
+            {
+                takeCardUnresponsive = true;
                 noteActivity (ActivityLevel::Failed, "Card",
                               juce::String (capture->getCardWriteProblem()));
+            }
         }
 
         // Before the folder is listed for the panel that shows what was saved,
@@ -2093,9 +2098,18 @@ void Application::toggleRecording()
             // Bounded: a card pulled during Stop must not freeze the window
             // while its folder is listed. Listed once and kept, so the
             // saved-take card shows the same files this verdict was drawn from.
-            lastSessionFiles = listSessionFilesWithin (lastSessionFolder,
-                                                       static_cast<int> (kRemovableVolumeDeadline.count()),
-                                                       lastSessionFilesListed);
+            if (takeCardUnresponsive)
+            {
+                lastSessionFiles.clear();
+                lastSessionFilesListed = false;
+            }
+            else
+            {
+                lastSessionFiles = listSessionFilesWithin (lastSessionFolder,
+                                                           static_cast<int> (kRemovableVolumeDeadline.count()),
+                                                           lastSessionFilesListed);
+                takeCardUnresponsive = ! lastSessionFilesListed && lastSessionFolder.isNotEmpty();
+            }
 
             if (! lastSessionFilesListed && lastSessionFolder.isNotEmpty())
                 noteActivity (ActivityLevel::Failed, "Recording",
@@ -2141,10 +2155,32 @@ void Application::toggleRecording()
         const auto endedBy = stopReason.isEmpty() ? juce::String ("Recording stopped")
                                                   : juce::String ("Recording was stopped");
 
-        noteActivity (stopReason.isNotEmpty() || lastTakeHeldNoAudio ? ActivityLevel::Failed
-                                                                    : ActivityLevel::Stopped,
+        // A card that stopped answering during the stop cannot be said to
+        // hold anything: "Saved to" there is the one claim nobody can check.
+        // The same account goes on the saved-take card, beside the backup's
+        // path -- which is offered as a place to look, not as a complete copy,
+        // because the backup is written by the same stalled writer.
+        if (takeCardUnresponsive && currentSessionFolder.isNotEmpty())
+        {
+            CardRemovalNotice stalled;
+            stalled.message = "The card stopped answering while this take was being finished, so "
+                              "the end of the recording may be missing from it.";
+            stalled.message += currentMirrorFolder.isNotEmpty()
+                ? " The backup copy on this computer may be missing the same part: "
+                      + currentMirrorFolder.toStdString()
+                : std::string (" Check the card before recording again.");
+            cardRemovalNotice = stalled;
+            cardRemovalPending = true;
+        }
+
+        noteActivity (stopReason.isNotEmpty() || lastTakeHeldNoAudio || takeCardUnresponsive
+                          ? ActivityLevel::Failed : ActivityLevel::Stopped,
                       "Recording",
-                      lastTakeHeldNoAudio
+                      takeCardUnresponsive
+                          ? endedBy + because + " The card stopped answering, so the end of "
+                                + juce::File (lastSessionFolder).getFileName()
+                                + " may be missing."
+                      : lastTakeHeldNoAudio
                           ? endedBy + because + " There is no audio in "
                                 + juce::File (lastSessionFolder).getFileName()
                                 + ". Check your microphones aren't muted."
@@ -2302,7 +2338,7 @@ juce::String Application::resolveSessionFolderName (juce::Time now, const juce::
         }));
 }
 
-juce::String Application::createSessionFolder (juce::Time now) const
+juce::String Application::createSessionFolder (juce::Time now, juce::String& problem) const
 {
     const juce::String root (destinationFolder);
     const auto desired = baseSessionFolderName (now, sessionName).toStdString();
@@ -2327,19 +2363,20 @@ juce::String Application::createSessionFolder (juce::Time now) const
         return Made { folder.getFullPathName(), folder.createDirectory().wasOk() };
     }, kRemovableVolumeDeadline);
 
+    // Returned rather than logged here: the caller logs the one reason, and
+    // two messages for one failure -- the second vaguer than the first -- left
+    // the user reading "couldn't make a folder" as the last word.
     if (! made.has_value())
     {
-        noteActivity (ActivityLevel::Failed, "Recording",
-                      "The card at " + root + " stopped answering, so the take couldn't "
-                      "start. Check the card is plugged in, or choose somewhere else.");
+        problem = "The card at " + root + " stopped answering, so the take couldn't start. "
+                  "Check the card is plugged in, or choose somewhere else.";
         return {};
     }
 
     if (! made->ok)
     {
-        noteActivity (ActivityLevel::Failed, "Recording",
-                      "Couldn't make a folder at " + made->path
-                      + ". Check the card is plugged in, has room, and isn't locked.");
+        problem = "Couldn't make a folder at " + made->path
+                + ". Check the card is plugged in, has room, and isn't locked.";
         return {};
     }
 
@@ -2484,6 +2521,7 @@ bool Application::consumeSavedTake (SavedTake& out)
     // Listed at stop, with a deadline. Reading the card again here would be a
     // second chance for a card pulled at that moment to freeze the window.
     out.files = lastSessionFiles;
+    out.filesListed = lastSessionFilesListed;
     out.verdict = lastTakeVerdict;
 
     return true;
@@ -3445,7 +3483,11 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // above -- every dropout, every buffer change, why the backup stopped --
     // and it was written with the return value discarded, so the one file that
     // explains a difficult take could fail to appear and nothing would say so.
-    if (! replaceWithTextWithin (juce::File (currentSessionFolder).getChildFile ("session.json"), juce::String (json)))
+    // Not said once the card has stopped answering: "the audio itself is
+    // saved" is exactly what nobody can know then, and the card's own message
+    // has already told the user what happened.
+    if (! writeTakeText (juce::File (currentSessionFolder).getChildFile ("session.json"), juce::String (json))
+        && ! takeCardUnresponsive)
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the details file for this take. The audio itself is saved.");
 
@@ -3454,7 +3496,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // of how the take went -- which is the half of the pair the user reaches
     // for precisely when the card's copy is the one that went wrong.
     if (currentMirrorFolder.isNotEmpty()
-        && ! replaceWithTextWithin (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
+        && ! writeTakeText (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Local backup",
                       "Couldn't write the details file into the backup copy. The backed-up audio "
                       "itself is there.");
@@ -3463,6 +3505,41 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
 
     if (currentMirrorFolder.isNotEmpty())
         writeActivityLog (juce::File (currentMirrorFolder));
+}
+
+bool Application::isOnCard (const juce::File& file) const
+{
+    // Path arithmetic only: asking the filesystem would be the very call that
+    // hangs on a dead card.
+    return currentMirrorFolder.isEmpty()
+        || (file != juce::File (currentMirrorFolder)
+            && ! file.isAChildOf (juce::File (currentMirrorFolder)));
+}
+
+bool Application::writeTakeText (const juce::File& file, const juce::String& text) const
+{
+    // The backup copy lives on this computer, not the card, so a card that has
+    // stopped answering is no reason to skip it.
+    const bool onCard = isOnCard (file);
+
+    // Each card step is bounded, but they run one after another. Once one has
+    // timed out, waiting the full deadline again on every later step turned a
+    // dead card at Stop into half a minute of frozen window. The card has
+    // already said it is gone; believe it for the rest of the take.
+    if (onCard && takeCardUnresponsive)
+        return false;
+
+    const auto written = replaceWithTextWithin (file, text);
+
+    if (! written.has_value())
+    {
+        if (onCard)
+            takeCardUnresponsive = true;
+
+        return false;
+    }
+
+    return *written;
 }
 
 void Application::writeActivityLog (const juce::File& folder) const
@@ -3489,7 +3566,8 @@ void Application::writeActivityLog (const juce::File& folder) const
 
     // Checked like everything else here. A log that failed to write is exactly
     // the sort of thing this file exists to stop happening quietly.
-    if (! replaceWithTextWithin (folder.getChildFile ("activity.log"), text))
+    if (! writeTakeText (folder.getChildFile ("activity.log"), text)
+        && ! (takeCardUnresponsive && isOnCard (folder)))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the activity log into " + folder.getFileName()
                       + ". The audio itself is saved.");
@@ -4415,6 +4493,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         if (lastTakeHeldNoAudio)
             return "Recording stopped, but the files in " + lastSessionFolder
                    + " are empty -- no audio reached the drive.";
+
+        if (takeCardUnresponsive)
+            return "Recording stopped, but the card stopped answering, so the end of the take "
+                   "may be missing from " + lastSessionFolder
+                   + (lastMirrorFolder.isNotEmpty()
+                          ? ". The backup copy is at " + lastMirrorFolder + "."
+                          : juce::String (". Check the card before recording again."));
 
         return "Saved to " + lastSessionFolder;
     }

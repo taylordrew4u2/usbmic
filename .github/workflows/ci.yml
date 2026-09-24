@@ -211,6 +211,7 @@ jobs:
           bash Tools/alsa_monitor_loss.sh
           bash Tools/alsa_rate_refusal.sh
           bash Tools/e2e_disk_full.sh
+          bash Tools/e2e_card_stall.sh
 
       - name: App-integrated regression tests
         run: >-
