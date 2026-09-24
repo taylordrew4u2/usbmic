@@ -20,10 +20,10 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **547 unit tests**; if tests change, record the final discovered count here.
+  is **574 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
-  `sim_camera_sync_lifecycle` pass. The candidate baseline is **179 CoreAudio
-  checks**, **70 WASAPI checks**, **247 camera checks** and **7 synchronous
+  `sim_camera_sync_lifecycle` pass. The candidate baseline is **201 CoreAudio
+  checks**, **108 WASAPI checks**, **262 camera checks** and **7 synchronous
   camera-lifecycle checks**; record final counts from the candidate run rather
   than copying these numbers blindly.
 - [ ] The CoreAudio simulator proves the five-second production input-open
