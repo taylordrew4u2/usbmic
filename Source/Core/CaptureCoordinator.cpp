@@ -378,7 +378,19 @@ void CaptureCoordinator::runSoftwareClock()
     // scheduler jitter, well inside the rings' capacity.
     constexpr auto kMaxCatchUp = std::chrono::milliseconds (100);
 
+    // A wake this late is a stall the whole process shared, not this thread's
+    // alone. The device threads woke from it at the same instant, each with a
+    // driver ring full of audio to hand over; pulled first, the catch-up ticks
+    // below would find the rings dry and write silence for audio that arrives
+    // a moment later -- audio the streams then skip to stay in step, so the
+    // stall costs the take twice over. A moment's grace lets the producers
+    // land their bursts first. Once per stall, on entering catch-up.
+    constexpr auto kBurstGrace = std::chrono::milliseconds (1);
+    const auto sharedStall = period * 2;
+
     auto next = clock::now() + period;
+    bool wasTakingOver = ! outputStreamOpen;
+    bool catchingUp = false;
 
     while (clockRunning.load (std::memory_order_acquire))
     {
@@ -393,6 +405,15 @@ void CaptureCoordinator::runSoftwareClock()
         }
 
         outputClockLost.store (outputStreamOpen && takeOver, std::memory_order_relaxed);
+
+        // A takeover begins on a fresh deadline. The standby loop below leaves
+        // `next` up to a quarter of the loss window stale, and catching that
+        // up would open the takeover with a burst of pulls into rings the
+        // dead output had already stopped draining.
+        if (takeOver && ! wasTakingOver)
+            next = now + period;
+
+        wasTakingOver = takeOver;
 
         if (! takeOver)
         {
@@ -419,6 +440,30 @@ void CaptureCoordinator::runSoftwareClock()
         // scheduling jitter -- the process suspended, the machine asleep -- is
         // treated as a new start, since catching that up would be a burst.
         std::this_thread::sleep_until (next);
+
+        // How late this wake was: the grace above, and diagnostics -- a
+        // relaxed max on an atomic, nothing §11 forbids.
+        {
+            const auto woke = clock::now();
+            const bool late = woke > next && woke - next >= period;
+
+            if (woke > next)
+            {
+                const auto lateUs = static_cast<uint64_t> (
+                    std::chrono::duration_cast<std::chrono::microseconds> (woke - next).count());
+                auto seen = clockMaxWakeLateUs.load (std::memory_order_relaxed);
+                while (lateUs > seen
+                       && ! clockMaxWakeLateUs.compare_exchange_weak (seen, lateUs, std::memory_order_relaxed)) {}
+                if (late)
+                    clockCatchUpTicks.fetch_add (1, std::memory_order_relaxed);
+            }
+
+            if (late && ! catchingUp && woke - next >= sharedStall)
+                std::this_thread::sleep_for (kBurstGrace);
+
+            catchingUp = late;
+        }
+
         next += period;
         if (clock::now() - next > kMaxCatchUp)
             next = clock::now() + period;
@@ -1440,10 +1485,58 @@ double CaptureCoordinator::getMasterDriftPpm() const noexcept
 
 void CaptureCoordinator::tickDriftReporting (double elapsedSeconds) noexcept
 {
-    const double reference = getMasterDriftPpm();
+    // The master's measured clock, once it has one; §3.3's flag is judged
+    // against the master, and before the master is measured nothing is
+    // flagged (each stream withholds its flag until its own measurement
+    // exists, and the master's is the reference for all of them).
+    double reference = 0.0;
+
+    if (masterChannel >= 0 && masterChannel < static_cast<int> (deviceStreams.size())
+        && deviceStreams[static_cast<size_t> (masterChannel)]->hasDriftMeasurement())
+        reference = deviceStreams[static_cast<size_t> (masterChannel)]->getMeasuredDriftPpm();
 
     for (auto& stream : deviceStreams)
         stream->tickDriftReporting (elapsedSeconds, reference);
+}
+
+double CaptureCoordinator::getChannelMeasuredDriftPpm (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    double reference = 0.0;
+
+    if (masterChannel >= 0 && masterChannel < static_cast<int> (deviceStreams.size())
+        && deviceStreams[static_cast<size_t> (masterChannel)]->hasDriftMeasurement())
+        reference = deviceStreams[static_cast<size_t> (masterChannel)]->getMeasuredDriftPpm();
+
+    return deviceStreams[static_cast<size_t> (index)]->getMeasuredDriftPpm() - reference;
+}
+
+bool CaptureCoordinator::hasChannelDriftMeasurement (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return false;
+
+    return deviceStreams[static_cast<size_t> (index)]->hasDriftMeasurement();
+}
+
+double CaptureCoordinator::getChannelMeasurementSeconds (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getMeasurementSeconds();
+}
+
+uint64_t CaptureCoordinator::getRingLossEvents() const noexcept
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : deviceStreams)
+        total += stream->getLossEvents();
+
+    return total;
 }
 
 double CaptureCoordinator::getChannelDriftPpm (int index) const noexcept
@@ -1457,6 +1550,30 @@ double CaptureCoordinator::getChannelDriftPpm (int index) const noexcept
     // device-against-master number §3.3 asks for -- and the master reports zero
     // against itself by construction.
     return deviceStreams[static_cast<size_t> (index)]->getDriftPpm() - getMasterDriftPpm();
+}
+
+double CaptureCoordinator::getChannelFillFraction (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getFillFraction();
+}
+
+double CaptureCoordinator::getChannelRawDriftPpm (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getDriftPpm();
+}
+
+uint64_t CaptureCoordinator::getChannelOverrunSamples (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getOverrunSamples();
 }
 
 bool CaptureCoordinator::hasSustainedExcessDrift (int index) const noexcept
@@ -1483,6 +1600,12 @@ void CaptureCoordinator::noteCallbackLoad (std::chrono::steady_clock::time_point
 
     const auto elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
     const auto available = static_cast<double> (numSamples) / sampleRate;
+
+    {
+        const auto us = static_cast<uint64_t> (elapsed * 1.0e6);
+        auto seen = clockMaxPullUs.load (std::memory_order_relaxed);
+        while (us > seen && ! clockMaxPullUs.compare_exchange_weak (seen, us, std::memory_order_relaxed)) {}
+    }
 
     if (available <= 0.0)
         return;

@@ -145,18 +145,30 @@ passed the physical camera matrix.
 - [ ] Measure end-to-end monitor latency by loopback and verify the §5.4 ceiling
   for macOS CoreAudio and Windows WASAPI; add ASIO only if a real ASIO path ships.
 - [ ] Run the drift/long-take gate on real independent device clocks.
-- [ ] **Open finding from the microphone simulator.** `Tools/e2e_realtime_mics.sh`
-  runs the real Linux app against virtual microphones paced to independent
-  clocks (verified to within the probe's ±133 ppm resolution). On the
-  software-clock path (no usable monitor output) at the default 64-sample
-  buffer, on a loaded CI-class VM with ~5 ms scheduling jitter, takes still
-  overflow a few hundred samples, and the reported drift saturates toward the
-  +200 ppm clamp instead of matching the clocks given (+150/−150 and 0/0 were
-  both misread). The software clock's dropped-tick bug found this way is fixed
-  (loss fell from ~10,000 to ~700 samples in the same scenario); the remaining
-  cause is not yet identified. Resolve, or show it does not occur with a real
-  output device and buffer ladder on hardware, before GA. The gate is not in CI
-  yet because it currently fails.
+- [ ] **Drift loop on real clocks: fixed in simulation, owed on hardware.**
+  `Tools/e2e_realtime_mics.sh` runs the real Linux app against virtual
+  microphones paced to independent clocks. It found that the §3.2 loop
+  limit-cycled against block-timed delivery (a device 60 PPM slow never
+  converged; a device 150 PPM slow lost a block every few seconds; every
+  microphone read +200 PPM) and that the buffer ladder never stepped on Linux
+  or Windows. It then found, once the driver was asked to keep audio through
+  a late wake, that the app's own ring could not take the burst that follows
+  one, and that audio arriving late after silence was played late rather than
+  skipped, leaving that channel behind the others for minutes. All are fixed
+  (see `CHANGELOG.md`), and the gate passes: on a VM with stalls of tens of
+  milliseconds the app steps the ladder while monitoring, the take loses
+  nothing, and it reports +150.2 / −149.7 / +0.2 PPM for clocks set to
+  +150 / −150 / 0. `Tools/sim_drift_loop.cpp` proves the loop against
+  ±150/±60/0 PPM at every ladder rung in CI. Still owed before GA: the same
+  measurement against two physical USB microphones on macOS and Windows,
+  where the pulling clock is a real output device rather than the software
+  clock, and confirmation that the ladder steps there when it should. Known
+  and accepted: a microphone 150 PPM slow at the 64-sample rung has a cushion
+  of about 20 samples until the loop has slewed to its rate (thirty seconds
+  from stream open) and rebuilt the rest (a minute more), so a block can be
+  lost in that window on a machine with a block of jitter; the ladder's first
+  step removes it, and the loop cannot be made faster without the audible
+  pitch change §3.2 forbids.
 - [ ] Exercise hot-plug, output loss, full/slow/card removal, mirror failure,
   device-busy, rate refusal, sleep/wake, power loss and recovery during takes.
   On known slow media, confirm preflight measures post-flush throughput and

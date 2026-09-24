@@ -304,6 +304,11 @@ public:
     const std::string& getRecordingProblem() const noexcept { return recordingProblem; }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
 
+    /// The block size the open streams actually run at. The §5.4 ladder can
+    /// have moved on from this mid-take, since a step taken then is applied
+    /// when the take ends; what a take's record should carry is this.
+    int getBufferSizeSamples() const noexcept { return bufferSize; }
+
     /// BS.1770 loudness of the mix as written. What every streaming platform
     /// normalises against, and the only figure that says how loud a take will
     /// actually sound -- peak level says nothing about it.
@@ -402,6 +407,43 @@ public:
     /// §3.3, relative to the clock master: positive means this device runs fast
     /// against it. The master reports zero against itself.
     double getChannelDriftPpm (int index) const noexcept;
+
+    /// §3.3's figure as measured: this channel's clock against the master's,
+    /// from DeviceInputStream::getMeasuredDriftPpm (each side measured against
+    /// the pulling clock; the pulling clock's own skew cancels in the
+    /// difference). Meaningful only once hasChannelDriftMeasurement().
+    double getChannelMeasuredDriftPpm (int index) const noexcept;
+    bool hasChannelDriftMeasurement (int index) const noexcept;
+    double getChannelMeasurementSeconds (int index) const noexcept;
+
+    /// §5.4: blocks in which any channel's ring lost audio, summed over the
+    /// channels, as events. The buffer ladder counts these.
+    uint64_t getRingLossEvents() const noexcept;
+
+    /// Diagnostics for the clock harnesses: one channel's loop state as it
+    /// stands, with nothing subtracted. Ring fill 0..1, the stream's own PPM
+    /// against the clock pulling it, and what that ring has thrown away.
+    double getChannelFillFraction (int index) const noexcept;
+    double getChannelRawDriftPpm (int index) const noexcept;
+    uint64_t getChannelOverrunSamples (int index) const noexcept;
+
+    /// How the consumer clock is keeping time, for the same harnesses. All
+    /// three are running maxima/counts since monitoring began: the latest a
+    /// software-clock tick woke after its deadline, how many ticks were pulled
+    /// while a period or more behind, and the longest single pull. Relaxed
+    /// atomics written on the audio threads; nothing allocates or locks (§11).
+    struct ClockDiagnostics
+    {
+        uint64_t maxWakeLateUs = 0;
+        uint64_t catchUpTicks = 0;
+        uint64_t maxPullUs = 0;
+    };
+    ClockDiagnostics getClockDiagnostics() const noexcept
+    {
+        return { clockMaxWakeLateUs.load (std::memory_order_relaxed),
+                 clockCatchUpTicks.load (std::memory_order_relaxed),
+                 clockMaxPullUs.load (std::memory_order_relaxed) };
+    }
     bool hasSustainedExcessDrift (int index) const noexcept;
     uint64_t getUnderrunSamples (int index) const noexcept;
 
@@ -536,6 +578,9 @@ private:
     // Written by the audio thread, read by the UI. Relaxed because a stale
     // reading for one frame is harmless and a lock here would not be (§11).
     std::atomic<double> callbackLoad { 0.0 };
+    std::atomic<uint64_t> clockMaxWakeLateUs { 0 };
+    std::atomic<uint64_t> clockCatchUpTicks { 0 };
+    std::atomic<uint64_t> clockMaxPullUs { 0 };
 
     // §14.4, same ownership: written in the callback, read on the UI tick.
     //

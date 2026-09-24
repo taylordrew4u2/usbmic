@@ -280,20 +280,74 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   the real app (via `Tools/fs_stall_shim.cpp`) at Record and at Stop, and
   measures how long the window stopped responding with a test-build-only
   message-thread meter. It runs in CI and in the release workflow.
+- **The §3.2 drift loop was unstable against real devices, and is fixed.** A
+  device delivers whole blocks on its own clock, so the ring level a pull sees
+  moves in steps of a block; one step, at the spec's gains, was a request past
+  the ±200 PPM clamp, and the 5 PPM/s slew then unwound it for forty seconds
+  while the level overshot the cushion. Every dry pull refunded a block, which
+  the loop read as a fast device. Reproduced with zero jitter in a new
+  deterministic simulator: a device 60 PPM slow never converged (the loop swung
+  between 0 and −116 PPM), a device 150 PPM slow lost a block of audio every
+  few seconds, and every microphone in the rig was reported at +200 PPM. The
+  loop is now driven by the level with the device's progress since its last
+  delivery folded in, lightly smoothed. Gains, clamp and slew are the spec's.
+  In simulation all five test clocks (±150, ±60, 0 PPM) now lock within 1 PPM
+  with no loss after the first minute.
+- **Audio that arrives late, after silence has stood in for it, is skipped
+  rather than played late.** A device thread that stalls hands over everything
+  the driver held when it wakes; the span that burst covers is already in the
+  file as silence. Playing it too left that channel a stall's length behind
+  every other for as long as the loop took to drain it — minutes at 200 PPM,
+  with the monitor path that much slower and the ring that much closer to
+  full. The stream now skips it, up to the silence it answers for, at the
+  first pull that finds the ring above target, and the loss is counted once.
+  Silence that nothing arrives to answer, from a device that dropped the audio
+  itself, is written off after a ring's worth of pulls.
+- **The app's ring now holds a whole driver burst.** Linux asks the driver
+  for eight periods of ring so a late reader finds its audio kept; the app's
+  own ring was eight blocks with two of them the target fill, so the burst
+  that ride-out produced overflowed it by two blocks — audio the hardware had
+  kept, thrown away one layer up. The ring is sixteen blocks, the driver's
+  stays eight, and a static assertion holds the two apart. No latency cost:
+  the target fill is unchanged.
+- When the software clock wakes from a stall the whole process shared, it
+  gives the device threads a millisecond to land their bursts before it pulls
+  the missed ticks; pulled first, they found the rings dry and wrote silence
+  for audio that arrived a moment later.
+- **Reported drift is now measured, not read off the loop.** Each device's
+  delivered samples and the consumer's pulled samples are fitted against their
+  own timestamps over the 60-second window; the ratio is the device's clock
+  against the pulling clock, within about 2 PPM at the minute. In the real app
+  on simulated microphones set to +150 / −150 / 0 PPM it reported +149.8 /
+  −149.5 / +0.1. The §3.3 "unreliable" flag and clock-master selection use the
+  measurement; the loop's own figure remains available to the harnesses.
+- **§5.4's buffer ladder now hears the app's own ring losses**, on every
+  platform. It was fed only by CoreAudio's processor-overload property, which
+  the other two backends never raise, so a machine whose scheduling jitter was
+  wider than the two-block cushion sat at 64 samples losing audio with the
+  ladder never stepping. A dry pull or a full ring now counts as a callback
+  overrun; three inside thirty seconds steps up, and the streams reopen at the
+  new size. On a virtual machine with 5–9 ms stalls the app stepped 64 → 128 →
+  256 while monitoring and the take that followed lost nothing.
 - The software clock (used when no monitor output is running, and when one is
-  lost mid-take) no longer throws away ticks after a late wake. It restarted
-  its schedule whenever a wake was more than one 1.3 ms period late, so on a
-  busy machine it ran slow, every microphone measured fast, drift correction
-  pinned at its clamp and the rings overflowed. Missed ticks are now caught up;
-  only a stall over 100 ms resynchronises. The clock thread also asks for the
-  same real-time scheduling as the device threads that feed it.
+  lost mid-take) no longer throws away ticks after a late wake, runs at the
+  same real-time priority as the device threads, and begins a takeover on a
+  fresh deadline rather than a burst of stale ones.
+- Linux capture asks the driver for a period of one block and a buffer of
+  eight, so a worker thread that wakes late finds its audio still in the
+  driver's ring instead of dropped there; monitor latency is unchanged. An xrun
+  is charged with what the gap actually cost rather than a flat period.
 - A microphone simulator: `Tools/alsa_readi_shim.cpp` can pace every ALSA
-  device to its own clock (`MMA_SIM_REALTIME`, `MMA_SIM_PPM`), so virtual
-  microphones behave like independent USB crystals instead of delivering audio
-  as fast as a file can be read. `Tools/e2e_realtime_mics.sh` records a take on
-  them with the real app and checks the tracks, the loss and the app's own
-  drift measurement. It found the software-clock bug above, and an open finding
-  recorded in `RELEASE_CHECKLIST.md`.
+  device to its own clock (`MMA_SIM_REALTIME`, `MMA_SIM_PPM`) and emulate the
+  driver's ring (`MMA_SIM_BUFFER_FRAMES`), so virtual microphones behave like
+  independent USB crystals on real hardware instead of delivering audio as fast
+  as a file can be read. `Tools/e2e_realtime_mics.sh` records a take on them
+  with the real app and checks the tracks, the loss, the ladder and the app's
+  drift measurement against the clocks it was given; it runs in CI and the
+  release workflow. `Tools/sim_drift_loop.cpp` is the deterministic
+  block-timed simulation of the loop, a test at every ladder rung with the
+  jitter that rung is expected to absorb. `Tools/clock_trace.cpp` prints the
+  loop as a time series for reading.
 
 ### Verification baseline
 

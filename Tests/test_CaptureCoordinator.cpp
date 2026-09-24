@@ -920,6 +920,7 @@ struct TakeResult
 {
     double driftPpm[3] = { 0.0, 0.0, 0.0 };
     uint64_t underruns[3] = { 0, 0, 0 };
+    double rawDriftPpm[3] = { 0.0, 0.0, 0.0 };
 };
 
 TakeResult runTake (bool unplugMaster, int failoverTo, double seconds, double unplugAtSeconds = 5.0)
@@ -983,6 +984,10 @@ TakeResult runTake (bool unplugMaster, int failoverTo, double seconds, double un
     for (int d = 0; d < 3; ++d)
     {
         r.driftPpm[d] = c.getChannelDriftPpm (d);
+        // Each channel's own loop as well, for the test that asks whether one
+        // channel's arithmetic ever enters another's: the relative figure
+        // subtracts the master's state by design, so it cannot answer that.
+        r.rawDriftPpm[d] = c.getChannelRawDriftPpm (d);
         r.underruns[d] = c.getUnderrunSamples (d);
     }
     return r;
@@ -1011,7 +1016,7 @@ TEST_CASE (CaptureCoordinator_UnpluggedMasterLeavesTheOtherChannelsUntouched)
     // supposed to exist.
     for (int d = 1; d < 3; ++d)
     {
-        REQUIRE_NEAR (masterGone.driftPpm[d], control.driftPpm[d], 1e-12);
+        REQUIRE_NEAR (masterGone.rawDriftPpm[d], control.rawDriftPpm[d], 1e-12);
         REQUIRE (masterGone.underruns[d] == control.underruns[d]);
     }
 
