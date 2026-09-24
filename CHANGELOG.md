@@ -265,10 +265,15 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   stopped answering). A take whose folder could not be listed is no longer
   called empty; the saved-take card reuses the Stop listing instead of
   reading the card a second time.
+- Opening the take's files at Record start, the writer's final drain at Stop,
+  and the `session.json` and activity-log writes are bounded the same way. A
+  card that stops answering there stops the take from starting, or is
+  reported as a Stop whose end may not have reached the card, instead of
+  freezing the window. The abandoned write finishes on its own worker.
 
 ### Verification baseline
 
-The candidate contains 574 unit tests, 201 CoreAudio simulator checks, 108
+The candidate contains 576 unit tests, 201 CoreAudio simulator checks, 108
 WASAPI simulator checks, 262 camera simulator checks, a seven-check synchronous
 camera-lifecycle probe and an 11-check take-combiner probe, plus the capture,
 refusal and end-to-end harnesses. These numbers describe automated coverage,
