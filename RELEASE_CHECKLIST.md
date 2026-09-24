@@ -145,6 +145,18 @@ passed the physical camera matrix.
 - [ ] Measure end-to-end monitor latency by loopback and verify the §5.4 ceiling
   for macOS CoreAudio and Windows WASAPI; add ASIO only if a real ASIO path ships.
 - [ ] Run the drift/long-take gate on real independent device clocks.
+- [ ] **Open finding from the microphone simulator.** `Tools/e2e_realtime_mics.sh`
+  runs the real Linux app against virtual microphones paced to independent
+  clocks (verified to within the probe's ±133 ppm resolution). On the
+  software-clock path (no usable monitor output) at the default 64-sample
+  buffer, on a loaded CI-class VM with ~5 ms scheduling jitter, takes still
+  overflow a few hundred samples, and the reported drift saturates toward the
+  +200 ppm clamp instead of matching the clocks given (+150/−150 and 0/0 were
+  both misread). The software clock's dropped-tick bug found this way is fixed
+  (loss fell from ~10,000 to ~700 samples in the same scenario); the remaining
+  cause is not yet identified. Resolve, or show it does not occur with a real
+  output device and buffer ladder on hardware, before GA. The gate is not in CI
+  yet because it currently fails.
 - [ ] Exercise hot-plug, output loss, full/slow/card removal, mirror failure,
   device-busy, rate refusal, sleep/wake, power loss and recovery during takes.
   On known slow media, confirm preflight measures post-flush throughput and
