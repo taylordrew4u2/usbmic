@@ -337,6 +337,15 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   eight, so a worker thread that wakes late finds its audio still in the
   driver's ring instead of dropped there; monitor latency is unchanged. An xrun
   is charged with what the gap actually cost rather than a flat period.
+- **The Linux test fixture fed the app corrupt audio after thirty seconds.**
+  ALSA's `file` plugin starts an input file over when it reaches the end, and
+  from then on every block it delivers has a phase jump in it, for as long as
+  the stream stays open; the fixture's tone files were thirty seconds long.
+  It hid because the buffer ladder reopens the streams, which starts the
+  files over, so a take usually began inside a fresh thirty seconds -- and
+  showed as a stem whose tone the per-block vote could not recognise, on a
+  take the app had recorded faithfully. The files are four minutes now, and
+  `Tools/tone_timeline.py` prints where in a stem the tone is and is not.
 - A microphone simulator: `Tools/alsa_readi_shim.cpp` can pace every ALSA
   device to its own clock (`MMA_SIM_REALTIME`, `MMA_SIM_PPM`) and emulate the
   driver's ring (`MMA_SIM_BUFFER_FRAMES`), so virtual microphones behave like

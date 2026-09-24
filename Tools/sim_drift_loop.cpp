@@ -62,6 +62,15 @@ struct Device
     bool measuredAtMinuteValid = false;
     double lastOutsideS = -1.0;  // last time the loop ppm was more than 10 off its clock
     double minFillAfterMinute = 1.0, maxFillAfterMinute = 0.0;
+
+    // The device delivers a ramp -- each sample its own index -- so the
+    // output says which source sample it came from. A step between one
+    // output sample and the next that is neither the ramp's own slope, give
+    // or take a sample of resampling, nor silence, is a seam: audio out of
+    // order, which no counter here would otherwise see.
+    int64_t pushed = 0;
+    float lastOut = -1.0f;
+    uint64_t seams = 0, seamsAfterMinute = 0;
 };
 
 std::vector<double> parsePpm (const char* text)
@@ -162,6 +171,9 @@ int main (int argc, char** argv)
         if (who < devices.size())
         {
             auto& d = devices[who];
+            for (int n = 0; n < block; ++n)
+                d.in[static_cast<size_t> (n)] = static_cast<float> (d.pushed + n);
+            d.pushed += block;
             d.stream.pushBlock (d.in.data(), block);
             ++d.k;
             d.nextDueS += d.periodS;
@@ -170,7 +182,27 @@ int main (int argc, char** argv)
         else
         {
             for (auto& d : devices)
+            {
                 d.stream.pull (out.data(), block);
+
+                if (! d.stream.hasStarted())
+                    continue;
+
+                float prev = d.lastOut;
+                for (int n = 0; n < block; ++n)
+                {
+                    const float v = out[static_cast<size_t> (n)];
+                    // Silence written for a dry ring is loss, counted elsewhere;
+                    // the ramp resumes after it wherever the ring resumes.
+                    if (v != 0.0f && prev >= 0.0f && (v - prev < 0.0f || v - prev > 2.5f))
+                    {
+                        ++d.seams;
+                        if (simS >= 60.0) ++d.seamsAfterMinute;
+                    }
+                    prev = v != 0.0f ? v : -1.0f;
+                }
+                d.lastOut = prev;
+            }
 
             consumerDueS += consumerPeriodS;
             consumerActualS = std::max (consumerDueS + lateBy (consumerStall), simS);
@@ -206,8 +238,8 @@ int main (int argc, char** argv)
     std::printf ("block %d, %.0f s, kp %.2f ppm/sample, ki %.1e, slew %.0f ppm/s, jitter %.1f ms, stalls %.1f ms x %.2f/s, %s fill\n\n",
                  block, seconds, kpPpm, ki, slew, jitter.jitterS * 1000.0, jitter.stallS * 1000.0,
                  jitter.stallsPerSecond, virtualFill ? "virtual" : "raw");
-    std::printf ("%8s %9s %9s %9s %10s %10s %10s %10s %12s %12s\n",
-                 "clock", "loop@end", "meas@1min", "meas@end", "settle_s", "under<1m", "over<1m", "loss>1m", "fill_min>1m", "fill_max>1m");
+    std::printf ("%8s %9s %9s %9s %10s %10s %10s %10s %12s %12s %8s %8s\n",
+                 "clock", "loop@end", "meas@1min", "meas@end", "settle_s", "under<1m", "over<1m", "loss>1m", "fill_min>1m", "fill_max>1m", "seams", "seams>1m");
 
     int failures = 0;
 
@@ -219,7 +251,7 @@ int main (int argc, char** argv)
         const double loopErr = std::abs (d.stream.getDriftPpm() - d.ppm);
         const double measErr = d.stream.hasDriftMeasurement() ? std::abs (d.stream.getMeasuredDriftPpm() - d.ppm) : 1.0e9;
 
-        std::printf ("%+8.0f %+9.1f %+9.1f %+9.1f %10.1f %10llu %10llu %10llu %12.3f %12.3f\n",
+        std::printf ("%+8.0f %+9.1f %+9.1f %+9.1f %10.1f %10llu %10llu %10llu %12.3f %12.3f %8llu %8llu\n",
                      d.ppm, d.stream.getDriftPpm(),
                      d.measuredAtMinuteValid ? d.measuredAtMinute : 0.0,
                      d.stream.hasDriftMeasurement() ? d.stream.getMeasuredDriftPpm() : 0.0,
@@ -227,14 +259,17 @@ int main (int argc, char** argv)
                      static_cast<unsigned long long> (d.underAtMinute),
                      static_cast<unsigned long long> (d.overAtMinute),
                      static_cast<unsigned long long> (lossAfterMinute),
-                     d.minFillAfterMinute, d.maxFillAfterMinute);
+                     d.minFillAfterMinute, d.maxFillAfterMinute,
+                     static_cast<unsigned long long> (d.seams),
+                     static_cast<unsigned long long> (d.seamsAfterMinute));
 
         if (lossAfterMinute > 0) ++failures;
+        if (d.seamsAfterMinute > 0) ++failures;
         if (loopErr > 20.0) ++failures;
         if (measErr > 10.0) ++failures;
     }
 
-    std::printf ("\n%s\n", failures == 0 ? "PASS: no loss after the first minute, loop within 20 PPM, measurement within 10 PPM"
+    std::printf ("\n%s\n", failures == 0 ? "PASS: no loss or seam after the first minute, loop within 20 PPM, measurement within 10 PPM"
                                           : "FAIL: see the rows above");
     return failures == 0 ? 0 : 1;
 }

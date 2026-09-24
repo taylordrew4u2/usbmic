@@ -459,6 +459,16 @@ public:
     bool hasSustainedExcessDrift (int index) const noexcept;
     uint64_t getUnderrunSamples (int index) const noexcept;
 
+    /// Harness diagnostics: the interpolator's seams on one channel.
+    struct ChannelSeams { uint64_t primes = 0, holds = 0, skips = 0; };
+    ChannelSeams getChannelSeams (int index) const noexcept
+    {
+        if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+            return {};
+        const auto& s = *deviceStreams[static_cast<size_t> (index)];
+        return { s.getPrimeCount(), s.getHoldCount(), s.getSkipCount() };
+    }
+
 private:
     IAudioBackend& backend;
     double sampleRate;
