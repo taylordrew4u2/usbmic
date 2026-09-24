@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <future>
+#include <optional>
 #include <set>
 #include <thread>
 
@@ -82,6 +84,34 @@ DetachedPathMutationGate::LeasePtr waitForMutationLease (
 
     return {};
 }
+
+// Runs `work` on a disposable detached thread and waits at most `limit` for
+// its answer. A removable volume pulled or wedged at the wrong moment can
+// leave any filesystem call blocked forever, and on the message thread that is
+// a frozen window. The worker owns only copies, never Application, so giving
+// up on it is safe; it finishes (or never does) on its own.
+template <typename Result, typename Work>
+std::optional<Result> runWithDeadline (Work work, std::chrono::milliseconds limit)
+{
+    auto promise = std::make_shared<std::promise<Result>>();
+    auto future = promise->get_future();
+
+    std::thread ([promise, work = std::move (work)]() mutable
+    {
+        try { promise->set_value (work()); }
+        catch (...) { promise->set_exception (std::current_exception()); }
+    }).detach();
+
+    if (future.wait_for (limit) != std::future_status::ready)
+        return std::nullopt;
+
+    try { return future.get(); }
+    catch (...) { return std::nullopt; }
+}
+
+// Matches the production input-open deadline: long enough for a slow card to
+// wake, short enough that nobody reaches for Force Quit.
+constexpr std::chrono::milliseconds kRemovableVolumeDeadline { 5000 };
 
 // The version CMake stamped in. JUCE_APP_VERSION is only defined for builds
 // that go through JuceHeader.h, so stringifying it here wrote the literal
@@ -2043,11 +2073,28 @@ void Application::toggleRecording()
         // that every file was empty while this line said "Saved to ..." beside
         // it, and the line is the one a user reads on their way out of the room.
         {
+            // Bounded: a card pulled during Stop must not freeze the window
+            // while its folder is listed. Listed once and kept, so the
+            // saved-take card shows the same files this verdict was drawn from.
+            lastSessionFiles = listSessionFilesWithin (lastSessionFolder,
+                                                       static_cast<int> (kRemovableVolumeDeadline.count()),
+                                                       lastSessionFilesListed);
+
+            if (! lastSessionFilesListed && lastSessionFolder.isNotEmpty())
+                noteActivity (ActivityLevel::Failed, "Recording",
+                              "The card stopped answering after the take, so the files in "
+                              + juce::File (lastSessionFolder).getFileName()
+                              + " couldn't be checked. Check the card is plugged in.");
+
             std::vector<TakeFile> written;
-            for (const auto& f : listSessionFiles (lastSessionFolder))
+            for (const auto& f : lastSessionFiles)
                 written.push_back ({ f.name.toStdString(), f.sizeBytes });
 
-            lastTakeVerdict = judgeTakeAudio (written, takePeak, arrivedPeak);
+            // Nothing was read, so nothing can be concluded about the audio:
+            // "no audio" over a folder that simply did not answer is its own lie.
+            lastTakeVerdict = lastSessionFilesListed
+                                  ? judgeTakeAudio (written, takePeak, arrivedPeak)
+                                  : TakeAudioVerdict::NotJudged;
 
             // Both failures mean the same thing to anyone deciding whether to
             // record it again: there is no audio in that folder.
@@ -2240,18 +2287,46 @@ juce::String Application::resolveSessionFolderName (juce::Time now, const juce::
 
 juce::String Application::createSessionFolder (juce::Time now) const
 {
-    const juce::File root (destinationFolder);
-    const auto folder = root.getChildFile (resolveSessionFolderName (now, sessionName));
+    const juce::String root (destinationFolder);
+    const auto desired = baseSessionFolderName (now, sessionName).toStdString();
 
-    if (! folder.createDirectory().wasOk())
+    struct Made { juce::String path; bool ok = false; };
+
+    // The first write a take makes to the card, so the first place a card
+    // pulled or wedged during Record start would hang. Bounded, so Record
+    // reports it rather than freezing the window.
+    const auto made = runWithDeadline<Made> ([root, desired]
+    {
+        const juce::File rootDir (root);
+
+        // §6.2: never overwrite, never prompt -- collisions get _2, _3, ...
+        const auto name = SessionFolderNaming::resolveCollision (desired,
+            [&rootDir] (const std::string& candidate)
+            {
+                return rootDir.getChildFile (juce::String (candidate)).exists();
+            });
+
+        const auto folder = rootDir.getChildFile (juce::String (name));
+        return Made { folder.getFullPathName(), folder.createDirectory().wasOk() };
+    }, kRemovableVolumeDeadline);
+
+    if (! made.has_value())
     {
         noteActivity (ActivityLevel::Failed, "Recording",
-                      "Couldn't make a folder at " + folder.getFullPathName()
+                      "The card at " + root + " stopped answering, so the take couldn't "
+                      "start. Check the card is plugged in, or choose somewhere else.");
+        return {};
+    }
+
+    if (! made->ok)
+    {
+        noteActivity (ActivityLevel::Failed, "Recording",
+                      "Couldn't make a folder at " + made->path
                       + ". Check the card is plugged in, has room, and isn't locked.");
         return {};
     }
 
-    return folder.getFullPathName();
+    return made->path;
 }
 
 Application::PlannedSave Application::planSave (const juce::String& proposedSessionName) const
@@ -2338,6 +2413,16 @@ std::vector<Application::SavedFile> Application::listSessionFiles (const juce::S
     return files;
 }
 
+std::vector<Application::SavedFile> Application::listSessionFilesWithin (const juce::String& folder,
+                                                                      int limitMs,
+                                                                      bool& completed)
+{
+    auto listed = runWithDeadline<std::vector<SavedFile>> ([folder] { return listSessionFiles (folder); },
+                                                           std::chrono::milliseconds (limitMs));
+    completed = listed.has_value();
+    return completed ? std::move (*listed) : std::vector<SavedFile> {};
+}
+
 std::vector<Application::SavedFile> Application::getCurrentSessionFiles (bool* snapshotAvailable) const
 {
     if (snapshotAvailable != nullptr)
@@ -2379,7 +2464,9 @@ bool Application::consumeSavedTake (SavedTake& out)
     savedTakePending = false;
     out.folder = lastSessionFolder;
     out.mirrorFolder = lastMirrorFolder;
-    out.files = listSessionFiles (lastSessionFolder);
+    // Listed at stop, with a deadline. Reading the card again here would be a
+    // second chance for a card pulled at that moment to freeze the window.
+    out.files = lastSessionFiles;
     out.verdict = lastTakeVerdict;
 
     return true;
@@ -4386,7 +4473,15 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
 {
     // §11: logs + last 5 session.json + device inventory. NEVER audio -- the
     // point of a diagnostics bundle is that it can be sent to a stranger.
-    juce::ZipFile::Builder builder;
+    //
+    // A second press while one is still being written would race it for the
+    // same kind of file; say so rather than start another.
+    if (diagnosticsExportRunning->exchange (true))
+    {
+        noteActivity (ActivityLevel::Warning, "Diagnostics",
+                      "Still saving the last diagnostics file. Give it a moment.", true);
+        return;
+    }
 
     juce::Array<juce::var> deviceArray;
     for (const auto& d : deviceManager.getDevices())
@@ -4415,50 +4510,78 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     summary->setProperty ("destination", juce::String (destinationFolder));
     summary->setProperty ("devices", juce::var (deviceArray));
 
-    juce::TemporaryFile tempInventory;
-    // §11: a bundle missing the device inventory is the bundle that cannot
-    // answer "what was plugged in", which is the first question anyone reading
-    // it asks. Silently shipping one without it wastes a round trip.
-    if (! replaceWithTextChecked (tempInventory.getFile(), juce::JSON::toString (juce::var (summary), true)))
-        noteActivity (ActivityLevel::Warning, "Diagnostics",
-                      "Couldn't list the connected devices, so the diagnostics file won't include "
-                      "them.");
-    builder.addFile (tempInventory.getFile(), 9, "device_inventory.json");
+    // Everything above is in memory. Everything below reads the recordings
+    // folder, which is usually a card -- and a card pulled or wedged while the
+    // button is pressed used to freeze the window inside the directory scan.
+    // So the rest runs on a detached worker holding only copies; the result
+    // comes back through the alive token like every other OS-thread callback.
+    const auto inventoryText = juce::JSON::toString (juce::var (summary), true);
+    const juce::String root (destinationFolder);
+    const auto logFile = getLogFile();
+    const auto running = diagnosticsExportRunning;
+    const auto alive = getAliveToken();
 
-    // §11: the last five sessions. Newest first, because the one being asked
-    // about is almost always the most recent.
-    auto sessions = findRecentSessionMetadata (5);
-    int index = 0;
-
-    for (const auto& file : sessions)
-        builder.addFile (file, 9, "sessions/" + juce::String (++index) + "_"
-                                      + file.getParentDirectory().getFileName() + ".json");
-
-    if (const auto log = getLogFile(); log.existsAsFile())
-        builder.addFile (log, 9, "log.txt");
-
-    juce::FileOutputStream out (destinationZip);
-
-    if (out.openedOk() && builder.writeToStream (out, nullptr))
+    std::thread ([this, alive, running, inventoryText, root, logFile, destinationZip]
     {
-        // onTheLine, because the user pressed a button and nothing else
-        // happens: the level alone would have kept this out of the advice line,
-        // so a successful export looked identical to nothing happening and the
-        // path to the file was never shown anywhere they would look. The
-        // failure branch below already reaches the line by virtue of its level.
-        noteActivity (ActivityLevel::Stopped, "Diagnostics",
-                      "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".",
-                      true);
-    }
-    else
-    {
-        // The user asked for a file and was shown nothing either way, so a
-        // failed export looked exactly like a successful one -- right up until
-        // they went to attach it to an email.
-        noteActivity (ActivityLevel::Failed, "Diagnostics",
-                      "Couldn't write the diagnostics file to "
-                      + destinationZip.getFullPathName() + ". Try somewhere else.");
-    }
+        juce::ZipFile::Builder builder;
+        juce::TemporaryFile tempInventory;
+
+        // §11: a bundle missing the device inventory is the bundle that cannot
+        // answer "what was plugged in", which is the first question anyone
+        // reading it asks. Silently shipping one without it wastes a round trip.
+        const bool inventoryWritten = replaceWithTextChecked (tempInventory.getFile(), inventoryText);
+        builder.addFile (tempInventory.getFile(), 9, "device_inventory.json");
+
+        // §11: the last five sessions. Newest first, because the one being
+        // asked about is almost always the most recent.
+        auto sessions = findRecentSessionMetadata (root, 5);
+        int index = 0;
+
+        for (const auto& file : sessions)
+            builder.addFile (file, 9, "sessions/" + juce::String (++index) + "_"
+                                          + file.getParentDirectory().getFileName() + ".json");
+
+        if (logFile.existsAsFile())
+            builder.addFile (logFile, 9, "log.txt");
+
+        bool saved = false;
+        {
+            juce::FileOutputStream out (destinationZip);
+            saved = out.openedOk() && builder.writeToStream (out, nullptr);
+        }
+
+        running->store (false);
+
+        juce::MessageManager::callAsync ([this, alive, inventoryWritten, saved, destinationZip]
+        {
+            if (alive.lock() == nullptr)
+                return;
+
+            if (! inventoryWritten)
+                noteActivity (ActivityLevel::Warning, "Diagnostics",
+                              "Couldn't list the connected devices, so the diagnostics file won't "
+                              "include them.");
+
+            if (saved)
+            {
+                // onTheLine, because the user pressed a button and nothing else
+                // happens: the level alone would have kept this out of the
+                // advice line, so a successful export looked identical to
+                // nothing happening and the path to the file was never shown.
+                noteActivity (ActivityLevel::Stopped, "Diagnostics",
+                              "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".",
+                              true);
+            }
+            else
+            {
+                // A failed export must not look like a successful one right up
+                // until the user goes to attach it to an email.
+                noteActivity (ActivityLevel::Failed, "Diagnostics",
+                              "Couldn't write the diagnostics file to "
+                              + destinationZip.getFullPathName() + ". Try somewhere else.");
+            }
+        });
+    }).detach();
 }
 
 juce::File Application::getSettingsFile()
@@ -5341,11 +5464,11 @@ const std::vector<RecoveredSession>& Application::getRecoveredSessions() const
     return recoveredSessions;
 }
 
-juce::Array<juce::File> Application::findRecentSessionMetadata (int maximum) const
+juce::Array<juce::File> Application::findRecentSessionMetadata (const juce::String& rootPath, int maximum)
 {
     juce::Array<juce::File> found;
 
-    const juce::File root { juce::String (destinationFolder) };
+    const juce::File root { rootPath };
 
     if (! root.isDirectory())
         return found;
