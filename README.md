@@ -98,6 +98,18 @@ once, and that single stream carries both halves of the cycle.
 ## What it looks like
 
 <p align="center">
+  <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording of SobStage: the main screen with two microphone meters moving, Start recording pressed, the button turning red while the take clock counts up and the line above it reports six files growing, then Stop, and a card headed Saved listing MIX.wav, a WAV per microphone, activity.log and session.json with their sizes and the backup copy's location" width="660"></a>
+</p>
+
+<p align="center"><em>One take, start to finish: record, watch the files grow, stop, see exactly what was saved.
+<a href="docs/images/demo.mp4">Watch the video</a> (20 s).
+Recorded from the real app on Linux with two virtual microphones. Those
+are why the test output's warning line is visible, and why a "sound was
+dropped" card flashes up for a moment: the virtual microphones deliver
+audio faster than real time, and SobStage reports it.
+<code>Tools/record_demo.sh</code> regenerates the video.</em></p>
+
+<p align="center">
   <img src="docs/images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help and Settings in the masthead" width="660">
 </p>
 
