@@ -264,6 +264,18 @@ public:
         return total >= overrunAtTakeStart ? total - overrunAtTakeStart : total;
     }
 
+    /// The other way a ring loses audio: the pull came and the device's block
+    /// had not, so the stem got silence. Summed across channels for the whole
+    /// monitoring session, and since the current take began. The stream
+    /// counted this from the first day and nothing ever asked, so a take
+    /// whose microphone ran dry every other block reported no loss at all.
+    uint64_t getUnderrunSamples() const noexcept;
+    uint64_t getUnderrunSamplesThisTake() const noexcept
+    {
+        const auto total = getUnderrunSamples();
+        return total >= underrunAtTakeStart ? total - underrunAtTakeStart : total;
+    }
+
     /// §0.1: audio that arrived from a device and had nowhere to go, because
     /// the block did not match the layout this take was opened with.
     ///
@@ -557,6 +569,7 @@ private:
     /// stream's counter, but streams are prepared when monitoring starts, not
     /// when a take does -- so the take's own figure is measured from here.
     uint64_t overrunAtTakeStart = 0;
+    uint64_t underrunAtTakeStart = 0;
 
     /// Per-stream overrun totals when the take began, so the worst channel can
     /// be measured against its own starting point rather than the rig's.

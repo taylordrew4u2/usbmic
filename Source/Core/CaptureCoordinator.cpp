@@ -498,6 +498,16 @@ uint64_t CaptureCoordinator::getOverrunSamples() const noexcept
     return total;
 }
 
+uint64_t CaptureCoordinator::getUnderrunSamples() const noexcept
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : deviceStreams)
+        total += stream->getUnderrunSamples();
+
+    return total;
+}
+
 uint64_t CaptureCoordinator::getWorstChannelOverrunThisTake() const noexcept
 {
     uint64_t worst = 0;
@@ -760,6 +770,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     // everything that happened while merely monitoring.
     framesMissedByLayout.store (0, std::memory_order_relaxed);
     overrunAtTakeStart = getOverrunSamples();
+    underrunAtTakeStart = getUnderrunSamples();
 
     // Same reasoning as the counter above: without this, the figures from the
     // previous take would stand as this one's until enough blocks had gone by.
