@@ -55,7 +55,8 @@ SavedTakePanel::~SavedTakePanel() = default;
 void SavedTakePanel::setTake (const juce::String& folder,
                               const juce::String& mirrorFolder,
                               const std::vector<FileRow>& files,
-                              TakeAudioVerdict verdict)
+                              TakeAudioVerdict verdict,
+                              bool filesListed)
 {
     folderValue.setText (folder, juce::dontSendNotification);
 
@@ -87,8 +88,12 @@ void SavedTakePanel::setTake (const juce::String& folder,
         rows.push_back (std::move (row));
     }
 
-    totalLabel.setText (juce::String (files.size()) + " files, "
-                            + juce::File::descriptionOfSizeInBytes (total),
+    // "0 files, 0 bytes" over a folder that simply did not answer reads as a
+    // take that wrote nothing, which nobody can know.
+    totalLabel.setText (filesListed
+                            ? juce::String (files.size()) + " files, "
+                                  + juce::File::descriptionOfSizeInBytes (total)
+                            : juce::String ("The drive didn't answer, so its files couldn't be listed."),
                         juce::dontSendNotification);
 
     // Handed in, not worked out here. The status line and this panel have to

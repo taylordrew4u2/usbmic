@@ -227,6 +227,10 @@ public:
         /// how it once came to warn that files were empty while the status
         /// line beside it said "Saved to ...".
         TakeAudioVerdict verdict = TakeAudioVerdict::NotJudged;
+
+        /// False when the folder did not answer in time, so `files` being
+        /// empty means "unknown", not "nothing was written".
+        bool filesListed = true;
     };
     bool consumeSavedTake (SavedTake& out);
 
@@ -578,6 +582,10 @@ private:
     // The saved-take card reuses it rather than reading the card a second time.
     std::vector<SavedFile> lastSessionFiles;
     bool lastSessionFilesListed = false;
+    // Set the first time a card step of the current take times out, so the
+    // steps after it skip the card instead of each waiting out the deadline.
+    // Cleared when the next take starts. mutable: writeActivityLog is const.
+    mutable bool takeCardUnresponsive = false;
     // One export at a time; the flag is shared with its detached worker.
     std::shared_ptr<std::atomic<bool>> diagnosticsExportRunning
         = std::make_shared<std::atomic<bool>> (false);
@@ -871,12 +879,18 @@ private:
     /// collision suffix. Resolves against the disk but creates nothing, so the
     /// pre-record prompt and the take itself agree on the answer.
     juce::String resolveSessionFolderName (juce::Time now, const juce::String& name) const;
-    /// §6.2 destination folder for a new take, created on disk. Empty on failure.
-    juce::String createSessionFolder (juce::Time now) const;
+    /// §6.2 destination folder for a new take, created on disk. Empty on
+    /// failure, with the reason in `problem`.
+    juce::String createSessionFolder (juce::Time now, juce::String& problem) const;
     /// §6.3 local backup folder for a take, created on disk. Empty on failure.
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
+    /// Writes a take's text file with a deadline, skipping the card once it
+    /// has stopped answering this take. The local backup is always written.
+    bool writeTakeText (const juce::File& file, const juce::String& text) const;
+    /// True unless `file` is inside the current take's local backup folder.
+    bool isOnCard (const juce::File& file) const;
     /// §11: the newest session.json files under `root`, newest first. Static
     /// because it runs on the diagnostics export's detached worker.
     static juce::Array<juce::File> findRecentSessionMetadata (const juce::String& root, int maximum);
