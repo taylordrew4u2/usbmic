@@ -199,7 +199,23 @@ void DeviceInputStream::skipLateAudio (int numSamples) noexcept
     const double excess = std::min (virtualFillNow (available) - static_cast<double> (targetFillSamples),
                                     static_cast<double> (available) - static_cast<double> (numSamples + 1));
 
-    if (excess >= 1.0)
+    // Supplied again. Give the burst a ring's worth of pulls to land, then
+    // write the silence off, skipped or not: what is still owed after that
+    // is not coming.
+    if (available > 0 && ++pullsSinceSilence > kRingBlocks)
+    {
+        silenceOwed = 0.0;
+        return;
+    }
+
+    // A burst is whole blocks by nature. Anything under one is the loop's
+    // own jitter around its target, and skipping it -- a few samples, with
+    // the interpolator restarted each time -- put a click in every block
+    // for as long as the owed silence lasted, which, since only a pull that
+    // skipped nothing counted towards writing it off, was indefinitely.
+    const double block = static_cast<double> (std::max (1, lastPushSamples.load (std::memory_order_relaxed)));
+
+    if (excess >= block)
     {
         const auto skip = static_cast<size_t> (std::min (silenceOwed, excess));
         const auto skipped = ring.discard (skip);
@@ -216,13 +232,7 @@ void DeviceInputStream::skipLateAudio (int numSamples) noexcept
         phase = 0.0;
         primed = false;
         fillAverageValid = false;
-        return;
     }
-
-    // Supplied again at pace, with nothing late behind it. Give the burst a
-    // ring's worth of pulls to land, then write the silence off.
-    if (available > 0 && ++pullsSinceSilence > kRingBlocks)
-        silenceOwed = 0.0;
 }
 
 void DeviceInputStream::pull (float* destination, int numSamples) noexcept
