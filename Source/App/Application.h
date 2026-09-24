@@ -348,6 +348,12 @@ public:
     /// §5.4: report a callback overrun. Returns true when it pushed the buffer
     /// up a rung, so the caller can tell the user why latency just changed.
     bool noteCallbackOverrun();
+
+    /// After the ladder has stepped: journals it, reopens the streams at the
+    /// new size -- or, mid-take, owes that reopen to the take's end, since
+    /// §5.4 forbids a change during a recording -- and returns the sentence
+    /// the user is shown, with the delay the new size actually costs.
+    juce::String applyBufferLadderStep (const juce::String& cause);
     int getCurrentBufferSize() const { return desiredBufferSize(); }
 
     /// §6.6: called with the current load so pressure is warned about before it
@@ -778,6 +784,9 @@ private:
     /// The backend drop count already reported, so a loss that is still growing
     /// is said again and one that has stopped is not repeated forever.
     uint64_t reportedBackendDrops = 0;
+    // §5.4: ring loss events already handed to the buffer ladder, so each is
+    // counted once. Falls back to zero with the streams' own counters.
+    uint64_t reportedRingLossEvents = 0;
 
     /// The backend's drop total when the current take started, so the take's
     /// own record reports its own losses rather than the session's.

@@ -37,8 +37,13 @@
  *
  * Real-time clocks (the microphone simulator):
  *
- *   MMA_SIM_REALTIME   1 = every PCM runs at its sample rate in wall-clock time
- *   MMA_SIM_PPM        per-device crystal error, e.g. "mma_mic1=+150,mma_mic2=-150"
+ *   MMA_SIM_REALTIME      1 = every PCM runs at its sample rate in wall-clock time
+ *   MMA_SIM_PPM           per-device crystal error, e.g. "mma_mic1=+150,mma_mic2=-150"
+ *   MMA_SIM_BUFFER_FRAMES the driver ring a real card would have; default: what
+ *                         the PCM was configured with. A read that comes later
+ *                         than that ring can hold gets -EPIPE, the way a real
+ *                         capture xrun arrives, instead of a burst of the
+ *                         missed blocks that no hardware could have kept.
  *
  * The fixture's `file` plugin sits on the `null` slave, which has no clock: a
  * read returns as fast as the file can be copied, so every fixture "microphone"
@@ -54,8 +59,10 @@
 #include <alsa/asoundlib.h>
 #include <dlfcn.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -146,7 +153,43 @@ struct PacingState
     std::chrono::steady_clock::time_point anchor {};
     double framesSinceAnchor = 0.0;
     double framesPerSecond = 0.0;
+
+    // Diagnostics, dumped to MMA_SIM_STATS_FILE at exit: the device's name,
+    // the latest a read finished after the block's due time, how many blocks
+    // finished a whole block late (the thread was descheduled, so the reads
+    // that follow come as a burst, as they would from a kernel period buffer),
+    // and how often the clock had to be re-anchored.
+    std::string name;
+    long long maxLateNs = 0;
+    long long lateBlocks = 0;
+    long long reanchors = 0;
+    long long blocks = 0;
+    long long bufferFrames = 0;
+    long long xruns = 0;
 };
+
+std::mutex& pacingMutex() { static std::mutex m; return m; }
+std::map<snd_pcm_t*, PacingState>& pacingStates() { static std::map<snd_pcm_t*, PacingState> s; return s; }
+
+void dumpPacingStats()
+{
+    const char* path = std::getenv ("MMA_SIM_STATS_FILE");
+    if (path == nullptr || *path == '\0')
+        return;
+
+    FILE* f = std::fopen (path, "w");
+    if (f == nullptr)
+        return;
+
+    const std::lock_guard<std::mutex> lock (pacingMutex());
+
+    for (const auto& [pcm, st] : pacingStates())
+        std::fprintf (f, "%s blocks=%lld max_late_ms=%.2f late_blocks=%lld reanchors=%lld buffer_frames=%lld xruns=%lld\n",
+                      st.name.c_str(), st.blocks, st.maxLateNs / 1.0e6, st.lateBlocks, st.reanchors,
+                      st.bufferFrames, st.xruns);
+
+    std::fclose (f);
+}
 
 bool realtimeEnabled()
 {
@@ -200,20 +243,71 @@ double nominalRate (snd_pcm_t* pcm)
     return static_cast<double> (rate);
 }
 
+// Before a read: has the emulated driver ring already overflowed? A real
+// card keeps capturing while the reader sleeps, into a ring of bufferFrames;
+// a reader later than that finds the oldest audio gone and gets -EPIPE. The
+// fixture's file plugin would instead hand over everything missed, however
+// late, which no hardware does and which overflows the app's ring in a way
+// hardware never would.
+bool emulatedXrun (snd_pcm_t* pcm, snd_pcm_uframes_t frames)
+{
+    if (! realtimeEnabled())
+        return false;
+
+    const std::lock_guard<std::mutex> lock (pacingMutex());
+    auto& st = pacingStates()[pcm];
+
+    if (st.framesPerSecond <= 0.0)
+        return false; // first read: the clock is anchored after it
+
+    if (st.bufferFrames == 0)
+    {
+        if (const char* v = std::getenv ("MMA_SIM_BUFFER_FRAMES"); v != nullptr && std::atoll (v) > 0)
+            st.bufferFrames = std::atoll (v);
+        else
+        {
+            snd_pcm_uframes_t buffer = 0, period = 0;
+            st.bufferFrames = snd_pcm_get_params (pcm, &buffer, &period) == 0 && buffer > 0
+                                  ? static_cast<long long> (buffer)
+                                  : static_cast<long long> (frames) * 2;
+        }
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto due = st.anchor + std::chrono::duration_cast<std::chrono::steady_clock::duration> (
+                         std::chrono::duration<double> ((st.framesSinceAnchor + static_cast<double> (frames)) / st.framesPerSecond));
+    const auto ringHolds = std::chrono::duration_cast<std::chrono::steady_clock::duration> (
+                               std::chrono::duration<double> (static_cast<double> (st.bufferFrames) / st.framesPerSecond));
+
+    if (now - due <= ringHolds)
+        return false;
+
+    // The ring overflowed. What it still holds is the newest bufferFrames;
+    // the clock restarts from now, as a real card's does after prepare().
+    ++st.xruns;
+    st.anchor = now;
+    st.framesSinceAnchor = 0.0;
+    return true;
+}
+
 void pace (snd_pcm_t* pcm, snd_pcm_sframes_t transferred)
 {
     if (! realtimeEnabled() || transferred <= 0)
         return;
 
-    static std::mutex mutex;
-    static std::map<snd_pcm_t*, PacingState> states;
+    // The map and its mutex are constructed before the handler is registered,
+    // so they outlive it: function statics die in reverse order of
+    // construction, and an atexit handler registered after a static's
+    // construction runs before that static's destructor.
+    static const bool statsRegistered = (pacingMutex(), pacingStates(), std::atexit (dumpPacingStats), true);
+    (void) statsRegistered;
 
     const auto now = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point due;
 
     {
-        const std::lock_guard<std::mutex> lock (mutex);
-        auto& st = states[pcm];
+        const std::lock_guard<std::mutex> lock (pacingMutex());
+        auto& st = pacingStates()[pcm];
 
         if (st.framesPerSecond <= 0.0)
         {
@@ -221,19 +315,34 @@ void pace (snd_pcm_t* pcm, snd_pcm_sframes_t transferred)
             if (rate <= 0.0)
                 return;
 
-            st.framesPerSecond = rate * (1.0 + ppmFor (snd_pcm_name (pcm)) * 1.0e-6);
+            const char* name = snd_pcm_name (pcm);
+            st.name = name != nullptr ? name : "?";
+            st.framesPerSecond = rate * (1.0 + ppmFor (name) * 1.0e-6);
             st.anchor = now;
             st.framesSinceAnchor = 0.0;
         }
 
         st.framesSinceAnchor += static_cast<double> (transferred);
+        ++st.blocks;
         due = st.anchor + std::chrono::duration_cast<std::chrono::steady_clock::duration> (
                               std::chrono::duration<double> (st.framesSinceAnchor / st.framesPerSecond));
+
+        if (now > due)
+        {
+            const auto lateNs = static_cast<long long> (
+                std::chrono::duration_cast<std::chrono::nanoseconds> (now - due).count());
+            st.maxLateNs = std::max (st.maxLateNs, lateNs);
+
+            const auto blockNs = static_cast<long long> (1.0e9 * static_cast<double> (transferred) / st.framesPerSecond);
+            if (lateNs >= blockNs)
+                ++st.lateBlocks;
+        }
 
         // More than a quarter of a second behind: the stream was idle, not
         // slow. Start its clock again from here.
         if (now - due > std::chrono::milliseconds (250))
         {
+            ++st.reanchors;
             st.anchor = now;
             st.framesSinceAnchor = 0.0;
             return;
@@ -377,6 +486,9 @@ snd_pcm_sframes_t snd_pcm_readi (snd_pcm_t* pcm, void* buffer, snd_pcm_uframes_t
 {
     if (! shouldFail (pcm, Stream::capture))
     {
+        if (emulatedXrun (pcm, frames))
+            return -EPIPE;
+
         const auto got = passThrough (pcm, buffer, frames);
         pace (pcm, got);
         return got;

@@ -23,9 +23,19 @@ namespace mma {
 class DeviceInputStream
 {
 public:
-    /// Jitter headroom. Eight output blocks is enough to absorb a device that
-    /// briefly runs late without the ring ever emptying or overflowing.
-    static constexpr int kRingBlocks = 8;
+    /// How deep the platform layer asks the driver's own capture ring to be,
+    /// in blocks. A reader thread that wakes late finds its audio still
+    /// there rather than dropped in the kernel, and then hands it over all at
+    /// once: this many blocks can land in this ring between two pulls.
+    static constexpr int kSourceBufferBlocks = 8;
+
+    /// Jitter headroom. Sized to take a whole driver ring's burst on top of
+    /// the target fill with room to spare: with eight blocks here and eight
+    /// in the driver, a stall the driver rode out overflowed this ring by two
+    /// blocks -- audio the hardware had kept, thrown away one layer up. This
+    /// costs no latency (the target fill below is what the monitor path pays)
+    /// and 32 KB a channel at the largest block.
+    static constexpr int kRingBlocks = 16;
 
     /// How full the ring must be before playout starts, and what the PI loop
     /// steers back to. This is the latency the drift buffer costs, so it is
@@ -39,6 +49,28 @@ public:
     /// latency to the headroom, so making the ring safer would silently make
     /// the monitor path slower.
     static constexpr int kPreRollBlocks = 2;
+
+    static_assert (kSourceBufferBlocks + kPreRollBlocks + 2 <= kRingBlocks,
+                   "the ring must hold a full driver burst above its target fill, with a block "
+                   "of delivery jitter and one in flight");
+
+    /// §3.1/§3.3: a drift figure is only claimed once this much of it has been
+    /// measured. Before that the estimate's resolution is too coarse to name.
+    static constexpr double kMeasurementSeconds = 60.0;
+
+    /// The clock the loop reads to place a pull within the device's block. A
+    /// test may substitute simulated time; production leaves it alone.
+    using NowNsFn = int64_t (*)();
+    static void setClockForTesting (NowNsFn fn) noexcept;
+
+    /// Test and tuning hook: false drives the loop from the raw ring level at
+    /// pull time -- the whole-block staircase -- instead of the de-quantized
+    /// level. Exists so Tools/sim_drift_loop.cpp can show the difference.
+    static void setVirtualFillForTesting (bool enabled) noexcept;
+
+    /// Test and tuning hook: this stream's loop gains, after prepare().
+    void setLoopGainsForTesting (double kp, double ki) noexcept { compensator.setGains (kp, ki); }
+    void setLoopSlewForTesting (double ppmPerSecond) noexcept { compensator.setSlewForTesting (ppmPerSecond); }
 
     explicit DeviceInputStream (double sampleRate) noexcept;
 
@@ -93,31 +125,61 @@ public:
     /// consumer stopped pulling, or pulled too slowly. Counted, never silent.
     uint64_t getOverrunSamples() const noexcept { return overrunSamples.load (std::memory_order_relaxed); }
 
-    /// §3.3 reporting, as a correction against the stream that pulls this one --
-    /// i.e. the output device, not the clock master. Positive means this device
-    /// runs fast relative to that clock.
-    ///
-    /// The figure §3.3 actually shows is relative to the clock master, which is
-    /// this minus the master's own value; CaptureCoordinator owns which channel
-    /// that is and does the subtraction.
+    /// The loop's own correction against the clock that pulls this stream:
+    /// what the resampler is doing right now. Positive means this device is
+    /// being drained faster than nominal. This is a control state, not a
+    /// measurement -- it slews at 5 PPM/s, overshoots, and is disturbed by
+    /// every lost block -- so §3.3's reported figure comes from
+    /// getMeasuredDriftPpm() instead.
     double getDriftPpm() const noexcept { return driftPpm.load (std::memory_order_relaxed); }
     bool hasSustainedExcessDrift() const noexcept { return excessDrift.load (std::memory_order_relaxed); }
+
+    /// §3.3: this device's clock against the clock that pulls it, measured.
+    /// A least-squares fit of samples-delivered against samples-pulled over
+    /// the reporting window, so it does not depend on where the loop is in its
+    /// transient, and a lost block moves it by a few PPM rather than sending
+    /// it to a clamp. Zero, and hasDriftMeasurement() false, until
+    /// kMeasurementSeconds of window exist. Positive means the device runs
+    /// fast. The figure §3.3 shows is this minus the master's; the
+    /// coordinator does that subtraction.
+    double getMeasuredDriftPpm() const noexcept { return measuredPpm.load (std::memory_order_relaxed); }
+    bool hasDriftMeasurement() const noexcept { return measured.load (std::memory_order_relaxed); }
+    double getMeasurementSeconds() const noexcept { return measurementSeconds.load (std::memory_order_relaxed); }
 
     /// Samples the output clock asked for and the ring could not supply. Any
     /// value above zero is audio that was not there when it was needed.
     uint64_t getUnderrunSamples() const noexcept { return underruns.load (std::memory_order_relaxed); }
 
+    /// §5.4: blocks in which this ring lost audio -- a pull that ran dry or a
+    /// push that found the ring full -- as events rather than samples. The
+    /// buffer ladder counts events: three inside thirty seconds is its trigger.
+    uint64_t getLossEvents() const noexcept { return lossEvents.load (std::memory_order_relaxed); }
+
+    /// Samples the device has delivered, dropped ones included, and samples
+    /// the consumer has pulled since playout started. The measurement above
+    /// is built from these; harnesses read them directly.
+    uint64_t getPushedSamples() const noexcept { return pushedSamples.load (std::memory_order_relaxed); }
+    uint64_t getPulledSamples() const noexcept { return pulledSamples.load (std::memory_order_relaxed); }
+
+    /// The two clocks against the wall clock, from the same fit: how fast the
+    /// device delivers and how fast the consumer pulls, each in PPM against
+    /// nominal. Diagnostics; zero until measured.
+    double getMeasuredDeviceRatePpm() const noexcept { return deviceRatePpm.load (std::memory_order_relaxed); }
+    double getMeasuredConsumerRatePpm() const noexcept { return consumerRatePpm.load (std::memory_order_relaxed); }
+
     double getFillFraction() const noexcept { return ring.fillFraction(); }
 
     /// §3.3 drift reporting runs on a slower cadence than the audio callback,
-    /// so the sustained-excess flag is advanced from there. referencePpm is the
-    /// clock master's own correction, since §3.3 judges each device against the
-    /// master rather than against the output stream.
+    /// so the measurement and the sustained-excess flag are advanced from
+    /// there. referencePpm is the clock master's own measured drift, since
+    /// §3.3 judges each device against the master rather than against the
+    /// output stream. Called from one thread only; never from an audio thread.
     void tickDriftReporting (double elapsedSeconds, double referencePpm = 0.0) noexcept;
 
 private:
     RingBuffer ring;
     DriftCompensator compensator;
+    double rate = 48000.0;
 
     std::atomic<bool> channelLive { true };
 
@@ -132,11 +194,67 @@ private:
     std::atomic<bool> excessDrift { false };
     std::atomic<uint64_t> driftReportingResetEpoch { 0 };
     std::atomic<uint64_t> underruns { 0 };
+    std::atomic<uint64_t> lossEvents { 0 };
 
-    // Reporting-thread-owned state. The audio thread publishes driftPpm
-    // atomically; it never touches this accumulator.
+    // Producer-published: when its last block landed and how big it was. The
+    // consumer uses them to place its pull within the device's block, which
+    // is what turns the ring level from a staircase in whole blocks into a
+    // line the loop can follow. Sample counts feed the measurement.
+    std::atomic<int64_t> lastPushNs { 0 };
+    std::atomic<int> lastPushSamples { 0 };
+    std::atomic<uint64_t> pushedSamples { 0 };
+    std::atomic<int64_t> lastPullNs { 0 };
+    std::atomic<uint64_t> pulledSamples { 0 };
+
+    // Consumer-owned: the smoothed, de-quantized fill the loop is driven by.
+    double fillAverage = 0.0;
+    bool fillAverageValid = false;
+    static constexpr double kFillSmoothing = 1.0 / 32.0;
+
+    // Consumer-owned: silence this stream has written in place of audio that
+    // had not arrived, not yet answered by the audio that arrives late for
+    // the same span. A dry pull consumes nothing, so when the device's blocks
+    // do land -- a late reader hands over everything the driver held at once
+    // -- the ring holds that much more than before. The loop used to read
+    // that as "device fast" and answer with the clamp, which on a slow device
+    // drained the ring dry again: a limit cycle paid in one dropped block
+    // every few seconds. Draining it slowly instead kept this channel that
+    // far behind every other for as long as the drain took, minutes, with
+    // the monitor path that much slower and the headroom that much smaller.
+    //
+    // The span the late audio covers already stands in the file as silence.
+    // So it is skipped, up to the silence it answers for, at the first pull
+    // that finds the ring above its target: the channel is back in step at
+    // once, the loss was counted once, as the silence, and the loop never
+    // sees it. Silence that nothing arrives to answer within a ring's worth
+    // of pulls was audio lost outright -- a device that dropped it itself --
+    // and is forgotten rather than left to eat the next block that runs a
+    // few samples ahead.
+    double silenceOwed = 0.0;
+    int pullsSinceSilence = 0;
+
+    // Reporting-thread-owned. The audio threads publish counters atomically;
+    // they never touch anything below.
     double excessDriftSeconds = 0.0;
     uint64_t observedDriftReportingResetEpoch = 0;
+    std::atomic<double> measuredPpm { 0.0 };
+    std::atomic<bool> measured { false };
+    std::atomic<double> measurementSeconds { 0.0 };
+    std::atomic<double> deviceRatePpm { 0.0 };
+    std::atomic<double> consumerRatePpm { 0.0 };
+
+    // The measurement window: at each tick, each side's sample count paired
+    // with the timestamp of the block that brought it there, in a fixed ring
+    // so the reporting thread allocates nothing after construction either.
+    // Each side is fitted against its own timestamps. Fitting one count
+    // against the other would put the ring level into the residual, and the
+    // level's slow swing through the loop's transient reads as slope over a
+    // sixty-second window -- tens of PPM of bias at larger blocks.
+    static constexpr int kMaxWindowPoints = 1024;
+    struct RatePoint { double pushSeconds; double pushed; double pullSeconds; double pulled; };
+    RatePoint window[kMaxWindowPoints] {};
+    int windowStart = 0;
+    int windowCount = 0;
 
     static constexpr double kExcessDriftThresholdPpm = 100.0;
     static constexpr double kExcessDriftSustainSeconds = 10.0;
@@ -152,6 +270,11 @@ private:
     size_t targetFillSamples = 0;
 
     bool readOne (float& out) noexcept;
+    void resetMeasurementWindow() noexcept;
+    double virtualFillNow (size_t available) const noexcept;
+    double fillErrorNow (size_t available) noexcept;
+    void noteSilence (int samples) noexcept;
+    void skipLateAudio (int numSamples) noexcept;
 };
 
 } // namespace mma

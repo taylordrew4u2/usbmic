@@ -35,6 +35,13 @@ public:
     /// resuming after a gap has to say about the audio from before it.
     void clear() noexcept;
 
+    /// Consumer side: drop up to numSamples of what is readable, oldest first,
+    /// without copying them out; returns how many were dropped. Real-time
+    /// safe for the same reason clear() is. This is for a consumer skipping
+    /// audio it has decided not to play -- a span that arrived late, after
+    /// silence had already stood in for it.
+    size_t discard (size_t numSamples) noexcept;
+
     /// Number of samples currently readable.
     size_t availableForRead() const noexcept;
 

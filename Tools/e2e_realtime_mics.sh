@@ -36,6 +36,13 @@ export MMA_SIM_PPM="mma_mic1=${PPM_A},mma_mic2=${PPM_B},mma_out=0"
 export MMA_APP_LD_PRELOAD="$PWD/$SHIM"
 echo "Microphone clocks: $MMA_SIM_PPM"
 
+# The app monitors from launch, and §5.4's buffer ladder steps up on three
+# ring-loss events inside thirty seconds. On a machine whose scheduling jitter
+# is wider than the 64-sample cushion that happens while monitoring, before
+# the take -- given the time. Forty-five seconds is one ladder window plus the
+# reopen, so a take on such a machine starts at the size the machine needs.
+export MMA_SETTLE_SECONDS="${MMA_SETTLE_SECONDS:-45}"
+
 # The fixture's tone files are 30 s long and the `file` plugin loops them, so a
 # longer take is fine; verify_take.py only needs each tone present.
 bash Tools/e2e_app_take.sh "$SECONDS_TO_RECORD"
@@ -49,6 +56,11 @@ import json, sys
 path, seconds, ppm_a, ppm_b = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 j = json.load(open(path))
 failed = 0
+
+print("  buffer at take: %s samples; ladder steps before it: %s" % (
+    j.get("bufferSizeSamples"),
+    ["%s->%s at %.0fs" % (c.get("oldBufferSize"), c.get("newBufferSize"), c.get("timestampSeconds", 0))
+     for c in j.get("bufferChanges", [])] or "none"))
 
 def check(ok, what):
     global failed

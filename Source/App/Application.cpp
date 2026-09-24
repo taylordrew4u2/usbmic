@@ -1345,6 +1345,43 @@ bool Application::noteCallbackOverrun()
     return bufferLadder.noteOverrun (juce::Time::getMillisecondCounterHiRes() / 1000.0);
 }
 
+juce::String Application::applyBufferLadderStep (const juce::String& cause)
+{
+    const int size = bufferLadder.getCurrentSize();
+    const bool midTake = capture != nullptr && capture->isRecording();
+
+    // What the monitor path costs at this size: an input block, the two-block
+    // drift cushion and an output block. "Slightly more delay" was the old
+    // wording at every rung, and at 512 samples that is over 40 ms, which
+    // §5.4 says is never to be shipped without saying so.
+    const double delayMs = 4.0 * static_cast<double> (size) / std::max (1.0, currentSampleRate) * 1000.0;
+
+    auto line = juce::String ("This computer could not keep up") + cause
+              + ", so the audio buffer has been increased to " + juce::String (size)
+              + " samples. The headphone delay is now about "
+              + (delayMs < 10.0 ? juce::String (delayMs, 1) : juce::String (juce::roundToInt (delayMs)))
+              + " ms";
+
+    // Fixed for the life of a stream, so the streams are reopened through the
+    // same path a hot-plug takes -- the same one setBufferSizeOverride uses.
+    // Not during a take: §5.4 forbids a buffer change mid-recording, so the
+    // reopen is owed and happens when the take stops, and the sentence says
+    // so rather than describing a change that has not happened.
+    if (midTake)
+    {
+        line += ", from the next take. This take continues at the size it started with.";
+        requestCaptureRestart();
+    }
+    else
+    {
+        line += ".";
+        onDeviceListChanged();
+    }
+
+    noteActivity (ActivityLevel::Warning, "Performance", line);
+    return line;
+}
+
 PerformanceWarning Application::updatePerformance (double cpuLoad, bool thermallyThrottled)
 {
     return cpuPressureMonitor.update (cpuLoad, thermallyThrottled,
@@ -3341,7 +3378,9 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                 : std::string();
     meta.sampleRate = currentSampleRate;
     meta.bitDepth = currentBitDepth;
-    meta.bufferSizeSamples = bufferLadder.getCurrentSize();
+    // The size the take's streams actually ran at. The ladder can have stepped
+    // on during the take; that step applies to the next one.
+    meta.bufferSizeSamples = capture != nullptr ? capture->getBufferSizeSamples() : bufferLadder.getCurrentSize();
     meta.measuredLatencyMs = measuredLatencyMs;
 
     for (const auto& d : deviceManager.getDevices())
@@ -3816,12 +3855,26 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         // microphone's PPM under another's name, and §3.3's 100 PPM flag could
         // land on a device that was keeping perfect time.
         {
+            // The measured figure, not the loop's state. The loop's own PPM
+            // slews at 5 PPM/s from zero, overshoots to its clamp draining
+            // what it accumulated on the way, and is knocked sideways by
+            // every lost block -- so read at sixty seconds it was a snapshot
+            // of a transient, and every microphone in the rig was "measured"
+            // at +200. Each stream now fits its device's delivered samples
+            // against time and reports that; it is within a couple of PPM at
+            // the minute whatever the loop is doing.
             const auto& channels = capture->getChannels();
 
             for (size_t i = 0; i < channels.size(); ++i)
+            {
+                const auto index = static_cast<int> (i);
                 deviceManager.updateMeasuredDrift (channels[i].deviceId,
-                                                   capture->getChannelDriftPpm (static_cast<int> (i)),
-                                                   driftMeasuredSeconds);
+                                                   capture->getChannelMeasuredDriftPpm (index),
+                                                   capture->hasChannelDriftMeasurement (index)
+                                                       ? std::max (driftMeasuredSeconds,
+                                                                   capture->getChannelMeasurementSeconds (index))
+                                                       : 0.0);
+            }
         }
 
         // §3.1: the master is re-picked as measurements arrive, so a rig that
@@ -4070,29 +4123,49 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         //
         // §5.4 forbids a change mid-take: a buffer change during a recording is
         // itself a dropout risk, and §0.1 puts not losing audio first. The
-        // ladder refuses to step while recording for the same reason, so this
-        // can only be reached between takes.
+        // ladder still counts and steps during a take -- stepping *up* is what
+        // it forbids stepping *down* -- but the reopen waits for the take to
+        // end. It used to be handed to onDeviceListChanged(), which does not
+        // reopen anything mid-take and did not owe the reopen either, so a
+        // step taken during a take was announced and then never applied.
         if (bufferLadderStepped)
-        {
-            const auto line = juce::String ("This computer could not keep up, so the audio buffer "
-                                            "has been increased to ")
-                            + juce::String (bufferLadder.getCurrentSize())
-                            + " samples. You may notice slightly more delay in the headphones.";
-
-            noteActivity (ActivityLevel::Warning, "Performance", line);
-
-            // Fixed for the life of a stream, so the streams are reopened
-            // through the same path a hot-plug takes -- the same one
-            // setBufferSizeOverride uses.
-            onDeviceListChanged();
-
-            return line;
-        }
+            return applyBufferLadderStep ("");
 
         if (firstFailure.isNotEmpty())
             return firstFailure;
         if (firstWarning.isNotEmpty())
             return firstWarning;
+    }
+
+    // §5.4's trigger, from the app's own rings. The ladder was fed only by
+    // CoreAudio's processor-overload property, which the other two backends
+    // never raise and which says nothing about the one place this app
+    // actually loses audio to timing: a device ring that ran dry because its
+    // block came late, or filled because the pull came late. Those are the
+    // callback missing its deadline in every sense the spec means, and a
+    // machine whose scheduling jitter is wider than a two-block cushion sat
+    // at 64 samples losing a block every few seconds with the ladder never
+    // hearing about it. Three inside thirty seconds steps it up; the streams
+    // reopen at the new size through the same path a hot-plug takes.
+    if (capture != nullptr)
+    {
+        const auto eventsNow = capture->getRingLossEvents();
+
+        // The counters live in the streams and go back to zero whenever the
+        // streams are rebuilt, which every step does.
+        if (eventsNow < reportedRingLossEvents)
+            reportedRingLossEvents = 0;
+
+        // One overrun per poll in which any ring lost audio, however many
+        // events the streams counted: a single stall dries every ring at
+        // once and every tick it lasts, and counted per event -- even capped
+        // at three -- one stall was the whole trigger, and the ladder stepped
+        // twice inside a second. §5.4's three are three separate occasions.
+        const bool stepped = eventsNow > reportedRingLossEvents && noteCallbackOverrun();
+        reportedRingLossEvents = eventsNow;
+
+        if (stepped)
+            return applyBufferLadderStep (" with the microphones");
     }
 
     // §0.1: audio lost between the device and the app. Counted by the backends
@@ -4602,7 +4675,8 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
     summary->setProperty ("appVersion", appVersionString());
     summary->setProperty ("sampleRate", currentSampleRate);
     summary->setProperty ("bitDepth", currentBitDepth);
-    summary->setProperty ("bufferSize", bufferLadder.getCurrentSize());
+    summary->setProperty ("bufferSize", capture != nullptr ? capture->getBufferSizeSamples() : bufferLadder.getCurrentSize());
+    summary->setProperty ("bufferSizeNext", bufferLadder.getCurrentSize());
     summary->setProperty ("backend", audioBackend != nullptr
                                          ? juce::String (audioBackend->getBackendName())
                                          : juce::String ("none"));

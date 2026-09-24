@@ -50,7 +50,10 @@ for _ in {1..60}; do
   sleep 1
 done
 DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null || { echo "FAIL: window never appeared"; exit 1; }
-sleep 4  # devices enumerate and streams open after the window shows
+# Devices enumerate and streams open after the window shows. A gate that wants
+# the app to have settled its buffer ladder first (§5.4 steps on loss events
+# inside a 30-second window) asks for longer.
+sleep "${MMA_SETTLE_SECONDS:-4}"
 
 # Clicks are given relative to the app window's top-left corner, because the
 # window manager-less Xvfb root places the window wherever it likes: hard-coded
