@@ -75,6 +75,9 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     observedDriftReportingResetEpoch = 0;
     underruns.store (0, std::memory_order_relaxed);
     lossEvents.store (0, std::memory_order_relaxed);
+    primes.store (0, std::memory_order_relaxed);
+    holds.store (0, std::memory_order_relaxed);
+    skips.store (0, std::memory_order_relaxed);
 
     lastPushNs.store (0, std::memory_order_relaxed);
     lastPushSamples.store (0, std::memory_order_relaxed);
@@ -219,6 +222,7 @@ void DeviceInputStream::skipLateAudio (int numSamples) noexcept
     {
         const auto skip = static_cast<size_t> (std::min (silenceOwed, excess));
         const auto skipped = ring.discard (skip);
+        skips.fetch_add (1, std::memory_order_relaxed);
 
         // A burst that lands between two of the device's own periods leaves
         // the placement above short by up to a block until the next period
@@ -341,6 +345,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         previousSample = currentSample;
         phase = 0.0;
         primed = true;
+        primes.fetch_add (1, std::memory_order_relaxed);
     }
 
     for (int i = 0; i < numSamples; ++i)
@@ -374,6 +379,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
                 {
                     currentSample = previousSample;
                     destination[i] = previousSample;
+                    holds.fetch_add (1, std::memory_order_relaxed);
                     return;
                 }
 

@@ -113,12 +113,18 @@ int main (int argc, char** argv)
         std::printf ("%7.2f %10llu %+8.1f", t, static_cast<unsigned long long> (accepted), consumerPpm);
 
         for (int ch = 0; ch < static_cast<int> (mics.size()); ++ch)
-            std::printf (" | %d %.3f %+7.1f %+7.1f %6llu %6llu", ch,
+        {
+            const auto seams = coordinator.getChannelSeams (ch);
+            std::printf (" | %d %.3f %+7.1f %+7.1f %6llu %6llu p%llu h%llu s%llu", ch,
                          coordinator.getChannelFillFraction (ch),
                          coordinator.getChannelRawDriftPpm (ch),
                          coordinator.hasChannelDriftMeasurement (ch) ? coordinator.getChannelMeasuredDriftPpm (ch) : 0.0,
                          static_cast<unsigned long long> (coordinator.getUnderrunSamples (ch)),
-                         static_cast<unsigned long long> (coordinator.getChannelOverrunSamples (ch)));
+                         static_cast<unsigned long long> (coordinator.getChannelOverrunSamples (ch)),
+                         static_cast<unsigned long long> (seams.primes),
+                         static_cast<unsigned long long> (seams.holds),
+                         static_cast<unsigned long long> (seams.skips));
+        }
 
         const auto diag = coordinator.getClockDiagnostics();
         std::printf (" | clock late_max=%.2fms catchup=%llu pull_max=%.2fms\n",

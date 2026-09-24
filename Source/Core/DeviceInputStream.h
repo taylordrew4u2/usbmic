@@ -155,6 +155,15 @@ public:
     /// buffer ladder counts events: three inside thirty seconds is its trigger.
     uint64_t getLossEvents() const noexcept { return lossEvents.load (std::memory_order_relaxed); }
 
+    /// Diagnostics for the harnesses: how often the interpolator restarted
+    /// its pair (a sub-sample step each time), held its last sample for a
+    /// missing look-ahead, and skipped late audio. None of these is loss;
+    /// all of them are a seam in the audio, and a take with one per block
+    /// is a take with a click per block.
+    uint64_t getPrimeCount() const noexcept { return primes.load (std::memory_order_relaxed); }
+    uint64_t getHoldCount() const noexcept { return holds.load (std::memory_order_relaxed); }
+    uint64_t getSkipCount() const noexcept { return skips.load (std::memory_order_relaxed); }
+
     /// Samples the device has delivered, dropped ones included, and samples
     /// the consumer has pulled since playout started. The measurement above
     /// is built from these; harnesses read them directly.
@@ -195,6 +204,9 @@ private:
     std::atomic<uint64_t> driftReportingResetEpoch { 0 };
     std::atomic<uint64_t> underruns { 0 };
     std::atomic<uint64_t> lossEvents { 0 };
+    std::atomic<uint64_t> primes { 0 };
+    std::atomic<uint64_t> holds { 0 };
+    std::atomic<uint64_t> skips { 0 };
 
     // Producer-published: when its last block landed and how big it was. The
     // consumer uses them to place its pull within the device's block, which

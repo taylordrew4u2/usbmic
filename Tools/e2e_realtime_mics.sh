@@ -43,8 +43,11 @@ echo "Microphone clocks: $MMA_SIM_PPM"
 # reopen, so a take on such a machine starts at the size the machine needs.
 export MMA_SETTLE_SECONDS="${MMA_SETTLE_SECONDS:-45}"
 
-# The fixture's tone files are 30 s long and the `file` plugin loops them, so a
-# longer take is fine; verify_take.py only needs each tone present.
+# The fixture's tone files are four minutes long: the `file` plugin starts a
+# file over at its end and delivers a seam in every block from then on (see
+# Tools/setup_alsa_fixture.sh), so no stream may live longer than the file.
+# Settle plus take plus stop is well inside it. verify_take.py only needs each
+# tone present.
 TAKE_FAILED=0
 bash Tools/e2e_app_take.sh "$SECONDS_TO_RECORD" || TAKE_FAILED=1
 
