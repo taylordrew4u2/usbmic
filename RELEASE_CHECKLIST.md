@@ -20,7 +20,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **574 unit tests**; if tests change, record the final discovered count here.
+  is **576 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
   `sim_camera_sync_lifecycle` pass. The candidate baseline is **201 CoreAudio
   checks**, **108 WASAPI checks**, **262 camera checks** and **7 synchronous
@@ -67,14 +67,13 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] **GA blocker:** Pull or wedge the removable recording volume precisely
   during Record start, Stop/finalization, saved-take listing and diagnostics
   export. None of those message-thread paths may freeze the window or shutdown.
-  Launch, polling, preflight and recovery are detached; diagnostics export now
-  runs on a detached worker; take-folder creation at Record start and the
-  folder listing at Stop (reused by the saved-take card) are bounded to five
-  seconds and report a card that stopped answering. Still on the message
-  thread and unbounded: opening the stem files at Record start, draining the
-  writer at Stop, and the stop-time `session.json` and activity-log rewrites.
-  Close this only after those are bounded and the hostile-timing matrix has
-  been run on hardware.
+  Every one of them is now detached or bounded in code: diagnostics export
+  runs on a detached worker; take-folder creation, opening the stem files,
+  the writer's final drain at Stop, the Stop folder listing and the
+  `session.json`/activity-log writes each wait at most five seconds, then
+  report the card that stopped answering and abandon the call to its own
+  worker. Unit tests cover a stalled start and stop in `CaptureCoordinator`.
+  Close this only after the hostile-timing matrix has been run on hardware.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
   reports 1.12.0 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.

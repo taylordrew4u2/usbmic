@@ -146,6 +146,15 @@ bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
     return file.getSize() == static_cast<juce::int64> (text.getNumBytesAsUTF8());
 }
 
+// replaceWithTextChecked for files on the card, from the message thread. A
+// card pulled mid-write can hold the write forever; past the deadline this
+// reports failure and the write is left to finish (or not) on its own worker.
+bool replaceWithTextWithin (const juce::File& file, const juce::String& text)
+{
+    return runWithDeadline<bool> ([file, text] { return replaceWithTextChecked (file, text); },
+                                  kRemovableVolumeDeadline).value_or (false);
+}
+
 std::vector<juce::File> directChildDirectories (const juce::File& root)
 {
     std::vector<juce::File> result;
@@ -2004,7 +2013,15 @@ void Application::toggleRecording()
         // §6.1: stop the writer first so every buffered frame reaches the files
         // before the engine reports the take finished.
         if (capture != nullptr)
+        {
             capture->stopRecording();
+
+            // Bounded inside the coordinator; said here, because a Stop that
+            // could not finish the files must not read like a clean one.
+            if (capture->didLastStopTimeOut())
+                noteActivity (ActivityLevel::Failed, "Card",
+                              juce::String (capture->getCardWriteProblem()));
+        }
 
         // Before the folder is listed for the panel that shows what was saved,
         // so the video files are closed and their real sizes are on disk by the
@@ -3428,7 +3445,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // above -- every dropout, every buffer change, why the backup stopped --
     // and it was written with the return value discarded, so the one file that
     // explains a difficult take could fail to appear and nothing would say so.
-    if (! replaceWithTextChecked (juce::File (currentSessionFolder).getChildFile ("session.json"), juce::String (json)))
+    if (! replaceWithTextWithin (juce::File (currentSessionFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the details file for this take. The audio itself is saved.");
 
@@ -3437,7 +3454,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // of how the take went -- which is the half of the pair the user reaches
     // for precisely when the card's copy is the one that went wrong.
     if (currentMirrorFolder.isNotEmpty()
-        && ! replaceWithTextChecked (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
+        && ! replaceWithTextWithin (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
         noteActivity (ActivityLevel::Warning, "Local backup",
                       "Couldn't write the details file into the backup copy. The backed-up audio "
                       "itself is there.");
@@ -3472,7 +3489,7 @@ void Application::writeActivityLog (const juce::File& folder) const
 
     // Checked like everything else here. A log that failed to write is exactly
     // the sort of thing this file exists to stop happening quietly.
-    if (! replaceWithTextChecked (folder.getChildFile ("activity.log"), text))
+    if (! replaceWithTextWithin (folder.getChildFile ("activity.log"), text))
         noteActivity (ActivityLevel::Warning, "Recording",
                       "Couldn't write the activity log into " + folder.getFileName()
                       + ". The audio itself is saved.");

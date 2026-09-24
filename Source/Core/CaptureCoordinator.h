@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -141,6 +142,21 @@ public:
     bool isMirroring() const noexcept { return pipeline != nullptr && pipeline->isMirroring(); }
     void stopRecording();
     bool isRecording() const noexcept { return pipeline != nullptr && pipeline->isRunning(); }
+
+    /// How long startRecording() waits for the take's files to open, and
+    /// stopRecording() for the writer to drain and close them. Both touch the
+    /// card, and a card pulled or wedged at that instant can block a file call
+    /// forever; past the deadline the pipeline is abandoned to its own
+    /// detached worker (which releases it whenever the call returns) and the
+    /// take is reported rather than the calling thread freezing.
+    void setFilesystemDeadline (std::chrono::milliseconds limit) noexcept { filesystemDeadline = limit; }
+
+    /// True when the last stopRecording() gave up waiting on the card.
+    bool didLastStopTimeOut() const noexcept { return lastStopTimedOut; }
+
+    /// Runs on the worker just before the pipeline's start() or stop(). Tests
+    /// only: it stands in for a card that stops answering.
+    void setFilesystemStallForTesting (std::function<void()> stall) { filesystemStallForTesting = std::move (stall); }
 
     /// §6.5: an unplugged mic keeps its channel and writes silence. Applies
     /// to EVERY channel the device contributes: an interface with four
@@ -483,6 +499,10 @@ private:
     // return, and zero LUFS would read as a deafening mix rather than nothing.
     // The take's write outcome, captured as it stopped. Cleared when the next
     // take begins. See the note on hasCardWriteFailed().
+    std::chrono::milliseconds filesystemDeadline { 5000 };
+    std::function<void()> filesystemStallForTesting;
+    bool lastStopTimedOut = false;
+
     std::string lastTakeCardWriteProblem;
     bool lastTakeCardWriteFailed = false;
     bool lastTakeMirrorWriteFailed = false;

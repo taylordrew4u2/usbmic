@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 namespace mma {
@@ -596,16 +598,73 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     for (const auto& ch : channels)
         specs.push_back ({ ch.fileName, ch.trimDb, ch.bitDepth });
 
-    auto p = std::make_unique<WritePipeline>();
-
-    if (! p->start (sessionFolder, specs, sampleRate, bitDepth, originTimestamp, mirrorFolder))
+    // Opening the files is the take's first write to the card, so it runs on
+    // a disposable worker with a deadline. A card pulled at that instant used
+    // to hold the caller -- the message thread -- inside open() indefinitely.
+    struct StartState
     {
-        // Carried up rather than collapsed back into a bool. The pipeline knows
-        // which file it could not open and where; by the time a bare false
-        // reaches the UI that is gone, and the user gets a record button that
-        // does nothing for no stated reason.
-        recordingProblem = p->getStartProblem();
-        return false;
+        std::mutex mutex;
+        std::condition_variable done;
+        std::unique_ptr<WritePipeline> pipeline = std::make_unique<WritePipeline>();
+        bool finished = false;
+        bool started = false;
+        bool abandoned = false;
+    };
+
+    auto state = std::make_shared<StartState>();
+    const double rate = sampleRate;
+    auto stall = filesystemStallForTesting;
+
+    std::thread ([state, specs, rate, bitDepth, sessionFolder, originTimestamp, mirrorFolder, stall]
+    {
+        if (stall)
+            stall();
+
+        const bool ok = state->pipeline->start (sessionFolder, specs, rate, bitDepth,
+                                                originTimestamp, mirrorFolder);
+
+        std::unique_lock<std::mutex> lock (state->mutex);
+        state->started = ok;
+        state->finished = true;
+
+        if (state->abandoned)
+        {
+            // Nobody will publish it: close what was opened, here, off the
+            // caller's thread.
+            auto orphan = std::move (state->pipeline);
+            lock.unlock();
+            orphan.reset();
+            return;
+        }
+
+        lock.unlock();
+        state->done.notify_all();
+    }).detach();
+
+    std::unique_ptr<WritePipeline> p;
+    {
+        std::unique_lock<std::mutex> lock (state->mutex);
+
+        if (! state->done.wait_for (lock, filesystemDeadline, [&state] { return state->finished; }))
+        {
+            state->abandoned = true;
+            recordingProblem = "The card stopped answering while the take's files were being opened, "
+                               "so recording didn't start. Check the card is plugged in, or choose "
+                               "somewhere else to record.";
+            return false;
+        }
+
+        if (! state->started)
+        {
+            // Carried up rather than collapsed back into a bool. The pipeline
+            // knows which file it could not open and where; by the time a bare
+            // false reaches the UI that is gone, and the user gets a record
+            // button that does nothing for no stated reason.
+            recordingProblem = state->pipeline->getStartProblem();
+            return false;
+        }
+
+        p = std::move (state->pipeline);
     }
 
     // Published only once fully started, so the audio thread never sees a
@@ -663,29 +722,89 @@ void CaptureCoordinator::stopRecording()
     while (pipelineUsers.load (std::memory_order_seq_cst) != 0)
         std::this_thread::yield();
 
-    auto p = std::move (pipeline);
-    p->stop();
+    // The final drain and close run on a disposable worker with a deadline.
+    // The writer's last flush goes to the card, and a card pulled during Stop
+    // used to hold the message thread inside that join indefinitely. The
+    // audio thread has already let go of the pipeline above, so abandoning it
+    // to the worker is safe; it is released whenever the card answers.
+    struct StopResult
+    {
+        std::string cardWriteProblem;
+        bool cardWriteFailed = false;
+        bool mirrorWriteFailed = false;
+        double lufs = LoudnessMeter::kSilenceLufs;
+        double truePeakDbtp = LoudnessMeter::kSilenceLufs;
+        int loudnessBlocks = 0;
+    };
 
-    // AFTER stop(), and before p goes out of scope and takes the meter with it.
-    //
-    // The order matters: the loudness meter is fed on the WRITER thread inside
-    // drainOnce, and stop() performs the final flush, so a snapshot taken
-    // before it would miss the end of the take -- on a short take, most of it.
-    //
-    // Without any snapshot the figures died with the pipeline, the block count
-    // fell to zero the instant Stop was pressed, and §10's delivery advice
-    // reverted to "Not enough sound yet to judge how loud this is." at exactly
-    // the moment the user goes to read it.
-    // After stop(), which is where the final close() of every writer happens --
-    // so a header rewrite that failed at the very end is included here rather
-    // than dying with the object that noticed it.
-    lastTakeCardWriteProblem = p->getCardWriteProblem();
-    lastTakeCardWriteFailed = p->hasCardWriteFailed();
-    lastTakeMirrorWriteFailed = p->hasMirrorWriteFailed();
+    struct StopState
+    {
+        std::mutex mutex;
+        std::condition_variable done;
+        bool finished = false;
+        StopResult result;
+    };
 
-    lastTakeLufs = p->getIntegratedLufs();
-    lastTakeTruePeakDbtp = p->getTruePeakDbtp();
-    lastTakeLoudnessBlocks = p->getLoudnessBlockCount();
+    auto state = std::make_shared<StopState>();
+    std::shared_ptr<WritePipeline> p (std::move (pipeline));
+    auto stall = filesystemStallForTesting;
+
+    std::thread ([state, p, stall]
+    {
+        if (stall)
+            stall();
+
+        p->stop();
+
+        // AFTER stop(). The loudness meter is fed on the writer thread and
+        // stop() performs the final flush, so a snapshot taken before it would
+        // miss the end of the take -- on a short take, most of it. stop() is
+        // also where every writer's final close() happens, so a header rewrite
+        // that failed at the very end is included here rather than dying with
+        // the object that noticed it.
+        StopResult r;
+        r.cardWriteProblem = p->getCardWriteProblem();
+        r.cardWriteFailed = p->hasCardWriteFailed();
+        r.mirrorWriteFailed = p->hasMirrorWriteFailed();
+        r.lufs = p->getIntegratedLufs();
+        r.truePeakDbtp = p->getTruePeakDbtp();
+        r.loudnessBlocks = p->getLoudnessBlockCount();
+
+        {
+            const std::lock_guard<std::mutex> lock (state->mutex);
+            state->result = std::move (r);
+            state->finished = true;
+        }
+
+        state->done.notify_all();
+    }).detach();
+
+    std::unique_lock<std::mutex> lock (state->mutex);
+    lastStopTimedOut = ! state->done.wait_for (lock, filesystemDeadline,
+                                               [&state] { return state->finished; });
+
+    if (lastStopTimedOut)
+    {
+        // Without the snapshot the figures died with the pipeline and §10's
+        // delivery advice reverted to "not enough sound" -- but here there is
+        // no snapshot to take. Say what happened instead of implying a clean
+        // take: the end of it may not have reached the card.
+        lastTakeCardWriteProblem = "The card stopped answering while the take was being finished, so "
+                                   "the end of the recording may not have been saved to it.";
+        lastTakeCardWriteFailed = true;
+        lastTakeMirrorWriteFailed = false;
+        lastTakeLufs = LoudnessMeter::kSilenceLufs;
+        lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
+        lastTakeLoudnessBlocks = 0;
+        return;
+    }
+
+    lastTakeCardWriteProblem = state->result.cardWriteProblem;
+    lastTakeCardWriteFailed = state->result.cardWriteFailed;
+    lastTakeMirrorWriteFailed = state->result.mirrorWriteFailed;
+    lastTakeLufs = state->result.lufs;
+    lastTakeTruePeakDbtp = state->result.truePeakDbtp;
+    lastTakeLoudnessBlocks = state->result.loudnessBlocks;
 }
 
 void CaptureCoordinator::setChannelLive (const std::string& deviceId, bool live)
