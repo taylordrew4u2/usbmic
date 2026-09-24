@@ -167,8 +167,10 @@ passed the physical camera matrix.
   notices have owner/legal sign-off.
 - [ ] JUCE licensing is checked against the current official JUCE licensing page
   for the selected distribution model; no undated price table is relied on.
-- [ ] Release notes state the supported targets and known limitations without
-  describing simulator results as hardware certification.
+- [ ] Release notes (`docs/release-notes/v1.12.0.md`, which the release
+  workflow requires and publishes as the release body) state the supported
+  targets and known limitations without describing simulator results as
+  hardware certification.
 
 ## 6. Release and rollback
 
