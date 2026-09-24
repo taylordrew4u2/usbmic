@@ -62,7 +62,7 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     currentSample = 0.0f;
     phase = 0.0;
     primed = false;
-    started = false;
+    started.store (false, std::memory_order_relaxed);
     fillAverage = 0.0;
     fillAverageValid = false;
     silenceOwed = 0.0;
@@ -262,7 +262,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         currentSample = 0.0f;
         phase = 0.0;
         primed = false;
-        started = false;
+        started.store (false, std::memory_order_relaxed);
         fillAverageValid = false;
         silenceOwed = 0.0;
         pullsSinceSilence = 0;
@@ -275,7 +275,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // Pre-roll. The output clock starts before any device has delivered, so
     // consuming here would emit a click at the top of every take and count
     // audio as lost that had simply not arrived yet.
-    if (! started)
+    if (! started.load (std::memory_order_relaxed))
     {
         if (ring.availableForRead() < targetFillSamples)
         {
@@ -283,7 +283,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             return;
         }
 
-        started = true;
+        started.store (true, std::memory_order_relaxed);
     }
 
     // Count, then stamp: a reporter that reads the stamp sees a count at most
@@ -467,7 +467,7 @@ void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double refere
     // tick can see a count one block newer than its stamp: a block of noise
     // per point, white, which a fit over hundreds of points averages down --
     // a difference of two points would carry it whole, 40 PPM at a minute.
-    if (! started)
+    if (! started.load (std::memory_order_relaxed))
         return;
 
     const auto pushNs = lastPushNs.load (std::memory_order_acquire);

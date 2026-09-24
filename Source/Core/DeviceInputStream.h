@@ -93,7 +93,7 @@ public:
     void pull (float* destination, int numSamples) noexcept;
 
     /// True once enough audio has arrived to start consuming (§3.2 pre-roll).
-    bool hasStarted() const noexcept { return started; }
+    bool hasStarted() const noexcept { return started.load (std::memory_order_relaxed); }
 
     /// §6.5: an unplugged mic keeps its channel and yields silence.
     ///
@@ -265,7 +265,9 @@ private:
     float currentSample = 0.0f;
     double phase = 0.0;
     bool primed = false;
-    bool started = false;
+    // Read by the reporting thread too, to know whether there is anything to
+    // measure yet; the consumer alone writes it.
+    std::atomic<bool> started { false };
 
     size_t targetFillSamples = 0;
 

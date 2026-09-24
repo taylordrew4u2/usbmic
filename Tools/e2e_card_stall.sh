@@ -129,6 +129,23 @@ wait_for_log() {  # pattern, seconds
   return 1
 }
 
+# The meter rewrites "<file>.now" by truncating and then writing, so a read
+# that lands between the two sees an empty file, which `[ -lt ]` cannot
+# compare: a CI run failed on exactly that instant. Read until a number is
+# there; a window that has stopped answering leaves the last number in place
+# rather than nothing, so waiting cannot turn a frozen window into a pass.
+read_now() {
+  local value=""
+  for _ in $(seq 1 40); do
+    value=$(cat "$METER.now" 2>/dev/null || true)
+    case "$value" in
+      ''|*[!0-9]*) sleep 0.05 ;;
+      *) echo "$value"; return ;;
+    esac
+  done
+  echo 99999
+}
+
 check_responsive() {  # scenario name
   local worst
   worst=$(worst_stall_since_card_died)
@@ -198,7 +215,7 @@ else
   # once on the way out.
   sleep 3
   check_responsive stop
-  if [ "$(cat "$METER.now" 2>/dev/null || echo 99999)" -lt 1000 ]; then
+  if [ "$(read_now)" -lt 1000 ]; then
     pass "stop: window answering while the card is still dead"
   else
     fail "stop: window not answering while the card is still dead"
