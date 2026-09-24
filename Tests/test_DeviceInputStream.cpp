@@ -982,3 +982,52 @@ TEST_CASE (DeviceInputStream_SilenceNothingArrivesLateForIsWrittenOff)
     runInStep (s, src, out, 1);
     REQUIRE (out[0] - lastValue < 4.0f);
 }
+
+TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
+{
+    // The interpolator carries a pair of samples between blocks, so the
+    // block that primes it reads one sample more than it writes. A ring
+    // holding exactly one block per pull -- what a stall leaves behind, and
+    // what the loop takes half a minute to lift at 200 PPM -- used to run
+    // one sample short on that block, write one sample of silence, de-prime,
+    // and prime again on the next: a step to zero and a phase reset in
+    // every block for as long as it lasted, on a take whose record showed a
+    // sample of loss per block. On a fixture microphone that was every other
+    // 64-sample block voting for the wrong tone.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 128);
+
+    simulatedNs = 1'000'000'000;
+    RampSource src (128);
+    std::vector<float> out (128, 0.0f);
+
+    // Pre-roll to the target, then let a stall drain it to one block: the
+    // device delivers, the pull consumes, and the ring never gets deeper.
+    src.push (s, 256);
+    s.pull (out.data(), 128);
+    s.pull (out.data(), 128);
+    REQUIRE (s.getUnderrunSamples() == 0);
+
+    const int64_t blockNs = 128 * 1000000000LL / 48000;
+    float last = out[127];
+
+    for (int i = 0; i < 400; ++i)
+    {
+        src.push (s, 128);
+        simulatedNs += blockNs / 2;
+        s.pull (out.data(), 128);
+        simulatedNs += blockNs - blockNs / 2;
+
+        // Continuous: the ramp carries on from where the last block left it,
+        // give or take one held sample, and never steps to zero.
+        REQUIRE (out[0] - last <= 2.0f);
+        REQUIRE (out[0] - last >= 0.0f);
+        for (int k = 1; k < 128; ++k)
+            REQUIRE (out[k] - out[k - 1] >= 0.0f);
+        last = out[127];
+    }
+
+    REQUIRE (s.getUnderrunSamples() == 0);
+    REQUIRE (s.getLossEvents() == 0);
+}
