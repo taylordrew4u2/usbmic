@@ -9,8 +9,17 @@ This prints the vote per second, and a map of the first seconds a block at a
 time, so the pattern can be read off a CI log.
 
   Tools/tone_timeline.py <stem.wav> <want-hz> <other-hz> [map-seconds]
+  Tools/tone_timeline.py --seams <stem.wav> <want-hz>
 
 Map key: '1' the stem's own tone, '.' the other, '_' quiet (peak < 0.05).
+
+--seams counts the places where the tone stops being one sine: a sample
+that a pure sine of that frequency could not have produced from the two
+before it. Silence written for a dry ring is not a seam -- the tone stops
+and starts again, and the app reports that loss itself -- so a break next
+to zero samples is not counted. Anything else is audio out of order: a
+sample repeated, skipped or replaced, which no counter in the app can see
+and which a per-block vote only notices once there is one in most blocks.
 """
 import math
 import struct
@@ -51,7 +60,29 @@ def goertzel(seg, rate, hz):
     return s1 * s1 + s2 * s2 - c * s1 * s2
 
 
+def count_seams(samples, rate, hz):
+    c = 2.0 * math.cos(2.0 * math.pi * hz / rate)
+    seams = []
+    for n in range(2, len(samples)):
+        if abs(samples[n] - (c * samples[n - 1] - samples[n - 2])) <= 0.02:
+            continue
+        if any(samples[k] == 0.0 for k in range(max(0, n - 4), min(len(samples), n + 4))):
+            continue
+        if seams and n - seams[-1] <= 4:
+            continue
+        seams.append(n)
+    return seams
+
+
 def main():
+    if sys.argv[1] == '--seams':
+        path, want = sys.argv[2], float(sys.argv[3])
+        samples, rate = read_wav(path)
+        seams = count_seams(samples, rate, want)
+        print("%s: %d seams in %.1f s%s" % (path.split('/')[-1], len(seams), len(samples) / rate,
+                                             ("; first at " + ", ".join("%.2f s" % (n / rate) for n in seams[:8])) if seams else ""))
+        return
+
     path, want, other = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
     map_seconds = int(sys.argv[4]) if len(sys.argv) > 4 else 4
     samples, rate = read_wav(path)
