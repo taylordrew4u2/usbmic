@@ -1124,6 +1124,15 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                                                               produced > held ? produced - held : 0);
                         raw->framesDropped.fetch_add (lost, std::memory_order_relaxed);
                         lastReadAt = std::chrono::steady_clock::now();
+
+                        // Told to the streams as well, as produced-and-lost:
+                        // no inputs, that many frames. Their drift measurement
+                        // counts the device's clock, and a stall's worth
+                        // missing from the delivered count read as the clock
+                        // running slow for a minute after every xrun.
+                        if (raw->isInput && raw->callback)
+                            raw->callback (nullptr, 0, nullptr, 0,
+                                           static_cast<int> (std::min<uint64_t> (lost, 1u << 30)));
                     }
 
                     // Recovering is not the same as working. A PCM that fails

@@ -107,10 +107,24 @@ FIXTURE_INFLATED = (
     "didn't fit this take's channel layout",
 )
 
+# Loss the machine inflicts, which the app can only report: a microphone's
+# block that had not arrived when the pull came (silence written in its
+# place), and a driver ring that overflowed while the reader thread was not
+# running. Both are the host stalling for longer than the cushion, and
+# the buffer ladder may only grow the cushion between takes. They are
+# explained, and reported, which is what §0.1 asks; whether they are SMALL
+# is judged by Tools/e2e_realtime_mics.sh, the one gate that runs the
+# microphones on real clocks, with a bound in milliseconds. Here they are
+# noted, not asserted.
+MACHINE_STALL = (
+    "a microphone's audio did not arrive in time",
+    'the sound hardware delivered more audio than it could hand over',
+)
+
 
 def check_reported_losses(dropouts, check):
     real = [d for d in dropouts
-            if not any(marker in d.get('description', '') for marker in FIXTURE_INFLATED)]
+            if not any(marker in d.get('description', '') for marker in FIXTURE_INFLATED + MACHINE_STALL)]
     # Device loss is reported here too and is a legitimate thing for a take to
     # survive; the gate's own fixture never unplugs anything, so anything in
     # this list on a healthy run is a loss the app should not have taken.
@@ -119,6 +133,8 @@ def check_reported_losses(dropouts, check):
     for d in dropouts:
         if any(marker in d.get('description', '') for marker in FIXTURE_INFLATED):
             print('  NOTE  fixture-inflated, not asserted: %s' % d.get('description', ''))
+        elif any(marker in d.get('description', '') for marker in MACHINE_STALL):
+            print('  NOTE  the machine stalled, reported, bounded by e2e_realtime_mics.sh: %s' % d.get('description', ''))
 
 
 def main():

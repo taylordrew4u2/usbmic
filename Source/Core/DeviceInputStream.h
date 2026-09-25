@@ -81,6 +81,16 @@ public:
     /// Producer: this device's audio callback. Real-time safe.
     void pushBlock (const float* samples, int numSamples) noexcept;
 
+    /// Producer: the device produced these samples and the platform layer
+    /// lost them before they could be handed over -- a driver ring that
+    /// overflowed while the reader was not running. Nothing enters the ring;
+    /// the loss is the backend's to count and report. But the measurement
+    /// counts what the device's clock produced, and a step of a stall's
+    /// worth in the delivered count read as the clock running slow for as
+    /// long as the step sat in the window: a microphone at +150 PPM was
+    /// reported at -330 after one xrun. Real-time safe.
+    void noteSamplesLostBeforeDelivery (int numSamples) noexcept;
+
     /// Consumer: the output clock pulls numSamples of this device's audio,
     /// resampled by the current drift ratio so it lands on the master's
     /// timebase. Real-time safe.
