@@ -3,6 +3,7 @@
 #if defined(__linux__) && ! defined(MMA_NO_ALSA)
 
 #include "AlsaInputPolicy.h"
+#include "../Core/DeviceInputStream.h" // kSourceBufferBlocks: the driver's ring is sized so the app's own ring can take it whole
 
 #include <alsa/asoundlib.h>
 #include <sys/inotify.h>
@@ -130,6 +131,13 @@ struct AlsaStream
     /// two answer different questions and conflating them changes the shape of
     /// every read for the sake of a number that is only reported.
     snd_pcm_uframes_t grantedPeriodFrames = 0;
+    /// The kernel's own ring for this stream, as granted. For capture it is
+    /// asked for deep -- kSourceBufferBlocks periods -- because it costs no monitor
+    /// latency (the worker still reads one period as soon as it is ready) and
+    /// it is what stands between a late worker wake and an xrun in the driver,
+    /// where the audio is gone before this app ever sees it.
+    snd_pcm_uframes_t grantedBufferFrames = 0;
+    double sampleRate = 48000.0;
     bool isInput = true;
 
     AudioCallback callback;
@@ -919,13 +927,60 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
     if (isInput && channels > 1)
         counts.push_back (1u);
 
+    // Capture asks for its parameters explicitly: a period of one block, so
+    // the worker's reads and the driver's interrupts agree and no latency is
+    // added, and a buffer of DeviceInputStream::kSourceBufferBlocks periods,
+    // so a worker that wakes late finds its audio still in the driver's ring
+    // rather than dropped there -- and the app's own ring is sized to take
+    // that whole burst when it does. snd_pcm_set_params sized that buffer
+    // from a two-block latency hint -- 2.7 ms at 64/48k -- so any scheduling
+    // delay wider than that was an xrun in the kernel, audio lost before this
+    // app could count it. Playback keeps the hint: a deeper output buffer
+    // would be filled, and that is monitor latency.
+    const auto configureCapture = [&] (snd_pcm_format_t format, unsigned int wanted) -> bool
+    {
+        snd_pcm_hw_params_t* hw = nullptr;
+        snd_pcm_hw_params_alloca (&hw);
+
+        snd_pcm_uframes_t period = static_cast<snd_pcm_uframes_t> (std::max (1, bufferSizeSamples));
+        snd_pcm_uframes_t buffer = period * static_cast<snd_pcm_uframes_t> (DeviceInputStream::kSourceBufferBlocks);
+        int dir = 0;
+
+        if (snd_pcm_hw_params_any (stream->pcm, hw) < 0
+            || snd_pcm_hw_params_set_rate_resample (stream->pcm, hw, 1) < 0
+            || snd_pcm_hw_params_set_access (stream->pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0
+            || snd_pcm_hw_params_set_format (stream->pcm, hw, format) < 0
+            || snd_pcm_hw_params_set_channels (stream->pcm, hw, wanted) < 0
+            || snd_pcm_hw_params_set_rate (stream->pcm, hw, rate, 0) < 0
+            || snd_pcm_hw_params_set_period_size_near (stream->pcm, hw, &period, &dir) < 0
+            || snd_pcm_hw_params_set_buffer_size_near (stream->pcm, hw, &buffer) < 0
+            || snd_pcm_hw_params (stream->pcm, hw) < 0)
+            return false;
+
+        snd_pcm_sw_params_t* sw = nullptr;
+        snd_pcm_sw_params_alloca (&sw);
+
+        // Start on the first read and wake per period, which is what
+        // snd_pcm_set_params arranges for capture.
+        if (snd_pcm_sw_params_current (stream->pcm, sw) < 0
+            || snd_pcm_sw_params_set_start_threshold (stream->pcm, sw, 1) < 0
+            || snd_pcm_sw_params_set_avail_min (stream->pcm, sw, period) < 0
+            || snd_pcm_sw_params (stream->pcm, sw) < 0)
+            return false;
+
+        return true;
+    };
+
     for (auto wanted : counts)
     {
         for (auto format : candidates)
         {
-            if (snd_pcm_set_params (stream->pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
-                                    wanted, rate, 1 /* allow resampling */,
-                                    latencyMicroseconds) == 0)
+            const bool ok = (isInput && configureCapture (format, wanted))
+                         || snd_pcm_set_params (stream->pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
+                                                wanted, rate, 1 /* allow resampling */,
+                                                latencyMicroseconds) == 0;
+
+            if (ok)
             {
                 stream->format = format;
                 stream->channels = wanted;
@@ -937,6 +992,8 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         if (configured)
             break;
     }
+
+    stream->sampleRate = sampleRate;
 
     // Fewer inputs than the microphone list promised, which means the tracks
     // for the rest would be written as silence. Said rather than left to be
@@ -981,6 +1038,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
             && grantedPeriod > 0)
         {
             stream->grantedPeriodFrames = grantedPeriod;
+            stream->grantedBufferFrames = grantedBuffer;
         }
     }
 
@@ -1026,6 +1084,12 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
         // Reset by every successful read, so only an unbroken run counts.
         int consecutiveRecoveries = 0;
 
+        // When the last read came back, so an xrun can be charged with what
+        // was actually lost: the driver's ring held grantedBufferFrames, and
+        // everything the device produced beyond that before this thread woke
+        // is gone. One period was the old figure, whatever the gap.
+        auto lastReadAt = std::chrono::steady_clock::now();
+
         while (raw->running.load (std::memory_order_acquire))
         {
             if (raw->isInput)
@@ -1049,10 +1113,27 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                     // were added to close, left open on the platform whose CI
                     // job is the only one that opens a real device.
                     //
-                    // A period's worth is the honest figure: that is what the
-                    // read was for, and what the device dropped on the floor.
-                    raw->framesDropped.fetch_add (static_cast<uint64_t> (frames),
-                                                  std::memory_order_relaxed);
+                    // What the device produced since the last read, less what
+                    // the driver's ring could hold, is what it dropped on the
+                    // floor; never less than the period this read was for.
+                    {
+                        const auto gap = std::chrono::duration<double> (std::chrono::steady_clock::now() - lastReadAt).count();
+                        const auto produced = static_cast<uint64_t> (std::max (0.0, gap * raw->sampleRate));
+                        const auto held = static_cast<uint64_t> (raw->grantedBufferFrames);
+                        const auto lost = std::max<uint64_t> (static_cast<uint64_t> (frames),
+                                                              produced > held ? produced - held : 0);
+                        raw->framesDropped.fetch_add (lost, std::memory_order_relaxed);
+                        lastReadAt = std::chrono::steady_clock::now();
+
+                        // Told to the streams as well, as produced-and-lost:
+                        // no inputs, that many frames. Their drift measurement
+                        // counts the device's clock, and a stall's worth
+                        // missing from the delivered count read as the clock
+                        // running slow for a minute after every xrun.
+                        if (raw->isInput && raw->callback)
+                            raw->callback (nullptr, 0, nullptr, 0,
+                                           static_cast<int> (std::min<uint64_t> (lost, 1u << 30)));
+                    }
 
                     // Recovering is not the same as working. A PCM that fails
                     // and recovers on every read reaches neither of this
@@ -1071,6 +1152,7 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
                 }
 
                 consecutiveRecoveries = 0;
+                lastReadAt = std::chrono::steady_clock::now();
 
                 if (got == 0)
                     break; // end of a file-backed device: nothing more will arrive

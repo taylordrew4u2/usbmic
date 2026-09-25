@@ -1,5 +1,6 @@
 #include "DeviceManager.h"
 #include <algorithm>
+#include <cmath>
 
 namespace mma {
 
@@ -183,8 +184,12 @@ bool DeviceManager::lowerDrift (const MicDeviceState& a, const MicDeviceState& b
         return a.hasDriftMeasurement; // a wins (sorts "lower") if it has a measurement and b doesn't
     if (a.hasDriftMeasurement && b.hasDriftMeasurement)
     {
-        if (a.measuredDriftPpm != b.measuredDriftPpm)
-            return a.measuredDriftPpm < b.measuredDriftPpm;
+        // §3.1's "lowest measured drift" is the smallest departure from
+        // nominal in either direction. Compared signed, a device 150 PPM slow
+        // sorted ahead of one dead on.
+        const double aOff = std::abs (a.measuredDriftPpm), bOff = std::abs (b.measuredDriftPpm);
+        if (aOff != bOff)
+            return aOff < bOff;
     }
     return a.enumerationOrder < b.enumerationOrder; // tiebreak
 }

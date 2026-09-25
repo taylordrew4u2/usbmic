@@ -21,15 +21,15 @@ void DriftCompensator::update (double fillError, int blockSizeSamples) noexcept
 {
     const double maxDeviation = kMaxRatioDeviationPpm * 1.0e-6;
 
-    const double proportional = kKp * fillError;
-    const double candidateIntegral = std::clamp (integralTerm + kKi * fillError,
+    const double proportional = kp * fillError;
+    const double candidateIntegral = std::clamp (integralTerm + ki * fillError,
                                                  -maxDeviation, maxDeviation);
 
     const double target = std::clamp (proportional + candidateIntegral, -maxDeviation, maxDeviation);
 
     // Never correct instantaneously: limit slew to 5 PPM/second, expressed per this block.
     const double blockSeconds = (sampleRate > 0.0) ? (static_cast<double> (blockSizeSamples) / sampleRate) : 0.0;
-    const double maxStep = (kMaxSlewPpmPerSecond * 1.0e-6) * blockSeconds;
+    const double maxStep = (slewPpmPerSecond * 1.0e-6) * blockSeconds;
 
     double currentRatioDeviation = currentPpm * 1.0e-6;
     const double wanted = target - currentRatioDeviation;

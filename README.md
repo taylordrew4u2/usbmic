@@ -816,6 +816,20 @@ A third, smaller one: the output clock starts before any device has delivered,
 so the first pull of every take underran. That is normal startup rather than
 lost audio, and counting it made the §0.1 metric untrustworthy.
 
+The fourth was the one the soak could not see. `Tools/soak_drift` feeds each
+microphone's drift as an extra sample slipped into a block, so the ring level
+moves one sample at a time; a real device delivers whole blocks on its own
+clock, so the level a pull sees moves in steps of a block, and against that
+the §3.2 loop limit-cycled — a device 60 PPM slow never converged, a device
+150 PPM slow dropped a block of audio every few seconds, and every microphone
+in the rig was reported at +200 PPM. `Tools/sim_drift_loop` models delivery
+the real way, deterministically, and is now the test: five clocks at ±150,
+±60 and 0 PPM lock within 1 PPM with no loss, at every rung of the buffer
+ladder with the jitter that rung is meant to absorb. `Tools/e2e_realtime_mics.sh`
+then does the same through the real app, with the virtual microphones paced
+to real, independent clocks: the take is checked, the ladder is checked, and
+the drift the app reports is checked against the clocks it was given.
+
 ### Exercised against a real OS audio API
 
 `Source/Platform/AlsaBackend.cpp` is a real Linux backend on ALSA, and

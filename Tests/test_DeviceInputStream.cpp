@@ -303,19 +303,132 @@ TEST_CASE (DeviceInputStream_PassesAudioThroughAtMatchedClocks)
     REQUIRE (s.getUnderrunSamples() == 0);
 }
 
+namespace {
+
+// A simulated clock for the tests that need the loop to know where a pull
+// falls in the device's block, and the measurement to know when each block
+// arrived. Advanced by the test, one block per push.
+int64_t simulatedNs = 0;
+int64_t simulatedClock() { return simulatedNs; }
+
+struct ScopedSimulatedClock
+{
+    ScopedSimulatedClock() { simulatedNs = 0; DeviceInputStream::setClockForTesting (simulatedClock); }
+    ~ScopedSimulatedClock() { DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; }); }
+};
+
+} // namespace
+
 TEST_CASE (DeviceInputStream_SustainedExcessDriftIsFlagged)
+{
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    // A device delivering 130 samples per 64 pulled is 2,000,000 PPM fast --
+    // absurd, and exactly what "unreliable" is for. Ticked as it runs, since
+    // §3.3's figure is measured over a minute of running, not read off the
+    // loop.
+    std::vector<float> in (130, 0.25f), out (64, 0.0f);
+    const int64_t blockNs = 64 * 1000000000LL / 48000;
+
+    for (int second = 0; second < 80; ++second)
+    {
+        for (int i = 0; i < 750; ++i)
+        {
+            simulatedNs += blockNs;
+            s.pushBlock (in.data(), 130);
+            simulatedNs += blockNs / 2;
+            s.pull (out.data(), 64);
+            simulatedNs -= blockNs / 2;
+        }
+
+        s.tickDriftReporting (1.0);
+    }
+
+    REQUIRE (s.hasDriftMeasurement());
+    REQUIRE (s.getMeasuredDriftPpm() > 100.0);
+    REQUIRE (s.hasSustainedExcessDrift());
+}
+
+TEST_CASE (DeviceInputStream_MeasuresADeviceClockWithinTwoPpmInAMinute)
+{
+    // §3.3's reported figure is a measurement of the device's clock against
+    // the pulling clock, not the loop's state. A device 150 PPM fast, delivering
+    // whole blocks at its own cadence against a pull clock at nominal, is
+    // measured to within 2 PPM once the minute has run, whatever the loop is
+    // doing meanwhile.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> in (64, 0.25f), out (64, 0.0f);
+    const double pullPeriodS = 64.0 / 48000.0;
+    const double pushPeriodS = pullPeriodS / (1.0 + 150.0e-6);
+    double nextPushS = 0.0, nextPullS = pullPeriodS * 0.5, nextTickS = 0.1;
+    double nowS = 0.0;
+
+    // Long enough for the loop too: at the spec's 5 PPM/s slew, 150 PPM is
+    // reached at 30 s and the level it accumulated meanwhile takes another
+    // minute or so to drain through the clamp.
+    while (nowS < 160.0)
+    {
+        if (nextPushS <= nextPullS)
+        {
+            nowS = nextPushS;
+            simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+            s.pushBlock (in.data(), 64);
+            nextPushS += pushPeriodS;
+        }
+        else
+        {
+            nowS = nextPullS;
+            simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+            s.pull (out.data(), 64);
+            nextPullS += pullPeriodS;
+        }
+
+        if (nowS >= nextTickS)
+        {
+            s.tickDriftReporting (0.1);
+            nextTickS += 0.1;
+        }
+    }
+
+    REQUIRE (s.hasDriftMeasurement());
+    REQUIRE_NEAR (s.getMeasuredDriftPpm(), 150.0, 2.0);
+    REQUIRE (s.getMeasurementSeconds() >= 60.0);
+    REQUIRE_NEAR (s.getMeasuredDeviceRatePpm(), 150.0, 2.0);
+    REQUIRE_NEAR (s.getMeasuredConsumerRatePpm(), 0.0, 2.0);
+    // And the loop itself, on a level it can follow, has locked close to the
+    // clock rather than to a clamp.
+    REQUIRE_NEAR (s.getDriftPpm(), 150.0, 15.0);
+    REQUIRE (s.getUnderrunSamples() <= 64);
+}
+
+TEST_CASE (DeviceInputStream_CountsALossEventPerBlockNotPerSample)
 {
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    runClockRatio (s, 128, 64, 60000);
+    // Pre-roll, then pull twice from a ring that has one block: the second
+    // pull runs dry part way through -- one event, not one per sample.
+    std::vector<float> in (128, 0.25f), out (64, 0.0f);
+    s.pushBlock (in.data(), 128);
+    s.pull (out.data(), 64);
+    s.pull (out.data(), 64);
+    s.pull (out.data(), 64);
 
-    // §3.3: past 100 PPM sustained, the device is reported as unreliable rather
-    // than quietly corrected forever.
-    for (int i = 0; i < 20; ++i)
-        s.tickDriftReporting (1.0);
+    REQUIRE (s.getUnderrunSamples() > 0);
+    REQUIRE (s.getLossEvents() >= 1);
+    REQUIRE (s.getLossEvents() <= 2);
 
-    REQUIRE (s.hasSustainedExcessDrift());
+    // A push that finds the ring full is one event too.
+    const auto before = s.getLossEvents();
+    std::vector<float> flood (static_cast<size_t> (DeviceInputStream::kRingBlocks + 1) * 64, 0.25f);
+    s.pushBlock (flood.data(), static_cast<int> (flood.size()));
+    REQUIRE (s.getOverrunSamples() > 0);
+    REQUIRE (s.getLossEvents() == before + 1);
 }
 
 TEST_CASE (DeviceInputStream_ReconnectDoesNotKeepPreGapDriftCredit)
@@ -526,9 +639,10 @@ TEST_CASE (DeviceInputStream_RingIsHeldAtTargetEvenAtAWideClockOffset)
         s.pull (out.data(), 64);
     }
 
-    // kPreRollBlocks of kRingBlocks is 0.25, and settling sits just under it.
-    // Nowhere near the 0.875 the uncorrected channel used to reach.
-    REQUIRE (s.getFillFraction() < 0.3);
+    // kPreRollBlocks of kRingBlocks is 0.125, and settling sits just over it.
+    // Nowhere near the top of the ring, where the uncorrected channel used to
+    // sit.
+    REQUIRE (s.getFillFraction() < 0.25);
     REQUIRE (s.getUnderrunSamples() == 0);
 }
 
@@ -671,4 +785,309 @@ TEST_CASE (DeviceInputStream_OverrunsAreCountedNotSwallowed)
 
     REQUIRE (s.getOverrunSamples() > 0);
     REQUIRE (s.getOverrunSamples() < static_cast<uint64_t> (DeviceInputStream::kRingBlocks) * 2 * 64);
+}
+
+namespace {
+
+// A ramp: each sample's value is its index in the source, so the output says
+// which source sample it came from. Exact in a float up to 2^24 samples.
+struct RampSource
+{
+    long long pushed = 0;
+    std::vector<float> block;
+
+    explicit RampSource (int n) : block (static_cast<size_t> (n)) {}
+
+    void push (DeviceInputStream& s, int n)
+    {
+        if (block.size() < static_cast<size_t> (n))
+            block.resize (static_cast<size_t> (n));
+
+        for (int i = 0; i < n; ++i)
+            block[static_cast<size_t> (i)] = static_cast<float> (pushed + i);
+        s.pushBlock (block.data(), n);
+        pushed += n;
+    }
+};
+
+// How far the first sample of a pull is behind the newest delivered sample.
+// While a channel is in step this is constant to within a sample or two of
+// resampler phase; a channel playing late audio shows it grown by the gap.
+double stepBehind (const RampSource& src, const std::vector<float>& out)
+{
+    return static_cast<double> (src.pushed) - static_cast<double> (out[0]);
+}
+
+constexpr int64_t kBlockNs64 = 64 * 1000000000LL / 48000;
+
+// Pre-roll so the ring sits at the loop's target from the first pull: two
+// blocks plus the half block a pull lands after a delivery, less the sample
+// the interpolator primes with. The loop itself, at 5 PPM/s, would take a
+// minute to walk it there.
+void primeAtTarget (DeviceInputStream& s, RampSource& src, std::vector<float>& out)
+{
+    simulatedNs = 1'000'000'000; // zero is what the clock hook reads as "nothing delivered yet"
+    src.push (s, 64 + 64 + 32 + 1);
+    s.pull (out.data(), 64);
+}
+
+// One block delivered, one pulled half a block later, for `blocks` blocks.
+void runInStep (DeviceInputStream& s, RampSource& src, std::vector<float>& out, int blocks)
+{
+    for (int i = 0; i < blocks; ++i)
+    {
+        src.push (s, 64);
+        simulatedNs += kBlockNs64 / 2;
+        s.pull (out.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+    }
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_RingTakesAWholeDriverBurstOnTopOfItsTargetFill)
+{
+    // The platform layer asks the driver for kSourceBufferBlocks periods of
+    // ring, so a reader thread that wakes late finds its audio still there --
+    // and then hands all of it over at once. With eight blocks here and eight
+    // there, that burst overflowed this ring by two blocks: audio the
+    // hardware had kept, thrown away one layer up.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    RampSource src (64);
+    std::vector<float> out (64, 0.0f);
+    primeAtTarget (s, src, out);
+    runInStep (s, src, out, 1500);
+    REQUIRE (s.getUnderrunSamples() == 0);
+    const double inStep = stepBehind (src, out);
+
+    // The whole process stalls. The device thread wakes first and hands over
+    // the driver's ring; the output clock has not caught up yet.
+    for (int i = 0; i < DeviceInputStream::kSourceBufferBlocks; ++i)
+        src.push (s, 64);
+    simulatedNs += kBlockNs64 * DeviceInputStream::kSourceBufferBlocks;
+
+    REQUIRE (s.getOverrunSamples() == 0);
+
+    // Then the output clock catches up, back to back.
+    for (int i = 0; i < DeviceInputStream::kSourceBufferBlocks; ++i)
+        s.pull (out.data(), 64);
+
+    REQUIRE (s.getUnderrunSamples() == 0);
+    REQUIRE (s.getOverrunSamples() == 0);
+
+    // Nothing was lost and nothing is out of step.
+    runInStep (s, src, out, 4);
+    REQUIRE_NEAR (stepBehind (src, out), inStep, 2.0);
+}
+
+TEST_CASE (DeviceInputStream_LateAudioAfterSilenceIsSkippedSoTheChannelStaysInStep)
+{
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    RampSource src (64);
+    std::vector<float> out (64, 0.0f);
+    primeAtTarget (s, src, out);
+    runInStep (s, src, out, 1500);
+    REQUIRE (s.getUnderrunSamples() == 0);
+    const double inStep = stepBehind (src, out);
+    const double loopBeforeStall = s.getDriftPpm();
+
+    // The device's thread stalls for eight blocks while the output clock
+    // keeps pulling: the ring runs dry and silence stands in for the audio.
+    for (int i = 0; i < 8; ++i)
+    {
+        simulatedNs += kBlockNs64 / 2;
+        s.pull (out.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+    }
+
+    const auto silence = s.getUnderrunSamples();
+    REQUIRE (silence > 0);
+
+    // It wakes and hands over everything the driver held, at once, and then
+    // carries on at pace.
+    for (int i = 0; i < 8; ++i)
+        src.push (s, 64);
+    REQUIRE (s.getOverrunSamples() == 0);
+
+    simulatedNs += kBlockNs64 / 2;
+    s.pull (out.data(), 64);
+    simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+    runInStep (s, src, out, 4);
+
+    // The span that arrived late already stands in the file as silence.
+    // Playing it too would put this channel eight blocks behind every other
+    // for as long as the loop took to drain them; instead it is skipped and
+    // the channel is back in step at once.
+    REQUIRE_NEAR (stepBehind (src, out), inStep, 2.0);
+
+    // Counted once: the silence is the loss. The skip is not a second one.
+    REQUIRE (s.getUnderrunSamples() == silence);
+    REQUIRE (s.getOverrunSamples() == 0);
+
+    // And the loop was never shown the burst as fill: it is where the stall
+    // found it, not slewing off six blocks of false error towards the clamp.
+    REQUIRE_NEAR (s.getDriftPpm(), loopBeforeStall, 2.0);
+}
+
+TEST_CASE (DeviceInputStream_SilenceNothingArrivesLateForIsWrittenOff)
+{
+    // A device that dropped the audio itself -- an xrun in the driver, a USB
+    // hiccup -- resumes at pace with nothing late behind it. The silence it
+    // cost must not sit waiting to eat the next block that runs a few samples
+    // ahead.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    RampSource src (64);
+    std::vector<float> out (64, 0.0f);
+    primeAtTarget (s, src, out);
+    runInStep (s, src, out, 1500);
+
+    for (int i = 0; i < 8; ++i)
+    {
+        simulatedNs += kBlockNs64 / 2;
+        s.pull (out.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+    }
+    REQUIRE (s.getUnderrunSamples() > 0);
+
+    // Back at pace, with a cushion but no burst: two blocks is the target,
+    // not an excess over it.
+    src.push (s, 64);
+    src.push (s, 64);
+    simulatedNs += kBlockNs64 / 2;
+    s.pull (out.data(), 64);
+    simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+
+    // Every block from here on is continuous with the one before it: nothing
+    // is being skipped.
+    float lastValue = out[63];
+    for (int i = 0; i < DeviceInputStream::kRingBlocks * 2; ++i)
+    {
+        runInStep (s, src, out, 1);
+        REQUIRE (out[0] - lastValue < 4.0f);
+        lastValue = out[63];
+    }
+
+    // Long after the silence, one block runs ahead -- ordinary jitter. It is
+    // fill for the loop to drain over seconds, not late audio to skip.
+    src.push (s, 64);
+    runInStep (s, src, out, 1);
+    REQUIRE (out[0] - lastValue < 4.0f);
+}
+
+TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
+{
+    // The interpolator carries a pair of samples between blocks, so the
+    // block that primes it reads one sample more than it writes. A ring
+    // holding exactly one block per pull -- what a stall leaves behind, and
+    // what the loop takes half a minute to lift at 200 PPM -- used to run
+    // one sample short on that block, write one sample of silence, de-prime,
+    // and prime again on the next: a step to zero and a phase reset in
+    // every block for as long as it lasted, on a take whose record showed a
+    // sample of loss per block. On a fixture microphone that was every other
+    // 64-sample block voting for the wrong tone.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 128);
+
+    simulatedNs = 1'000'000'000;
+    RampSource src (128);
+    std::vector<float> out (128, 0.0f);
+
+    // Pre-roll to the target, then let a stall drain it to one block: the
+    // device delivers, the pull consumes, and the ring never gets deeper.
+    src.push (s, 256);
+    s.pull (out.data(), 128);
+    s.pull (out.data(), 128);
+    REQUIRE (s.getUnderrunSamples() == 0);
+
+    const int64_t blockNs = 128 * 1000000000LL / 48000;
+    float last = out[127];
+
+    for (int i = 0; i < 400; ++i)
+    {
+        src.push (s, 128);
+        simulatedNs += blockNs / 2;
+        s.pull (out.data(), 128);
+        simulatedNs += blockNs - blockNs / 2;
+
+        // Continuous: the ramp carries on from where the last block left it,
+        // give or take one held sample, and never steps to zero.
+        REQUIRE (out[0] - last <= 2.0f);
+        REQUIRE (out[0] - last >= 0.0f);
+        for (int k = 1; k < 128; ++k)
+            REQUIRE (out[k] - out[k - 1] >= 0.0f);
+        last = out[127];
+    }
+
+    REQUIRE (s.getUnderrunSamples() == 0);
+    REQUIRE (s.getLossEvents() == 0);
+}
+
+TEST_CASE (DeviceInputStream_AudioTheDriverLostDoesNotReadAsASlowClock)
+{
+    // A driver ring that overflows while the reader thread is not running
+    // loses a stall's worth of the device's audio before the app sees it.
+    // The measurement counts what the device's clock produced; told nothing,
+    // it saw a step down in the delivered count and reported a microphone at
+    // +150 PPM as -330 for the minute the step sat in its window.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> in (64, 0.25f), out (64, 0.0f);
+    const double pullPeriodS = 64.0 / 48000.0;
+    const double pushPeriodS = pullPeriodS / (1.0 + 150.0e-6);
+    double nextPushS = 0.0, nextPullS = pullPeriodS * 0.5, nextTickS = 0.1;
+    double nowS = 0.0;
+    bool stalled = false;
+
+    while (nowS < 130.0)
+    {
+        if (nextPushS <= nextPullS)
+        {
+            nowS = nextPushS;
+            simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+
+            // At 100 s the reader is away for 120 ms: the driver drops what
+            // it could not hold, the app is told, and delivery resumes.
+            if (! stalled && nowS >= 100.0)
+            {
+                stalled = true;
+                const int lost = static_cast<int> (0.12 * 48000.0);
+                nowS += 0.12;
+                simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+                s.noteSamplesLostBeforeDelivery (lost);
+                nextPushS = nowS;
+                continue;
+            }
+
+            s.pushBlock (in.data(), 64);
+            nextPushS += pushPeriodS;
+        }
+        else
+        {
+            nowS = nextPullS;
+            simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+            s.pull (out.data(), 64);
+            nextPullS += pullPeriodS;
+        }
+
+        if (nowS >= nextTickS)
+        {
+            s.tickDriftReporting (0.1);
+            nextTickS += 0.1;
+        }
+    }
+
+    REQUIRE (s.hasDriftMeasurement());
+    REQUIRE_NEAR (s.getMeasuredDriftPpm(), 150.0, 3.0);
 }

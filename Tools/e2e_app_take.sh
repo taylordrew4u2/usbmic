@@ -37,7 +37,11 @@ trap cleanup EXIT
 pkill Xvfb 2>/dev/null || true; sleep 1
 Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
 sleep 2
-DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-app.log 2>&1 &
+# MMA_APP_LD_PRELOAD reaches the app and nothing else, so a shim meant for it
+# (the real-time microphone clocks, for one) is not loaded into Xvfb, xdotool
+# and every other helper this script runs.
+env ${MMA_APP_LD_PRELOAD:+LD_PRELOAD="$MMA_APP_LD_PRELOAD"} \
+  DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-app.log 2>&1 &
 APP_PID=$!
 
 # 1. The window is up.
@@ -46,7 +50,10 @@ for _ in {1..60}; do
   sleep 1
 done
 DISPLAY="$DISPLAY_NUM" xdotool search --name SobStage >/dev/null || { echo "FAIL: window never appeared"; exit 1; }
-sleep 4  # devices enumerate and streams open after the window shows
+# Devices enumerate and streams open after the window shows. A gate that wants
+# the app to have settled its buffer ladder first (§5.4 steps on loss events
+# inside a 30-second window) asks for longer.
+sleep "${MMA_SETTLE_SECONDS:-4}"
 
 # Clicks are given relative to the app window's top-left corner, because the
 # window manager-less Xvfb root places the window wherever it likes: hard-coded
