@@ -69,6 +69,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -171,6 +172,27 @@ struct PacingState
 std::mutex& pacingMutex() { static std::mutex m; return m; }
 std::map<snd_pcm_t*, PacingState>& pacingStates() { static std::map<snd_pcm_t*, PacingState> s; return s; }
 
+// States of PCMs that have been closed, kept for the stats dump. A closed
+// PCM's state must leave the live map: the map is keyed by the handle, and
+// a handle closed and reopened -- which every buffer-ladder step does, for
+// every device -- comes back at whatever address the allocator hands out,
+// often one another device's handle just gave up. Left in the map, the new
+// stream inherited the old one's clock: on a CI runner mma_mic1 came back on
+// mma_out's 0 PPM and mma_out on mma_mic2's -150, the app measured exactly
+// that, and the gate said the app was wrong.
+std::vector<PacingState>& retiredStates()
+{
+    static std::vector<PacingState> states;
+    return states;
+}
+
+void printPacingState (FILE* f, const PacingState& st)
+{
+    std::fprintf (f, "%s blocks=%lld max_late_ms=%.2f late_blocks=%lld reanchors=%lld buffer_frames=%lld xruns=%lld\n",
+                  st.name.c_str(), st.blocks, st.maxLateNs / 1.0e6, st.lateBlocks, st.reanchors,
+                  st.bufferFrames, st.xruns);
+}
+
 void dumpPacingStats()
 {
     const char* path = std::getenv ("MMA_SIM_STATS_FILE");
@@ -183,12 +205,28 @@ void dumpPacingStats()
 
     const std::lock_guard<std::mutex> lock (pacingMutex());
 
+    for (const auto& st : retiredStates())
+        printPacingState (f, st);
+
     for (const auto& [pcm, st] : pacingStates())
-        std::fprintf (f, "%s blocks=%lld max_late_ms=%.2f late_blocks=%lld reanchors=%lld buffer_frames=%lld xruns=%lld\n",
-                      st.name.c_str(), st.blocks, st.maxLateNs / 1.0e6, st.lateBlocks, st.reanchors,
-                      st.bufferFrames, st.xruns);
+        printPacingState (f, st);
 
     std::fclose (f);
+}
+
+void retirePacingState (snd_pcm_t* pcm)
+{
+    const std::lock_guard<std::mutex> lock (pacingMutex());
+    auto& states = pacingStates();
+    const auto it = states.find (pcm);
+
+    if (it == states.end())
+        return;
+
+    if (it->second.blocks > 0)
+        retiredStates().push_back (it->second);
+
+    states.erase (it);
 }
 
 bool realtimeEnabled()
@@ -434,6 +472,24 @@ snd_pcm_sframes_t passThroughWrite (snd_pcm_t* pcm, const void* buffer, snd_pcm_
 } // namespace
 
 extern "C" {
+
+int snd_pcm_close (snd_pcm_t* pcm)
+{
+    static std::atomic<int (*) (snd_pcm_t*)> real { nullptr };
+
+    auto fn = real.load (std::memory_order_acquire);
+
+    if (fn == nullptr)
+    {
+        fn = reinterpret_cast<decltype (fn)> (dlsym (RTLD_NEXT, "snd_pcm_close"));
+        real.store (fn, std::memory_order_release);
+    }
+
+    // Before the real close, so nothing can reuse the address first.
+    retirePacingState (pcm);
+
+    return fn != nullptr ? fn (pcm) : -ENODEV;
+}
 
 int snd_pcm_open (snd_pcm_t** pcm, const char* name, snd_pcm_stream_t stream, int mode)
 {
