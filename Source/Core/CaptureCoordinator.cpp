@@ -552,18 +552,21 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
 {
     if (inputs == nullptr || numInputs <= 0)
     {
-        // A microphone stream that hands over no inputs at all has lost every
-        // channel the take routed from it. The duplex output callback reaching
-        // here means only that this cycle had no input half, which is ordinary
-        // and loses nothing -- counting those turned a clean take on any duplex
-        // interface into a session.json claiming millions of dropped frames.
-        // Wall-clock frames, not channel-frames. Multiplying by the channel
-        // count made the number in "Dropped N frames" four times the audio
-        // actually lost on a four-channel device -- a true event reported with
-        // a false magnitude, which is its own kind of wrong answer.
+        // A microphone stream that hands over no inputs at all is telling us
+        // its device produced numSamples that were lost before they could be
+        // delivered -- a driver ring that overflowed while the reader thread
+        // was not running. The backend counts and reports that loss itself
+        // (getFramesDroppedByBackend, "before recording"); here it reaches the
+        // streams, whose §3.3 measurement counts what the device's clock
+        // produced, delivered or not, so a stall does not read as the clock
+        // running slow. It used to be added to the layout figure as well, a
+        // second count of the same loss under the wrong name. The duplex
+        // output callback reaching here means only that this cycle had no
+        // input half, which is ordinary and loses nothing.
         if (fromInputStream && numSamples > 0)
-            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
-                                            std::memory_order_relaxed);
+            for (const auto& [deviceInput, takeChannel] : routing)
+                if (takeChannel >= 0 && takeChannel < static_cast<int> (deviceStreams.size()))
+                    deviceStreams[static_cast<size_t> (takeChannel)]->noteSamplesLostBeforeDelivery (numSamples);
         return;
     }
 

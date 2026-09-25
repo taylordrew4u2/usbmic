@@ -314,6 +314,19 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   gives the device threads a millisecond to land their bursts before it pulls
   the missed ticks; pulled first, they found the rings dry and wrote silence
   for audio that arrived a moment later.
+- **A dry ring is now in the take's record.** A pull that came before the
+  microphone's block wrote silence into the stem, and nothing ever said so:
+  `session.json` carried the writer's drops, the ring overflow, the layout
+  misses and the driver's drops, and not this one. It is reported now, per
+  take, like the others.
+- **Audio the driver lost no longer reads as a slow clock.** The drift
+  measurement counts the samples a device delivered against its timestamps;
+  a driver ring that overflowed while the reader thread was not running took
+  a stall's worth out of that count in one step, which the fit read as the
+  clock running slow for the minute the step sat in its window -- a
+  microphone at +150 PPM reported at -330 after one xrun. The platform layer
+  now tells the stream what the driver lost, and the measurement counts it
+  as produced.
 - **Reported drift is now measured, not read off the loop.** Each device's
   delivered samples and the consumer's pulled samples are fitted against their
   own timestamps over the 60-second window; the ratio is the device's clock

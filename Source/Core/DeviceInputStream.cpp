@@ -122,6 +122,19 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
     lastPushNs.store (nowNs(), std::memory_order_release);
 }
 
+void DeviceInputStream::noteSamplesLostBeforeDelivery (int numSamples) noexcept
+{
+    if (numSamples <= 0)
+        return;
+
+    // Counted as produced, stamped as delivered: the measurement pairs the
+    // count with the moment the device's clock had reached it. The block
+    // size is left alone, so the loop's placement of the next pull within
+    // the device's block is unchanged.
+    pushedSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+    lastPushNs.store (nowNs(), std::memory_order_release);
+}
+
 bool DeviceInputStream::readOne (float& out) noexcept
 {
     return ring.read (&out, 1) == 1;

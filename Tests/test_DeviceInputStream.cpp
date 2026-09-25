@@ -1031,3 +1031,63 @@ TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
     REQUIRE (s.getUnderrunSamples() == 0);
     REQUIRE (s.getLossEvents() == 0);
 }
+
+TEST_CASE (DeviceInputStream_AudioTheDriverLostDoesNotReadAsASlowClock)
+{
+    // A driver ring that overflows while the reader thread is not running
+    // loses a stall's worth of the device's audio before the app sees it.
+    // The measurement counts what the device's clock produced; told nothing,
+    // it saw a step down in the delivered count and reported a microphone at
+    // +150 PPM as -330 for the minute the step sat in its window.
+    ScopedSimulatedClock clock;
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> in (64, 0.25f), out (64, 0.0f);
+    const double pullPeriodS = 64.0 / 48000.0;
+    const double pushPeriodS = pullPeriodS / (1.0 + 150.0e-6);
+    double nextPushS = 0.0, nextPullS = pullPeriodS * 0.5, nextTickS = 0.1;
+    double nowS = 0.0;
+    bool stalled = false;
+
+    while (nowS < 130.0)
+    {
+        if (nextPushS <= nextPullS)
+        {
+            nowS = nextPushS;
+            simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+
+            // At 100 s the reader is away for 120 ms: the driver drops what
+            // it could not hold, the app is told, and delivery resumes.
+            if (! stalled && nowS >= 100.0)
+            {
+                stalled = true;
+                const int lost = static_cast<int> (0.12 * 48000.0);
+                nowS += 0.12;
+                simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+                s.noteSamplesLostBeforeDelivery (lost);
+                nextPushS = nowS;
+                continue;
+            }
+
+            s.pushBlock (in.data(), 64);
+            nextPushS += pushPeriodS;
+        }
+        else
+        {
+            nowS = nextPullS;
+            simulatedNs = static_cast<int64_t> (nowS * 1.0e9);
+            s.pull (out.data(), 64);
+            nextPullS += pullPeriodS;
+        }
+
+        if (nowS >= nextTickS)
+        {
+            s.tickDriftReporting (0.1);
+            nextTickS += 0.1;
+        }
+    }
+
+    REQUIRE (s.hasDriftMeasurement());
+    REQUIRE_NEAR (s.getMeasuredDriftPpm(), 150.0, 3.0);
+}
