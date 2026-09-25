@@ -23,6 +23,22 @@ void RingBuffer::clear() noexcept
     readIndex.store (writeIndex.load (std::memory_order_acquire), std::memory_order_release);
 }
 
+size_t RingBuffer::discard (size_t numSamples) noexcept
+{
+    const size_t capacity = buffer.size();
+    const size_t toDrop = std::min (numSamples, availableForRead());
+
+    if (toDrop == 0)
+        return 0;
+
+    size_t r = readIndex.load (std::memory_order_relaxed) + toDrop;
+    if (r >= capacity)
+        r -= capacity;
+
+    readIndex.store (r, std::memory_order_release);
+    return toDrop;
+}
+
 size_t RingBuffer::availableForRead() const noexcept
 {
     // Both loads acquire: this is called from the consumer (which must see the

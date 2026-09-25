@@ -1,14 +1,46 @@
 #include "DeviceInputStream.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace mma {
 
 static_assert (std::atomic<double>::is_always_lock_free,
                "DeviceInputStream requires lock-free double atomics on the audio thread");
+static_assert (std::atomic<int64_t>::is_always_lock_free,
+               "DeviceInputStream requires lock-free 64-bit atomics on the audio thread");
+
+namespace {
+
+int64_t steadyNowNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds> (
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::atomic<DeviceInputStream::NowNsFn> clockOverride { nullptr };
+std::atomic<bool> virtualFillEnabled { true };
+
+int64_t nowNs()
+{
+    const auto fn = clockOverride.load (std::memory_order_relaxed);
+    return fn != nullptr ? fn() : steadyNowNs();
+}
+
+} // namespace
+
+void DeviceInputStream::setClockForTesting (NowNsFn fn) noexcept
+{
+    clockOverride.store (fn, std::memory_order_relaxed);
+}
+
+void DeviceInputStream::setVirtualFillForTesting (bool enabled) noexcept
+{
+    virtualFillEnabled.store (enabled, std::memory_order_relaxed);
+}
 
 DeviceInputStream::DeviceInputStream (double sampleRate) noexcept
-    : ring (static_cast<size_t> (kRingBlocks) * 64), compensator (sampleRate)
+    : ring (static_cast<size_t> (kRingBlocks) * 64), compensator (sampleRate), rate (sampleRate)
 {
 }
 
@@ -17,10 +49,12 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     const auto block = static_cast<size_t> (std::max (1, bufferSizeSamples));
 
     ring.reset (block * static_cast<size_t> (kRingBlocks));
+    rate = sampleRate > 0.0 ? sampleRate : 48000.0;
 
     // §5.4: this is monitor latency, so it is a fixed small number of blocks
-    // rather than a fraction of the ring. The remaining six blocks of capacity
-    // are headroom the loop never intends to use.
+    // rather than a fraction of the ring. The remaining fourteen blocks of
+    // capacity are headroom the loop never intends to use: room for the
+    // driver's whole ring to land at once after a late wake.
     targetFillSamples = block * static_cast<size_t> (kPreRollBlocks);
 
     compensator = DriftCompensator (sampleRate);
@@ -28,7 +62,11 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     currentSample = 0.0f;
     phase = 0.0;
     primed = false;
-    started = false;
+    started.store (false, std::memory_order_relaxed);
+    fillAverage = 0.0;
+    fillAverageValid = false;
+    silenceOwed = 0.0;
+    pullsSinceSilence = 0;
 
     driftPpm.store (0.0, std::memory_order_relaxed);
     excessDrift.store (false, std::memory_order_relaxed);
@@ -36,6 +74,17 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     excessDriftSeconds = 0.0;
     observedDriftReportingResetEpoch = 0;
     underruns.store (0, std::memory_order_relaxed);
+    lossEvents.store (0, std::memory_order_relaxed);
+    primes.store (0, std::memory_order_relaxed);
+    holds.store (0, std::memory_order_relaxed);
+    skips.store (0, std::memory_order_relaxed);
+
+    lastPushNs.store (0, std::memory_order_relaxed);
+    lastPushSamples.store (0, std::memory_order_relaxed);
+    pushedSamples.store (0, std::memory_order_relaxed);
+    lastPullNs.store (0, std::memory_order_relaxed);
+    pulledSamples.store (0, std::memory_order_relaxed);
+    resetMeasurementWindow();
 
     // Reset with its siblings. It was the one counter here that was not, so it
     // ran for the life of the stream while the sentence built from it -- "about
@@ -58,12 +107,149 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
     const auto written = ring.write (samples, static_cast<size_t> (numSamples));
 
     if (written < static_cast<size_t> (numSamples))
+    {
         overrunSamples.fetch_add (static_cast<uint64_t> (numSamples) - written, std::memory_order_relaxed);
+        lossEvents.fetch_add (1, std::memory_order_relaxed);
+    }
+
+    // Delivered, whether or not it fit: the measurement wants the device's
+    // clock, and a dropped sample was still a sample the device produced.
+    pushedSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+
+    // Published after the write, so a consumer that sees this stamp also sees
+    // the block behind it in the ring's own release/acquire.
+    lastPushSamples.store (numSamples, std::memory_order_relaxed);
+    lastPushNs.store (nowNs(), std::memory_order_release);
+}
+
+void DeviceInputStream::noteSamplesLostBeforeDelivery (int numSamples) noexcept
+{
+    if (numSamples <= 0)
+        return;
+
+    // Counted as produced, stamped as delivered: the measurement pairs the
+    // count with the moment the device's clock had reached it. The block
+    // size is left alone, so the loop's placement of the next pull within
+    // the device's block is unchanged.
+    pushedSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+    lastPushNs.store (nowNs(), std::memory_order_release);
 }
 
 bool DeviceInputStream::readOne (float& out) noexcept
 {
     return ring.read (&out, 1) == 1;
+}
+
+double DeviceInputStream::virtualFillNow (size_t available) const noexcept
+{
+    // The ring level, read at a pull, only ever moves in whole device blocks:
+    // a device 150 PPM slow lowers it by 7 samples a second, but the pull sees
+    // the same number for nine seconds and then a step of 64. A loop driven by
+    // that staircase either does nothing or sees a whole block of error at
+    // once -- and one block, at 5 PPM per sample, was the 200 PPM clamp.
+    //
+    // So the pull is placed within the device's current block instead: how far
+    // the device has got since its last delivery, from that delivery's
+    // timestamp and its block's nominal duration, is audio the device has
+    // captured but not yet handed over. The level with that fraction folded in
+    // is continuous across the delivery, and it is what the loop steers.
+    // Equivalently: the lowest level this pull could have seen had it landed
+    // just before the next delivery, which is the cushion that actually
+    // matters for an underrun.
+    const auto pushNs = lastPushNs.load (std::memory_order_acquire);
+    const auto pushSamples = lastPushSamples.load (std::memory_order_relaxed);
+
+    double virtualFill = static_cast<double> (available);
+
+    if (pushNs > 0 && pushSamples > 0 && virtualFillEnabled.load (std::memory_order_relaxed))
+    {
+        const double periodNs = static_cast<double> (pushSamples) * 1.0e9 / rate;
+        const double elapsedNs = static_cast<double> (nowNs() - pushNs);
+        const double fraction = std::clamp (elapsedNs / periodNs, 0.0, 1.0);
+
+        virtualFill -= static_cast<double> (pushSamples) * (1.0 - fraction);
+    }
+
+    return virtualFill;
+}
+
+double DeviceInputStream::fillErrorNow (size_t available) noexcept
+{
+    const double virtualFill = virtualFillNow (available);
+
+    // Smoothed a little: a delivery that lands late by a fraction of a block
+    // reads as a dip until it arrives, and the loop should see the trend
+    // rather than the tremor. Thirty-two blocks is 43 ms at 64/48k, nothing
+    // against a loop whose slew takes thirty seconds to cross 150 PPM.
+    if (! fillAverageValid)
+    {
+        fillAverage = virtualFill;
+        fillAverageValid = true;
+    }
+    else
+    {
+        fillAverage += (virtualFill - fillAverage) * kFillSmoothing;
+    }
+
+    return fillAverage - static_cast<double> (targetFillSamples);
+}
+
+void DeviceInputStream::noteSilence (int samples) noexcept
+{
+    // Capped at what the ring can hold above target, which is the most late
+    // audio a burst could ever leave there to be skipped.
+    const double cap = static_cast<double> (ring.capacity()) - static_cast<double> (targetFillSamples);
+    silenceOwed = std::min (cap, silenceOwed + static_cast<double> (samples));
+    pullsSinceSilence = 0;
+}
+
+void DeviceInputStream::skipLateAudio (int numSamples) noexcept
+{
+    // Measured on the de-quantized level, which is what the loop holds at
+    // target; the raw level sits up to a block above it just after a delivery,
+    // and that block is not late audio. And never into what this pull itself
+    // is about to take: a ring that is chronically short -- pulls larger than
+    // the target fill -- owes silence every block, and skipping ahead of a
+    // pull that will run dry anyway only makes it run dry sooner.
+    const auto available = ring.availableForRead();
+    const double excess = std::min (virtualFillNow (available) - static_cast<double> (targetFillSamples),
+                                    static_cast<double> (available) - static_cast<double> (numSamples + 1));
+
+    // Supplied again. Give the burst a ring's worth of pulls to land, then
+    // write the silence off, skipped or not: what is still owed after that
+    // is not coming.
+    if (available > 0 && ++pullsSinceSilence > kRingBlocks)
+    {
+        silenceOwed = 0.0;
+        return;
+    }
+
+    // A burst is whole blocks by nature. Anything under one is the loop's
+    // own jitter around its target, and skipping it -- a few samples, with
+    // the interpolator restarted each time -- put a click in every block
+    // for as long as the owed silence lasted, which, since only a pull that
+    // skipped nothing counted towards writing it off, was indefinitely.
+    const double block = static_cast<double> (std::max (1, lastPushSamples.load (std::memory_order_relaxed)));
+
+    if (excess >= block)
+    {
+        const auto skip = static_cast<size_t> (std::min (silenceOwed, excess));
+        const auto skipped = ring.discard (skip);
+        skips.fetch_add (1, std::memory_order_relaxed);
+
+        // A burst that lands between two of the device's own periods leaves
+        // the placement above short by up to a block until the next period
+        // arrives; what is still owed after that waits for it.
+        silenceOwed = std::max (0.0, silenceOwed - static_cast<double> (skipped));
+
+        // The interpolator's pair predates the gap; the level's average was
+        // taken while the ring was dry. Both restart from what is there now.
+        previousSample = 0.0f;
+        currentSample = 0.0f;
+        phase = 0.0;
+        primed = false;
+        fillAverageValid = false;
+    }
 }
 
 void DeviceInputStream::pull (float* destination, int numSamples) noexcept
@@ -103,7 +289,10 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         currentSample = 0.0f;
         phase = 0.0;
         primed = false;
-        started = false;
+        started.store (false, std::memory_order_relaxed);
+        fillAverageValid = false;
+        silenceOwed = 0.0;
+        pullsSinceSilence = 0;
 
         driftPpm.store (0.0, std::memory_order_relaxed);
         excessDrift.store (false, std::memory_order_relaxed);
@@ -113,7 +302,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // Pre-roll. The output clock starts before any device has delivered, so
     // consuming here would emit a click at the top of every take and count
     // audio as lost that had simply not arrived yet.
-    if (! started)
+    if (! started.load (std::memory_order_relaxed))
     {
         if (ring.availableForRead() < targetFillSamples)
         {
@@ -121,8 +310,13 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             return;
         }
 
-        started = true;
+        started.store (true, std::memory_order_relaxed);
     }
+
+    // Count, then stamp: a reporter that reads the stamp sees a count at most
+    // one block newer than it, never older.
+    pulledSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+    lastPullNs.store (nowNs(), std::memory_order_release);
 
     // §3.2: fill error drives the loop. Positive means this device is producing
     // faster than this stream is being consumed, so its ratio must rise to
@@ -137,8 +331,13 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // which is drift on the one channel §3.1 nominated as the reference. See
     // §3.1/§3.2 in docs/SPEC.md for why the reference is a reporting role here
     // rather than a correction one.
-    const auto available = ring.availableForRead();
-    const double fillError = static_cast<double> (available) - static_cast<double> (targetFillSamples);
+    //
+    // Audio arriving late for a span already written as silence is skipped
+    // before the level is read, so the loop never sees it as fill.
+    if (silenceOwed > 0.0)
+        skipLateAudio (numSamples);
+
+    const double fillError = fillErrorNow (ring.availableForRead());
 
     compensator.update (fillError, numSamples);
     driftPpm.store (compensator.getPpm(), std::memory_order_relaxed);
@@ -151,27 +350,52 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         {
             std::fill (destination, destination + numSamples, 0.0f);
             underruns.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+            lossEvents.fetch_add (1, std::memory_order_relaxed);
+            noteSilence (numSamples);
             return;
         }
 
         previousSample = currentSample;
         phase = 0.0;
         primed = true;
+        primes.fetch_add (1, std::memory_order_relaxed);
     }
 
     for (int i = 0; i < numSamples; ++i)
     {
-        destination[i] = previousSample
-                         + static_cast<float> (phase) * (currentSample - previousSample);
-
-        phase += ratio;
-
+        // Advance to the pair this output sample lies between BEFORE writing
+        // it, never after. Reading ahead after the last sample of a block
+        // meant a block that consumed the ring exactly -- every source sample
+        // used, none to spare -- ended in a failed read, and the interpolator
+        // was zeroed and re-primed for a starvation that had not happened:
+        // its fractional phase snapped to zero, a sub-sample step in the
+        // output, once per block in a ring held one block from empty.
         while (phase >= 1.0)
         {
             previousSample = currentSample;
 
             if (! readOne (currentSample))
             {
+                // Only the sample this block's LAST output would have leaned
+                // on is missing: the ring held exactly this block's worth,
+                // and the pair the interpolator carries between blocks needs
+                // one more. Hold the sample it has for that one output and
+                // keep the pair, with the crossing still pending, so the next
+                // block's first read completes it. De-priming here was a
+                // trap: the next block primed again, which costs the same
+                // extra sample, ran one short again, and so on -- a sample
+                // of silence and a restart in every block for as long as the
+                // ring sat one block deep, which the loop, at 200 PPM, took
+                // half a minute to lift it out of. One held sample, once,
+                // against a step to zero and a phase reset every block.
+                if (i == numSamples - 1 && i > 0)
+                {
+                    currentSample = previousSample;
+                    destination[i] = previousSample;
+                    holds.fetch_add (1, std::memory_order_relaxed);
+                    return;
+                }
+
                 // Nothing left to interpolate towards. The source did not
                 // provide the remainder of this block, so write silence for
                 // exactly that missing span, count it once, and stop. Holding
@@ -197,31 +421,82 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
                 phase = 0.0;
                 primed = false;
 
-                const int remaining = numSamples - (i + 1);
+                const int remaining = numSamples - i;
 
-                if (remaining > 0)
-                {
-                    std::fill (destination + i + 1, destination + numSamples, 0.0f);
-                    underruns.fetch_add (static_cast<uint64_t> (remaining), std::memory_order_relaxed);
-                }
+                std::fill (destination + i, destination + numSamples, 0.0f);
+                underruns.fetch_add (static_cast<uint64_t> (remaining), std::memory_order_relaxed);
+                lossEvents.fetch_add (1, std::memory_order_relaxed);
 
+                // Exactly the silence written, no more: the sample this read
+                // did not get is the one the next pull primes with, and it
+                // comes out where it would have.
+                noteSilence (remaining);
                 return;
             }
 
             phase -= 1.0;
         }
+
+        destination[i] = previousSample
+                         + static_cast<float> (phase) * (currentSample - previousSample);
+
+        phase += ratio;
     }
 }
+
+void DeviceInputStream::resetMeasurementWindow() noexcept
+{
+    windowStart = 0;
+    windowCount = 0;
+    measured.store (false, std::memory_order_relaxed);
+    measuredPpm.store (0.0, std::memory_order_relaxed);
+    measurementSeconds.store (0.0, std::memory_order_relaxed);
+    deviceRatePpm.store (0.0, std::memory_order_relaxed);
+    consumerRatePpm.store (0.0, std::memory_order_relaxed);
+}
+
+namespace {
+
+// Least-squares slope of y against x over a ring of points; false when the
+// points do not spread in x. Two passes, so a 60-second window of sample
+// counts near 3e6 keeps its precision.
+template <typename Point, typename GetX, typename GetY>
+bool slopeOf (const Point* ring, int start, int count, int capacity, GetX getX, GetY getY, double& slope)
+{
+    double meanX = 0.0, meanY = 0.0;
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& p = ring[(start + i) % capacity];
+        meanX += getX (p);
+        meanY += getY (p);
+    }
+    meanX /= count;
+    meanY /= count;
+
+    double sxy = 0.0, sxx = 0.0;
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& p = ring[(start + i) % capacity];
+        const double dx = getX (p) - meanX;
+        sxy += dx * (getY (p) - meanY);
+        sxx += dx * dx;
+    }
+
+    if (sxx <= 0.0)
+        return false;
+
+    slope = sxy / sxx;
+    return true;
+}
+
+} // namespace
 
 void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double referencePpm) noexcept
 {
     // §3.3 judges a device against the clock master, not against the output
-    // stream. Passing the master's own correction as the reference is what
+    // stream. Passing the master's own measurement as the reference is what
     // keeps a skewed *output* device from flagging every microphone at once:
-    // that skew lands in every channel's PPM equally and subtracts out here.
-    // The compensator belongs exclusively to the audio thread. Read its
-    // published PPM snapshot instead of mutating it here from the message
-    // thread, which used to create a data race with pull().
+    // that skew lands in every channel's figure equally and subtracts out here.
     const auto resetEpoch = driftReportingResetEpoch.load (std::memory_order_acquire);
     if (! channelLive.load (std::memory_order_relaxed)
         || resetEpoch != observedDriftReportingResetEpoch)
@@ -229,10 +504,83 @@ void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double refere
         observedDriftReportingResetEpoch = resetEpoch;
         excessDriftSeconds = 0.0;
         excessDrift.store (false, std::memory_order_relaxed);
+        resetMeasurementWindow();
         return;
     }
 
-    const double relativePpm = driftPpm.load (std::memory_order_relaxed) - referencePpm;
+    // The measurement. Each tick records, for each side, its sample count
+    // paired with the timestamp of the block that brought it there; the slope
+    // of count against time is that clock's rate. The device's rate over the
+    // consumer's is the figure. A count and its stamp are two atomics, so a
+    // tick can see a count one block newer than its stamp: a block of noise
+    // per point, white, which a fit over hundreds of points averages down --
+    // a difference of two points would carry it whole, 40 PPM at a minute.
+    if (! started.load (std::memory_order_relaxed))
+        return;
+
+    const auto pushNs = lastPushNs.load (std::memory_order_acquire);
+    const auto pullNs = lastPullNs.load (std::memory_order_acquire);
+
+    if (pushNs <= 0 || pullNs <= 0)
+        return;
+
+    const RatePoint point { static_cast<double> (pushNs) * 1.0e-9,
+                            static_cast<double> (pushedSamples.load (std::memory_order_relaxed)),
+                            static_cast<double> (pullNs) * 1.0e-9,
+                            static_cast<double> (pulledSamples.load (std::memory_order_relaxed)) };
+
+    if (windowCount == kMaxWindowPoints)
+    {
+        windowStart = (windowStart + 1) % kMaxWindowPoints;
+        --windowCount;
+    }
+
+    window[(windowStart + windowCount) % kMaxWindowPoints] = point;
+    ++windowCount;
+
+    // Drop what has aged out of the window, keeping a little more than the
+    // named length so the fit always spans it.
+    while (windowCount > 2
+           && point.pullSeconds - window[windowStart].pullSeconds > kMeasurementSeconds * 1.25)
+    {
+        windowStart = (windowStart + 1) % kMaxWindowPoints;
+        --windowCount;
+    }
+
+    const double span = point.pullSeconds - window[windowStart].pullSeconds;
+    measurementSeconds.store (span, std::memory_order_relaxed);
+
+    if (windowCount >= 8 && span >= kMeasurementSeconds)
+    {
+        double deviceRate = 0.0, consumerRate = 0.0;
+
+        const bool ok = slopeOf (window, windowStart, windowCount, kMaxWindowPoints,
+                                 [] (const RatePoint& p) { return p.pushSeconds; },
+                                 [] (const RatePoint& p) { return p.pushed; }, deviceRate)
+                     && slopeOf (window, windowStart, windowCount, kMaxWindowPoints,
+                                 [] (const RatePoint& p) { return p.pullSeconds; },
+                                 [] (const RatePoint& p) { return p.pulled; }, consumerRate)
+                     && consumerRate > 0.0;
+
+        if (ok)
+        {
+            measuredPpm.store ((deviceRate / consumerRate - 1.0) * 1.0e6, std::memory_order_relaxed);
+            deviceRatePpm.store ((deviceRate / rate - 1.0) * 1.0e6, std::memory_order_relaxed);
+            consumerRatePpm.store ((consumerRate / rate - 1.0) * 1.0e6, std::memory_order_relaxed);
+            measured.store (true, std::memory_order_relaxed);
+        }
+    }
+
+    // §3.3's flag, from the measurement, once there is one. Before that there
+    // is nothing honest to flag: the loop's own figure is still settling.
+    if (! measured.load (std::memory_order_relaxed))
+    {
+        excessDriftSeconds = 0.0;
+        excessDrift.store (false, std::memory_order_relaxed);
+        return;
+    }
+
+    const double relativePpm = measuredPpm.load (std::memory_order_relaxed) - referencePpm;
 
     if (std::abs (relativePpm) > kExcessDriftThresholdPpm)
     {

@@ -466,6 +466,21 @@ if (MMA_BUILD_TOOLS)
     add_executable(soak_drift Tools/soak_drift.cpp)
     target_link_libraries(soak_drift PRIVATE mma_core)
 
+    # The same loop against devices that deliver whole blocks on their own
+    # clocks, with the pull clock's phase slipping against them -- which is
+    # what soak_drift's lockstep feeding cannot produce, and what made the loop
+    # limit-cycle in the real app. Deterministic, sub-second, a test.
+    add_executable(sim_drift_loop Tools/sim_drift_loop.cpp)
+    target_link_libraries(sim_drift_loop PRIVATE mma_core mma_warnings)
+    # No jitter, then the jitter each rung of §5.4's buffer ladder is expected
+    # to absorb: stalls up to about a block and a half over per-event jitter of
+    # a quarter block or so. What a rung cannot absorb is the next rung's job.
+    add_test(NAME sim_drift_loop COMMAND sim_drift_loop 300)
+    add_test(NAME sim_drift_loop_jitter_64 COMMAND sim_drift_loop 300 64 150,-150,60,-60,0 -1 -1 0.5 1.0 0.2)
+    add_test(NAME sim_drift_loop_jitter_128 COMMAND sim_drift_loop 300 128 150,-150,60,-60,0 -1 -1 1.0 2.0 0.2)
+    add_test(NAME sim_drift_loop_jitter_256 COMMAND sim_drift_loop 300 256 150,-150,60,-60,0 -1 -1 1.0 4.0 0.2)
+    add_test(NAME sim_drift_loop_jitter_512 COMMAND sim_drift_loop 300 512 150,-150,60,-60,0 -1 -1 2.0 8.0 0.3)
+
     # Registered, not merely built. The note above says these take minutes,
     # which is the reason nothing ever ran them -- and measured, the pair takes
     # under twenty seconds: e2e_capture 0.09 s, and soak_drift's FULL four-hour
@@ -489,6 +504,12 @@ if (MMA_BUILD_TOOLS)
         add_executable(live_capture Tools/live_capture.cpp)
         target_link_libraries(live_capture PRIVATE mma_core)
     target_link_libraries(live_capture PRIVATE mma_warnings)
+
+        # The drift loop on real, independent clocks: a time series of every
+        # ring and every PI loop, for reading rather than for pass/fail. Run
+        # under libalsa_readi_shim.so with MMA_SIM_REALTIME=1.
+        add_executable(clock_trace Tools/clock_trace.cpp)
+        target_link_libraries(clock_trace PRIVATE mma_core mma_warnings)
     endif()
 
     # -----------------------------------------------------------------------

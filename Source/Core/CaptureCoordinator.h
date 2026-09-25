@@ -264,6 +264,18 @@ public:
         return total >= overrunAtTakeStart ? total - overrunAtTakeStart : total;
     }
 
+    /// The other way a ring loses audio: the pull came and the device's block
+    /// had not, so the stem got silence. Summed across channels for the whole
+    /// monitoring session, and since the current take began. The stream
+    /// counted this from the first day and nothing ever asked, so a take
+    /// whose microphone ran dry every other block reported no loss at all.
+    uint64_t getUnderrunSamples() const noexcept;
+    uint64_t getUnderrunSamplesThisTake() const noexcept
+    {
+        const auto total = getUnderrunSamples();
+        return total >= underrunAtTakeStart ? total - underrunAtTakeStart : total;
+    }
+
     /// §0.1: audio that arrived from a device and had nowhere to go, because
     /// the block did not match the layout this take was opened with.
     ///
@@ -303,6 +315,11 @@ public:
     /// which is why a take that could not open its files failed in silence.
     const std::string& getRecordingProblem() const noexcept { return recordingProblem; }
     double getRingFillFraction() const noexcept { return pipeline != nullptr ? pipeline->getFillFraction() : 0.0; }
+
+    /// The block size the open streams actually run at. The §5.4 ladder can
+    /// have moved on from this mid-take, since a step taken then is applied
+    /// when the take ends; what a take's record should carry is this.
+    int getBufferSizeSamples() const noexcept { return bufferSize; }
 
     /// BS.1770 loudness of the mix as written. What every streaming platform
     /// normalises against, and the only figure that says how loud a take will
@@ -402,8 +419,55 @@ public:
     /// §3.3, relative to the clock master: positive means this device runs fast
     /// against it. The master reports zero against itself.
     double getChannelDriftPpm (int index) const noexcept;
+
+    /// §3.3's figure as measured: this channel's clock against the master's,
+    /// from DeviceInputStream::getMeasuredDriftPpm (each side measured against
+    /// the pulling clock; the pulling clock's own skew cancels in the
+    /// difference). Meaningful only once hasChannelDriftMeasurement().
+    double getChannelMeasuredDriftPpm (int index) const noexcept;
+    bool hasChannelDriftMeasurement (int index) const noexcept;
+    double getChannelMeasurementSeconds (int index) const noexcept;
+
+    /// §5.4: blocks in which any channel's ring lost audio, summed over the
+    /// channels, as events. The buffer ladder counts these.
+    uint64_t getRingLossEvents() const noexcept;
+
+    /// Diagnostics for the clock harnesses: one channel's loop state as it
+    /// stands, with nothing subtracted. Ring fill 0..1, the stream's own PPM
+    /// against the clock pulling it, and what that ring has thrown away.
+    double getChannelFillFraction (int index) const noexcept;
+    double getChannelRawDriftPpm (int index) const noexcept;
+    uint64_t getChannelOverrunSamples (int index) const noexcept;
+
+    /// How the consumer clock is keeping time, for the same harnesses. All
+    /// three are running maxima/counts since monitoring began: the latest a
+    /// software-clock tick woke after its deadline, how many ticks were pulled
+    /// while a period or more behind, and the longest single pull. Relaxed
+    /// atomics written on the audio threads; nothing allocates or locks (§11).
+    struct ClockDiagnostics
+    {
+        uint64_t maxWakeLateUs = 0;
+        uint64_t catchUpTicks = 0;
+        uint64_t maxPullUs = 0;
+    };
+    ClockDiagnostics getClockDiagnostics() const noexcept
+    {
+        return { clockMaxWakeLateUs.load (std::memory_order_relaxed),
+                 clockCatchUpTicks.load (std::memory_order_relaxed),
+                 clockMaxPullUs.load (std::memory_order_relaxed) };
+    }
     bool hasSustainedExcessDrift (int index) const noexcept;
     uint64_t getUnderrunSamples (int index) const noexcept;
+
+    /// Harness diagnostics: the interpolator's seams on one channel.
+    struct ChannelSeams { uint64_t primes = 0, holds = 0, skips = 0; };
+    ChannelSeams getChannelSeams (int index) const noexcept
+    {
+        if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+            return {};
+        const auto& s = *deviceStreams[static_cast<size_t> (index)];
+        return { s.getPrimeCount(), s.getHoldCount(), s.getSkipCount() };
+    }
 
 private:
     IAudioBackend& backend;
@@ -515,6 +579,7 @@ private:
     /// stream's counter, but streams are prepared when monitoring starts, not
     /// when a take does -- so the take's own figure is measured from here.
     uint64_t overrunAtTakeStart = 0;
+    uint64_t underrunAtTakeStart = 0;
 
     /// Per-stream overrun totals when the take began, so the worst channel can
     /// be measured against its own starting point rather than the rig's.
@@ -536,6 +601,9 @@ private:
     // Written by the audio thread, read by the UI. Relaxed because a stale
     // reading for one frame is harmless and a lock here would not be (§11).
     std::atomic<double> callbackLoad { 0.0 };
+    std::atomic<uint64_t> clockMaxWakeLateUs { 0 };
+    std::atomic<uint64_t> clockCatchUpTicks { 0 };
+    std::atomic<uint64_t> clockMaxPullUs { 0 };
 
     // §14.4, same ownership: written in the callback, read on the UI tick.
     //

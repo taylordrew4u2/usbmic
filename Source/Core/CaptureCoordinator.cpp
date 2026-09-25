@@ -7,6 +7,11 @@
 #include <mutex>
 #include <thread>
 
+#if defined (__linux__) || defined (__APPLE__)
+ #include <pthread.h>
+ #include <sched.h>
+#endif
+
 namespace mma {
 
 CaptureCoordinator::CaptureCoordinator (IAudioBackend& b, double rate, int bufferSizeSamples)
@@ -348,6 +353,19 @@ void CaptureCoordinator::runSoftwareClock()
 {
     using clock = std::chrono::steady_clock;
 
+    // The same scheduling class as the device threads that fill the rings this
+    // drains. Left at normal priority, the consumer was the one thread in the
+    // audio path the producers could preempt: with an 8 ms margin in each
+    // ring, an ordinary scheduling delay overflowed it, and the delays read as
+    // drift. Best effort -- where the OS refuses, the clock runs as before.
+   #if defined (__linux__) || defined (__APPLE__)
+    {
+        sched_param param {};
+        param.sched_priority = std::min (80, sched_get_priority_max (SCHED_FIFO));
+        pthread_setschedparam (pthread_self(), SCHED_FIFO, &param);
+    }
+   #endif
+
     const auto period = std::chrono::nanoseconds (
         static_cast<int64_t> (1.0e9 * static_cast<double> (std::max (1, bufferSize)) / std::max (1.0, sampleRate)));
 
@@ -356,7 +374,23 @@ void CaptureCoordinator::runSoftwareClock()
     // has not called back for a tenth of a second has stopped.
     const auto lostAfter = std::max (period * 8, std::chrono::nanoseconds (100'000'000));
 
+    // How far behind the clock may fall and still be caught up: well past
+    // scheduler jitter, well inside the rings' capacity.
+    constexpr auto kMaxCatchUp = std::chrono::milliseconds (100);
+
+    // A wake this late is a stall the whole process shared, not this thread's
+    // alone. The device threads woke from it at the same instant, each with a
+    // driver ring full of audio to hand over; pulled first, the catch-up ticks
+    // below would find the rings dry and write silence for audio that arrives
+    // a moment later -- audio the streams then skip to stay in step, so the
+    // stall costs the take twice over. A moment's grace lets the producers
+    // land their bursts first. Once per stall, on entering catch-up.
+    constexpr auto kBurstGrace = std::chrono::milliseconds (1);
+    const auto sharedStall = period * 2;
+
     auto next = clock::now() + period;
+    bool wasTakingOver = ! outputStreamOpen;
+    bool catchingUp = false;
 
     while (clockRunning.load (std::memory_order_acquire))
     {
@@ -372,6 +406,15 @@ void CaptureCoordinator::runSoftwareClock()
 
         outputClockLost.store (outputStreamOpen && takeOver, std::memory_order_relaxed);
 
+        // A takeover begins on a fresh deadline. The standby loop below leaves
+        // `next` up to a quarter of the loss window stale, and catching that
+        // up would open the takeover with a burst of pulls into rings the
+        // dead output had already stopped draining.
+        if (takeOver && ! wasTakingOver)
+            next = now + period;
+
+        wasTakingOver = takeOver;
+
         if (! takeOver)
         {
             // The output is doing its job. Look again well before it could
@@ -382,11 +425,47 @@ void CaptureCoordinator::runSoftwareClock()
             continue;
         }
 
-        // Absolute deadlines: a late wake does not shorten the next period,
-        // and a run of late wakes does not pile up.
+        // Absolute deadlines, and a late wake is caught up rather than
+        // forgiven. This used to restart the schedule whenever a wake came
+        // more than one period late -- routine at a 1.3 ms period on a busy
+        // machine -- which silently threw those ticks away. The clock then ran
+        // slow against real time, so every microphone measured fast, drift
+        // correction sat pinned at its +200 ppm clamp, and the rings
+        // overflowed for as long as the take lasted. Found by running the app
+        // against microphones on real, independent clocks
+        // (Tools/e2e_realtime_mics.sh).
+        //
+        // Missed ticks are pulled back to back instead: the audio they stand
+        // for is already waiting in the rings. Only a stall far beyond any
+        // scheduling jitter -- the process suspended, the machine asleep -- is
+        // treated as a new start, since catching that up would be a burst.
         std::this_thread::sleep_until (next);
+
+        // How late this wake was: the grace above, and diagnostics -- a
+        // relaxed max on an atomic, nothing §11 forbids.
+        {
+            const auto woke = clock::now();
+            const bool late = woke > next && woke - next >= period;
+
+            if (woke > next)
+            {
+                const auto lateUs = static_cast<uint64_t> (
+                    std::chrono::duration_cast<std::chrono::microseconds> (woke - next).count());
+                auto seen = clockMaxWakeLateUs.load (std::memory_order_relaxed);
+                while (lateUs > seen
+                       && ! clockMaxWakeLateUs.compare_exchange_weak (seen, lateUs, std::memory_order_relaxed)) {}
+                if (late)
+                    clockCatchUpTicks.fetch_add (1, std::memory_order_relaxed);
+            }
+
+            if (late && ! catchingUp && woke - next >= sharedStall)
+                std::this_thread::sleep_for (kBurstGrace);
+
+            catchingUp = late;
+        }
+
         next += period;
-        if (next < clock::now())
+        if (clock::now() - next > kMaxCatchUp)
             next = clock::now() + period;
 
         if (pulling.exchange (true, std::memory_order_acq_rel))
@@ -415,6 +494,16 @@ uint64_t CaptureCoordinator::getOverrunSamples() const noexcept
 
     for (const auto& stream : deviceStreams)
         total += stream->getOverrunSamples();
+
+    return total;
+}
+
+uint64_t CaptureCoordinator::getUnderrunSamples() const noexcept
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : deviceStreams)
+        total += stream->getUnderrunSamples();
 
     return total;
 }
@@ -463,18 +552,21 @@ void CaptureCoordinator::fanOutDeviceInputs (const std::vector<std::pair<int, in
 {
     if (inputs == nullptr || numInputs <= 0)
     {
-        // A microphone stream that hands over no inputs at all has lost every
-        // channel the take routed from it. The duplex output callback reaching
-        // here means only that this cycle had no input half, which is ordinary
-        // and loses nothing -- counting those turned a clean take on any duplex
-        // interface into a session.json claiming millions of dropped frames.
-        // Wall-clock frames, not channel-frames. Multiplying by the channel
-        // count made the number in "Dropped N frames" four times the audio
-        // actually lost on a four-channel device -- a true event reported with
-        // a false magnitude, which is its own kind of wrong answer.
+        // A microphone stream that hands over no inputs at all is telling us
+        // its device produced numSamples that were lost before they could be
+        // delivered -- a driver ring that overflowed while the reader thread
+        // was not running. The backend counts and reports that loss itself
+        // (getFramesDroppedByBackend, "before recording"); here it reaches the
+        // streams, whose §3.3 measurement counts what the device's clock
+        // produced, delivered or not, so a stall does not read as the clock
+        // running slow. It used to be added to the layout figure as well, a
+        // second count of the same loss under the wrong name. The duplex
+        // output callback reaching here means only that this cycle had no
+        // input half, which is ordinary and loses nothing.
         if (fromInputStream && numSamples > 0)
-            framesMissedByLayout.fetch_add (static_cast<uint64_t> (numSamples),
-                                            std::memory_order_relaxed);
+            for (const auto& [deviceInput, takeChannel] : routing)
+                if (takeChannel >= 0 && takeChannel < static_cast<int> (deviceStreams.size()))
+                    deviceStreams[static_cast<size_t> (takeChannel)]->noteSamplesLostBeforeDelivery (numSamples);
         return;
     }
 
@@ -681,6 +773,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     // everything that happened while merely monitoring.
     framesMissedByLayout.store (0, std::memory_order_relaxed);
     overrunAtTakeStart = getOverrunSamples();
+    underrunAtTakeStart = getUnderrunSamples();
 
     // Same reasoning as the counter above: without this, the figures from the
     // previous take would stand as this one's until enough blocks had gone by.
@@ -1406,10 +1499,58 @@ double CaptureCoordinator::getMasterDriftPpm() const noexcept
 
 void CaptureCoordinator::tickDriftReporting (double elapsedSeconds) noexcept
 {
-    const double reference = getMasterDriftPpm();
+    // The master's measured clock, once it has one; §3.3's flag is judged
+    // against the master, and before the master is measured nothing is
+    // flagged (each stream withholds its flag until its own measurement
+    // exists, and the master's is the reference for all of them).
+    double reference = 0.0;
+
+    if (masterChannel >= 0 && masterChannel < static_cast<int> (deviceStreams.size())
+        && deviceStreams[static_cast<size_t> (masterChannel)]->hasDriftMeasurement())
+        reference = deviceStreams[static_cast<size_t> (masterChannel)]->getMeasuredDriftPpm();
 
     for (auto& stream : deviceStreams)
         stream->tickDriftReporting (elapsedSeconds, reference);
+}
+
+double CaptureCoordinator::getChannelMeasuredDriftPpm (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    double reference = 0.0;
+
+    if (masterChannel >= 0 && masterChannel < static_cast<int> (deviceStreams.size())
+        && deviceStreams[static_cast<size_t> (masterChannel)]->hasDriftMeasurement())
+        reference = deviceStreams[static_cast<size_t> (masterChannel)]->getMeasuredDriftPpm();
+
+    return deviceStreams[static_cast<size_t> (index)]->getMeasuredDriftPpm() - reference;
+}
+
+bool CaptureCoordinator::hasChannelDriftMeasurement (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return false;
+
+    return deviceStreams[static_cast<size_t> (index)]->hasDriftMeasurement();
+}
+
+double CaptureCoordinator::getChannelMeasurementSeconds (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getMeasurementSeconds();
+}
+
+uint64_t CaptureCoordinator::getRingLossEvents() const noexcept
+{
+    uint64_t total = 0;
+
+    for (const auto& stream : deviceStreams)
+        total += stream->getLossEvents();
+
+    return total;
 }
 
 double CaptureCoordinator::getChannelDriftPpm (int index) const noexcept
@@ -1423,6 +1564,30 @@ double CaptureCoordinator::getChannelDriftPpm (int index) const noexcept
     // device-against-master number §3.3 asks for -- and the master reports zero
     // against itself by construction.
     return deviceStreams[static_cast<size_t> (index)]->getDriftPpm() - getMasterDriftPpm();
+}
+
+double CaptureCoordinator::getChannelFillFraction (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getFillFraction();
+}
+
+double CaptureCoordinator::getChannelRawDriftPpm (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0.0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getDriftPpm();
+}
+
+uint64_t CaptureCoordinator::getChannelOverrunSamples (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getOverrunSamples();
 }
 
 bool CaptureCoordinator::hasSustainedExcessDrift (int index) const noexcept
@@ -1449,6 +1614,12 @@ void CaptureCoordinator::noteCallbackLoad (std::chrono::steady_clock::time_point
 
     const auto elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
     const auto available = static_cast<double> (numSamples) / sampleRate;
+
+    {
+        const auto us = static_cast<uint64_t> (elapsed * 1.0e6);
+        auto seen = clockMaxPullUs.load (std::memory_order_relaxed);
+        while (us > seen && ! clockMaxPullUs.compare_exchange_weak (seen, us, std::memory_order_relaxed)) {}
+    }
 
     if (available <= 0.0)
         return;
