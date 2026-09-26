@@ -69,8 +69,11 @@ physical-hardware matrix remain open in `RELEASE_CHECKLIST.md`.
   its remembered preview returns only for the next one.
 - Release packaging validates version/tag identity against the exact tip of
   `main`, pins third-party actions and JUCE by commit, and builds a universal
-  macOS 13+ app. A tagged release fails closed without Developer ID/notary and
-  Authenticode credentials, signs the outer DMG as well as the app, preserves
+  macOS 13+ app. A tagged release signs and notarizes when Developer ID/notary
+  and Authenticode credentials exist and otherwise ships ad-hoc/unsigned with
+  the release notes saying so (the fail-closed gate added in the candidate cut
+  blocked every release, since no certificate has ever been on file); when
+  signing, it signs the outer DMG as well as the app, preserves
   hardened-runtime microphone/camera entitlements, and launches every opaque
   downloaded container again on a second runner before promotion.
 - The portable Windows executable links its Visual C++ runtime statically, and
