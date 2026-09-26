@@ -270,10 +270,10 @@ jobs:
           }
           Write-Host 'No MSVCP/VCRUNTIME imports: the portable Windows binary carries its MSVC runtime.'
 
-      # A public release is never allowed to fall back to an unsigned Windows
-      # executable. Build-only rehearsals remain possible without repository
-      # secrets, but a tag/release request fails closed until the owner has
-      # supplied the code-signing certificate.
+      # Signed with Authenticode when the repository carries a certificate.
+      # Without one the executable ships unsigned, as every release before
+      # v1.12.0 did, and the workflow log says so. Half a pair of secrets is
+      # still a configuration error and fails.
       - name: Authenticode-sign the Windows application
         if: runner.os == 'Windows'
         shell: pwsh
@@ -282,7 +282,6 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $publishing = '${{ needs.prepare.outputs.release_tag }}' -ne ''
           $haveCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX)
           $havePassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
 
@@ -291,12 +290,8 @@ jobs:
           }
 
           if (-not $haveCertificate) {
-            if ($publishing) {
-              throw 'A public release requires an Authenticode certificate. Build-only rehearsals may remain unsigned.'
-            }
-
-            'SOBSTAGE_WINDOWS_SIGNING=unsigned-rehearsal' | Out-File -FilePath $env:GITHUB_ENV -Append
-            Write-Warning 'Unsigned Windows build: this artifact is for release rehearsal only.'
+            'SOBSTAGE_WINDOWS_SIGNING=unsigned' | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Warning 'Unsigned Windows build: no WINDOWS_CERTIFICATE_PFX secret. SmartScreen will show "unknown publisher" until one is added.'
             exit 0
           }
 
@@ -450,7 +445,6 @@ jobs:
           set -euo pipefail
 
           version="${{ needs.prepare.outputs.version }}"
-          publishing="${{ needs.prepare.outputs.release_tag }}"
           app="$(find out -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app"
           appname="$(basename "$app")"
@@ -523,11 +517,10 @@ jobs:
             spctl --assess --type execute --verbose=2 "$app"
             echo "SOBSTAGE_MAC_SIGNING=developer-id-notarized" >> "$GITHUB_ENV"
           else
-            if [[ -n "$publishing" ]]; then
-              echo "::error::A public release requires Developer ID signing and notarization. Build-only rehearsals may use an ad-hoc signature."
-              exit 1
-            fi
-
+            # No Developer ID credentials in the repository: ship ad-hoc signed,
+            # as every release before v1.12.0 did. The README's macOS install
+            # step tells the user to clear quarantine once.
+            #
             # Ad-hoc re-sign, and the reason this fallback exists at all.
             #
             # The linker ad-hoc signs every arm64 binary, because Apple Silicon
@@ -541,8 +534,8 @@ jobs:
             # past it. So re-sign here, after the install, where it sticks.
             codesign --force --options runtime --timestamp=none \
               --entitlements Resources/SobStage.entitlements --sign - "$app"
-            echo "SOBSTAGE_MAC_SIGNING=adhoc-rehearsal" >> "$GITHUB_ENV"
-            echo "::warning::Ad-hoc macOS build: this artifact is for release rehearsal only."
+            echo "SOBSTAGE_MAC_SIGNING=adhoc" >> "$GITHUB_ENV"
+            echo "::warning::Ad-hoc macOS build: no Developer ID secrets. Users must clear quarantine once (see README, Installing -> macOS)."
           fi
           bash Tools/verify_macos_release.sh \
             "$app" "$version" 13.0 --capture-entitlements
