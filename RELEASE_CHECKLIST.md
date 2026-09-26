@@ -102,12 +102,13 @@ release until every **GA blocker** below is closed with evidence.
   checksum-verified updates and user-reviewed diagnostic exports; no automatic
   update or crash upload.
 
-The release workflow fails closed on a public tag unless all production secrets
-exist. macOS requires `APPLE_CERTIFICATE_P12`,
+The release workflow signs when the production secrets exist and otherwise
+ships an ad-hoc (macOS) or unsigned (Windows) build, labelled as such in its
+workflow log and in the release notes. macOS requires `APPLE_CERTIFICATE_P12`,
 `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_PASSWORD` and
 `APPLE_TEAM_ID`; Windows requires `WINDOWS_CERTIFICATE_PFX` and
-`WINDOWS_CERTIFICATE_PASSWORD`. A build-only rehearsal may remain ad-hoc or
-unsigned, and its workflow log labels it as such.
+`WINDOWS_CERTIFICATE_PASSWORD`. Half of a platform's set is a configuration
+error and fails the job.
 
 Unsigned packages may be labelled and distributed to informed beta testers;
 they are not a completed consumer release.
