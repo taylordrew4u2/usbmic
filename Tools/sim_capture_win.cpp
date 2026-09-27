@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -43,13 +44,32 @@ void check (bool condition, const std::string& what)
         ++failures;
 }
 
+/// A folder of this run's own. The capture simulators used to write straight
+/// into the temp directory under shared names -- 01_Singer.wav, MIX.wav -- and
+/// delete them after each scenario, so under `ctest -j` the macOS and Windows
+/// simulators wrote over and deleted each other's files mid-check.
 std::string tempDir()
 {
+    std::string base = "/tmp";
+
     for (const char* var : { "MMA_TEST_TMPDIR", "TMPDIR", "TMP", "TEMP" })
         if (const char* d = std::getenv (var); d != nullptr && *d != '\0')
-            return std::string (d);
+        {
+            base = d;
+            break;
+        }
 
-    return "/tmp";
+    static const struct Folder
+    {
+        std::filesystem::path path;
+        ~Folder() { std::error_code ignored; std::filesystem::remove_all (path, ignored); }
+    } folder { std::filesystem::path (base)
+               / ("sobstage-sim-capture-win-"
+                  + std::to_string (std::chrono::steady_clock::now().time_since_epoch().count())) };
+
+    std::error_code ignored;
+    std::filesystem::create_directories (folder.path, ignored);
+    return folder.path.string();
 }
 
 fakewasapi::EndpointSpec microphone (const std::string& id, const std::string& name,

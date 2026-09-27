@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A microphone whose audio stream died mid-take while still plugged in is now
+  treated exactly like one that was unplugged. Before, the failure only reached
+  the activity log: its meter stayed lit, the mid-take alert card never came
+  up, and the silence written to its track was reported as the computer being
+  too slow. Found by the new UI walk's dead-microphone run.
+- A NaN or infinity from a microphone driver is written as silence. Infinity
+  used to become a full-scale click in that microphone's file, a click at the
+  ceiling in `MIX.wav` and a click at the monitor ceiling in the headphones. One
+  NaN wiped out the take's loudness figure for good and was sent to the
+  headphone output as NaN. Found by the new mix-bus simulator.
+
+### Added
+
+- `sim_mix_bus`: the recording-mix and headphone limiters driven with eight
+  microphones at full scale, trims moved mid-take, full-scale clicks, and
+  drivers handing over NaN and infinity, at 16, 24 and 32 bits, with every file
+  read back from disk. Runs in `ctest` on all three platforms and under
+  AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer.
+- `Tools/e2e_ui_walk.sh` and `Source/UI/UiWalker.h` (test builds only): the
+  real app walks every screen, control and card from inside the process, then
+  is killed mid-take to prove the next launch offers the take back, then loses
+  a microphone mid-take to prove the alert card, Keep recording and the saved
+  take all work. Runs in CI with the other end-to-end gates.
+- The macOS and Windows capture simulators each write to a folder of their
+  own. They shared file names in the temp directory, so under `ctest -j` one
+  deleted the other's recording mid-check and the Windows headphone-unplug
+  scenario failed intermittently.
+- `MMA_SHIM_FAIL_WHEN_FILE` in `Tools/alsa_readi_shim.cpp`, so a test can kill
+  a device at the moment it chooses rather than a fixed time after it opened.
+- Unit tests for the ffmpeg search order.
+
 ## v1.12.0 -- 2026-09-12 (release candidate)
 
 This candidate concentrates on making failures visible, keeping the record of a

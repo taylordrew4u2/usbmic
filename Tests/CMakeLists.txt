@@ -43,6 +43,7 @@ add_executable(mma_core_tests
     test_FilesystemStatusProbe.cpp
     test_DetachedRefreshCache.cpp
     test_StreamFailurePolicy.cpp
+    test_FfmpegLocator.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)
