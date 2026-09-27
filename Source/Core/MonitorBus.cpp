@@ -54,6 +54,15 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     for (auto s : trimmedInputSamples)
         sum += s; // unity sum, no per-channel attenuation with channel count
 
+    // A NaN or infinity from any microphone is a device fault. NaN failed the
+    // ceiling comparison below and went to the headphones as NaN, which an
+    // output driver may turn into a full-scale burst; infinity was clipped to
+    // the ceiling, a click at maximum level. Silence for that sample, and it
+    // is not counted as limiting, so a faulty microphone cannot trip the
+    // runaway cut and leave everyone's headphones muted after it recovers.
+    if (! std::isfinite (sum))
+        return 0.0f;
+
     // ceilingLinear is a member computed once at construction. It used to be a
     // std::pow evaluated on every sample of every block.
     const double sampleSeconds = (sampleRate > 0.0) ? (1.0 / sampleRate) : 0.0;
