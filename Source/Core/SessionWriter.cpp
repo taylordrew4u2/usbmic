@@ -251,7 +251,9 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            float s = std::clamp (frame[ch], -1.0f, 1.0f);
+            // Non-finite input is written as silence: std::clamp passes NaN
+            // straight through, and the integer conversion of NaN is unspecified.
+            float s = std::isfinite (frame[ch]) ? std::clamp (frame[ch], -1.0f, 1.0f) : 0.0f;
             if (bitDepth == 16)
             {
                 int16_t v = static_cast<int16_t> (std::lround (s * 32767.0f));
