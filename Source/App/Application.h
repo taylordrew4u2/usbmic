@@ -616,6 +616,11 @@ private:
     // always tracked this and nothing ever told it anything.
     std::vector<DropoutEntry> midTakeDropouts;
 
+    // Take channels whose input stream died while the device stayed plugged
+    // in. The device is still listed, so without this the next device-list
+    // refresh would read it as "plugged back in" and relabel a dead stream live.
+    std::set<std::string> deadInputStreams;
+
     // Whether the mirror was still writing when this take was stopped, sampled
     // before stopRecording() tears the pipeline down. Read after, isMirroring()
     // is always false, so every finished take claimed its backup never ran --

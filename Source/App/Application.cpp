@@ -1149,9 +1149,17 @@ void Application::onDeviceListChanged()
         for (const auto& ch : capture->getChannels())
             takeChannels.insert (ch.deviceId);
 
+        // A dead stream whose device has now left the list is an unplug, and
+        // from here on the ordinary unplug and replug handling applies. Without
+        // this a macOS unplug -- reported both as a stream failure and as a
+        // device-list change -- would never be read as plugged back in.
+        for (auto it = deadInputStreams.begin(); it != deadInputStreams.end();)
+            it = present.count (*it) == 0 ? deadInputStreams.erase (it) : std::next (it);
+
         for (const auto& ch : capture->getChannels())
         {
-            const bool live = present.count (ch.deviceId) > 0;
+            const bool live = present.count (ch.deviceId) > 0
+                           && deadInputStreams.count (ch.deviceId) == 0;
             capture->setChannelLive (ch.deviceId, live);
 
             // §6.5: "Log the dropout" on an unplug, and log the reconnection
@@ -2015,6 +2023,7 @@ void Application::toggleRecording()
             // ten-minute warning already spent.
             mirrorActiveAtStop = -1;
             midTakeDropouts.clear();
+            deadInputStreams.clear();
             midTakeNotice.clear();
             midTakeNoticeSeconds = 0.0;
 
@@ -4125,6 +4134,42 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 noteActivity (ActivityLevel::Failed, subject, line);
                 if (firstFailure.isEmpty())
                     firstFailure = line;
+
+                // §6.5: a microphone whose stream died is gone from the take as
+                // surely as one that was unplugged, and has to be treated the
+                // same way. It was only written to the log: its skull stayed
+                // lit, the mid-take card never came up, and the silence its
+                // track filled with was counted as the computer being slow.
+                // Only while the device is still listed: one that has already
+                // left the list is an unplug, which onDeviceListChanged() owns,
+                // replug included.
+                bool stillListed = false;
+                for (const auto& d : deviceManager.getDevices())
+                    stillListed = stillListed || d.identity.key() == failure.deviceId;
+
+                if (! stopForSafety && ! failure.deviceId.empty() && stillListed
+                    && capture != nullptr && capture->isRecording()
+                    && deadInputStreams.count (failure.deviceId) == 0)
+                {
+                    for (const auto& ch : capture->getChannels())
+                    {
+                        if (ch.deviceId != failure.deviceId)
+                            continue;
+
+                        deadInputStreams.insert (ch.deviceId);
+                        capture->setChannelLive (ch.deviceId, false);
+
+                        if (! recordingEngine.isWritingSilence (ch.deviceId))
+                        {
+                            recordingEngine.onMicUnplugged (ch.deviceId);
+                            midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                                         "Microphone stopped sending audio: writing silence "
+                                                         "to its channel." });
+                            noteDeviceDropout();
+                        }
+                        break;
+                    }
+                }
             }
 
             if (stopForSafety)

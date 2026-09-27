@@ -249,6 +249,9 @@ if (MMA_BUILD_APP)
     # without MMA_ALLOW_TEST_INPUTS.
     if (MMA_ALLOW_TEST_INPUTS)
         target_compile_definitions(SobStage PRIVATE MMA_STALL_METER=1)
+        # Tools/e2e_ui_walk.sh: the app walks its own screens. Inert unless
+        # MMA_UI_WALK_REPORT is set; see Source/UI/UiWalker.h.
+        target_compile_definitions(SobStage PRIVATE MMA_UI_WALK=1)
     endif()
 
     # Camera capture, on the two desktop targets §11 names. JUCE implements

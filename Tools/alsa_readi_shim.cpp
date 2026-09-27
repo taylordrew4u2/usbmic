@@ -61,6 +61,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <unistd.h>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -92,6 +93,10 @@ struct Config
     const char* onlyDevice = nullptr;
     long failAfterReads = 0;
     long failAfterMs = 0;
+    /// MMA_SHIM_FAIL_WHEN_FILE: nothing fails until this file exists. Lets a
+    /// test fail a device at a moment it chooses -- a take that starts half a
+    /// minute after launch -- which a delay counted from the first read cannot.
+    const char* failWhenFile = nullptr;
     const char* openMatch = nullptr;
     const char* openAs = nullptr;
     long refuseRate = 0;
@@ -108,7 +113,8 @@ struct Config
                                     || std::getenv ("MMA_SHIM_DEVICE") != nullptr
                                     || std::getenv ("MMA_SHIM_STREAM") != nullptr
                                     || std::getenv ("MMA_SHIM_FAIL_AFTER") != nullptr
-                                    || std::getenv ("MMA_SHIM_FAIL_AFTER_MS") != nullptr;
+                                    || std::getenv ("MMA_SHIM_FAIL_AFTER_MS") != nullptr
+                                    || std::getenv ("MMA_SHIM_FAIL_WHEN_FILE") != nullptr;
         const char* realtime = std::getenv ("MMA_SIM_REALTIME");
         injectFailures = anyFailureSetting || realtime == nullptr || std::strcmp (realtime, "0") == 0;
 
@@ -130,6 +136,8 @@ struct Config
 
         if (const char* n = std::getenv ("MMA_SHIM_FAIL_AFTER_MS"); n != nullptr)
             failAfterMs = std::atol (n);
+
+        failWhenFile = std::getenv ("MMA_SHIM_FAIL_WHEN_FILE");
 
         openMatch = std::getenv ("MMA_SHIM_OPEN_MATCH");
         openAs = std::getenv ("MMA_SHIM_OPEN_AS");
@@ -417,6 +425,20 @@ bool shouldFail (snd_pcm_t* pcm, Stream direction)
 
         if (name == nullptr || std::strcmp (name, c.onlyDevice) != 0)
             return false;
+    }
+
+    if (c.failWhenFile != nullptr)
+    {
+        // Latched: once the file has been seen the device stays dead, as an
+        // unplugged one would, even if the test tidies the file away.
+        static std::atomic<bool> triggered { false };
+
+        if (! triggered.load (std::memory_order_relaxed))
+        {
+            if (::access (c.failWhenFile, F_OK) != 0)
+                return false;
+            triggered.store (true, std::memory_order_relaxed);
+        }
     }
 
     if (reads.fetch_add (1, std::memory_order_relaxed) < c.failAfterReads)
