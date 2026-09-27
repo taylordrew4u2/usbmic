@@ -455,7 +455,7 @@ private:
         {
             if (auto* editor = find<juce::TextEditor>())
             {
-                editor->setText ("UI walk", juce::sendNotificationSync);
+                editor->setText ("UI walk", true);
                 editor->grabKeyboardFocus();
             }
         }, [this] { auto* ms = find<MainScreen>(); return ms != nullptr && ms->getSessionName() == "UI walk"; });

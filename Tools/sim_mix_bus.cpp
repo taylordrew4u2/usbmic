@@ -274,7 +274,7 @@ void eightMicsAtFullScale()
 {
     std::printf ("-- eight microphones all at full scale, in phase --\n");
 
-    constexpr int kChannels = 8, kFrames = 48000;
+    static constexpr int kChannels = 8, kFrames = 48000;
     const auto source = [] (int, int i) { return std::sin (2.0f * kPi * 440.0f * static_cast<float> (i) / 48000.0f); };
 
     for (int bits : { 16, 24, 32 })
@@ -351,7 +351,7 @@ void transients()
 {
     std::printf ("-- a dropped microphone: full-scale clicks on every channel --\n");
 
-    constexpr int kChannels = 4, kFrames = 24000;
+    static constexpr int kChannels = 4, kFrames = 24000;
     const auto source = [] (int, int i) { return (i % 997 == 0) ? ((i / 997) % 2 ? 1.0f : -1.0f) : 0.0f; };
     const auto take = runTake ("clicks", kChannels, 24, kFrames, {}, source, noBlockHook);
 
@@ -364,7 +364,7 @@ void nonFiniteSamples()
 {
     std::printf ("-- a driver hands over NaN and infinity mid-take --\n");
 
-    constexpr int kChannels = 3, kFrames = 48000;
+    static constexpr int kChannels = 3, kFrames = 48000;
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
 
