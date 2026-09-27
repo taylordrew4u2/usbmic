@@ -15,6 +15,11 @@ const float kCeilingLinear = std::pow (10.0f, MixBusLimiter::kCeilingDb / 20.0f)
 
 float MixBusLimiter::processSample (float sumInputSample) noexcept
 {
+    // A NaN fails every comparison, so without this it passed the ceiling
+    // check and went into the file as whatever the integer conversion made of it.
+    if (! std::isfinite (sumInputSample))
+        return 0.0f;
+
     if (std::abs (sumInputSample) > kCeilingLinear)
         return std::copysign (kCeilingLinear, sumInputSample);
     return sumInputSample;

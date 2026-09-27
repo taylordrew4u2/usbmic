@@ -466,7 +466,12 @@ void WritePipeline::drainOnce (bool finalFlush)
 
             for (size_t f = 0; f < frames; ++f)
             {
-                const float sample = drainBuffer[f * static_cast<size_t> (numChannels) + static_cast<size_t> (ch)];
+                // A NaN or infinity is a driver fault, not audio. Left alone,
+                // infinity became a full-scale click in the stem and a click at
+                // the ceiling in the mix, and one NaN wiped out the take's
+                // loudness figure for good. Silence is the only honest value.
+                const float raw = drainBuffer[f * static_cast<size_t> (numChannels) + static_cast<size_t> (ch)];
+                const float sample = std::isfinite (raw) ? raw : 0.0f;
 
                 // §4: the stem is unity gain, always. A bad trim decision must
                 // not be baked into the raw material.
