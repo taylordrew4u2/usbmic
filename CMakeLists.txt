@@ -249,6 +249,9 @@ if (MMA_BUILD_APP)
     # without MMA_ALLOW_TEST_INPUTS.
     if (MMA_ALLOW_TEST_INPUTS)
         target_compile_definitions(SobStage PRIVATE MMA_STALL_METER=1)
+        # Tools/e2e_ui_walk.sh: the app walks its own screens. Inert unless
+        # MMA_UI_WALK_REPORT is set; see Source/UI/UiWalker.h.
+        target_compile_definitions(SobStage PRIVATE MMA_UI_WALK=1)
     endif()
 
     # Camera capture, on the two desktop targets §11 names. JUCE implements
@@ -480,6 +483,13 @@ if (MMA_BUILD_TOOLS)
     add_test(NAME sim_drift_loop_jitter_128 COMMAND sim_drift_loop 300 128 150,-150,60,-60,0 -1 -1 1.0 2.0 0.2)
     add_test(NAME sim_drift_loop_jitter_256 COMMAND sim_drift_loop 300 256 150,-150,60,-60,0 -1 -1 1.0 4.0 0.2)
     add_test(NAME sim_drift_loop_jitter_512 COMMAND sim_drift_loop 300 512 150,-150,60,-60,0 -1 -1 2.0 8.0 0.3)
+
+    # The two limiters every take and every headphone feed go through, driven
+    # with eight full-scale microphones, hard trims, clicks, and a driver that
+    # hands over NaN and infinity. Reads the files back from disk. Seconds.
+    add_executable(sim_mix_bus Tools/sim_mix_bus.cpp)
+    target_link_libraries(sim_mix_bus PRIVATE mma_core mma_warnings)
+    add_test(NAME sim_mix_bus COMMAND sim_mix_bus)
 
     # Registered, not merely built. The note above says these take minutes,
     # which is the reason nothing ever ran them -- and measured, the pair takes

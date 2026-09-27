@@ -731,6 +731,18 @@ covered by the ordinary test command too.
 ```sh
 ./build/sim_coreaudio           # interleaved buffers, rate ranges, hog mode, hotplug
 ./build/sim_wasapi              # exclusive-mode negotiation, PCM conversion, threading
+./build/sim_mix_bus             # both limiters: 8 mics at full scale, trims, NaN/inf
+```
+
+**The UI walk** drives the real app through every screen it has. A test build
+(`-DMMA_ALLOW_TEST_INPUTS=ON`) walks its own live window: Settings, Help and
+Cameras; every picker, tick box and slider moved and put back; a microphone
+renamed; diagnostics exported; a take recorded through a mid-take buffer
+change. It then kills the app mid-take and checks the next launch offers the
+take back, and kills a microphone mid-take and checks the alert card.
+
+```sh
+./Tools/e2e_ui_walk.sh          # Linux, Xvfb; about five minutes
 ```
 
 Linux needs JUCE's usual dependencies for the GUI build:

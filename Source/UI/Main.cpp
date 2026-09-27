@@ -6,6 +6,9 @@
 #if defined (MMA_STALL_METER)
  #include "MessageThreadStallMeter.h"
 #endif
+#if defined (MMA_UI_WALK)
+ #include "UiWalker.h"
+#endif
 
 namespace mma {
 
@@ -112,11 +115,19 @@ public:
 
         application->initialise();
         mainWindow = std::make_unique<MainWindow> (getApplicationName(), *application);
+
+       #if defined (MMA_UI_WALK)
+        uiWalker = std::make_unique<UiWalker> (*mainWindow->getContentComponent(), *application);
+       #endif
     }
 
     void shutdown() override
     {
         stopTimer();
+
+       #if defined (MMA_UI_WALK)
+        uiWalker.reset();
+       #endif
 
        #if defined (MMA_STALL_METER)
         stallMeter.reset();
@@ -185,6 +196,10 @@ private:
 
    #if defined (MMA_STALL_METER)
     std::unique_ptr<MessageThreadStallMeter> stallMeter;
+   #endif
+
+   #if defined (MMA_UI_WALK)
+    std::unique_ptr<UiWalker> uiWalker;
    #endif
 };
 
