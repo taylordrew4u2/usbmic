@@ -799,6 +799,10 @@ jobs:
       - name: Verify and launch downloaded macOS containers
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          # Only whether it is set is read here: the build job notarizes when
+          # this secret exists and ships ad-hoc when it does not.
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
@@ -820,7 +824,7 @@ jobs:
           bash Tools/verify_macos_release.sh \
             "$dmg_app" "$version" 13.0 --capture-entitlements
 
-          if [[ -n "${{ needs.prepare.outputs.release_tag }}" ]]; then
+          if [[ -n "$APPLE_CERTIFICATE_P12" ]]; then
             xcrun stapler validate downloaded/SobStage-macOS.dmg
             spctl --assess --type open --context context:primary-signature \
               --verbose=2 downloaded/SobStage-macOS.dmg
@@ -850,6 +854,10 @@ jobs:
       - name: Verify and launch downloaded Windows ZIP
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          # Only whether it is set is read here: the build job signs when this
+          # secret exists and ships unsigned when it does not.
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
         run: |
           $ErrorActionPreference = 'Stop'
           $extracted = Join-Path $env:RUNNER_TEMP 'downloaded-windows'
@@ -859,7 +867,7 @@ jobs:
             throw 'The downloaded Windows ZIP is missing SobStage.exe.'
           }
 
-          if ('${{ needs.prepare.outputs.release_tag }}' -ne '') {
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX)) {
             $signature = Get-AuthenticodeSignature $exe
             if ($signature.Status -ne 'Valid') {
               throw "Downloaded Authenticode status is $($signature.Status), expected Valid."
