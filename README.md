@@ -299,13 +299,12 @@ $actual = (Get-FileHash SobStage-Windows.zip -Algorithm SHA256).Hash.ToLowerInva
 if ($actual -ne $expected) { throw 'SobStage-Windows.zip checksum does not match' }
 ```
 
-The workflow distinguishes a public release from a rehearsal. A tagged public
-release fails unless the macOS app is Developer ID signed, notarized and
-stapled and the Windows executable has a valid Authenticode signature. An
-untagged build-only artifact may remain ad-hoc/unsigned for informed testing and
-is labelled that way in its workflow log. [Installing → macOS](#macos) explains
-the extra step for such a rehearsal artifact; a notarized tagged release does
-not need it.
+The workflow signs and notarizes the macOS app and Authenticode-signs the
+Windows executable when the repository carries those credentials. Without them
+the macOS app is ad-hoc signed and the Windows executable unsigned, and the
+workflow log labels the build that way. Current releases are unsigned.
+[Installing → macOS](#macos) explains the one extra step an ad-hoc build needs;
+a notarized release does not need it.
 
 The Blue Yeti in the spec is reference hardware only. Recording-input discovery
 uses a positive external-hardware rule and fails closed rather than guessing:
@@ -368,25 +367,23 @@ a public issue, then follow [`SUPPORT.md`](SUPPORT.md).
 
 No separate installer is used. The macOS app and Windows portable ZIP carry
 their application runtime; the Linux ZIP expects the system audio/desktop
-libraries listed below. Tagged public artifacts must pass the workflow's
-signature and notarization gates; untagged rehearsal artifacts can be
-ad-hoc/unsigned and are private-beta material only. See
-[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
+libraries listed below. Current releases are ad-hoc signed on macOS and
+unsigned on Windows; the workflow signs and notarizes once the credentials in
+[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) exist.
 
 ### macOS
 
 1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
    and an arrow pointing at your **Applications** folder.
 2. Drag the skull onto **Applications**. That is the install.
-3. For an **untagged rehearsal artifact only**, open **Terminal** and run this
-   once before first launch:
+3. Open **Terminal** and run this once before first launch:
 
    ```sh
    xattr -dr com.apple.quarantine "/Applications/SobStage.app"
    ```
 
-   Then open the app normally. This step is needed only when the workflow built
-   an ad-hoc rehearsal rather than a notarized Developer ID release;
+   Then open the app normally. This step is needed because current releases
+   are ad-hoc signed rather than notarized with a Developer ID;
    without clearing that flag you get *"SobStage is damaged and
    can't be opened"*. Nothing is wrong with the download — see
    [Troubleshooting](#troubleshooting-macos) below for the full explanation.
@@ -404,7 +401,7 @@ ad-hoc/unsigned and are private-beta material only. See
 
 #### Troubleshooting (macOS)
 
-**An untagged rehearsal says "SobStage is damaged and can't be opened."**
+**macOS says "SobStage is damaged and can't be opened."**
 
 Nothing is damaged and your download is fine — this is what Gatekeeper says
 when a quarantined app's signature does not satisfy it. Control-click → Open
@@ -417,20 +414,19 @@ xattr -dr com.apple.quarantine "/Applications/SobStage.app"
 Then open the app normally. If you put the app somewhere other than
 Applications, point the command at wherever it actually is.
 
-This workaround is for an explicitly ad-hoc rehearsal artifact, not a public
-release. A tagged release is required to be Developer ID signed, notarized and
-stapled; the workflow fails instead of publishing when those credentials are
-absent.
+This workaround is for an ad-hoc signed build, which is what every release so
+far is. Once the workflow has Developer ID credentials it signs, notarizes and
+staples the app and this step goes away.
 
 ### Windows
 
 1. Unzip `SobStage-Windows.zip` anywhere (e.g. a folder in
    `Program Files` or your Desktop).
-2. Run `bin\SobStage.exe` from the unzipped folder. A tagged public release is
-   Authenticode-signed and should show its verified publisher. SmartScreen also
-   uses download reputation, so a newly published, correctly signed build may
-   still show a reputation warning until it has established trust. An untagged
-   rehearsal can be unsigned and is not a consumer release.
+2. Run `bin\SobStage.exe` from the unzipped folder. Current releases are not
+   Authenticode-signed, so SmartScreen shows "unknown publisher" on first run:
+   choose **More info → Run anyway**. Check the download against `SHA256SUMS`
+   first. A signed build shows its verified publisher instead, though a new
+   publisher may still get a reputation warning until it has established trust.
 3. If no microphones appear: Settings → Privacy & security → Microphone →
    make sure **Let desktop apps access your microphone** is on.
 4. Plug in mics and headphones; monitoring is live from launch.
@@ -1019,8 +1015,9 @@ These release gates require credentials, hardware or distribution operations
 outside the source tree:
 
 - Add the Apple Developer ID/notarization and Windows Authenticode credentials
-  named in `RELEASE_CHECKLIST.md`; the release workflow refuses a public tag
-  without them and verifies signatures again after packaging.
+  named in `RELEASE_CHECKLIST.md`; the release workflow ships ad-hoc/unsigned
+  builds without them and verifies signatures again after packaging once they
+  exist.
 - Complete owner/legal/privacy/licensing sign-off and the physical matrix.
 
 An installed macOS HAL plugin, Windows virtual input, automatic crash upload
