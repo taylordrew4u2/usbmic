@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.12.1 -- 2026-09-28 (release candidate)
+
+A fix release on v1.12.0. Two faults that could spoil a take without saying
+so, both found by new whole-app simulators. Physical-hardware validation and
+code signing remain open in `RELEASE_CHECKLIST.md`, as for v1.12.0.
 
 ### Fixed
 
