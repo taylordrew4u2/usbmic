@@ -21,7 +21,61 @@ TakeAlertCard::TakeAlertCard()
     addAndMakeVisible (stopButton);
 }
 
-TakeAlertCard::~TakeAlertCard() = default;
+TakeAlertCard::~TakeAlertCard()
+{
+    stopTimer();
+}
+
+void TakeAlertCard::setAlarming (bool shouldAlarm)
+{
+    if (alarming == shouldAlarm)
+        return;
+
+    alarming = shouldAlarm;
+
+    if (alarming)
+    {
+        alarmStartedMs = juce::Time::getMillisecondCounterHiRes();
+        startTimerHz (30);
+    }
+    else
+    {
+        stopTimer();
+    }
+
+    repaint();
+}
+
+void TakeAlertCard::visibilityChanged()
+{
+    // Hidden by any route -- Keep, Stop, the take ending -- the alarm ends
+    // with it. Nothing may keep a siren going over a card nobody can see.
+    if (! isVisible())
+        setAlarming (false);
+}
+
+void TakeAlertCard::timerCallback()
+{
+    repaint();
+}
+
+bool TakeAlertCard::litNow() const
+{
+    if (! alarming)
+        return false;
+
+    const auto elapsed = juce::Time::getMillisecondCounterHiRes() - alarmStartedMs;
+    const int period = reducedMotion ? kReducedFlashMs : kFlashMs;
+    return (static_cast<int> (elapsed / period) % 2) == 0;
+}
+
+juce::String TakeAlertCard::getBannerText() const
+{
+    if (severeHeading)
+        return severeTakeStopped ? "RECORDING FAILED" : "RECORDING IN TROUBLE";
+
+    return "SOMETHING IS WRONG";
+}
 
 juce::Colour TakeAlertCard::colourFor (Tone tone)
 {
@@ -130,6 +184,7 @@ void TakeAlertCard::refreshCalmHeading()
 void TakeAlertCard::setSevere (bool severe, bool takeStopped)
 {
     severeHeading = severe;
+    severeTakeStopped = severe && takeStopped;
 
     if (severe)
     {
@@ -167,7 +222,58 @@ bool TakeAlertCard::keyPressed (const juce::KeyPress& key)
 
 void TakeAlertCard::paint (juce::Graphics& g)
 {
-    ModalCard::paint (g);
+    const bool lit = litNow();
+
+    // The backdrop. Calm: the meters dimmed behind the card, as every card
+    // does. Alarming: the whole window flashes red, because a card that
+    // politely dims the room is exactly what got missed on a loud stage.
+    if (alarming)
+        g.fillAll (lit ? AppLookAndFeel::danger.withAlpha (0.92f)
+                       : AppLookAndFeel::background.withAlpha (0.96f));
+    else
+        g.fillAll (AppLookAndFeel::background.withAlpha (0.86f));
+
+    const auto card = getCardBounds().toFloat();
+
+    // Room above the card is used for the same words, bigger, so the message
+    // reads from across the room even before anyone walks to the screen.
+    if (alarming)
+    {
+        const int above = static_cast<int> (card.getY()) - 8;
+
+        if (above >= 48)
+        {
+            g.setColour (lit ? AppLookAndFeel::background : AppLookAndFeel::danger);
+            g.setFont (juce::Font (juce::jlimit (36.0f, 90.0f, static_cast<float> (above) * 0.7f), juce::Font::bold));
+            g.drawFittedText (getBannerText(), getLocalBounds().withHeight (above).reduced (12, 4),
+                              juce::Justification::centred, 1, 0.8f);
+        }
+    }
+
+    g.setColour (AppLookAndFeel::surface);
+    g.fillRoundedRectangle (card, 12.0f);
+
+    g.setColour (alarming ? AppLookAndFeel::danger : AppLookAndFeel::outline);
+    g.drawRoundedRectangle (card.reduced (alarming ? 2.0f : 0.5f), 12.0f, alarming ? 4.0f : 1.0f);
+
+    // The banner across the card: the one line to read before anything else.
+    if (! bannerBounds.isEmpty())
+    {
+        const auto banner = bannerBounds.toFloat();
+        const bool bannerLit = alarming ? lit : true;
+        g.setColour (bannerLit ? AppLookAndFeel::danger : AppLookAndFeel::surfaceHigh);
+        g.fillRoundedRectangle (banner, 8.0f);
+
+        auto text = bannerBounds.reduced (10, 6);
+        g.setColour (bannerLit ? AppLookAndFeel::background : AppLookAndFeel::danger);
+        g.setFont (juce::Font (30.0f, juce::Font::bold));
+        g.drawFittedText (getBannerText(), text.removeFromTop (44), juce::Justification::centred, 1, 0.7f);
+
+        g.setFont (juce::Font (14.0f, juce::Font::bold));
+        g.drawFittedText (severeTakeStopped ? "The take has stopped. Read what happened below."
+                                            : "Check the rig now. The take carries on until you say otherwise.",
+                          text, juce::Justification::centred, 2, 0.8f);
+    }
 
     // The severity bar. Colour is the whole point of it: a microphone that
     // has gone and a camera that has gone are not the same emergency.
@@ -183,13 +289,17 @@ void TakeAlertCard::paint (juce::Graphics& g)
 
 int TakeAlertCard::getContentHeight() const
 {
-    return static_cast<int> (rows.size()) * kRowHeight
+    return kBannerHeight + 12
+           + static_cast<int> (rows.size()) * kRowHeight
            + (rowsDropped > 0 ? kOverflowHeight : 0)
            + 14 + kButtonHeight;
 }
 
 void TakeAlertCard::layOutContent (juce::Rectangle<int> area)
 {
+    bannerBounds = area.removeFromTop (kBannerHeight);
+    area.removeFromTop (12);
+
     for (auto& row : rows)
     {
         auto line = area.removeFromTop (kRowHeight);

@@ -281,6 +281,13 @@ MainComponent::MainComponent (Application& app)
     };
     addChildComponent (recoveredTakesPanel);
 
+    // Last, so it sits over every card: the three-second takeover that says a
+    // take has started or stopped. It takes no input, so nothing behind it
+    // is ever blocked.
+    takeBanner.setReducedMotion (application.prefersReducedMotion());
+    takeAlertCard.setReducedMotion (application.prefersReducedMotion());
+    addChildComponent (takeBanner);
+
     // Tall enough that the whole main screen -- monitor volume, mute and the
     // Settings button included -- is on screen at launch. At 480 the bottom
     // row sat below the fold, so the one door into Settings was reachable
@@ -667,7 +674,45 @@ void MainComponent::showTakeAlertCard()
     takeAlertCard.setBounds (getLocalBounds());
     takeAlertCard.setVisible (true);
     takeAlertCard.toFront (true);
+    takeAlertCard.setAlarming (true);
     takeAlertCard.prepareToShow();
+}
+
+void MainComponent::announceTakeTransitions()
+{
+    // On the fast tick, whichever way the take started or stopped: the
+    // button, the card, the proof, the drive. A start or stop nobody could
+    // miss: the whole window flashes for three seconds and the headphones
+    // chirp, up for a start and down for a stop.
+    const bool recording = application.getRecordingEngine().getState() == RecordingState::Recording;
+
+    if (recording != lastAnnouncedRecording)
+    {
+        lastAnnouncedRecording = recording;
+
+        if (recording)
+        {
+            announcedTakeFolder = juce::File (application.getCurrentSessionFolder()).getFileName();
+            takeBanner.show (TakeBanner::Kind::Started, "RECORDING",
+                             announcedTakeFolder.isNotEmpty() ? "Take: " + announcedTakeFolder : juce::String());
+            application.announceRecordingStarted();
+        }
+        else
+        {
+            takeBanner.show (TakeBanner::Kind::Stopped, "RECORDING STOPPED",
+                             announcedTakeFolder.isNotEmpty() ? "Saved: " + announcedTakeFolder : juce::String());
+            application.announceRecordingStopped();
+        }
+    }
+
+    // The siren follows the card: on while it is up and alarming, off the
+    // moment it is not. Re-asserted every tick, so a capture rebuilt during
+    // the alarm (a device coming or going) picks it up again. A start or stop
+    // chirp is allowed to finish first.
+    const bool wanted = takeAlertCard.isVisible() && takeAlertCard.isAlarming();
+
+    if (! wanted || ! application.isAlarmChirping())
+        application.setFaultAlarm (wanted);
 }
 
 void MainComponent::showSavedTake()
@@ -768,6 +813,8 @@ void MainComponent::refreshStatus()
     // bounded mailbox from the ordinary UI tick; this never waits, and is what
     // releases metadata/combining/saved notices once every movie is real.
     application.pollCameraFinalization();
+
+    announceTakeTransitions();
 
     // The capture-rebuilt callback is the source of truth after construction.
     // The first refresh performs the initial bind because Application has
@@ -1441,6 +1488,7 @@ void MainComponent::resized()
     savedTakePanel.setBounds (bounds);
     recoveredTakesPanel.setBounds (bounds);
     takeAlertCard.setBounds (bounds);
+    takeBanner.setBounds (bounds);
 
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one

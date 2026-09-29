@@ -67,10 +67,14 @@ fresh_home() {
   echo "$home"
 }
 
+SNAPSHOTS="${MMA_UI_WALK_SNAPSHOT_DIR:-/tmp/mma-ui-walk-snapshots}"
+rm -rf "$SNAPSHOTS"; mkdir -p "$SNAPSHOTS"
+
 # launch <home> <report> [extra env...]; sets APP_PID
 launch() {
   local home="$1" report="$2"; shift 2
   env HOME="$home" DISPLAY="$DISPLAY_NUM" MMA_UI_WALK_REPORT="$report" \
+    MMA_UI_WALK_SNAPSHOT_DIR="$SNAPSHOTS" \
     LD_PRELOAD="$SHIM" MMA_SIM_REALTIME=1 MMA_SIM_PPM="mma_mic1=150,mma_mic2=-150,mma_out=0" "$@" \
     "$APP" >"$report.log" 2>&1 &
   APP_PID=$!
@@ -160,4 +164,4 @@ if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
 rm -rf "$WORK"
-echo "UI walk: OK"
+echo "UI walk: OK (window snapshots in $SNAPSHOTS)"
