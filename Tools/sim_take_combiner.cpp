@@ -364,7 +364,11 @@ int main (int argc, char** argv)
     // A failed lookup used to be cached for the life of the app, so ffmpeg
     // installed after the first take was never found until a restart.
     {
+       #if JUCE_WINDOWS
+        const auto installed = root.getChildFile ("later-installed").getChildFile ("ffmpeg.exe");
+       #else
         const auto installed = root.getChildFile ("later-installed").getChildFile ("ffmpeg");
+       #endif
 
         mma::TakeCombiner laterCombiner;
         laterCombiner.setFfmpegSearchPathsForTesting ({ installed.getFullPathName().toStdString() });
@@ -373,9 +377,15 @@ int main (int argc, char** argv)
             return fail ("an ffmpeg that is not there yet was reported as found");
 
         if (! installed.getParentDirectory().createDirectory().wasOk()
-            || ! juce::File (executable).copyFileTo (installed)
-            || ! installed.setExecutePermission (true))
+            || ! juce::File (executable).copyFileTo (installed))
             return fail ("could not install the stand-in ffmpeg");
+
+        // Windows has no execute bit (JUCE reports false there); the .exe
+        // name is what makes it runnable.
+       #if ! JUCE_WINDOWS
+        if (! installed.setExecutePermission (true))
+            return fail ("could not install the stand-in ffmpeg");
+       #endif
 
         const auto laterTake = root.getChildFile ("later-take");
         if (! laterTake.createDirectory().wasOk()
