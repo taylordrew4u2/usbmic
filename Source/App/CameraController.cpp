@@ -669,6 +669,12 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
 
             if (currentCount != baselineCount && (baselineCount > 1 || currentCount > 1))
                 ambiguousTakeDeviceNames.insert (name);
+
+            auto last = lastTakeDeviceNameCounts.find (name);
+            const int previousCount = last != lastTakeDeviceNameCounts.end() ? last->second : baselineCount;
+            if (currentCount < previousCount)
+                shrunkTakeDeviceNames.insert (name);
+            lastTakeDeviceNameCounts[name] = currentCount;
         }
     }
 
@@ -723,6 +729,15 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
 }
 #endif
 
+bool CameraController::hiddenOnlyByGrowth (const std::string& id) const
+{
+    for (const auto& recordingEntry : takeRecordings)
+        if (recordingEntry.deviceId == id)
+            return ambiguousTakeDeviceNames.count (recordingEntry.deviceName) > 0
+                && shrunkTakeDeviceNames.count (recordingEntry.deviceName) == 0;
+    return false;
+}
+
 void CameraController::applySelection (bool retryFailures)
 {
 #if JUCE_USE_CAMERA
@@ -756,6 +771,13 @@ void CameraController::applySelection (bool retryFailures)
         // A real unplug is different: the device is already gone, so close it
         // now and retain the partial movie for the watchdog/combiner.
         if (takeActive && entry.second.recordingThisTake && switchedOff && ! disappeared)
+            continue;
+
+        // Hidden only because a same-name twin arrived: nothing left, and the
+        // open device is still bound to the camera it was recording. Keep it.
+        if (takeActive && disappeared
+            && (entry.second.recordingThisTake || entry.second.startingThisTake)
+            && hiddenOnlyByGrowth (entry.first))
             continue;
 
         if (switchedOff || disappeared)
@@ -1129,6 +1151,8 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     camerasDeferredUntilTakeEnds.clear();
     takeDeviceNameCounts.clear();
     ambiguousTakeDeviceNames.clear();
+    shrunkTakeDeviceNames.clear();
+    lastTakeDeviceNameCounts.clear();
     recordingFinalizationState = RecordingFinalizationState::Idle;
     recordingFinalizationProblem.clear();
     reconcileWhenFinalized = false;
@@ -1339,6 +1363,8 @@ void CameraController::stopRecordingInternal (bool reconcileForNextTake)
     takeActive = false;
     takeDeviceNameCounts.clear();
     ambiguousTakeDeviceNames.clear();
+    shrunkTakeDeviceNames.clear();
+    lastTakeDeviceNameCounts.clear();
 
 #if JUCE_USE_CAMERA
     if (! wasTakeActive)

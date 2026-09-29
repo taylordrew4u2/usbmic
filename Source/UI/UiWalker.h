@@ -627,6 +627,39 @@ private:
         add ("Settings closes during a take", [this] { pressKey (juce::KeyPress::escapeKey); },
              [this] { return ! isUp<AdvancedPanel>(); });
         settle (2000);
+
+        // Renaming during a take: this take's files keep the name they started
+        // with (§6.5 fixes the channel list), but the strip must show the new
+        // name straight away. It used to wait for the take to end.
+        for (const char* name : { "Walker Mid", "Walker Vox" })
+        {
+            const juce::String newName (name);
+            add ("renaming a microphone during the take asks for the name", [this]
+            {
+                if (auto* ms = find<MainScreen>())
+                    if (auto* meter = ms->getChannelMeter (0); meter != nullptr && meter->onNameClicked)
+                        meter->onNameClicked();
+            }, [this] { return find<juce::AlertWindow>() != nullptr; });
+            add ("and its strip shows \"" + newName + "\" at once, mid-take", [this, newName]
+            {
+                if (auto* alert = find<juce::AlertWindow>())
+                {
+                    if (auto* editor = alert->getTextEditor ("name"))
+                        editor->setText (newName);
+                    click<juce::AlertWindow> ("Save");
+                }
+            }, [this, newName]
+            {
+                auto* ms = find<MainScreen>();
+                auto* meter = ms != nullptr ? ms->getChannelMeter (0) : nullptr;
+                // Names are stored filename-safe ("Walker Mid" -> "Walker-Mid"),
+                // so the strip is matched against the name the app now holds.
+                const auto stored = application.getMicDisplayName (0);
+                return recording() && find<juce::AlertWindow>() == nullptr
+                    && stored.contains (newName.fromLastOccurrenceOf (" ", false, false))
+                    && meter != nullptr && meter->getTitle() == stored + " meter";
+            }, 2000);
+        }
         add ("recording stops", [this]
         {
             takeFolder = application.getCurrentSessionFolder();

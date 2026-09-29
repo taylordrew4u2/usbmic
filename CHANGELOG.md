@@ -4,6 +4,34 @@
 
 ### Fixed
 
+- **A stalled drive raises the alarm once, not twice a second.** When the
+  take's files stopped growing, the stall verdict repeated on every tick:
+  each one added another alert row and brought the card and the siren back
+  half a second after Keep recording. It is now reported once per stall,
+  and again only if the files grow and then stall a second time.
+- **Plugging in a second camera of the same model no longer stops the one
+  recording.** A same-name group that only grew mid-take is still held out
+  of the list, but its running recording is kept; nothing left. A group
+  whose count drops is still treated as before.
+- **Renaming a microphone during a take now shows on its strip at once.**
+  The take's own files keep the name they started with, as before, but the
+  strip kept the old name until the take ended. The UI walk renames a
+  microphone mid-take and checks the strip.
+- **WAV files with an odd-sized data chunk are padded to an even length**,
+  as RIFF requires. A mono 24-bit take with an odd number of frames ended
+  on an odd byte, which strict readers can reject. The pad is added when a
+  file is finished; its size is not counted in the data chunk.
+- **Windows: microphones open when the app's main thread is a
+  single-threaded COM apartment**, which JUCE always makes it. The audio
+  worker threads now join the multithreaded apartment themselves; before,
+  COM calls from them could fail and every microphone read as "no longer
+  connected". Reproduced in the Windows simulator, which now models COM
+  apartments per thread.
+- **Windows: a buffer smaller than the device's minimum period opens at the
+  minimum** instead of failing with a message blaming another app; and a
+  device that vanishes between a rejected period and the retry now says why
+  the open failed instead of failing with no message. Other Initialize
+  failures name the Windows error code.
 - **Muting the headphones could come undone on its own.** When the app
   rebuilt its audio engine -- which it does itself when it raises the buffer
   size for a computer that can't keep up, or when the sample rate changes --
