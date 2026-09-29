@@ -1126,6 +1126,65 @@ void aDriverThatRetainsListenerClientDataIsQuarantined()
            "the quarantine refuses a retry without touching the unsafe driver");
 }
 
+/// Unplugging one interface of a live rig invalidates its AudioObjectID, so
+/// Stop and Destroy on it fail with kAudioHardwareBadObjectError. That is the
+/// HAL saying the registration no longer exists, not a refusal to drop it. It
+/// used to be counted as unsafe cleanup and quarantined the backend until the
+/// app restarted, refusing the interface that was still plugged in.
+void anUnpluggedInterfaceDoesNotQuarantineTheSurvivor()
+{
+    std::printf ("\nOne interface of a live rig is unplugged before close\n");
+    fakeca::reset();
+
+    auto survivorSpec = microphone ("Survivor Mic", "uid-unplug-survivor", 1,
+                                    fakeca::BufferShape::oneChannelPerBuffer);
+    auto unpluggedSpec = microphone ("Unplugged Mic", "uid-unplug-gone", 1,
+                                     fakeca::BufferShape::oneChannelPerBuffer);
+    const auto survivor = fakeca::addDevice (survivorSpec);
+    const auto unplugged = fakeca::addDevice (unpluggedSpec);
+
+    mma::CoreAudioBackend backend;
+    Capture survivorCapture, unpluggedCapture;
+    check (backend.openInputStream (survivorSpec.uid, 48000.0, 256, survivorCapture.callback())
+               && backend.openInputStream (unpluggedSpec.uid, 48000.0, 256,
+                                           unpluggedCapture.callback()),
+           "both interfaces open");
+
+    fakeca::removeDevice (unplugged);
+    backend.closeAllStreams();
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
+           "teardown of the rig settles");
+    check (! fakeca::isRunning (survivor) && fakeca::openIoProcCount (survivor) == 0,
+           "the surviving interface is fully released");
+
+    Capture retryCapture;
+    check (backend.openInputStream (survivorSpec.uid, 48000.0, 256, retryCapture.callback()),
+           "the surviving interface reopens after its partner was unplugged");
+    backend.closeAllStreams();
+
+    // Control: the same refusal on a device that is still present is a real
+    // retained registration and must keep the quarantine.
+    std::printf ("\nA live interface refuses teardown in the same rig\n");
+    fakeca::reset();
+
+    auto refusingSpec = microphone ("Refusing Mic", "uid-unplug-refusing", 1,
+                                    fakeca::BufferShape::oneChannelPerBuffer);
+    refusingSpec.allowPropertyListenerRemoval = false;
+    fakeca::addDevice (survivorSpec);
+    fakeca::addDevice (refusingSpec);
+
+    mma::CoreAudioBackend controlBackend;
+    check (controlBackend.openInputStream (survivorSpec.uid, 48000.0, 256, survivorCapture.callback())
+               && controlBackend.openInputStream (refusingSpec.uid, 48000.0, 256,
+                                                  unpluggedCapture.callback()),
+           "both interfaces open");
+    controlBackend.closeAllStreams();
+    controlBackend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds);
+    check (! controlBackend.openInputStream (survivorSpec.uid, 48000.0, 256,
+                                             retryCapture.callback()),
+           "a refusal from a device that is still present still quarantines");
+}
+
 /// This is the ordering that matters after a launch timeout: the abandoned
 /// input discovers that CoreAudio retained listener clientData, while an
 /// already-live stream is queued for asynchronous teardown. Successful cleanup
@@ -1703,6 +1762,7 @@ int main()
     aMicrophoneWhoseFirstCallbackNeverArrivesIsReported();
     aStuckInputStartIsBoundedAndCleanedUp();
     aDriverThatRetainsListenerClientDataIsQuarantined();
+    anUnpluggedInterfaceDoesNotQuarantineTheSurvivor();
     aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup();
     anInputPropertyCallCannotFreezeLaunch();
     stuckOutputCreateAndStartCallsAreBounded();

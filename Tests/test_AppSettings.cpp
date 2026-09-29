@@ -231,6 +231,59 @@ TEST_CASE (AppSettings_PerInputSettingsRoundTrip)
     REQUIRE (back.ports[0].settings.inputNames.at (2) == "Sam");
 }
 
+TEST_CASE (AppSettings_InterfaceTrimIsKeptPerInput)
+{
+    // Two people on one interface are set up by ear separately. A trim that
+    // was saved against the box came back on every input after a relaunch.
+    AppSettings s;
+    PersistedPort port;
+    port.key = "usb-3|SN123";
+    port.settings.trimDb = -2.0f;
+    port.settings.inputTrimDb[0] = 6.0f;
+    port.settings.inputTrimDb[3] = -4.5f;
+    s.ports.push_back (port);
+
+    const auto back = AppSettings::fromJsonString (s.toJsonString());
+
+    REQUIRE (back.ports.size() == 1);
+    REQUIRE (back.ports[0].settings.trimDb == -2.0f);
+    REQUIRE (back.ports[0].settings.inputTrimDb.size() == 2);
+    REQUIRE (back.ports[0].settings.inputTrimDb.at (0) == 6.0f);
+    REQUIRE (back.ports[0].settings.inputTrimDb.at (3) == -4.5f);
+}
+
+TEST_CASE (PersistedDeviceSettings_TrimOnOneInputLeavesTheOthersAlone)
+{
+    PersistedDeviceSettings settings;
+
+    settings.setTrimDbForInput (1, true, 6.0f);
+
+    REQUIRE (settings.trimDbForInput (1) == 6.0f);
+    REQUIRE (settings.trimDbForInput (0) == 0.0f);
+    REQUIRE (settings.trimDbForInput (2) == 0.0f);
+
+    // A single microphone's trim is the box's, as it always was.
+    PersistedDeviceSettings mic;
+    mic.setTrimDbForInput (0, false, -3.0f);
+    REQUIRE (mic.trimDb == -3.0f);
+    REQUIRE (mic.trimDbForInput (0) == -3.0f);
+}
+
+TEST_CASE (PersistedDeviceSettings_AnInterfaceSavedBeforePerInputTrimKeepsItsTrim)
+{
+    // Settings from before trim was per input have only the box's value; every
+    // input keeps it until that input is given its own.
+    PersistedDeviceSettings legacy;
+    legacy.trimDb = -6.0f;
+
+    REQUIRE (legacy.trimDbForInput (0) == -6.0f);
+    REQUIRE (legacy.trimDbForInput (1) == -6.0f);
+
+    legacy.setTrimDbForInput (0, true, 0.0f);
+    REQUIRE (legacy.trimDbForInput (0) == 0.0f);
+    REQUIRE (legacy.trimDbForInput (1) == -6.0f);
+}
+
 TEST_CASE (AppSettings_AnUnreadableFileSaysSoRatherThanQuietlyResetting)
 {
     // Defaults instead of a failure is right -- a preferences file is never
@@ -255,6 +308,59 @@ TEST_CASE (AppSettings_ATruncatedFileKeepsWhatSurvivedAndIsNotCalledUnreadable)
 
     REQUIRE_FALSE (settings.wasUnreadable);
     REQUIRE (settings.masterVolume == 0.5);
+}
+
+TEST_CASE (AppSettings_ATruncatedFileNeverKeepsAValueThatWasCutOff)
+{
+    // Keeping what survived is right; keeping the half of a value that got
+    // written is not. A folder cut to "/Users/me/RECO" would be recorded into
+    // and saved back as though the user had chosen it.
+    const auto settings = AppSettings::fromJsonString (
+        "{\"masterVolume\": 0.5, \"destinationFolder\": \"/Users/me/RECO");
+
+    REQUIRE_FALSE (settings.wasUnreadable);
+    REQUIRE (settings.masterVolume == 0.5);
+    REQUIRE (settings.destinationFolder.empty());
+}
+
+TEST_CASE (AppSettings_ATruncatedFileNeverNamesAMicrophoneWithHalfItsName)
+{
+    // Cut inside "Lead Vocal": the complete port before it stays, the one that
+    // was being written when the file stopped is not rebuilt as "Lea".
+    const auto settings = AppSettings::fromJsonString (
+        "{\"masterVolume\": 0.5, \"ports\": ["
+        "{\"key\": \"usb-1\", \"assignedName\": \"Drums\"}, "
+        "{\"key\": \"usb-2\", \"assignedName\": \"Lea");
+
+    REQUIRE_FALSE (settings.wasUnreadable);
+    REQUIRE (settings.masterVolume == 0.5);
+    REQUIRE (settings.findPort ("usb-1") != nullptr);
+    REQUIRE (settings.findPort ("usb-1")->settings.assignedName == std::string ("Drums"));
+
+    for (const auto& port : settings.ports)
+        REQUIRE (port.settings.assignedName != std::string ("Lea"));
+}
+
+TEST_CASE (JsonValue_ATruncatedDocumentDropsTheMemberThatWasCut)
+{
+    // The parser's half of the above: members that finished are kept, the one
+    // the input stopped inside is not, and the caller is told it was cut.
+    bool truncated = false;
+    const auto v = JsonValue::parse ("{\"a\": 1, \"b\": \"hal", &truncated);
+
+    REQUIRE (truncated);
+    REQUIRE (v.find ("a") != nullptr);
+    REQUIRE (v.find ("b") == nullptr);
+
+    // Cut inside a literal is the same case, not an unreadable file.
+    const auto literal = JsonValue::parse ("{\"a\": 1, \"b\": tr", &truncated);
+    REQUIRE (truncated);
+    REQUIRE (literal.find ("a") != nullptr);
+    REQUIRE (literal.find ("b") == nullptr);
+
+    truncated = true;
+    JsonValue::parse ("{\"a\": 1}", &truncated);
+    REQUIRE_FALSE (truncated);
 }
 
 TEST_CASE (AppSettings_AnEmptyFileIsAFirstLaunchNotACorruptOne)

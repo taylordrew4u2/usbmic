@@ -252,4 +252,52 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
     return result;
 }
 
+namespace {
+
+std::string folderName (const std::string& folder)
+{
+    auto end = folder.find_last_not_of ("/\\");
+    if (end == std::string::npos)
+        return {};
+
+    const auto start = folder.find_last_of ("/\\", end);
+    return folder.substr (start == std::string::npos ? 0 : start + 1,
+                          end - (start == std::string::npos ? 0 : start + 1) + 1);
+}
+
+} // namespace
+
+RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
+                                                 std::vector<RecoveredSession> scanned,
+                                                 bool scanIsPrimaryCopy)
+{
+    for (auto& session : scanned)
+    {
+        const auto name = folderName (session.folder);
+        const auto existing = std::find_if (list.shown.begin(), list.shown.end(),
+                                            [&name] (const RecoveredSession& candidate)
+                                            {
+                                                return folderName (candidate.folder) == name;
+                                            });
+
+        if (existing == list.shown.end())
+        {
+            list.shown.push_back (std::move (session));
+        }
+        else if (scanIsPrimaryCopy)
+        {
+            // The user's primary copy wins; the backup it displaces is hidden,
+            // not forgotten.
+            list.hiddenFolders.push_back (std::move (existing->folder));
+            *existing = std::move (session);
+        }
+        else
+        {
+            list.hiddenFolders.push_back (std::move (session.folder));
+        }
+    }
+
+    return list;
+}
+
 } // namespace mma

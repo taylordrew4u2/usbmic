@@ -779,6 +779,9 @@ private:
     CpuPressureMonitor cpuPressureMonitor;
 
     double recordingStartMs = 0.0;
+    /// The ladder's log size when the take began: its session.json records
+    /// only the steps from here on.
+    std::size_t takeBufferChangeStart = 0;
     double currentSampleRate = 48000.0;
     int currentBitDepth = 24;
     // Buffer size lives in bufferLadder, which is the only thing allowed to
@@ -948,11 +951,6 @@ private:
     /// it, and the caller falls back to the name the channel opened with.
     juce::String nameForChannel (const std::string& identityKey, int deviceChannel) const;
 
-    /// The device a strip belongs to: the take's frozen channel list mid-take,
-    /// the plan otherwise. Never a walk over included devices, which is a
-    /// different space once an interface contributes more than one strip.
-    std::string deviceKeyForStrip (int index) const;
-
     /// The rig as the channel planner sees it: every included device, with
     /// §2.4's remembered name and §2.1 verdict already resolved.
     std::vector<ChannelPlanDevice> planDevices() const;
@@ -1044,6 +1042,8 @@ private:
     mutable RecoveryScanStatus destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
     mutable RecoveryScanStatus mirrorRecoveryStatus = RecoveryScanStatus::NotStarted;
     mutable std::vector<RecoveredSession> recoveredSessions;
+    /// Folders of same-named copies hidden behind a shown recovered take.
+    mutable std::vector<std::string> hiddenRecoveredFolders;
 
     /// Pushes the remembered per-port names and trims, and the microphones the
     /// user switched off, onto the device list as it currently stands. Runs

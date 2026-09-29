@@ -2,6 +2,7 @@
 #include "Core/SessionRecovery.h"
 #include "Core/SessionWriter.h"
 #include "Core/Utf8Path.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -354,4 +355,41 @@ TEST_CASE (SessionRecovery_aTakeUnderANonAsciiFolderRecordsAndRepairs)
     REQUIRE (result.fileName == "01_Zo\xC3\xAB.wav");
 
     std::filesystem::remove_all (pathFromUtf8 (folder), ec);
+}
+
+TEST_CASE (SessionRecovery_AHiddenBackupCopyIsRememberedSoItCanBeDismissedToo)
+{
+    const auto take = [] (const std::string& folder)
+    {
+        RecoveredSession s;
+        s.folder = folder;
+        s.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false });
+        return s;
+    };
+
+    // Either scan can finish first; the card copy wins both ways, and the
+    // backup's folder is kept so dismissing the card stamps it as well.
+    for (const bool mirrorFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        const std::vector<RecoveredSession> mirror { take ("/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take"),
+                                                     take ("/Users/me/RECORDINGS-MIRROR/2026-09-01_2100_Other") };
+        const std::vector<RecoveredSession> card { take ("/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take") };
+
+        if (mirrorFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), mirror, false),
+                                               card, true);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), card, true),
+                                               mirror, false);
+
+        REQUIRE (list.shown.size() == 2);
+        const auto shownTake = std::find_if (list.shown.begin(), list.shown.end(),
+                                             [] (const RecoveredSession& s)
+                                             { return s.folder.find ("2000_Take") != std::string::npos; });
+        REQUIRE (shownTake != list.shown.end());
+        REQUIRE (shownTake->folder == "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take");
+        REQUIRE (list.hiddenFolders.size() == 1);
+        REQUIRE (list.hiddenFolders[0] == "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take");
+    }
 }

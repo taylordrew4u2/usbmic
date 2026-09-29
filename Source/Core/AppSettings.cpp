@@ -48,6 +48,16 @@ JsonValue AppSettings::toJson() const
         }
         pv["inputNames"] = inputNames;
 
+        JsonValue inputTrims = JsonValue::makeArray();
+        for (const auto& [input, db] : p.settings.inputTrimDb)
+        {
+            JsonValue entry = JsonValue::makeObject();
+            entry["input"] = JsonValue (static_cast<double> (input));
+            entry["trimDb"] = JsonValue (static_cast<double> (db));
+            inputTrims.push_back (entry);
+        }
+        pv["inputTrims"] = inputTrims;
+
         portArr.push_back (pv);
     }
     root["ports"] = portArr;
@@ -141,6 +151,19 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
                             port.settings.inputNames[input] = name;
                 }
 
+            if (auto* n = pv.find ("inputTrims"))
+                for (const auto& ev : n->asArray())
+                {
+                    const auto* inputV = ev.find ("input");
+                    const auto* trimV = ev.find ("trimDb");
+
+                    if (inputV == nullptr || trimV == nullptr)
+                        continue;
+
+                    if (const int input = static_cast<int> (inputV->asDouble (-1.0)); input >= 0)
+                        port.settings.inputTrimDb[input] = static_cast<float> (trimV->asDouble());
+                }
+
             s.ports.push_back (port);
         }
 
@@ -188,10 +211,10 @@ AppSettings AppSettings::fromJsonString (const std::string& text)
         // of keys and must keep whatever it can -- so the test is that
         // something was read, not that a particular thing was.
         // Counted by members that carry a VALUE. A file truncated before its
-        // first value -- {"destinationFolde -- parses to one dangling key with
-        // nothing under it, which the member count read as a setting recovered,
-        // so everything the user had was reset and the warning never fired.
-        // Seen for real: a settings.json cut short reported nothing at all.
+        // first value finished -- {"destinationFolde -- used to parse to one
+        // dangling key, which the member count read as a setting recovered, so
+        // everything the user had was reset and the warning never fired. The
+        // parser now drops that member; a literal null still counts as nothing.
         const bool readSomething = parsed.getType() == JsonValue::Type::Object
                                 && parsed.getValuedMemberCount() > 0;
 
