@@ -1,4 +1,4 @@
-# SobStage v1.12.1 release checklist
+# SobStage v1.13.0 release checklist
 
 **Classification:** release candidate. Do not present it as a general consumer
 release until every **GA blocker** below is closed with evidence.
@@ -8,8 +8,8 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The release commit is on `main`, the worktree is clean, and all intended
   changes have been reviewed.
 - [ ] `CMakeLists.txt`, the app About/version strings, package metadata, the tag
-  (`v1.12.1`) and this changelog all agree.
-- [ ] `CHANGELOG.md` covers every user-visible change since v1.12.0.
+  (`v1.13.0`) and this changelog all agree.
+- [ ] `CHANGELOG.md` covers every user-visible change since v1.12.1.
 - [ ] Dependency revisions and third-party GitHub Actions are immutable pins;
   the GPLv3 source offer and release archive are present.
 - [ ] Fresh release screenshots have been captured, or the README continues to
@@ -20,7 +20,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **587 unit tests**; if tests change, record the final discovered count here.
+  is **595 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
   `sim_camera_sync_lifecycle` pass. The candidate baseline is **201 CoreAudio
   checks**, **108 WASAPI checks**, **262 camera checks** and **7 synchronous
@@ -82,7 +82,7 @@ release until every **GA blocker** below is closed with evidence.
   Close this only after the same moments have been run with a real card
   pulled on macOS and Windows.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
-  reports 1.12.1 in its bundle, and passes `Tools/verify_macos_release.sh` both
+  reports 1.13.0 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.
 - [ ] The DMG opens with current SobStage artwork, a working Applications link
   and no historical “Multi-Mic Aggregator” name or command.
@@ -199,20 +199,20 @@ passed the physical camera matrix.
   notices have owner/legal sign-off.
 - [ ] JUCE licensing is checked against the current official JUCE licensing page
   for the selected distribution model; no undated price table is relied on.
-- [ ] Release notes (`docs/release-notes/v1.12.1.md`, which the release
+- [ ] Release notes (`docs/release-notes/v1.13.0.md`, which the release
   workflow requires and publishes as the release body) state the supported
   targets and known limitations without describing simulator results as
   hardware certification.
 
 ## 6. Release and rollback
 
-- [ ] Keep the v1.12.0 and v1.11.0 tags and assets immutable and available until v1.12.1 is
+- [ ] Keep the v1.12.1 and v1.12.0 tags and assets immutable and available until v1.13.0 is
   proven in production.
-- [ ] Publish v1.12.1 from the exact tested commit; never move or reuse the tag.
+- [ ] Publish v1.13.0 from the exact tested commit; never move or reuse the tag.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
-- [ ] If a serious regression appears, mark v1.12.1 as pre-release/not latest,
-  point users to v1.12.0 when safe, preserve reports and publish a fixed v1.12.2
+- [ ] If a serious regression appears, mark v1.13.0 as pre-release/not latest,
+  point users to v1.12.1 when safe, preserve reports and publish a fixed v1.13.1
   from a new commit/tag. Do not silently replace assets or retag.
 - [ ] Before advising a downgrade, back up `settings.json` and confirm the older
   version can read it; otherwise remove or restore settings explicitly. Never
