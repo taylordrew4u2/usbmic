@@ -40,6 +40,80 @@
   rebuild was lost. The mute is now held by the app, like the volume, and
   carried into every rebuilt engine. The UI walk checks it: mute, force a
   rebuild, still muted; unmute, rebuild, still unmuted.
+- **A take stopped while the last one was still being combined now gets
+  its combined video too.** With "Also save video with the sound in one
+  file" on, a take stopped while the previous take's ffmpeg was still
+  running was turned away, and nothing asked again: its `_with-sound` file
+  silently never appeared. It now waits its turn behind the first on the
+  same worker -- still one ffmpeg at a time -- and the combine status
+  covers both takes. Quitting still stops the run, queued takes included.
+  The combiner simulator stops a second take mid-combine and checks both
+  files arrive.
+- **The fault siren is heard when the headphones die mid-take.** Once the
+  monitor output stopped calling back, the app still counted it as the way
+  to play its own sounds, so the siren for that very fault -- and every
+  later one in the take -- was set on a tone only the dead output renders,
+  and the computer's default output, there for exactly this, was held
+  shut. While the output clock is lost the siren and the start and stop
+  sounds now go through the default output, and move back to the
+  headphones when they return. A unit test stops the output mid-siren and
+  checks the rig stops offering it.
+- **A buffer size or sample rate picked in Settings during a take now takes
+  effect when the take stops.** The streams cannot be reopened mid-take, so
+  the change is owed to the stop -- but nothing marked it owed: Settings
+  showed the new size or rate while the streams stayed on the old one, take
+  after take, until some unrelated event reopened them. A microphone or
+  output plugged in mid-take was left out the same way, so the next take
+  ran without the microphone it was promised. Any device change that
+  arrives during a take is now applied at Stop. The UI walk records a
+  second take that changes only the buffer size and checks the streams
+  reopen at it once Stop is pressed.
+- **A take's `session.json` describes the files it wrote, even when Settings
+  changed mid-take.** A bit depth or sample rate picked during a take is
+  for the next take -- this one's files are already open -- but the copy
+  of `session.json` rewritten at Stop took whatever Settings said by then,
+  so a 48 kHz 24-bit take could be recorded as 44.1 kHz 16-bit, and the
+  combined video's sound was written at the new depth rather than the one
+  recorded. Its microphone list was likewise whoever was ticked and plugged
+  in at Stop. The take's rate, depth and microphones are now fixed when it
+  starts, and both read those. The UI walk changes both mid-take and checks
+  `session.json` against MIX.wav's own header.
+- **A runaway-sound cut stays on until Unmute is pressed, even through an
+  audio engine rebuild.** The cut was kept only in the engine, so when the
+  app rebuilt it -- raising the buffer size for a computer that can't keep
+  up, a hot-plug that moved the sample rate, or the restart a take put off
+  until Stop -- the new engine started uncut. The headphones came back at
+  full listening level with nobody pressing Unmute, and the "Sound was cut"
+  message went away. If the feedback was still there, it howled for another
+  half second before the new engine cut it again. The cut is now carried
+  into the rebuilt engine, as the Mute is. The UI walk cuts the sound, forces
+  a rebuild, and checks the sound is still cut. It then presses Unmute and
+  checks the next rebuild does not bring the cut back.
+- **Picking the headphone output no longer fails because the app's own
+  chirp is holding it.** With no monitor output open, the start and stop
+  chirps play through the computer's default output, and that output was
+  only let go once monitoring already had its stream. On Linux, where the
+  default output (dmix, PipeWire) sits on the same card, and on Windows with
+  "Give exclusive mode applications priority" off, that card was then busy:
+  picking it in Settings was refused as "in use", monitoring stayed off,
+  and the default output was never closed again until the app restarted.
+  It is now closed before the monitor output is opened, and reopened at
+  once if monitoring still has no output. (PipeWire keeps an idle card held
+  for a few seconds after its last client leaves, so there the first open
+  can still be refused; the next one succeeds.) The UI walk picks the
+  output again after a take and checks the default output was let go
+  first.
+- **A take the app stops for writing nothing keeps its red card on top.**
+  When the files had not grown three seconds in, the app stopped the take
+  and raised the "RECORDING FAILED" card, then opened the saved-take card,
+  headed "Saved.", over it in the same moment. The siren went on sounding
+  behind a card that did not mention it. The card that said why was out of
+  sight, and only its OK, under the saved-take card, could stop the siren.
+  The saved-take card now waits until the red card is closed, and OK brings
+  it up. A new UI walk run (`MMA_UI_WALK_MODE=proof`, launch 5 of
+  `Tools/e2e_ui_walk.sh`) records a take whose files never grow. It checks
+  that the red card is the one on screen while the siren sounds, and that
+  the saved-take card comes up only after OK.
 
 ## v1.13.1 -- 2026-09-29 (release candidate)
 

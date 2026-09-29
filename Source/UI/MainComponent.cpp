@@ -248,9 +248,16 @@ MainComponent::MainComponent (Application& app)
 
         // "OK" on a take the proof already stopped; "Stop recording" otherwise.
         if (application.getRecordingEngine().getState() == RecordingState::Recording)
+        {
             startRecordingNow();
+        }
         else
+        {
             grabKeyboardFocus();
+
+            // The saved-take card waited behind this one; it follows the OK.
+            showSavedTake();
+        }
     };
     addChildComponent (takeAlertCard);
 
@@ -700,6 +707,14 @@ void MainComponent::announceTakeTransitions()
 
 void MainComponent::showSavedTake()
 {
+    // A take the proof stopped leaves its red card up, alarming. "Saved." must
+    // not open over it: the siren would carry on behind a card that does not
+    // mention it, with the card that explains it out of sight. Both notices
+    // stay pending in Application; the card's OK (or the next slow tick once
+    // it is gone) brings this card up after it.
+    if (takeAlertCard.isVisible())
+        return;
+
     // §6.5: consumed first and unconditionally, so the alert cannot be stranded
     // by an early return further down.
     CardRemovalNotice removal;

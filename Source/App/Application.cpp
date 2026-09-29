@@ -725,10 +725,18 @@ void Application::restartCapture()
         && (captureRate != currentSampleRate || captureBufferSize != desiredBufferSize()))
     {
         capture->stopMonitoring();
+
+        // §5: a runaway cut holds until the user presses Unmute, but it lives
+        // on the bus being replaced and a fresh bus starts uncut. Read after
+        // the old streams stop, so a cut from their last block is kept too.
+        const bool wasRunawayCut = capture->getMonitorBus().isRunawayMuted();
+
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
         capture->getMonitorBus().setGlobalMute (monitorMuted);
+        if (wasRunawayCut)
+            capture->getMonitorBus().engageRunawayCut();
         ++captureGeneration;
 
         captureRate = currentSampleRate;
@@ -759,7 +767,32 @@ void Application::restartCapture()
         return;
     }
 
+    // AlarmSpeaker.h: the default output and the monitor output are never
+    // open together. alarmTarget() closes the speaker only once the monitor
+    // already HAS its stream -- but a speaker left open by a chirp is what can
+    // keep that stream from opening. When the default output is the device
+    // about to be monitored on, dmix or PipeWire (or WASAPI shared mode with
+    // exclusive priority off) still holds it, the exclusive open is refused as
+    // "in use", monitoring falls back to input-only, and nothing closed the
+    // speaker again for the life of the app. Let go of it before the open.
+    // A sound server that keeps the card suspended-but-held for a few seconds
+    // after its last client leaves (PipeWire's idle suspend) can still refuse
+    // this first open; the next rebuild then succeeds.
+    const bool speakerWasActive = alarmSpeaker.isActive();
+    if (! selectedOutputDeviceId.empty() && speakerWasActive)
+    {
+        alarmSpeaker.setActive (false);
+        alarmSpeakerRetryAtMs = 0.0;
+        ++speakerHandoversForMonitorOpen;
+    }
+
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
+
+    // The monitor did not come up, so nothing else will play a chirp or siren
+    // that was sounding a moment ago: give the speaker straight back rather
+    // than leaving it silent until the next alarm asks for it.
+    if (speakerWasActive && ! alarmSpeaker.isActive() && ! capture->hasOutputStream())
+        alarmSpeaker.setActive (true);
 
     // §5.4: what the monitor path actually costs, taken from the backend that
     // opened it.
@@ -1326,6 +1359,16 @@ void Application::onDeviceListChanged()
         // that has gone silent stops updating, so leaving it there would quote
         // every surviving microphone against a frozen number.
         applyClockMaster();
+
+        // Whatever this notification carried -- a rate or buffer size picked
+        // in Settings, a microphone plugged in, an output that appeared -- is
+        // already written into currentSampleRate, desiredBufferSize(), the
+        // device list and selectedOutputDeviceId above, and none of it may
+        // reach the streams mid-take. The reopen is owed, and the stop path
+        // pays it, the same bargain requestCaptureRestart() strikes. Without
+        // this the change was shown in Settings and never applied: the next
+        // take ran at the old rate and size, and left out the new microphone.
+        captureRestartDeferred = true;
         return;
     }
 
@@ -1501,6 +1544,11 @@ ProofReading Application::snapshotProof() const
 {
     ProofReading reading;
     reading.elapsedSeconds = getElapsedRecordingSeconds();
+
+    // The UI walk's take that writes nothing. ProofReading's defaults are
+    // exactly that: no frames, no bytes, a disk that did answer.
+    if (proofStarvedForTesting)
+        return reading;
 
     if (capture != nullptr)
     {
@@ -2075,6 +2123,33 @@ void Application::toggleRecording()
                 currentMirrorFolder = mirror;
                 sessionStartIso = now.toISO8601 (true);
 
+                // What this take's files were opened with, fixed here. The
+                // Settings pickers stay live during a take and move
+                // currentBitDepth / currentSampleRate for the NEXT one, and a
+                // replug or a tick box changes who is included, so the
+                // stop-time session.json and the combined file read these.
+                // captureRate, not currentSampleRate: it is the rate the running
+                // coordinator writes into every header, and currentSampleRate
+                // runs ahead of it whenever a reopen is still owed.
+                takeSampleRate = captureRate;
+                takeBitDepth = currentBitDepth;
+                takeDevices.clear();
+
+                for (const auto& d : deviceManager.getDevices())
+                {
+                    if (! d.included)
+                        continue;
+
+                    DeviceRecord record;
+                    record.name = d.displayName;
+                    record.usbId = d.identity.key();
+
+                    if (const auto persisted = portIdentityStore.get (d.identity))
+                        record.trimDb = persisted->trimDb;
+
+                    takeDevices.push_back (std::move (record));
+                }
+
                 // Do not attempt a fresh platform camera open after the audio
                 // writer has started. JUCE's desktop open is synchronous and a
                 // broken capture-card driver can wait inside it indefinitely;
@@ -2203,7 +2278,7 @@ void Application::toggleRecording()
             const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
                                                      cameraController.getCombinedTakeInputs(),
                                                      "MIX.wav",
-                                                     currentBitDepth);
+                                                     takeBitDepth);
 
             if (plan.hasWork())
             {
@@ -3503,30 +3578,38 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     meta.stopTimestampIso = sessionHasStopped
                                 ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
                                 : std::string();
-    meta.sampleRate = currentSampleRate;
-    meta.bitDepth = currentBitDepth;
+    // The take's own format (see toggleRecording), not the live setting,
+    // which Settings can change mid-take for the next take.
+    meta.sampleRate = takeSampleRate;
+    meta.bitDepth = takeBitDepth;
     // The size the take's streams actually ran at. The ladder can have stepped
     // on during the take; that step applies to the next one.
     meta.bufferSizeSamples = capture != nullptr ? capture->getBufferSizeSamples() : bufferLadder.getCurrentSize();
     meta.measuredLatencyMs = measuredLatencyMs;
 
-    for (const auto& d : deviceManager.getDevices())
+    // The take's roster, fixed when it started, not whoever is ticked and
+    // plugged in now. A mic unplugged mid-take still has its stem in the
+    // folder, and one plugged in mid-take has none. Trim and drift still come
+    // from the live device while it is there, so a trim moved mid-take is
+    // recorded as it ends.
+    for (auto record : takeDevices)
     {
-        if (! d.included)
-            continue;
+        for (const auto& d : deviceManager.getDevices())
+        {
+            if (d.identity.key() != record.usbId)
+                continue;
 
-        DeviceRecord record;
-        record.name = d.displayName;
-        record.usbId = d.identity.key();
+            if (const auto persisted = portIdentityStore.get (d.identity))
+                record.trimDb = persisted->trimDb;
 
-        if (const auto persisted = portIdentityStore.get (d.identity))
-            record.trimDb = persisted->trimDb;
+            // §3.2: drift is only claimed once 60 seconds of measurement exist.
+            if (d.hasDriftMeasurement)
+                meta.driftLog.push_back ({ getElapsedRecordingSeconds(), d.identity.key(), d.measuredDriftPpm });
+
+            break;
+        }
 
         meta.devices.push_back (std::move (record));
-
-        // §3.2: drift is only claimed once 60 seconds of measurement exist.
-        if (d.hasDriftMeasurement)
-            meta.driftLog.push_back ({ getElapsedRecordingSeconds(), d.identity.key(), d.measuredDriftPpm });
     }
 
     // §5.4 requires every buffer step logged.
