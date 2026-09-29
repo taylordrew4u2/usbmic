@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.13.2 -- 2026-09-29 (release candidate)
+
+A bug-fix release on v1.13.1: 46 fixes found by eight rounds of bug hunting,
+each proven by a test that failed before the fix and passes after it. Nothing
+was added. Physical-hardware validation and code signing remain open in
+`RELEASE_CHECKLIST.md`, as for v1.13.1.
 
 ### Fixed
 
