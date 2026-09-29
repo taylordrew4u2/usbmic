@@ -260,3 +260,82 @@ TEST_CASE (FfmpegCommand_SecondsAlwaysUseADotWhateverTheLocale)
     REQUIRE (formatSecondsForFfmpeg (0.0) == "0.000");
     REQUIRE (formatSecondsForFfmpeg (-1.0) == "0.000");
 }
+
+TEST_CASE (CombinedTake_ASplitMixNamesEveryPartInOrder)
+{
+    // A take past 3.9 GB carries on in MIX_001.wav, MIX_002.wav... The
+    // combined file was laid against MIX.wav alone, so a long take's video
+    // stopped where the first part did. Listed out of order, and beside a
+    // stem that split too, to show only the mix's own parts are taken.
+    const std::vector<std::string> folder { "MIX_002.wav", "01_Singer.wav", "MIX.wav",
+                                            "01_Singer_001.wav", "MIX_001.wav",
+                                            "V01_Kitchen-Cam.mov" };
+
+    const auto parts = splitPartsInOrder ("MIX.wav", folder);
+
+    REQUIRE (parts.size() == 3);
+    REQUIRE (parts[0] == "MIX.wav");
+    REQUIRE (parts[1] == "MIX_001.wav");
+    REQUIRE (parts[2] == "MIX_002.wav");
+
+    // A gap ends the recording: MIX_003 without MIX_002 is not part of it.
+    REQUIRE (splitPartsInOrder ("MIX.wav", { "MIX.wav", "MIX_001.wav", "MIX_003.wav" }).size() == 2);
+
+    // Nothing to combine when the first part is not there at all.
+    REQUIRE (splitPartsInOrder ("MIX.wav", { "MIX_001.wav" }).empty());
+
+    // An unsplit take is still just the one file.
+    REQUIRE (splitPartsInOrder ("MIX.wav", { "MIX.wav" }).size() == 1);
+}
+
+TEST_CASE (FfmpegCommand_ASplitMixIsReadWholeWithTheLeadStillTrimmed)
+{
+    const std::vector<std::string> parts { "/take/MIX.wav", "/take/MIX_001.wav", "/take/MIX_002.wav" };
+    const auto args = buildFfmpegArguments ("ffmpeg", "/take/V01.mov", parts, "/tmp/mix.ffconcat",
+                                            "/take/V01_with-sound.mov", 0.25);
+
+    // The sound is the joined parts, read through the concat demuxer, with
+    // absolute paths allowed -- not the first part on its own.
+    const int audioInput = indexOf (args, "/tmp/mix.ffconcat");
+    REQUIRE (audioInput > 0);
+    REQUIRE (args[static_cast<size_t> (audioInput) - 1] == "-i");
+    REQUIRE (valueAfter (args, "-f") == "concat");
+    REQUIRE (valueAfter (args, "-safe") == "0");
+    REQUIRE (indexOf (args, "-f") < audioInput);
+    REQUIRE_FALSE (contains (args, "/take/MIX.wav"));
+
+    // The lead is still a seek on that input, so it trims the joined sound.
+    const int ss = indexOf (args, "-ss");
+    REQUIRE (ss > indexOf (args, "/take/V01.mov"));
+    REQUIRE (ss < audioInput);
+    REQUIRE (valueAfter (args, "-ss") == "0.250");
+    REQUIRE (contains (args, "1:a:0"));
+
+    // And the list names every part, in order.
+    const auto list = buildFfmpegConcatList (parts);
+    const auto first = list.find ("'/take/MIX.wav'");
+    const auto second = list.find ("'/take/MIX_001.wav'");
+    const auto third = list.find ("'/take/MIX_002.wav'");
+    REQUIRE (first != std::string::npos);
+    REQUIRE (second != std::string::npos && second > first);
+    REQUIRE (third != std::string::npos && third > second);
+}
+
+TEST_CASE (FfmpegCommand_AnUnsplitMixIsTheSameCommandAsBefore)
+{
+    const auto one = buildFfmpegArguments ("ffmpeg", "/v.mov", std::vector<std::string> { "/a.wav" },
+                                           "/tmp/unused.ffconcat", "/o.mov", 0.25);
+
+    REQUIRE (one == buildFfmpegArguments ("ffmpeg", "/v.mov", "/a.wav", "/o.mov", 0.25));
+}
+
+TEST_CASE (FfmpegCommand_ConcatListSurvivesQuotesInAFolderName)
+{
+    // A session folder named after a performer can hold an apostrophe. In the
+    // list it must stay a path, not end the quoted string early.
+    const auto list = buildFfmpegConcatList ({ "/Takes/Zo\xC3\xAB's Set/MIX.wav",
+                                               "/Takes/Zo\xC3\xAB's Set/MIX_001.wav" });
+
+    REQUIRE (list.find ("file '/Takes/Zo\xC3\xAB'\\''s Set/MIX.wav'") != std::string::npos);
+    REQUIRE (list.find ("file '/Takes/Zo\xC3\xAB'\\''s Set/MIX_001.wav'") != std::string::npos);
+}

@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 #include "Core/SessionRecovery.h"
 #include "Core/SessionWriter.h"
+#include "Core/Utf8Path.h"
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -290,4 +291,67 @@ TEST_CASE (RecoveredSession_APlayableCountExcludesWhatCouldNotBeRepaired)
     REQUIRE (s.keptFileCount() == 2);      // the broken one still counts here
     REQUIRE (s.playableFileCount() == 1);  // and must not count here
     REQUIRE (s.emptyFileCount() == 1);
+}
+
+TEST_CASE (Utf8Path_aNonAsciiFolderNameSurvivesTheRoundTrip)
+{
+    // Every path in Core is a UTF-8 std::string. Handed straight to fstream or
+    // std::filesystem, MSVC reads it in the ANSI code page, so "Zo\xC3\xAB"
+    // becomes "ZoÃ«" -- a different folder, which does not exist. The helper is
+    // the one place that says "these bytes are UTF-8".
+    const std::string name = "Zo\xC3\xAB";
+    REQUIRE (utf8FromPath (pathFromUtf8 (name)) == name);
+}
+
+TEST_CASE (SessionRecovery_aTakeUnderANonAsciiFolderRecordsAndRepairs)
+{
+    // A user profile or card label with an accent in it -- C:\Users\Zoë --
+    // made every take fail to start on Windows: the writer could not create
+    // its first file, and recovery could not open what was there. Passes on
+    // Linux either way (narrow paths are already UTF-8 there); on the Windows
+    // CI job it fails without the u8path conversions in SessionWriter and
+    // SessionRecovery.
+    const auto folder = tmpPath ("Zo\xC3\xAB-take");
+    std::error_code ec;
+    std::filesystem::remove_all (pathFromUtf8 (folder), ec);
+    REQUIRE (std::filesystem::create_directories (pathFromUtf8 (folder), ec));
+
+    const auto base = folder + "/01_Zo\xC3\xAB";
+    const auto path = base + ".wav";
+
+    {
+        SessionWriter writer;
+        REQUIRE (writer.open (base, 48000.0, 1, 24, "2026-08-31T05:00:00Z"));
+
+        std::vector<float> block (48000u * 2u, 0.25f);
+        REQUIRE (writer.writeInterleaved (block.data(), block.size()));
+        writer.close();
+    }
+
+    // The file landed under the name it was given, not a code-page mangling
+    // of it beside the folder.
+    REQUIRE (std::filesystem::exists (pathFromUtf8 (path), ec));
+
+    {
+        // Stale both size fields, as a killed process would leave them.
+        std::fstream f (pathFromUtf8 (path), std::ios::in | std::ios::out | std::ios::binary);
+        std::string all ((std::istreambuf_iterator<char> (f)), std::istreambuf_iterator<char>());
+        const auto at = all.find ("data");
+        REQUIRE (at != std::string::npos);
+        const char zero[4] = { 0, 0, 0, 0 };
+        f.clear();
+        f.seekp (4);
+        f.write (zero, 4);
+        f.seekp (static_cast<std::streamoff> (at) + 4);
+        f.write (zero, 4);
+    }
+
+    const auto result = SessionRecovery::repairWavFile (path);
+    REQUIRE (result.headerWasStale);
+    REQUIRE_FALSE (result.repairFailed);
+    REQUIRE_FALSE (result.reportedEmpty);
+    REQUIRE (result.frames == 48000u * 2u);
+    REQUIRE (result.fileName == "01_Zo\xC3\xAB.wav");
+
+    std::filesystem::remove_all (pathFromUtf8 (folder), ec);
 }

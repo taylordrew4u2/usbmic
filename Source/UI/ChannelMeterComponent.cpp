@@ -19,6 +19,10 @@ const juce::Colour ChannelMeterComponent::kTertiaryText      { palette::tertiary
 ChannelMeterComponent::ChannelMeterComponent()
 {
     setWantsKeyboardFocus (true);
+    // Tab still reaches a strip, but a mouse click leaves the keyboard where
+    // it was. A clicked strip that kept the focus took the next Space -- the
+    // room's mute -- to clear a clip or reopen its rename dialog.
+    setMouseClickGrabsKeyboardFocus (false);
     setAccessible (true);
     updateAccessibilityText();
     startTimerHz (60); // §8.2: UI polls at 60Hz, independent of the audio callback

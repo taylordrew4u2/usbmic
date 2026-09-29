@@ -1122,6 +1122,57 @@ void aSameNameCameraArrivingMidTakeDoesNotStopTheOneRecording()
     takeFolder.deleteRecursively();
 }
 
+/// The twin plugged in mid-take and then unplugged again. The group went
+/// 1 -> 2 -> 1: never below what the take began with, so the camera that was
+/// recording is not shown to have left. Treating the drop back to one as a
+/// departure closed the healthy recording the moment the twin was pulled.
+void aSameNameTwinLeavingMidTakeDoesNotStopTheOneRecording()
+{
+    std::printf ("\nA same-name twin plugged in and pulled again while one is recording\n");
+
+    fakecamera::setDevices ({ "Twin Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+
+    const auto cameras = controller.getSelection().getAvailableCameras();
+    check (cameras.size() == 1, "the one camera is discovered");
+    if (cameras.size() != 1)
+        return;
+
+    controller.getSelection().setEnabled (cameras[0].id, true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-twin-leaves", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a temporary take folder is available");
+    check (controller.startRecording (takeFolder), "the camera starts recording");
+
+    fakecamera::setDevices ({ "Twin Camera", "Twin Camera" });
+    refreshNow (controller);
+    controller.applyPendingCameraList();
+    check (fakecamera::getActiveRecordingCount() == 1 && fakecamera::getStopRecordingCallCount() == 0,
+           "the recording camera keeps recording when its twin arrives");
+
+    fakecamera::setDevices ({ "Twin Camera" });
+    refreshNow (controller);
+    controller.applyPendingCameraList();
+    check (fakecamera::getActiveRecordingCount() == 1 && fakecamera::getStopRecordingCallCount() == 0,
+           "and keeps recording when the twin is unplugged again");
+    const auto states = controller.getTakeCameraStates();
+    check (states.size() == 1 && states[0].recording,
+           "and the watchdog still sees it recording");
+
+    controller.stopRecording();
+    controller.applyPendingCameraList();
+    check (fakecamera::getStopRecordingCallCount() == 1, "its movie is finalized once, at Stop");
+
+    takeFolder.deleteRecursively();
+}
+
 /// Submitting startRecordingToFile is not proof that AVFoundation accepted the
 /// movie. The UI stays STARTING until didStart, and the alignment offset is
 /// measured at that callback rather than at the request call.
@@ -1488,6 +1539,7 @@ int main()
     aRecordedCameraThatReconnectsWaitsForTheNextTake();
     aChangingSameNameGroupIsDeferredTogether();
     aSameNameCameraArrivingMidTakeDoesNotStopTheOneRecording();
+    aSameNameTwinLeavingMidTakeDoesNotStopTheOneRecording();
     recordingTruthWaitsForTheStartCallback();
     delayedFinalizationBlocksClaimsAndTheNextTake();
     finishWithoutStartIsAStartFailure();

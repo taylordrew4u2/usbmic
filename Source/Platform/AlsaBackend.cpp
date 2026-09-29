@@ -338,24 +338,14 @@ int openPcmBounded (snd_pcm_t** pcm, const std::string& deviceId,
 }
 
 
-/// What one bounded open can answer about a capture device: how many inputs it
-/// has, and which depths it will accept.
+/// How many inputs an OPEN capture PCM has, or 0 when it will not say.
 ///
-/// Both questions used to be asked separately, and each one opened the PCM to
-/// ask. That is two bounded opens per device on every enumeration -- and on a
-/// device that is not answering, two full probe timeouts rather than one. With
-/// a wedged microphone attached, enumeration measured 4003 ms, which is exactly
-/// two 2-second deadlines and no actual work.
-///
-/// snd_pcm_hw_params_any fills the same parameter set both answers come from,
-/// so there was never a reason to open twice.
-struct CaptureCapabilities
-{
-    unsigned int channels = 1;
-    std::vector<int> bitDepths;
-};
-
-CaptureCapabilities captureCapabilitiesFor (const char* name)
+/// Asked of a handle the caller already holds, never by opening the device
+/// again. A capture device on real hardware opens once: a second open, from
+/// this app as much as any other, is -EBUSY. openStream used to ask by opening
+/// the device it had just opened, got -EBUSY, and recorded a four-input
+/// interface as one track.
+unsigned int captureChannelsOf (snd_pcm_t* pcm)
 {
     // Where a real device stops and a plugin's shrug begins.
     //
@@ -371,33 +361,69 @@ CaptureCapabilities captureCapabilitiesFor (const char* name)
     // no opinion is one microphone.
     constexpr unsigned int kMostInputsRealHardwareHas = 64;
 
+    snd_pcm_hw_params_t* params = nullptr;
+    snd_pcm_hw_params_alloca (&params);
+
+    if (snd_pcm_hw_params_any (pcm, params) < 0)
+        return 0;
+
+    unsigned int reported = 0;
+
+    // Zero is success here, not one -- getting that wrong makes the branch
+    // unreachable, and an unreachable probe answers 1 for real hardware too,
+    // which is the bug this function exists to fix wearing a disguise.
+    if (snd_pcm_hw_params_get_channels_max (params, &reported) == 0
+        && reported >= 1 && reported <= kMostInputsRealHardwareHas)
+        return reported;
+
+    return 1;
+}
+
+/// What one bounded open can answer about a capture device: how many inputs it
+/// has, and which depths it will accept.
+///
+/// Both questions used to be asked separately, and each one opened the PCM to
+/// ask. That is two bounded opens per device on every enumeration -- and on a
+/// device that is not answering, two full probe timeouts rather than one. With
+/// a wedged microphone attached, enumeration measured 4003 ms, which is exactly
+/// two 2-second deadlines and no actual work.
+///
+/// snd_pcm_hw_params_any fills the same parameter set both answers come from,
+/// so there was never a reason to open twice.
+struct CaptureCapabilities
+{
+    /// 0 is "could not ask", which the descriptor already means by 0. It is
+    /// not "one input": the commonest reason the probe cannot open a device is
+    /// that this app is recording from it, and answering 1 then shrank the
+    /// strips of the interface being recorded on every device-list change.
+    unsigned int channels = 0;
+    std::vector<int> bitDepths;
+};
+
+CaptureCapabilities captureCapabilitiesFor (const char* name)
+{
     CaptureCapabilities caps;
 
     snd_pcm_t* pcm = nullptr;
     bool probeTimedOut = false;
 
-    // A device that cannot be opened to ask keeps the defaults: one channel,
-    // and an EMPTY depth list. Empty means "not reported", which the chooser
-    // turns into the fallback, while a wrong list would silently change the
-    // depth of a recording.
+    // A device that cannot be opened to ask keeps the defaults: zero channels,
+    // and an EMPTY depth list. Both mean "not reported" -- the caller keeps
+    // what it already knew, and the depth chooser turns empty into the
+    // fallback -- while a wrong answer would silently change the rig.
     if (openPcmBounded (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK,
                         kAlsaProbeDeadline, probeTimedOut) < 0)
         return caps;
+
+    // Opened but unwilling to describe itself is still a device, and still one
+    // microphone -- the answer this probe has always given it.
+    caps.channels = std::max (1u, captureChannelsOf (pcm));
 
     snd_pcm_hw_params_t* params = nullptr;
     snd_pcm_hw_params_alloca (&params);
 
     if (snd_pcm_hw_params_any (pcm, params) >= 0)
     {
-        unsigned int reported = 0;
-
-        // Zero is success here, not one -- getting that wrong makes the branch
-        // unreachable, and an unreachable probe answers 1 for real hardware too,
-        // which is the bug this function exists to fix wearing a disguise.
-        if (snd_pcm_hw_params_get_channels_max (params, &reported) == 0
-            && reported >= 1 && reported <= kMostInputsRealHardwareHas)
-            caps.channels = reported;
-
         // Only the depths this app can write. S24_3LE is the packed 3-byte
         // layout SessionWriter lays down; S24_LE is the same 24 bits in a
         // 4-byte container, and either one means the device can give 24.
@@ -421,51 +447,6 @@ CaptureCapabilities captureCapabilitiesFor (const char* name)
 
     snd_pcm_close (pcm);
     return caps;
-}
-
-unsigned int captureChannelsFor (const char* name)
-{
-    // Where a real device stops and a plugin's shrug begins.
-    //
-    // A PCM backed by hardware answers with its actual count -- 2 for a small
-    // interface, 18 for a big one. A plugin PCM (default, plug, file, null)
-    // has no channels of its own and will be configured to whatever it is
-    // asked for, so it answers 1073741823: not "I have a billion inputs" but
-    // "I have no opinion". Read literally that would put a billion tracks --
-    // clamped to some arbitrary ceiling -- on every virtual device on the
-    // machine, which is a worse failure than the one this fixes.
-    //
-    // Anything above this line is taken as the shrug it is, and a device with
-    // no opinion is one microphone.
-    constexpr unsigned int kMostInputsRealHardwareHas = 64;
-
-    snd_pcm_t* pcm = nullptr;
-
-    bool probeTimedOut = false;
-
-    if (openPcmBounded (&pcm, name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK,
-                        kAlsaProbeDeadline, probeTimedOut) < 0)
-        return 1;
-
-    snd_pcm_hw_params_t* params = nullptr;
-    snd_pcm_hw_params_alloca (&params);
-
-    unsigned int most = 1;
-
-    if (snd_pcm_hw_params_any (pcm, params) >= 0)
-    {
-        unsigned int reported = 0;
-
-        // Zero is success here, not one -- getting that wrong makes the branch
-        // unreachable, and an unreachable probe answers 1 for real hardware too,
-        // which is the bug this function exists to fix wearing a disguise.
-        if (snd_pcm_hw_params_get_channels_max (params, &reported) == 0
-            && reported >= 1 && reported <= kMostInputsRealHardwareHas)
-            most = reported;
-    }
-
-    snd_pcm_close (pcm);
-    return most;
 }
 
 /// `probeCapabilities` false answers the question openInputStream actually
@@ -909,8 +890,9 @@ bool AlsaBackend::openStream (const std::string& deviceId, double sampleRate, in
     // Inputs: every input the device has, because each one is somebody's
     // track. Outputs: stereo, which is what a monitor mix is. The input count
     // comes from the same question enumeration asked, so the take opens with
-    // the channels the microphone list promised.
-    const unsigned int channels = isInput ? captureChannelsFor (deviceId.c_str()) : 2u;
+    // the channels the microphone list promised -- asked of the handle just
+    // opened, because opening the device again to ask is -EBUSY on hardware.
+    const unsigned int channels = isInput ? std::max (1u, captureChannelsOf (stream->pcm)) : 2u;
     const auto rate = static_cast<unsigned int> (sampleRate);
     const auto latencyMicroseconds = static_cast<unsigned int> (
         (static_cast<double> (bufferSizeSamples) / std::max (1.0, sampleRate)) * 1.0e6 * 2.0);

@@ -37,6 +37,16 @@ public:
         juce::JUCEApplication::getInstance()->systemRequestedQuit();
     }
 
+    /// The window itself does nothing with a key. When it gets the focus back
+    /// with nothing inside remembered to hand it to -- after a dialog such as
+    /// a strip's rename closes -- pass it on to the screen, or the next Space
+    /// (the room's mute) stops at the window frame.
+    void focusGained (FocusChangeType) override
+    {
+        if (auto* content = getContentComponent())
+            content->grabKeyboardFocus();
+    }
+
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
 };

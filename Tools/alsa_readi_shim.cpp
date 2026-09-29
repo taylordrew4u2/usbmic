@@ -17,6 +17,8 @@
  *   MMA_SHIM_OPEN_MATCH    snd_pcm_open of a name with this prefix is...
  *   MMA_SHIM_OPEN_AS       ...redirected to this name instead
  *   MMA_SHIM_REFUSE_RATE   hw_params_test_rate says no to this rate, always
+ *   MMA_SHIM_EXCLUSIVE     1 = a capture PCM already open in this process is
+ *                          -EBUSY to a second open, the way a hw: device is
  *
  * The last three exist for one reason. AlsaBackend's exclusive-mode capability
  * check refuses any output name that is not direct hardware, so nothing named
@@ -101,6 +103,13 @@ struct Config
     const char* openAs = nullptr;
     long refuseRate = 0;
 
+    /// MMA_SHIM_EXCLUSIVE. The `file` plugin opens as many times as it is
+    /// asked; a real capture device opens once, and every later open -- this
+    /// app's own included -- gets -EBUSY. Code that re-opens a device it
+    /// already holds works on the fixture and fails on hardware, which is
+    /// exactly the difference this makes visible.
+    bool exclusiveCapture = false;
+
     /// False only for the microphone simulator on its own: MMA_SIM_REALTIME
     /// with none of the failure settings. Every older caller loads this shim to
     /// make reads fail and relies on that being the default, so the default
@@ -144,6 +153,9 @@ struct Config
 
         if (const char* n = std::getenv ("MMA_SHIM_REFUSE_RATE"); n != nullptr)
             refuseRate = std::atol (n);
+
+        if (const char* e = std::getenv ("MMA_SHIM_EXCLUSIVE"); e != nullptr && std::strcmp (e, "0") != 0)
+            exclusiveCapture = true;
     }
 };
 
@@ -491,6 +503,12 @@ snd_pcm_sframes_t passThroughWrite (snd_pcm_t* pcm, const void* buffer, snd_pcm_
     return fn != nullptr ? fn (pcm, buffer, frames) : -EPIPE;
 }
 
+/// Which capture PCMs this process holds, by the name they were opened as.
+/// Only consulted under MMA_SHIM_EXCLUSIVE. Opens run on the backend's bounded
+/// open worker threads, so it is locked.
+std::mutex& heldMutex() { static std::mutex m; return m; }
+std::map<snd_pcm_t*, std::string>& heldCapture() { static std::map<snd_pcm_t*, std::string> h; return h; }
+
 } // namespace
 
 extern "C" {
@@ -509,6 +527,11 @@ int snd_pcm_close (snd_pcm_t* pcm)
 
     // Before the real close, so nothing can reuse the address first.
     retirePacingState (pcm);
+
+    {
+        const std::lock_guard<std::mutex> lock (heldMutex());
+        heldCapture().erase (pcm);
+    }
 
     return fn != nullptr ? fn (pcm) : -ENODEV;
 }
@@ -534,7 +557,23 @@ int snd_pcm_open (snd_pcm_t** pcm, const char* name, snd_pcm_stream_t stream, in
         && std::strncmp (name, c.openMatch, std::strlen (c.openMatch)) == 0)
         return fn (pcm, c.openAs, stream, mode);
 
-    return fn (pcm, name, stream, mode);
+    if (! c.exclusiveCapture || stream != SND_PCM_STREAM_CAPTURE || name == nullptr)
+        return fn (pcm, name, stream, mode);
+
+    // Held across the real open, so two racing opens of one device cannot
+    // both succeed -- which hardware would not allow either.
+    const std::lock_guard<std::mutex> lock (heldMutex());
+
+    for (const auto& [held, heldName] : heldCapture())
+        if (heldName == name)
+            return -EBUSY;
+
+    const int err = fn (pcm, name, stream, mode);
+
+    if (err >= 0 && pcm != nullptr && *pcm != nullptr)
+        heldCapture()[*pcm] = name;
+
+    return err;
 }
 
 int snd_pcm_hw_params_test_rate (snd_pcm_t* pcm, snd_pcm_hw_params_t* params,

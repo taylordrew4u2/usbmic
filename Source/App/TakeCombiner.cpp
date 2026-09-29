@@ -149,14 +149,25 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
             break;
 
         const auto video = sessionFolder.getChildFile (juce::String (job.videoFile));
-        const auto audio = sessionFolder.getChildFile (juce::String (job.audioFile));
         const auto output = sessionFolder.getChildFile (juce::String (job.outputFile));
+
+        // The mix as it is on the card: MIX.wav, and MIX_001.wav onwards if a
+        // long take crossed the split limit. The plan names only the first;
+        // how many followed is known only now the take is finished.
+        std::vector<std::string> namesInFolder;
+        for (const auto& file : sessionFolder.findChildFiles (juce::File::findFiles, false))
+            namesInFolder.push_back (file.getFileName().toStdString());
+
+        std::vector<std::string> audioPaths;
+        for (const auto& part : splitPartsInOrder (job.audioFile, namesInFolder))
+            audioPaths.push_back (sessionFolder.getChildFile (juce::String::fromUTF8 (part.c_str()))
+                                      .getFullPathName().toStdString());
 
         // Checked here rather than in the plan, because the plan is built from
         // what the take intended to write and this runs against what is
         // actually on the card -- which a pulled card or a full disk can make
         // two different things.
-        if (! video.existsAsFile() || ! audio.existsAsFile())
+        if (! video.existsAsFile() || audioPaths.empty())
         {
             ++failures;
 
@@ -167,9 +178,36 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
             continue;
         }
 
+        // More than one part is joined through a list file, kept in the temp
+        // folder rather than the take's and removed whichever way this ends.
+        // UTF-8 inside it, which is what ffmpeg reads it as on every platform.
+        const auto concatList = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                    .getNonexistentChildFile ("sobstage-mix", ".ffconcat", false);
+
+        struct RemoveList
+        {
+            const juce::File& file;
+            ~RemoveList() { file.deleteFile(); }
+        } removeList { concatList };
+
+        if (audioPaths.size() > 1
+            && ! concatList.replaceWithText (juce::String::fromUTF8 (buildFfmpegConcatList (audioPaths).c_str()),
+                                             false, false, "\n"))
+        {
+            ++failures;
+
+            if (firstFailureDetail.isEmpty())
+                firstFailureDetail = "The list of the sound's parts couldn't be written.";
+
+            const std::lock_guard<std::mutex> lock (state->statusLock);
+            ++state->status.done;
+            continue;
+        }
+
         const auto args = buildFfmpegArguments (ffmpeg.toStdString(),
                                                 video.getFullPathName().toStdString(),
-                                                audio.getFullPathName().toStdString(),
+                                                audioPaths,
+                                                concatList.getFullPathName().toStdString(),
                                                 output.getFullPathName().toStdString(),
                                                 job.audioLeadSeconds,
                                                 job.audioBitDepth);

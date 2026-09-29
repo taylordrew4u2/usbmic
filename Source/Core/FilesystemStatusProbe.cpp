@@ -1,4 +1,5 @@
 #include "FilesystemStatusProbe.h"
+#include "Utf8Path.h"
 
 #include <algorithm>
 #include <cctype>
@@ -243,7 +244,7 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     if (! request.destinationPath.empty() && request.bytesPerSecond > 0.0)
     {
         std::error_code error;
-        const fs::path destination (request.destinationPath);
+        const fs::path destination = pathFromUtf8 (request.destinationPath);
         if (fs::is_directory (destination, error) && ! error)
         {
             const auto space = fs::space (destination, error);
@@ -256,7 +257,7 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     if (! request.mirrorPath.empty())
     {
         std::error_code error;
-        const fs::path mirror (request.mirrorPath);
+        const fs::path mirror = pathFromUtf8 (request.mirrorPath);
         if (fs::is_directory (mirror, error) && ! error)
         {
             const auto space = fs::space (mirror, error);
@@ -268,7 +269,7 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     if (! request.sessionFolder.empty())
     {
         std::error_code error;
-        const fs::path folder (request.sessionFolder);
+        const fs::path folder = pathFromUtf8 (request.sessionFolder);
         const bool isDirectory = fs::is_directory (folder, error);
 
         if (! error && isDirectory)
@@ -295,7 +296,7 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
                     }
 
                     if (size <= static_cast<uintmax_t> (INT64_MAX))
-                        out.files.push_back ({ entry.path().filename().string(),
+                        out.files.push_back ({ utf8FromPath (entry.path().filename()),
                                                static_cast<int64_t> (size) });
                 }
 

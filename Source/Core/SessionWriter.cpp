@@ -1,4 +1,5 @@
 #include "SessionWriter.h"
+#include "Utf8Path.h"
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -80,13 +81,15 @@ bool SessionWriter::openNewFile (int index)
         file.close();
 
     currentFilePath = makePathForSplit (index);
-    file.open (currentFilePath, std::ios::binary | std::ios::out | std::ios::in | std::ios::trunc);
+    // UTF-8 on the way in; see Utf8Path.h for what a narrow open does on Windows.
+    const auto nativePath = pathFromUtf8 (currentFilePath);
+    file.open (nativePath, std::ios::binary | std::ios::out | std::ios::in | std::ios::trunc);
     if (! file.is_open())
     {
         // Retry with out-only (some platforms need the file to exist before in|out trunc works).
-        file.open (currentFilePath, std::ios::binary | std::ios::out | std::ios::trunc);
+        file.open (nativePath, std::ios::binary | std::ios::out | std::ios::trunc);
         file.close();
-        file.open (currentFilePath, std::ios::binary | std::ios::out | std::ios::in);
+        file.open (nativePath, std::ios::binary | std::ios::out | std::ios::in);
         if (! file.is_open())
             return false;
     }
@@ -125,7 +128,7 @@ bool SessionWriter::openNewFile (int index)
         // recorded nothing, which is a different and more alarming thing than
         // a take that never started.
         std::error_code ignored;
-        std::filesystem::remove (currentFilePath, ignored);
+        std::filesystem::remove (nativePath, ignored);
 
         return false;
     }
@@ -302,7 +305,7 @@ void SessionWriter::noteWriteFailureCause()
 
     std::error_code ec;
     const auto space = std::filesystem::space (
-        std::filesystem::path (currentFilePath).parent_path(), ec);
+        pathFromUtf8 (currentFilePath).parent_path(), ec);
 
     if (ec)
         return;
@@ -394,7 +397,8 @@ bool SessionWriter::syncCurrentFileToStorage()
     // so ask the OS to push those bytes to the device as well. This function is
     // called by the writer/timer path, never by an audio callback.
 #if defined (_WIN32)
-    const HANDLE handle = CreateFileA (currentFilePath.c_str(), GENERIC_WRITE,
+    // Wide, not CreateFileA: the A form reads the path in the ANSI code page.
+    const HANDLE handle = CreateFileW (pathFromUtf8 (currentFilePath).c_str(), GENERIC_WRITE,
                                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
@@ -471,7 +475,7 @@ bool SessionWriter::close()
 bool SessionWriter::patchHeaderThroughFreshHandle()
 {
     std::error_code ec;
-    const auto onDisk = std::filesystem::file_size (currentFilePath, ec);
+    const auto onDisk = std::filesystem::file_size (pathFromUtf8 (currentFilePath), ec);
 
     if (ec)
         return false;
@@ -510,7 +514,7 @@ bool SessionWriter::patchHeaderThroughFreshHandle()
     const auto riffSize = static_cast<uint32_t> (
         std::min<uint64_t> (describedEnd >= 8 ? describedEnd - 8 : 0, 0xFFFFFFFFull));
 
-    std::fstream patch (currentFilePath, std::ios::in | std::ios::out | std::ios::binary);
+    std::fstream patch (pathFromUtf8 (currentFilePath), std::ios::in | std::ios::out | std::ios::binary);
 
     if (! patch.is_open())
         return false;

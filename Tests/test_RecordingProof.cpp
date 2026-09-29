@@ -1,5 +1,7 @@
 #include "TestFramework.h"
 #include "Core/RecordingProof.h"
+#include <string>
+#include <vector>
 
 using namespace mma;
 
@@ -142,4 +144,45 @@ TEST_CASE (RecordingProof_AStallIsReportedOnceUntilTheFilesGrowAgain)
     REQUIRE (p.observe (at (31.0, 48000ull * 31, frozen + perSecond)) != ProofVerdict::Stalled);
     REQUIRE (p.observe (at (37.0, 48000ull * 37, frozen + perSecond)) == ProofVerdict::Stalled);
     REQUIRE (p.observe (at (37.5, 48000ull * 37, frozen + perSecond)) != ProofVerdict::Stalled);
+}
+
+// The camera's movie sits in the take's folder beside the WAVs. Only the WAVs
+// are the audio writer's work; a movie that keeps growing must not stand in
+// for them.
+TEST_CASE (RecordingProof_OnlyWavFilesCountAsRecordedAudio)
+{
+    REQUIRE (countsAsRecordedAudio ("MIX.wav"));
+    REQUIRE (countsAsRecordedAudio ("01 Vocal.WAV"));
+    REQUIRE (! countsAsRecordedAudio ("Camera.mov"));
+    REQUIRE (! countsAsRecordedAudio ("Camera.mp4"));
+    REQUIRE (! countsAsRecordedAudio ("session.json"));
+    REQUIRE (! countsAsRecordedAudio ("wav"));
+}
+
+TEST_CASE (RecordingProof_AGrowingCameraMovieDoesNotHideAStalledAudioWriter)
+{
+    struct Entry { std::string name; uint64_t size; };
+    const uint64_t perSecond = 48000ull * 3 * 2;
+    const uint64_t moviePerSecond = 1'000'000;
+
+    // The audio stops growing at 10 s; the camera keeps writing its movie.
+    auto readingAt = [&] (double s)
+    {
+        const double audioSeconds = s < 10.0 ? s : 10.0;
+        const std::vector<Entry> files {
+            { "MIX.wav", kHeaders + static_cast<uint64_t> (perSecond * audioSeconds) },
+            { "Camera.mov", static_cast<uint64_t> (moviePerSecond * s) },
+        };
+        uint64_t bytes = 0;
+        for (const auto& f : files)
+            if (countsAsRecordedAudio (f.name))
+                bytes += f.size;
+        return at (s, static_cast<uint64_t> (48000 * s), bytes);
+    };
+
+    RecordingProof p;
+    p.begin (readingAt (0.0));
+    for (int s = 1; s <= 15; ++s)
+        REQUIRE (p.observe (readingAt (s)) != ProofVerdict::Stalled);
+    REQUIRE (p.observe (readingAt (16.0)) == ProofVerdict::Stalled);
 }

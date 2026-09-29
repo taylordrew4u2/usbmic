@@ -25,6 +25,25 @@ std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutab
                                                double audioLeadSeconds,
                                                int audioBitDepth = 24);
 
+/// The same, for a take whose sound is more than one file end to end: a mix
+/// that crossed the 3.9 GB split limit (see splitPartsInOrder).
+///
+/// One part is exactly the call above. More than one is read through ffmpeg's
+/// concat demuxer from `concatListPath`, a file the caller writes with
+/// buildFfmpegConcatList and removes afterwards. The lead trim still comes
+/// before that input, so it seeks into the joined sound rather than the first
+/// part alone.
+std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutable,
+                                               const std::string& videoPath,
+                                               const std::vector<std::string>& audioPaths,
+                                               const std::string& concatListPath,
+                                               const std::string& outputPath,
+                                               double audioLeadSeconds,
+                                               int audioBitDepth = 24);
+
+/// The contents of the concat list naming `audioPaths` in order, as UTF-8.
+std::string buildFfmpegConcatList (const std::vector<std::string>& audioPaths);
+
 /// Seconds as ffmpeg wants them: fixed-point with millisecond resolution and a
 /// dot, whatever the machine's locale would otherwise do to the decimal
 /// separator. A comma here does not fail loudly -- ffmpeg reads "0,25" as 0 --
