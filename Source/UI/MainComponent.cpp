@@ -785,7 +785,15 @@ void MainComponent::promptRenameMic (int index)
         juce::ModalCallbackFunction::create ([this, window, target] (int result)
         {
             if (result == 1)
+            {
                 application.setMicAssignedName (target, window->getTextEditorContents ("name"));
+
+                // Outside a take the rename rebuilds the capture, which rebinds
+                // the strips anyway. During one, §6.5 defers that rebuild to the
+                // take's end -- and the strip kept the old name until then.
+                // The name on screen is not part of the take; show it now.
+                rebindMeters();
+            }
         }),
         true); // delete the window when dismissed
 }

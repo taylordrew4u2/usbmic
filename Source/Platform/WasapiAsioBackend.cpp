@@ -1,4 +1,5 @@
 #include "WasapiAsioBackend.h"
+#include <cstdio>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -433,10 +434,28 @@ void reportRenderDeath (WasapiStream* stream)
         stream->client->Stop();
 }
 
+/// Joins the calling thread to the multithreaded apartment for its lifetime.
+/// The backend's constructor cannot do this for the threads it starts: it runs
+/// on JUCE's message thread, which OleInitialize has already made a
+/// single-threaded apartment, so its own CoInitializeEx(MULTITHREADED) fails
+/// with RPC_E_CHANGED_MODE and no thread in the process is in the MTA. A COM
+/// call from a worker in no apartment then fails with CO_E_NOTINITIALIZED --
+/// every microphone "no longer connected". Each worker joins for itself.
+struct ScopedMtaMembership
+{
+    ScopedMtaMembership() : joined (SUCCEEDED (CoInitializeEx (nullptr, COINIT_MULTITHREADED))) {}
+    ~ScopedMtaMembership() { if (joined) CoUninitialize(); }
+    ScopedMtaMembership (const ScopedMtaMembership&) = delete;
+    ScopedMtaMembership& operator= (const ScopedMtaMembership&) = delete;
+    const bool joined;
+};
+
 /// The audio worker. Waits on the client's event and services one buffer per
 /// wake. §11: no allocation, locking, logging or file I/O in here.
 void runStreamThread (WasapiStream* stream)
 {
+    const ScopedMtaMembership com;
+
     // Exclusive-mode buffers are small; without Pro Audio scheduling the OS
     // will not wake this thread reliably enough to hold the §5.4 budget.
     DWORD taskIndex = 0;
@@ -993,8 +1012,17 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     stream->sampleIsFloat = (format.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
 
     // Exclusive mode wants the buffer expressed as a duration in 100 ns units.
-    const REFERENCE_TIME duration =
+    REFERENCE_TIME duration =
         static_cast<REFERENCE_TIME> ((10000.0 * 1000.0 / sampleRate) * bufferSizeSamples + 0.5);
+
+    // Below the device's minimum period Initialize fails with
+    // AUDCLNT_E_INVALID_DEVICE_PERIOD, which used to be reported as another app
+    // holding the device. Ask for the minimum instead; the granted size is
+    // read back from GetBufferSize, so the latency quoted stays true.
+    REFERENCE_TIME defaultPeriod = 0, minimumPeriod = 0;
+    if (SUCCEEDED (stream->client->GetDevicePeriod (&defaultPeriod, &minimumPeriod))
+        && minimumPeriod > duration)
+        duration = minimumPeriod;
 
     HRESULT hr = stream->client->Initialize (AUDCLNT_SHAREMODE_EXCLUSIVE,
                                              AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -1016,7 +1044,14 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
 
             if (FAILED (device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr,
                                           reinterpret_cast<void**> (stream->client.GetAddressOf()))))
+            {
+                openError = isInput
+                    ? "This microphone stopped responding while it was being set up. Check its cable, "
+                      "then choose it again in Advanced."
+                    : "These headphones stopped responding while they were being set up. Check the "
+                      "cable, then choose them again in Advanced.";
                 return nullptr;
+            }
 
             hr = stream->client->Initialize (AUDCLNT_SHAREMODE_EXCLUSIVE,
                                              AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -1024,6 +1059,24 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
                                              reinterpret_cast<const WAVEFORMATEX*> (&format),
                                              nullptr);
         }
+    }
+
+    if (hr == AUDCLNT_E_INVALID_DEVICE_PERIOD)
+    {
+        openError = std::string (isInput ? "This microphone" : "These headphones")
+                  + " can't run with a buffer of " + std::to_string (bufferSizeSamples)
+                  + " samples. Pick a larger buffer size in Advanced.";
+        return nullptr;
+    }
+
+    if (FAILED (hr) && hr != AUDCLNT_E_DEVICE_IN_USE && hr != AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED)
+    {
+        char code[16];
+        std::snprintf (code, sizeof (code), "0x%08X", static_cast<unsigned> (hr));
+        openError = std::string (isInput ? "This microphone" : "These headphones")
+                  + " refused the connection (Windows error " + code
+                  + "). Unplug it, plug it back in, and choose it again in Advanced.";
+        return nullptr;
     }
 
     if (FAILED (hr))
@@ -1139,6 +1192,7 @@ bool WasapiAsioBackend::openWasapiExclusiveStream (const std::string& deviceId, 
         worker = std::thread ([this, attempt, pending, deviceId, sampleRate, bufferSizeSamples,
                                isInput, callback = std::move (callback)] () mutable
         {
+            const ScopedMtaMembership com;
             std::string error;
             auto built = buildExclusiveStream (deviceId, sampleRate, bufferSizeSamples, isInput,
                                                std::move (callback), error);
