@@ -4,7 +4,7 @@
 
 namespace mma {
 
-/// §9.1: the shared mix uses a horizontal bar, not a skull -- visually
+/// §9.1: the shared mix uses a horizontal bar, not a ring -- visually
 /// distinct so the bus is never confused with a channel.
 class MixBarComponent : public juce::Component, private juce::Timer
 {

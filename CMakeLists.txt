@@ -209,13 +209,12 @@ if (MMA_BUILD_APP)
         Source/Platform/NullBackend.cpp
         Source/Platform/MacSystemAggregateDevice.cpp
         Source/Platform/NullSystemAggregateDevice.cpp
-        Source/Platform/ReducedMotion.cpp
         Source/Platform/SystemThermalState.cpp
         Source/Platform/AsioOutputBackend.cpp
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp
         Source/UI/AppLookAndFeel.cpp
-        Source/UI/SkullMeterComponent.cpp
+        Source/UI/ChannelMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/MainScreen.cpp
         Source/UI/AdvancedPanel.cpp
@@ -295,7 +294,7 @@ if (MMA_BUILD_APP)
         Source/UI/AdvancedPanel.cpp
         Source/UI/MainScreen.cpp
         Source/UI/CameraPanel.cpp
-        Source/UI/SkullMeterComponent.cpp
+        Source/UI/ChannelMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/AppLookAndFeel.cpp
         Source/UI/ModalCard.cpp

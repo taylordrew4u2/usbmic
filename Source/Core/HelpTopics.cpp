@@ -11,7 +11,7 @@ std::string HelpTopics::introduction()
 std::vector<HelpTopic> HelpTopics::all()
 {
     return {
-        { "The recording is silent, or the skull never fills",
+        { "The recording is silent, or the meter never fills",
           "SobStage lists only directly attached external microphone hardware. "
           "It intentionally leaves out the computer's microphone, known phone "
           "or Continuity inputs, Bluetooth/AirPlay and software or aggregate "
@@ -20,7 +20,7 @@ std::vector<HelpTopic> HelpTopics::all()
           "eligible hardware uses USB, FireWire or Thunderbolt. On a mixer or "
           "interface the sound has to reach "
           "the cable before this app can hear it. Check these, in this order:\n"
-          "1. The microphone has a skull on the main screen. If it does not, "
+          "1. The microphone has a strip on the main screen. If it does not, "
           "open Settings and tick its box, and the socket under it.\n"
           "2. This app is allowed to use the microphone: System Settings > "
           "Privacy & Security > Microphone > SobStage switched on. Without "
@@ -32,7 +32,7 @@ std::vector<HelpTopic> HelpTopics::all()
           "With it off the computer gets silence however loud the room is.\n"
           "5. The microphone's gain knob is up and the mic is in a socket that "
           "goes into the mix, not a headphone or line-out socket.\n"
-          "6. Speak. The skull should fill and the number under it should move. "
+          "6. Speak. The ring should fill and the number beside it should move. "
           "If it does, record. If it does not, unplug the USB cable, plug it "
           "back in, and wait for the strip to come back." },
 

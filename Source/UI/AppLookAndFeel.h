@@ -16,7 +16,7 @@ namespace palette {
     inline constexpr juce::uint32 background    = 0xFF0A0E13; // slate near-black
     inline constexpr juce::uint32 surface       = 0xFF121A23; // panels, cards, fields
     inline constexpr juce::uint32 surfaceHigh   = 0xFF1C2733; // hover, pressed, empty well
-    inline constexpr juce::uint32 bone          = 0xFFE3EAF2; // primary text, skull outline
+    inline constexpr juce::uint32 bone          = 0xFFE3EAF2; // primary text, meter ring
     inline constexpr juce::uint32 secondary     = 0xFF8496A8; // supporting text
     inline constexpr juce::uint32 tertiary      = 0xFF566372; // hints, disabled
     inline constexpr juce::uint32 accent        = 0xFF22D3EE; // cyan: the one colour that acts
@@ -30,8 +30,8 @@ namespace palette {
     inline constexpr juce::uint32 meterLow      = 0xFF2DD4A7;
     inline constexpr juce::uint32 meterMid      = 0xFFFACC15;
     inline constexpr juce::uint32 meterHigh     = 0xFFFF4D5E;
-    inline constexpr juce::uint32 clipEyes      = 0xFFFDE047; // the skull's eyes, latched on clip
-    inline constexpr juce::uint32 dimmedOutline = 0xFF4A5B6D; // dashed skull, no signal
+    inline constexpr juce::uint32 clipEyes      = 0xFFFDE047; // clip ring and CLIP n, latched on clip
+    inline constexpr juce::uint32 dimmedOutline = 0xFF4A5B6D; // hollow ring, no signal
 } // namespace palette
 
 

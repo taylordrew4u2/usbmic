@@ -3,7 +3,7 @@
 
 namespace mma {
 
-// Built from the one palette, for the reason given in SkullMeterComponent.
+// Built from the one palette, for the reason given in ChannelMeterComponent.
 const juce::Colour MixBarComponent::kPanel           { palette::surface };
 const juce::Colour MixBarComponent::kEmptyInterior   { palette::surfaceHigh };
 const juce::Colour MixBarComponent::kFillLow         { palette::meterLow };
@@ -52,7 +52,7 @@ void MixBarComponent::paint (juce::Graphics& g)
 
     // Peak hold. currentPeakDb was sampled every frame and never drawn, so the
     // mix bus was the one meter with no trace of a transient: a passage that
-    // peaked and fell back left nothing on it, while every skull meter beside
+    // peaked and fell back left nothing on it, while every channel meter beside
     // it showed its "pk" figure. A transient on the MIX is exactly the thing
     // worth seeing, because it is what the limiter is catching.
     //

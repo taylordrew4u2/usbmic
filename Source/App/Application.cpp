@@ -1,7 +1,6 @@
 #include "Application.h"
 #include "../Platform/SystemPermissions.h"
 #include "../Core/TakeCompleteness.h"
-#include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemThermalState.h"
 #include "../Core/CombinedTakePlan.h"
 #include "../Core/LoudnessMeter.h"
@@ -218,12 +217,7 @@ juce::String baseSessionFolderName (juce::Time now, const juce::String& name)
 
 } // namespace
 
-Application::Application()
-    // §9.3, asked once. The setting does not change between meter repaints, and
-    // the alternative -- querying the OS per strip at 60Hz -- would be absurd.
-    : reducedMotionPreferred (prefersReducedMotionOnThisSystem())
-{
-}
+Application::Application() = default;
 Application::~Application() { shutdown(); }
 
 std::weak_ptr<int> Application::getAliveToken() const
@@ -1542,7 +1536,7 @@ juce::String Application::nameForChannel (const std::string& identityKey, int de
         const auto persisted = portIdentityStore.get (d.identity);
 
         // The name the user gave this port wins over the product string --
-        // otherwise the skull says "Blue Yeti" while the files say "Kitchen".
+        // otherwise the meter says "Blue Yeti" while the files say "Kitchen".
         std::string base = d.displayName;
         bool knownDuplicateStereo = false;
 
@@ -2584,7 +2578,7 @@ double Application::getElapsedRecordingSeconds() const
 int Application::getIncludedMicCount() const
 {
     // During a take this is the count the meters, the drift reports, the
-    // advisor and the skull strips are all indexed by, and every one of those
+    // advisor and the channel strips are all indexed by, and every one of those
     // reads out of capture. The device list is not the same length once a
     // microphone is unplugged mid-take -- counting it there left the last
     // channel's meter unread and shifted every name past the gap onto the
@@ -3818,7 +3812,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     applyChannelLayoutDecisions();
 
     // Cleared first, not inside the tap block: a capacity or performance
-    // warning returns early below, and a stale index would leave one skull
+    // warning returns early below, and a stale index would leave one meter
     // lit indefinitely.
     tappedChannel = -1;
 
@@ -4137,7 +4131,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
                 // §6.5: a microphone whose stream died is gone from the take as
                 // surely as one that was unplugged, and has to be treated the
-                // same way. It was only written to the log: its skull stayed
+                // same way. It was only written to the log: its meter stayed
                 // lit, the mid-take card never came up, and the silence its
                 // track filled with was counted as the computer being slow.
                 // Only while the device is still listed: one that has already
@@ -4559,7 +4553,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         return midTakeNotice;
 
     // §14.6: which mic was just heard alone. Not an error and not a message --
-    // the UI highlights that skull, which is how a user with four identical
+    // the UI highlights that meter, which is how a user with four identical
     // mics learns which meter is which person. Runs only outside a take, when
     // naming actually happens.
     if (capture == nullptr || ! capture->isRecording())
