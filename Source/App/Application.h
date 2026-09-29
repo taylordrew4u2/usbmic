@@ -11,6 +11,7 @@
 #include "../Core/DriftCompensator.h"
 #include "../Core/Metering.h"
 #include "../Core/SessionMetadata.h"
+#include "../Core/TakeStopSnapshot.h"
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/AppSettings.h"
 #include "../Core/SessionRecovery.h"
@@ -692,6 +693,12 @@ private:
     // no take has stopped yet, so a mid-take write uses the live flag.
     int mirrorActiveAtStop = -1;
 
+    // The take as it stood when Stop was pressed, for the stop-time
+    // session.json. With a camera still finishing its movie that write runs
+    // later, when the engine has stopped -- the live clock reads zero then and
+    // the counters have moved on. Cleared when a take starts.
+    TakeStopSnapshot takeStopSnapshot;
+
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
 
@@ -737,6 +744,9 @@ private:
     mutable DetachedResultTask<PreflightBackgroundResult> preflightTask;
     mutable std::string preflightTaskDestination;
     mutable std::map<std::string, PreflightResult> preflightResults;
+    /// When each verdict above landed, so a "couldn't write" one can be re-run
+    /// after PreflightThroughputTest::kWriteFailureRetrySeconds.
+    mutable std::map<std::string, double> preflightVerdictAtMs;
     static PreflightBackgroundResult runPreflight (
         std::string destination, int channelCount, double sampleRate,
         int bytesPerSample, const std::atomic<bool>& cancelled);
@@ -973,6 +983,8 @@ private:
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
+    /// The figures session.json reports, read from the live take now.
+    TakeFigures liveTakeFigures (bool sessionHasStopped) const;
     /// Writes a take's text file with a deadline, skipping the card once it
     /// has stopped answering this take. The local backup is always written.
     bool writeTakeText (const juce::File& file, const juce::String& text) const;

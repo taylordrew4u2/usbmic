@@ -130,3 +130,66 @@ TEST_CASE (PreflightThroughputTest_EvaluateAgreesWithTheMeasuredForm)
     REQUIRE (windowed.requiredBytesPerSec == measured.requiredBytesPerSec);
     REQUIRE (windowed.sustainedMinBytesPerSec == measured.sustainedMinBytesPerSec);
 }
+
+TEST_CASE (PreflightThroughputTest_CachedWriteFailureIsRefusedAsCouldNotWriteNotTooSlow)
+{
+    // No windows measured: the old gate read 0 MB/s and called the card slow.
+    PreflightResult empty;
+    empty.couldNotWrite = true;
+    empty.reason = "Couldn't write to this card.";
+
+    const auto verdict = PreflightThroughputTest::evaluateCached (empty, 2, 48000.0, 3);
+    REQUIRE_FALSE (verdict.passed);
+    REQUIRE (verdict.couldNotWrite);
+    REQUIRE (verdict.reason.find ("Couldn't write") != std::string::npos);
+    REQUIRE (verdict.reason.find ("slow") == std::string::npos);
+}
+
+TEST_CASE (PreflightThroughputTest_CachedWriteFailureCannotPassOnAPartialMeasurement)
+{
+    // A fast card that took a few seconds of writes and then refused the rest.
+    PreflightResult partial;
+    partial.couldNotWrite = true;
+    partial.sustainedMinBytesPerSec = 1.0e9;
+    partial.reason = "Couldn't write to this card.";
+
+    REQUIRE_FALSE (PreflightThroughputTest::evaluateCached (partial, 2, 48000.0, 3).passed);
+}
+
+TEST_CASE (PreflightThroughputTest_CachedMeasurementIsReappliedToTheCurrentRig)
+{
+    PreflightResult measured;
+    measured.sustainedMinBytesPerSec = PreflightThroughputTest::requiredBytesPerSecond (2, 48000.0, 3) * 3.0;
+
+    REQUIRE (PreflightThroughputTest::evaluateCached (measured, 2, 48000.0, 3).passed);
+    REQUIRE_FALSE (PreflightThroughputTest::evaluateCached (measured, 8, 48000.0, 3).passed);
+}
+
+TEST_CASE (PreflightThroughputTest_WriteFailureIsRetriedAfterTheIntervalWhileIdle)
+{
+    PreflightResult failed;
+    failed.couldNotWrite = true;
+
+    const auto interval = PreflightThroughputTest::kWriteFailureRetrySeconds;
+
+    // Not on every UI tick.
+    REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (failed, interval * 0.5, true, false));
+    // After the interval: the user may have freed space or reinserted the card.
+    REQUIRE (PreflightThroughputTest::shouldRetryCached (failed, interval, true, false));
+    // Never mid-take, and never over a worker that is still running.
+    REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (failed, interval * 10.0, false, false));
+    REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (failed, interval * 10.0, true, true));
+}
+
+TEST_CASE (PreflightThroughputTest_SpeedVerdictsAreNotRetried)
+{
+    PreflightResult slow;
+    slow.passed = false;
+    slow.reason = "too slow";
+
+    PreflightResult fast;
+    fast.passed = true;
+
+    REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (slow, 3600.0, true, false));
+    REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (fast, 3600.0, true, false));
+}

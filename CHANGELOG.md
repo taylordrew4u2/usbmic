@@ -4,6 +4,35 @@
 
 ### Fixed
 
+- **The take's details file counts the frames the drive dropped.** The
+  session.json written at Stop always said no frames were lost to a slow
+  drive, even when some were; it now records the take's real count.
+- **The take's details file is timed correctly while a camera finishes.**
+  When Stop had to wait for a camera's movie, session.json stamped every
+  drift and dropout entry at 0 seconds and could report figures from after
+  the take; it now records the take as it stood when Stop was pressed.
+- **Short, loud peaks show on the meters.** At small buffer sizes a
+  transient lasting only a few milliseconds could fall between meter updates
+  and never reach the level, peak hold or setup advice; each update now
+  shows the loudest moment since the last one.
+- **The bottom row keeps its full height when Record is off.** With a reason
+  shown under the record button, or no microphones plugged in, the mute
+  button and volume slider were squashed to a sliver; the screen now makes
+  room for them and scrolls if it has to.
+- **The time left on the drive is readable in a narrow window.** Beside an
+  open Settings drawer, or with the window dragged small, it was cut to
+  "Room for 1..."; the volume slider now shortens first, and during a take
+  the elapsed and remaining times share the space.
+- **Record comes back once a card that couldn't be written is fixed.** After
+  the drive check failed to write to a card, Record stayed off for the rest
+  of the session -- even after freeing space or reinserting the card -- and
+  said the card was too slow (0 MB/s). It now says the card couldn't be
+  written, and checks again every few seconds until it can.
+- **The drive warning no longer says nothing was lost after the tracks
+  stopped.** Once the drive fell so far behind that only the mixed file was
+  being kept, a later slowdown said "Nothing has been lost yet" and warned
+  the separate tracks "will be dropped". It now says the separate tracks
+  stopped earlier and the mixed file is still recording.
 - **Pressing Quit again while the camera files finish no longer cuts the
   movie short.** A second quit forced SobStage closed in the middle of the
   camera writing its movie; it is now ignored, and SobStage closes by itself

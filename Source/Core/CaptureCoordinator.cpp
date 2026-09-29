@@ -824,6 +824,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     lastTakeLufs = LoudnessMeter::kSilenceLufs;
     lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
     lastTakeLoudnessBlocks = 0;
+    lastTakeFramesDropped = 0;
 
     overrunBaselinePerStream.clear();
     overrunBaselinePerStream.reserve (deviceStreams.size());
@@ -869,6 +870,7 @@ void CaptureCoordinator::stopRecording()
         double lufs = LoudnessMeter::kSilenceLufs;
         double truePeakDbtp = LoudnessMeter::kSilenceLufs;
         int loudnessBlocks = 0;
+        uint64_t framesDropped = 0;
     };
 
     struct StopState
@@ -880,6 +882,10 @@ void CaptureCoordinator::stopRecording()
     };
 
     auto state = std::make_shared<StopState>();
+
+    // Read here too, for the timed-out path below: the counter is atomic and
+    // the audio thread has let go, so this is every drop but the final drain's.
+    lastTakeFramesDropped = pipeline->getFramesDropped();
     std::shared_ptr<WritePipeline> p (std::move (pipeline));
     auto stall = filesystemStallForTesting;
 
@@ -903,6 +909,7 @@ void CaptureCoordinator::stopRecording()
         r.lufs = p->getIntegratedLufs();
         r.truePeakDbtp = p->getTruePeakDbtp();
         r.loudnessBlocks = p->getLoudnessBlockCount();
+        r.framesDropped = p->getFramesDropped();
 
         {
             const std::lock_guard<std::mutex> lock (state->mutex);
@@ -939,6 +946,7 @@ void CaptureCoordinator::stopRecording()
     lastTakeLufs = state->result.lufs;
     lastTakeTruePeakDbtp = state->result.truePeakDbtp;
     lastTakeLoudnessBlocks = state->result.loudnessBlocks;
+    lastTakeFramesDropped = state->result.framesDropped;
 }
 
 void CaptureCoordinator::setChannelLive (const std::string& deviceId, bool live)

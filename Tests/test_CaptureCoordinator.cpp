@@ -2161,3 +2161,36 @@ TEST_CASE (CaptureCoordinator_ANewTakeDoesNotInheritTheLastOnesLoudness)
     REQUIRE (c.getLoudnessBlockCount() == 0);
     c.stopRecording();
 }
+
+TEST_CASE (CaptureCoordinator_TheTakesDroppedFramesSurviveTheTake)
+{
+    // session.json is rewritten at Stop, after stopRecording() has moved the
+    // WritePipeline out and destroyed it. The dropped-frame getter read the
+    // pipeline, so the one record written at the end of a take that lost audio
+    // said it had lost none.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (tempDir(), 16, "2026-09-29T00:00:00Z"));
+
+    // One block larger than the writer's whole ring: it cannot fit, so the
+    // pipeline counts every frame of it as dropped -- deterministically, with
+    // no race against the writer thread draining.
+    const int frames = static_cast<int> (RingBuffer::minimumCapacitySamples (48000.0, 2) / 2) + 64;
+    std::vector<float> a (static_cast<size_t> (frames), 0.1f), b (static_cast<size_t> (frames), 0.1f);
+    const float* ins[] = { a.data(), b.data() };
+    c.processAudioBlock (ins, 2, nullptr, 0, frames);
+
+    REQUIRE (c.getFramesDropped() == static_cast<uint64_t> (frames));
+
+    c.stopRecording();
+    REQUIRE (c.getFramesDropped() == static_cast<uint64_t> (frames));
+
+    // And the next take starts from nothing rather than inheriting it.
+    REQUIRE (c.startRecording (tempDir(), 16, "2026-09-29T00:00:01Z"));
+    REQUIRE (c.getFramesDropped() == 0u);
+    c.stopRecording();
+    REQUIRE (c.getFramesDropped() == 0u);
+}

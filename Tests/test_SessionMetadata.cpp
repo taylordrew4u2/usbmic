@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 #include "Core/SessionMetadata.h"
 #include "Core/Json.h"
+#include "Core/TakeStopSnapshot.h"
 
 using namespace mma;
 
@@ -141,4 +142,63 @@ TEST_CASE (SessionMetadata_aTakeWithNoCamerasRecordsNoVideos)
     SessionMetadata meta;
     const auto restored = SessionMetadata::fromJsonString (meta.toJsonString());
     REQUIRE (restored.videos.empty());
+}
+
+TEST_CASE (TakeStopSnapshot_TheStopTimeRecordDescribesTheMomentStopWasPressed)
+{
+    // With a camera still finishing its movie the stop-time session.json is
+    // written later, from the camera's completion. By then the engine has
+    // stopped, so the live clock reads zero -- every drift and dropout entry was
+    // stamped 0.0 s -- and the counters have run on through monitoring, or
+    // restarted with a rebuilt coordinator.
+    TakeFigures atStop;
+    atStop.elapsedSeconds = 1234.5;
+    atStop.stopTimestampIso = "2026-09-29T21:00:00Z";
+    atStop.bufferSizeSamples = 256;
+    atStop.framesDropped = 11;
+    atStop.overrunSamples = 22;
+    atStop.underrunSamples = 33;
+    atStop.framesMissedByLayout = 44;
+    atStop.backendFramesDropped = 55;
+
+    TakeFigures later;
+    later.elapsedSeconds = 0.0;
+    later.stopTimestampIso = "2026-09-29T21:00:19Z";
+    later.bufferSizeSamples = 512;
+
+    TakeStopSnapshot snapshot;
+    snapshot.capture (atStop);
+
+    const auto figures = snapshot.resolve (true, later);
+    REQUIRE (figures.elapsedSeconds == 1234.5);
+    REQUIRE (figures.stopTimestampIso == "2026-09-29T21:00:00Z");
+    REQUIRE (figures.bufferSizeSamples == 256);
+    REQUIRE (figures.framesDropped == 11u);
+    REQUIRE (figures.overrunSamples == 22u);
+    REQUIRE (figures.underrunSamples == 33u);
+    REQUIRE (figures.framesMissedByLayout == 44u);
+    REQUIRE (figures.backendFramesDropped == 55u);
+}
+
+TEST_CASE (TakeStopSnapshot_TheStartTimeRecordAndANewTakeUseLiveFigures)
+{
+    // The write at the start of a take has no stop to describe, and a take
+    // must never be recorded with the previous take's stop.
+    TakeFigures atStop;
+    atStop.elapsedSeconds = 99.0;
+    atStop.stopTimestampIso = "2026-09-29T21:00:00Z";
+
+    TakeFigures live;
+    live.elapsedSeconds = 0.25;
+    live.bufferSizeSamples = 128;
+
+    TakeStopSnapshot snapshot;
+    snapshot.capture (atStop);
+    REQUIRE (snapshot.resolve (false, live).elapsedSeconds == 0.25);
+    REQUIRE (snapshot.resolve (false, live).stopTimestampIso.empty());
+
+    snapshot.clear();
+    REQUIRE_FALSE (snapshot.hasSnapshot());
+    REQUIRE (snapshot.resolve (true, live).elapsedSeconds == 0.25);
+    REQUIRE (snapshot.resolve (true, live).bufferSizeSamples == 128);
 }

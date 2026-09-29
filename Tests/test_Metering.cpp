@@ -79,3 +79,34 @@ TEST_CASE (Metering_PeakHoldStaysUpThenDecaysAfterTwoSeconds)
         m.tick (0.010);
     REQUIRE (m.getPeakHoldDb() < 0.0f);
 }
+
+TEST_CASE (Metering_ShortPeakBetweenUiTicksStillReachesPeakHold)
+{
+    // At 64-sample buffers the audio thread delivers ~12 blocks per 60Hz UI
+    // tick. A loud transient confined to one of them must still register.
+    Metering m (48000.0);
+    std::vector<float> loud (64, 0.0f);
+    loud[10] = 1.0f;
+    std::vector<float> quiet (64, 0.001f);
+
+    m.processAudioBlock (loud.data(), static_cast<int> (loud.size()));
+    for (int i = 0; i < 11; ++i)
+        m.processAudioBlock (quiet.data(), static_cast<int> (quiet.size()));
+    m.tick (1.0 / 60.0);
+
+    REQUIRE (m.getPeakHoldDb() > -1.5f);
+}
+
+TEST_CASE (Metering_PeakConsumedByTickIsNotReportedAgain)
+{
+    // The max is taken since the last UI read, not for all time: once a tick
+    // has seen the transient, later quiet blocks must be what the next tick sees.
+    Metering m (48000.0);
+    m.pushBlockStats (1.0f, 64);
+    m.pushBlockStats (0.0f, 64);
+    m.tick (1.0 / 60.0);
+    m.pushBlockStats (0.0f, 64);
+    for (int i = 0; i < 600; ++i) // 10s: hold expires and decays to the floor
+        m.tick (1.0 / 60.0);
+    REQUIRE (m.getPeakHoldDb() < -50.0f);
+}

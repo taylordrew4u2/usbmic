@@ -66,6 +66,30 @@ PreflightResult PreflightThroughputTest::evaluateMeasured (double sustainedMinBy
     return result;
 }
 
+PreflightResult PreflightThroughputTest::evaluateCached (const PreflightResult& cached,
+                                                         int numChannels, double sampleRate, int bytesPerSample,
+                                                         double videoBytesPerSecond)
+{
+    // Checked before any rate: windows measured before the card stopped taking
+    // writes describe a card that is no longer accepting audio.
+    if (cached.couldNotWrite)
+    {
+        PreflightResult refused = cached;
+        refused.passed = false;
+        return refused;
+    }
+
+    return evaluateMeasured (cached.sustainedMinBytesPerSec, numChannels, sampleRate,
+                             bytesPerSample, videoBytesPerSecond);
+}
+
+bool PreflightThroughputTest::shouldRetryCached (const PreflightResult& cached, double secondsSinceVerdict,
+                                                 bool idle, bool workerRunning) noexcept
+{
+    return cached.couldNotWrite && idle && ! workerRunning
+        && secondsSinceVerdict >= kWriteFailureRetrySeconds;
+}
+
 std::string PreflightThroughputTest::formatRemainingTime (uint64_t freeBytes, double requiredBytesPerSecPerFile) noexcept
 {
     if (requiredBytesPerSecPerFile <= 0.0)
