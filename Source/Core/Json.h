@@ -38,10 +38,9 @@ public:
     /// whether anything actually came out of it.
     size_t getMemberCount() const { return objectValue.size(); }
 
-    /// Members that actually carry a value. A truncated file ends mid-member,
-    /// and the lenient parse above stores that dangling key with a null value
-    /// -- so counting members alone reports "I read something" for a file that
-    /// yielded nothing at all.
+    /// Members that actually carry a value. A member whose value is a literal
+    /// null counts as nothing read. (A member the input was cut inside is no
+    /// longer stored at all -- see parse().)
     size_t getValuedMemberCount() const
     {
         size_t count = 0;
@@ -81,11 +80,18 @@ public:
 
     std::string dump (int indent = 2) const { std::string out; dumpImpl (out, indent, 0); return out; }
 
-    static JsonValue parse (const std::string& text)
+    /// Input that stops part way -- a file cut short by a power cut mid-write --
+    /// still yields every member that finished before the cut, but never the
+    /// one the input stopped inside: half a string, a number that may have
+    /// had more digits, or an object missing its end would all read as real
+    /// values. `truncated`, when given, says whether that happened.
+    static JsonValue parse (const std::string& text, bool* truncated = nullptr)
     {
         size_t pos = 0;
+        bool cut = false;
         skipWhitespace (text, pos);
-        JsonValue v = parseValue (text, pos);
+        JsonValue v = parseValue (text, pos, cut);
+        if (truncated != nullptr) *truncated = cut;
         return v;
     }
 
@@ -103,7 +109,7 @@ private:
             ++pos;
     }
 
-    static std::string parseString (const std::string& s, size_t& pos)
+    static std::string parseString (const std::string& s, size_t& pos, bool& cut)
     {
         std::string out;
         ++pos; // opening quote
@@ -131,19 +137,30 @@ private:
                 ++pos;
             }
         }
+        // No closing quote: the input ended inside this string.
+        if (pos >= s.size()) { cut = true; return out; }
         ++pos; // closing quote
         return out;
     }
 
-    static JsonValue parseValue (const std::string& s, size_t& pos)
+    // Sets `cut` when the input ends before this value does. A cut member or
+    // element is dropped by its container rather than stored, and the cut is
+    // passed up so every enclosing container knows it ended early too. A cut
+    // array keeps the elements it finished -- a list cut short is a shorter
+    // list -- but a cut object inside a container is dropped whole, since a
+    // record missing its tail (a port without its name) is not one to trust.
+    static JsonValue parseValue (const std::string& s, size_t& pos, bool& cut)
     {
         skipWhitespace (s, pos);
         if (pos >= s.size())
+        {
+            cut = true;
             return JsonValue();
+        }
 
         char c = s[pos];
         if (c == '"')
-            return JsonValue (parseString (s, pos));
+            return JsonValue (parseString (s, pos, cut));
 
         if (c == '{')
         {
@@ -154,16 +171,23 @@ private:
             while (pos < s.size())
             {
                 skipWhitespace (s, pos);
-                std::string key = parseString (s, pos);
+                std::string key = parseString (s, pos, cut);
                 skipWhitespace (s, pos);
                 if (pos < s.size() && s[pos] == ':') ++pos;
-                JsonValue value = parseValue (s, pos);
+                JsonValue value = parseValue (s, pos, cut);
+                if (cut)
+                {
+                    if (value.type == Type::Array) obj[key] = value;
+                    return obj;
+                }
                 obj[key] = value;
                 skipWhitespace (s, pos);
                 if (pos < s.size() && s[pos] == ',') { ++pos; continue; }
-                if (pos < s.size() && s[pos] == '}') { ++pos; break; }
+                if (pos < s.size() && s[pos] == '}') { ++pos; return obj; }
                 break;
             }
+            // Ran out of input before the closing brace.
+            if (pos >= s.size()) cut = true;
             return obj;
         }
 
@@ -175,19 +199,35 @@ private:
             if (pos < s.size() && s[pos] == ']') { ++pos; return arr; }
             while (pos < s.size())
             {
-                JsonValue value = parseValue (s, pos);
+                JsonValue value = parseValue (s, pos, cut);
+                if (cut)
+                {
+                    if (value.type == Type::Array) arr.push_back (value);
+                    return arr;
+                }
                 arr.push_back (value);
                 skipWhitespace (s, pos);
                 if (pos < s.size() && s[pos] == ',') { ++pos; continue; }
-                if (pos < s.size() && s[pos] == ']') { ++pos; break; }
+                if (pos < s.size() && s[pos] == ']') { ++pos; return arr; }
                 break;
             }
+            // Ran out of input before the closing bracket.
+            if (pos >= s.size()) cut = true;
             return arr;
         }
 
         if (s.compare (pos, 4, "true") == 0) { pos += 4; return JsonValue (true); }
         if (s.compare (pos, 5, "false") == 0) { pos += 5; return JsonValue (false); }
         if (s.compare (pos, 4, "null") == 0) { pos += 4; return JsonValue(); }
+
+        // The start of true/false/null running into the end of the input.
+        for (const char* word : { "true", "false", "null" })
+            if (s.size() - pos < std::char_traits<char>::length (word) && s.compare (pos, std::string::npos, word, s.size() - pos) == 0)
+            {
+                pos = s.size();
+                cut = true;
+                return JsonValue();
+            }
 
         // Number.
         size_t start = pos;
@@ -196,6 +236,10 @@ private:
             ++pos;
         if (pos == start)
             throw std::runtime_error ("JsonValue::parse: unexpected character");
+        // A number that runs to the very end of the input may have lost digits.
+        // Harmless for a document that is just a number, but inside a container
+        // the end of input here means the cut fell in or right after it.
+        if (pos >= s.size()) cut = true;
         return JsonValue (std::stod (s.substr (start, pos - start)));
     }
 

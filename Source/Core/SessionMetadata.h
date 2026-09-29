@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <map>
 
 namespace mma {
 
@@ -11,6 +12,10 @@ struct DeviceRecord
     std::string name;
     std::string usbId;
     float trimDb = 0.0f;
+
+    /// Trim per physical input of an interface, keyed like the port settings.
+    /// Empty for a single microphone, whose trim is trimDb.
+    std::map<int, float> inputTrimDb;
 };
 
 struct DriftLogEntry

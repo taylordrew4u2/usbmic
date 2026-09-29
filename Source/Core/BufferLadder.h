@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <vector>
 
 namespace mma {
@@ -48,5 +49,15 @@ private:
 
     void dropOverrunsBefore (double cutoffSeconds);
 };
+
+/// The steps that belong to one take, for its session.json.
+///
+/// The ladder's log covers the whole launch and is stamped on the process
+/// uptime clock. A take's session.json wants only the steps from its own start
+/// onwards (`startIndex` is the log's size when the take began), timed from
+/// that start like its drift and dropout entries, never negative.
+std::vector<BufferSizeChange> selectTakeBufferChanges (const std::vector<BufferSizeChange>& log,
+                                                       std::size_t startIndex,
+                                                       double takeStartSeconds);
 
 } // namespace mma

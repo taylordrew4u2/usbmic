@@ -48,6 +48,33 @@ struct PersistedDeviceSettings
     /// assignedName names the whole box; on an interface each socket is a
     /// person, and "Scarlett 2i2 2" is not who they are.
     std::map<int, std::string> inputNames;
+
+    /// A trim per input of an interface, keyed by physical input, like
+    /// inputNames. trimDb is the whole box's: a single microphone's trim, and
+    /// the fallback for an input that has none of its own yet (every input of
+    /// an interface saved before trim was kept per input).
+    std::map<int, float> inputTrimDb;
+
+    float trimDbForInput (int input) const
+    {
+        const auto own = inputTrimDb.find (input);
+        return own != inputTrimDb.end() ? own->second : trimDb;
+    }
+
+    /// perInput is whether this port records as more than one channel. A
+    /// single microphone's trim stays on the box, so it follows the mic even
+    /// if the side it is recorded from changes.
+    void setTrimDbForInput (int input, bool perInput, float db)
+    {
+        if (perInput)
+        {
+            inputTrimDb[input] = db;
+            return;
+        }
+
+        trimDb = db;
+        inputTrimDb.erase (input);
+    }
 };
 
 /// In-memory persistence map keyed by PortIdentity::key(). Actual disk

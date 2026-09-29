@@ -56,6 +56,17 @@ struct RecoveredSession
     bool isWorthPresenting() const { return keptFileCount() > 0; }
 };
 
+/// What the recovery card shows, plus the copies it deliberately does not.
+struct RecoveredSessionList
+{
+    std::vector<RecoveredSession> shown;
+    /// Folders of same-named copies hidden behind a shown one -- the local
+    /// backup of a take whose card copy is on the card. Nobody is offered
+    /// them, but they are just as interrupted, so dismissing the card has to
+    /// stamp them too or they come back at the next launch.
+    std::vector<std::string> hiddenFolders;
+};
+
 /// §6.6 crash and power-loss recovery.
 ///
 /// SessionWriter already rewrites each file's RIFF and data sizes every five
@@ -86,6 +97,14 @@ public:
     /// Returns frames == 0 for anything that is not a readable WAV, rather than
     /// throwing -- a folder recovered off a card can contain anything.
     static RecoveredFile repairWavFile (const std::string& path);
+
+    /// Adds one root's scan to the list. A take found under the same folder
+    /// name in both the save location and the local backup is shown once: the
+    /// save location's copy wins, and the other copy's folder is remembered in
+    /// hiddenFolders rather than forgotten.
+    static RecoveredSessionList mergeScan (RecoveredSessionList list,
+                                           std::vector<RecoveredSession> scanned,
+                                           bool scanIsPrimaryCopy);
 };
 
 } // namespace mma

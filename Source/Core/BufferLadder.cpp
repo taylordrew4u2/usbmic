@@ -38,4 +38,17 @@ bool BufferLadder::resetToLowest() noexcept
     return true;
 }
 
+std::vector<BufferSizeChange> selectTakeBufferChanges (const std::vector<BufferSizeChange>& log,
+                                                       std::size_t startIndex,
+                                                       double takeStartSeconds)
+{
+    std::vector<BufferSizeChange> changes;
+
+    for (std::size_t i = startIndex; i < log.size(); ++i)
+        changes.push_back ({ std::max (0.0, log[i].atSeconds - takeStartSeconds),
+                             log[i].fromSamples, log[i].toSamples });
+
+    return changes;
+}
+
 } // namespace mma

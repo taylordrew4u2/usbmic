@@ -653,6 +653,30 @@ AudioObjectID findDeviceByUID (const std::string& uid)
     return kAudioObjectUnknown;
 }
 
+/// True only when the HAL positively lists this stream's device as gone: its
+/// AudioObjectID has left the device list, or now names a different UID. An
+/// unreadable list is not proof of anything, so it answers false.
+bool streamDeviceIsGone (const CoreAudioStream& stream)
+{
+    AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize (kAudioObjectSystemObject, &address, 0, nullptr, &size) != noErr)
+        return false;
+
+    std::vector<AudioObjectID> devices (size / sizeof (AudioObjectID));
+    if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr, &size, devices.data()) != noErr)
+        return false;
+
+    devices.resize (size / sizeof (AudioObjectID));
+    if (std::find (devices.begin(), devices.end(), stream.deviceId) == devices.end())
+        return true;
+
+    const auto uid = readStringProperty (stream.deviceId, kAudioDevicePropertyDeviceUID);
+    return ! stream.uid.empty() && ! uid.empty() && uid != stream.uid;
+}
+
 double getNominalSampleRate (AudioObjectID device)
 {
     AudioObjectPropertyAddress address { kAudioDevicePropertyNominalSampleRate,
@@ -976,8 +1000,13 @@ CoreAudioCleanupResult destroyStreamAfterFailedOpen (CoreAudioStream& stream)
             stream.ownsHogMode = false;
     }
 
-    return { listenersRemoved && ioProcDestroyed,
-             listenersRemoved && ioProcDestroyed && hogReleased };
+    // An unplugged device fails Destroy and listener removal with
+    // kAudioHardwareBadObjectError because the HAL has already discarded the
+    // object and every registration on it. That is not a refusal, so it must
+    // not quarantine the survivors; the stream is still retained, inert.
+    const bool safe = listenersRemoved && ioProcDestroyed;
+    const bool succeeded = safe && hogReleased;
+    return { safe, succeeded || streamDeviceIsGone (stream) };
 }
 
 CoreAudioCleanupResult stopAndDestroyAbandonedStream (CoreAudioStream& stream)
@@ -1011,8 +1040,13 @@ CoreAudioCleanupResult stopAndDestroyAbandonedStream (CoreAudioStream& stream)
     // If CoreAudio refused to remove either callback registration, its
     // clientData may still be called later. Retaining the tiny stream object is
     // safer than freeing that pointer; the closed lease gate makes it inert.
-    return { listenersRemoved && ioProcDestroyed,
-             stopped && listenersRemoved && ioProcDestroyed && hogReleased };
+    // An unplug makes Stop, listener removal and Destroy all fail with
+    // kAudioHardwareBadObjectError: the object and its registrations are
+    // already gone. Only a refusal from a device that is still present means
+    // CoreAudio may call us again, and only that may quarantine the backend.
+    const bool safe = listenersRemoved && ioProcDestroyed;
+    const bool succeeded = stopped && safe && hogReleased;
+    return { safe, succeeded || streamDeviceIsGone (stream) };
 }
 
 // The HAL transaction intentionally includes rollback. Real devices have been
