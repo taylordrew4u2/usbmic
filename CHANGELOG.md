@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.13.1 -- 2026-09-29 (release candidate)
+
+A testing release on v1.13.0. The app itself behaves the same; what is new is
+proof that the crying face on each microphone strip does what it claims, on
+every platform and in the real app. Physical-hardware validation and code
+signing remain open in `RELEASE_CHECKLIST.md`, as for v1.13.0.
 
 ### Added
 
