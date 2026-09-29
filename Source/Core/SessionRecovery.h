@@ -67,6 +67,26 @@ struct RecoveredSessionList
     std::vector<std::string> hiddenFolders;
 };
 
+/// One take as the recovery card lists it. Built here rather than in the panel
+/// so the card's wording can be checked without a window.
+struct RecoveredTakeRow
+{
+    std::string folderName;
+    std::string fullPath;
+    int fileCount = 0;
+    /// Files repaired AND openable. The card used to say every take "has been
+    /// repaired and is playable" over files the card had refused the repair on.
+    int playableFileCount = 0;
+    int emptyFileCount = 0;
+    double longestSeconds = 0.0;
+};
+
+RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session);
+/// The paragraph above the list: what happened, and whether it is safe to play.
+std::string recoveredTakesExplanation (const std::vector<RecoveredTakeRow>& takes);
+/// The line under a take's name: "2 files, 3m 4s of sound, ...".
+std::string recoveredTakeDetail (const RecoveredTakeRow& take);
+
 /// §6.6 crash and power-loss recovery.
 ///
 /// SessionWriter already rewrites each file's RIFF and data sizes every five

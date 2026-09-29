@@ -4,6 +4,38 @@
 
 ### Fixed
 
+- **Pressing Quit again while the camera files finish no longer cuts the
+  movie short.** A second quit forced SobStage closed in the middle of the
+  camera writing its movie; it is now ignored, and SobStage closes by itself
+  once the files are finished (at most about 20 seconds).
+- **Opening SobStage again brings back its window.** Launching it while it
+  was already running minimised did nothing, so it looked as if it had
+  failed to start; the existing window is now restored and brought to the
+  front.
+- **Unplugging the headphones mid-take no longer shortens the recording.**
+  The tenth of a second it took to notice the headphones had stopped was
+  left out of every track and the mix, so the audio after it ran early
+  against the camera. That span is now kept in the take -- as silence where
+  the audio could not be held, and noted in the take's record -- so the
+  tracks stay the length of the take and in sync.
+- **A recovered take whose files the card wouldn't fix is no longer called
+  playable.** The recovery card said every take had been repaired and was
+  playable, even when the card refused the repair on some files. It now
+  says which takes have files that couldn't be repaired, and to copy them
+  off the card before playing them.
+- **Recovered mono 24-bit takes are repaired into valid WAV files.** A take
+  with an odd number of samples was left without the pad byte a WAV file
+  needs after its audio, so stricter players and editors could reject it.
+  Recovery now adds it, as a normal stop does.
+- **Windows: audio a microphone's driver drops is now counted.** When the
+  driver fell behind and lost a stretch of audio, no dropped audio was
+  reported and the drift reading went wrong, as if the microphone's clock
+  had slowed down. The loss is now counted and reported, and no longer
+  skews drift.
+- **Windows: mono and four-channel headphone outputs are no longer called
+  incapable.** The check before monitoring asked only about stereo, so
+  such outputs were refused with advice to change a Windows setting,
+  although they would have opened fine.
 - **macOS: unplugging one interface no longer locks out the rest until
   relaunch.** Closing a rig after an interface was pulled treated the
   vanished device as refusing to let go, and every later open said macOS

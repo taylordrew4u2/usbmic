@@ -45,6 +45,7 @@ add_executable(mma_core_tests
     test_StreamFailurePolicy.cpp
     test_FfmpegLocator.cpp
     test_AlarmTone.cpp
+    test_QuitGate.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)

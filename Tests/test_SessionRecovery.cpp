@@ -393,3 +393,82 @@ TEST_CASE (SessionRecovery_AHiddenBackupCopyIsRememberedSoItCanBeDismissedToo)
         REQUIRE (list.hiddenFolders[0] == "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take");
     }
 }
+
+TEST_CASE (SessionRecovery_anOddLengthDataChunkIsRepairedWithItsPadByte)
+{
+    // Mono 24-bit is three bytes a frame, so an odd number of frames is an odd
+    // data chunk -- and RIFF chunks are word-aligned, so it needs a pad byte
+    // after it that the RIFF size counts. Built by hand as the placeholder a
+    // crash in the first five seconds leaves: both sizes still zero.
+    const auto path = tmpPath ("odd-data.wav");
+    std::remove (path.c_str());
+
+    {
+        std::ofstream f (path, std::ios::binary);
+        const auto u32 = [&f] (uint32_t v)
+        {
+            const char b[4] = { static_cast<char> (v & 0xFF), static_cast<char> ((v >> 8) & 0xFF),
+                                static_cast<char> ((v >> 16) & 0xFF), static_cast<char> ((v >> 24) & 0xFF) };
+            f.write (b, 4);
+        };
+        const auto u16 = [&f] (uint16_t v)
+        {
+            const char b[2] = { static_cast<char> (v & 0xFF), static_cast<char> ((v >> 8) & 0xFF) };
+            f.write (b, 2);
+        };
+
+        f.write ("RIFF", 4); u32 (0); f.write ("WAVE", 4);
+        f.write ("fmt ", 4); u32 (16);
+        u16 (1); u16 (1); u32 (48000); u32 (48000 * 3); u16 (3); u16 (24);
+        f.write ("data", 4); u32 (0);
+        const char frames[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+        f.write (frames, 9);
+    }
+
+    constexpr std::streamoff dataSizeAt = 40;
+
+    const auto result = SessionRecovery::repairWavFile (path);
+    REQUIRE (result.headerWasStale);
+    REQUIRE_FALSE (result.repairFailed);
+    REQUIRE (result.frames == 3u);
+
+    const auto size = static_cast<uint32_t> (std::filesystem::file_size (path));
+    REQUIRE (size % 2 == 0);
+    REQUIRE (readU32At (path, 4) == size - 8);
+    REQUIRE (readU32At (path, dataSizeAt) == 9u);
+
+    // Still safe to run twice: the pad byte is not mistaken for audio.
+    const auto second = SessionRecovery::repairWavFile (path);
+    REQUIRE_FALSE (second.headerWasStale);
+    REQUIRE (second.frames == 3u);
+    REQUIRE (std::filesystem::file_size (path) == size);
+
+    std::remove (path.c_str());
+}
+
+TEST_CASE (SessionRecovery_theCardDoesNotCallUnrepairedFilesPlayable)
+{
+    // A card that went read-only took the repair on one file and dropped it on
+    // the other. The card used to say the take "has been repaired and is
+    // playable" either way.
+    RecoveredSession session;
+    session.folder = "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take";
+    session.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false, false });
+    session.files.push_back ({ "VOX.wav", 48000 * 4, 4.0, true, false, true });
+
+    const auto row = recoveredTakeRow (session);
+    REQUIRE (row.folderName == "2026-09-01_2000_Take");
+    REQUIRE (row.fileCount == 2);
+    REQUIRE (row.playableFileCount == 1);
+
+    const auto explanation = recoveredTakesExplanation ({ row });
+    REQUIRE (explanation.find ("is playable") == std::string::npos);
+    REQUIRE (explanation.find ("couldn't be repaired") != std::string::npos);
+    REQUIRE (recoveredTakeDetail (row) == "2 files, 4s of sound, 1 couldn't be repaired");
+
+    // A take the repair fully reached still says so.
+    session.files[1].repairFailed = false;
+    const auto good = recoveredTakeRow (session);
+    REQUIRE (recoveredTakesExplanation ({ good }).find ("repaired and is playable") != std::string::npos);
+    REQUIRE (recoveredTakeDetail (good) == "2 files, 4s of sound");
+}
