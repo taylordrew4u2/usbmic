@@ -91,8 +91,17 @@ TEST_CASE (MirrorPolicy_DisablingMidTakeStopsIt)
     p.evaluateAtArm (10 * kGB, 1 * kGB);
     REQUIRE (p.isMirroring());
 
+    // The setting alone does not stop the copy being written -- the caller
+    // does that, and records it here once. Saying "not mirroring" before the
+    // writer had stopped was what took the low-space stop off a live mirror.
     p.setEnabledByUser (false);
+    REQUIRE (p.noteStoppedByUser());
+    REQUIRE_FALSE (p.noteStoppedByUser());
     REQUIRE_FALSE (p.isMirroring());
+    REQUIRE (p.wasStoppedByUser());
+
+    // Never restarted within the take, however much room there is.
+    REQUIRE (p.evaluateDuringRecording (500 * kGB) == MirrorState::StoppedByUser);
 }
 
 TEST_CASE (MirrorPolicy_StoppedForSpaceIsDistinctFromNeverStarted)
@@ -202,4 +211,26 @@ TEST_CASE (MirrorPolicy_ALowSpaceStopIsNotRelabelledAsAWriteFailure)
     REQUIRE_FALSE (p.noteWriteFailure());
     REQUIRE (p.wasStoppedForSpace());
     REQUIRE_FALSE (p.wasStoppedForWriteFailure());
+}
+
+TEST_CASE (MirrorPolicy_TheLowSpaceStopStillRunsAfterTheSettingIsUntickedMidTake)
+{
+    // The tick box is the user's wish for the next take; it does not stop a
+    // copy that is already being written. Unticking it mid-take used to throw
+    // the state to DisabledByUser while the mirror kept writing, and every
+    // later low-space check then saw "not Active" and did nothing -- a backup
+    // left to fill the computer's disk with the §6.3 stop switched off.
+    MirrorPolicy p;
+    REQUIRE (p.evaluateAtArm (10 * kGB, 1 * kGB) == MirrorState::Active);
+
+    p.setEnabledByUser (false);
+    REQUIRE_FALSE (p.isEnabledByUser());
+    REQUIRE (p.isMirroring());
+
+    REQUIRE (p.evaluateDuringRecording (MirrorPolicy::kStopBytes - 1) == MirrorState::StoppedLowSpace);
+    REQUIRE (p.wasStoppedForSpace());
+
+    // And the next take honours the setting.
+    p.reset();
+    REQUIRE (p.evaluateAtArm (10 * kGB, 1 * kGB) == MirrorState::DisabledByUser);
 }

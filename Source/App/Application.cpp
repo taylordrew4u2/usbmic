@@ -422,7 +422,8 @@ void Application::setCameraName (const std::string& id, const juce::String& name
 {
     // §6.2 sanitizing at the point of entry, so what is remembered is what will
     // appear in the filename rather than something that still has to be cleaned.
-    cameraController.getSelection().setAssignedName (id, SessionFolderNaming::sanitizeName (name.toStdString()));
+    // A cleared name is empty, not "Session", so the camera's own name returns.
+    cameraController.getSelection().setAssignedName (id, SessionFolderNaming::sanitizeNameOrEmpty (name.toStdString()));
     saveSettings();
 }
 
@@ -447,6 +448,23 @@ void Application::setAskWhereToSaveEveryTime (bool ask)
 void Application::setMirrorEnabled (bool enabled)
 {
     mirrorPolicy.setEnabledByUser (enabled);
+
+    // §6.3: unticking mid-take used to change only the setting. The copy went
+    // on being written to the end of the take, while session.json said the
+    // backup was off. Off means off: this take's copy stops here, and the
+    // record says where. Ticking it back on waits for the next take -- a copy
+    // with a hole in the middle is not a usable one.
+    if (! enabled && capture != nullptr && capture->isRecording() && capture->isMirroring()
+        && mirrorPolicy.noteStoppedByUser())
+    {
+        capture->stopMirroring();
+        midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+                                     "Local backup copy turned off in Settings: the copy is "
+                                     "incomplete from this point." });
+        noteActivity (ActivityLevel::Stopped, "Local backup",
+                      "Local backup copy turned off; this take's copy stops here.");
+    }
+
     saveSettings();
 }
 
@@ -741,6 +759,13 @@ void Application::restartCapture()
         captureRestartDeferred = true;
         return;
     }
+
+    // Every stream is reopened below, so none is dead any more. Stamped, so
+    // one that dies again straight away is left dead instead of looping here.
+    const auto reopenedAtMs = juce::Time::getMillisecondCounterHiRes();
+    for (const auto& deviceId : deadInputStreams)
+        deadInputReopenedAtMs[deviceId] = reopenedAtMs;
+    deadInputStreams.clear();
 
     // §2.2 can settle on a different rate once the mics are enumerated, and
     // §5.4 can move the buffer up a rung. Both are fixed at construction, so a
@@ -1648,9 +1673,7 @@ TakeHealth Application::snapshotTakeHealth() const
 
 bool Application::isMicLive (int index) const
 {
-    // Outside a take every included mic is live by definition: §6.5's silence
-    // only applies to a channel already fixed into a recording.
-    if (capture == nullptr || ! capture->isRecording())
+    if (capture == nullptr)
         return true;
 
     const auto& channels = capture->getChannels();
@@ -1658,7 +1681,20 @@ bool Application::isMicLive (int index) const
     if (index < 0 || index >= static_cast<int> (channels.size()))
         return true;
 
-    return ! recordingEngine.isWritingSilence (channels[static_cast<size_t> (index)].deviceId);
+    const auto& deviceId = channels[static_cast<size_t> (index)].deviceId;
+
+    // A stream that died and was not reopened is dead with or without a take.
+    // Outside one this used to say live by definition, so a microphone that
+    // died between takes kept a lit strip and was recorded as silence.
+    if (deadInputStreams.count (deviceId) > 0)
+        return false;
+
+    // Otherwise, outside a take every included mic is live: §6.5's silence
+    // only applies to a channel already fixed into a recording.
+    if (! capture->isRecording())
+        return true;
+
+    return ! recordingEngine.isWritingSilence (deviceId);
 }
 
 void Application::noteDeviceDropout()
@@ -1868,21 +1904,14 @@ void Application::setMicAssignedName (const MicRenameTarget& target, const juce:
             continue;
 
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
-        const auto clean = SessionFolderNaming::sanitizeName (name.toStdString());
 
         // One microphone is one box, so the box takes the name. On an interface
         // each socket is a person, so the socket does -- and the box's own name
-        // is left alone for the other inputs.
+        // is left alone for the other inputs. A cleared name clears the override.
         const bool knownDuplicateStereo = settings.hasChannelLayoutDecision && settings.channelLayoutIsMono;
-        if (takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) > 1)
-        {
-            if (clean.empty()) settings.inputNames.erase (target.deviceChannel);
-            else               settings.inputNames[target.deviceChannel] = clean;
-        }
-        else
-        {
-            settings.assignedName = clean;
-        }
+        settings.setNameForInput (target.deviceChannel,
+                                  takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) > 1,
+                                  name.toStdString());
 
         portIdentityStore.put (d.identity, settings);
 
@@ -2228,7 +2257,6 @@ void Application::toggleRecording()
             // ten-minute warning already spent.
             mirrorActiveAtStop = -1;
             midTakeDropouts.clear();
-            deadInputStreams.clear();
             midTakeNotice.clear();
             midTakeNoticeSeconds = 0.0;
 
@@ -2247,6 +2275,32 @@ void Application::toggleRecording()
                                                  "This microphone could not be opened when the take "
                                                  "started, so its track is silent for the whole "
                                                  "take. The other microphones recorded normally." });
+
+                // One whose stream died before the take and could not be
+                // reopened. deadInputStreams used to be cleared here, which
+                // made it live again on paper while its stream stayed dead:
+                // the take wrote silence for it with no card and no dropout.
+                for (const auto& deviceId : deadInputStreams)
+                {
+                    capture->setChannelLive (deviceId, false);
+
+                    if (! recordingEngine.isWritingSilence (deviceId))
+                        recordingEngine.onMicUnplugged (deviceId);
+
+                    midTakeDropouts.push_back ({ 0.0, deviceId,
+                                                 "Microphone stopped sending audio before the take "
+                                                 "started and could not be reopened, so its track is "
+                                                 "silent. Unplug it and plug it back in." });
+
+                    auto subject = juce::String (deviceId);
+                    for (const auto& d : deviceManager.getDevices())
+                        if (d.identity.key() == deviceId)
+                            subject = juce::String (d.displayName);
+
+                    noteActivity (ActivityLevel::Failed, subject,
+                                  subject + " is not sending audio, so its track in this take is "
+                                  "silent. Unplug it and plug it back in.");
+                }
             }
 
             // §5.4: buffer size is fixed for the duration of a take.
@@ -4360,6 +4414,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         juce::String firstFailure;
         juce::String firstWarning;
         bool bufferLadderStepped = false;
+        bool reopenDeadInputs = false;
 
         for (const auto& failure : audioBackend->takeStreamFailures())
         {
@@ -4429,19 +4484,26 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 for (const auto& d : deviceManager.getDevices())
                     stillListed = stillListed || d.identity.key() == failure.deviceId;
 
+                //
+                // Nothing ever reopened the stream, either: the device stayed
+                // listed, so no replug came, and the next take recorded it as
+                // silence. Between takes the failure was dropped outright.
                 if (! stopForSafety && ! failure.deviceId.empty() && stillListed
-                    && capture != nullptr && capture->isRecording()
-                    && deadInputStreams.count (failure.deviceId) == 0)
+                    && capture != nullptr && deadInputStreams.count (failure.deviceId) == 0)
                 {
+                    const bool takeRunning = capture->isRecording();
+                    bool isInput = false;
+
                     for (const auto& ch : capture->getChannels())
                     {
                         if (ch.deviceId != failure.deviceId)
                             continue;
 
+                        isInput = true;
                         deadInputStreams.insert (ch.deviceId);
                         capture->setChannelLive (ch.deviceId, false);
 
-                        if (! recordingEngine.isWritingSilence (ch.deviceId))
+                        if (takeRunning && ! recordingEngine.isWritingSilence (ch.deviceId))
                         {
                             recordingEngine.onMicUnplugged (ch.deviceId);
                             midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
@@ -4450,6 +4512,23 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                             noteDeviceDropout();
                         }
                         break;
+                    }
+
+                    // Reopened once. One that dies again straight after its
+                    // reopen stays dead -- its strip asleep, the next take
+                    // reporting it -- rather than holding the rig in a loop.
+                    const auto reopened = deadInputReopenedAtMs.find (failure.deviceId);
+                    const bool reopenedRecently = reopened != deadInputReopenedAtMs.end()
+                        && juce::Time::getMillisecondCounterHiRes() - reopened->second < kDeadInputReopenBackoffMs;
+
+                    if (isInput)
+                    {
+                        switch (deadInputStreamAction (takeRunning, reopenedRecently))
+                        {
+                            case DeadInputStreamAction::reopenAtStop: captureRestartDeferred = true; break;
+                            case DeadInputStreamAction::reopenNow:    reopenDeadInputs = true; break;
+                            case DeadInputStreamAction::leaveDead:    break;
+                        }
                     }
                 }
             }
@@ -4460,6 +4539,10 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 toggleRecording();
             }
         }
+
+        // After the loop, so several streams dying together reopen once.
+        if (reopenDeadInputs)
+            restartCapture();
 
         // Acted on after the loop, so one batch of overloads produces one step
         // rather than one per report.
@@ -4704,13 +4787,18 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // which sounds like a short file that plays; what they actually have is
     // one whose header says it holds no audio.
     if (capture != nullptr && ! mirrorFinalizeFailureReported
-        && mirrorPolicy.wasStoppedForSpace() && capture->hasMirrorWriteFailed())
+        && (mirrorPolicy.wasStoppedForSpace() || mirrorPolicy.wasStoppedByUser())
+        && capture->hasMirrorWriteFailed())
     {
         mirrorFinalizeFailureReported = true;
 
-        const auto line = juce::String ("The local backup copy stopped for space and its files "
-                                        "could not be closed properly, so they may not open. The "
-                                        "recording on the card is unaffected.");
+        // Turning the backup off in Settings stops it the same way, so its
+        // close can fail the same way.
+        const auto line = juce::String (mirrorPolicy.wasStoppedByUser()
+                                            ? "The local backup copy was turned off and its files "
+                                            : "The local backup copy stopped for space and its files ")
+                        + "could not be closed properly, so they may not open. The "
+                          "recording on the card is unaffected.";
 
         noteActivity (ActivityLevel::Failed, "Local backup", line);
         return line;

@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **Turning off the local backup mid-take stops it.** Unticking it only
+  changed the setting: the copy kept being written, no longer stopped when
+  the disk ran low, and the take's details said the backup was off; it now
+  stops at once, and the take's details say where its copy ends.
+- **Settings' trim sliders follow renamed and swapped microphones.** A
+  rename left the old name on its trim row, and after two microphones
+  swapped places a slider could adjust the wrong one; the rows now follow
+  each microphone and show its current trim.
+- **A microphone that stops sending audio is reopened for the next take.**
+  When a mic's audio stopped but it stayed plugged in, nothing reopened it,
+  so every later take recorded it as silence while its strip looked live; it
+  is now reopened, and one that stays dead is shown asleep and reported.
+- **Clearing a microphone's or camera's name gives it back its own.**
+  Erasing the name (or typing only symbols) renamed it "Session" -- on its
+  strip, its sound files and its movie; it now goes back to the device's name.
+- **Installing ffmpeg while SobStage is open takes effect.** After ffmpeg
+  was missing once, SobStage never looked again until it was restarted, so
+  the next take still wasn't combined as promised; it now checks again.
 - **The take's details file counts the frames the drive dropped.** The
   session.json written at Stop always said no frames were lost to a slow
   drive, even when some were; it now records the take's real count.

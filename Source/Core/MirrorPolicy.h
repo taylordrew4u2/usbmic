@@ -20,6 +20,10 @@ enum class MirrorState
     /// is filling up", the other is "your backup drive is gone". The card
     /// write continues either way.
     StoppedWriteFailed,
+    /// Was running and was stopped mid-take because the user unticked the
+    /// setting. Distinct from DisabledByUser: this take HAS a copy, it is just
+    /// shorter than the card's, and session.json has to say so.
+    StoppedByUser,
 };
 
 /// §6.3 redundant local mirror. Its whole purpose is turning most card
@@ -37,6 +41,10 @@ public:
     /// resort, and re-deciding at the same number would flap.
     static constexpr int64_t kStopBytes = 1LL * 1024 * 1024 * 1024;
 
+    /// The setting, for the next take. It never overwrites the state of a take
+    /// already under way: a running mirror stays Active (and so stays watched by
+    /// the low-space stop) until someone actually stops it -- see
+    /// noteStoppedByUser().
     void setEnabledByUser (bool enabled) noexcept;
 
     /// Decides at arm time whether the mirror starts.
@@ -72,6 +80,13 @@ public:
     /// requires be noted in session.json just as the low-space stop is. Without
     /// it a truncated backup copy is indistinguishable from a complete one.
     bool wasStoppedForWriteFailure() const noexcept { return state == MirrorState::StoppedWriteFailed; }
+
+    /// Records that the user turned the mirror off while it was running. One-way
+    /// within a take, like the other stops. Returns true only on the transition
+    /// out of Active, so the caller stops the copy and says so exactly once.
+    bool noteStoppedByUser() noexcept;
+
+    bool wasStoppedByUser() const noexcept { return state == MirrorState::StoppedByUser; }
 
     void reset() noexcept;
 

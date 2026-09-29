@@ -94,6 +94,9 @@ public:
     /// currentTrimDb supplies each row's starting value.
     void setTrimChannels (const juce::StringArray& micNames,
                           const std::function<float (int)>& currentTrimDb);
+    /// Brings each row's slider to the stored trim without notifying, so a trim
+    /// changed elsewhere shows here. A slider the user is dragging is left alone.
+    void setTrimValues (const std::function<float (int)>& currentTrimDb);
 
     std::function<void (int, float)> onTrimChanged; // channel index, dB
     std::function<void (const juce::String&)> onAggregateNameChanged;

@@ -91,7 +91,7 @@ private:
     /// One place that decides which viewports show, from the three flags.
     void applyPanelVisibility();
     int lastMicCount = -1;
-    int lastAdvancedMicCount = -1;
+    juce::StringArray lastAdvancedTrimRows; // identity and name of each trim row shown
     int framesUntilStatusRefresh = 1;
 
     // What the live "files are appearing" line last reported, so it is only

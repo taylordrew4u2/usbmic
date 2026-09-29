@@ -1,6 +1,21 @@
 #include "PortIdentity.h"
+#include "SessionFolderNaming.h"
 
 namespace mma {
+
+void PersistedDeviceSettings::setNameForInput (int input, bool perInput, const std::string& rawName)
+{
+    const auto clean = SessionFolderNaming::sanitizeNameOrEmpty (rawName);
+
+    if (perInput)
+    {
+        if (clean.empty()) inputNames.erase (input);
+        else               inputNames[input] = clean;
+        return;
+    }
+
+    assignedName = clean;
+}
 
 void PortIdentityStore::put (const PortIdentity& id, const PersistedDeviceSettings& settings)
 {

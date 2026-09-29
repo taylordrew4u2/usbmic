@@ -6,7 +6,11 @@ void MirrorPolicy::setEnabledByUser (bool enabled) noexcept
 {
     enabledByUser = enabled;
 
-    if (! enabled)
+    // Only a state that describes no copy at all is relabelled. Throwing an
+    // Active mirror to DisabledByUser left it writing with nothing watching it:
+    // evaluateDuringRecording() only judges an Active mirror, so the 1 GB stop
+    // never ran again for the rest of the take.
+    if (! enabled && state == MirrorState::NotStartedNoSpace)
         state = MirrorState::DisabledByUser;
 }
 
@@ -53,6 +57,15 @@ bool MirrorPolicy::noteWriteFailure() noexcept
         return false;
 
     state = MirrorState::StoppedWriteFailed;
+    return true;
+}
+
+bool MirrorPolicy::noteStoppedByUser() noexcept
+{
+    if (state != MirrorState::Active)
+        return false;
+
+    state = MirrorState::StoppedByUser;
     return true;
 }
 

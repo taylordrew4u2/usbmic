@@ -17,7 +17,9 @@
 #   3. The next launch after that crash: the interrupted take must be offered
 #      back before anything else, and the full walk must pass again.
 #   4. A microphone dies mid-take: the alert card must come up, Keep recording
-#      must keep the take going, and the take must still stop and save.
+#      must keep the take going, and the take must still stop and save. The
+#      microphone then comes back, and Stop must reopen it: the second take
+#      has to carry its tone, not silence.
 #   5. A take whose files never grow: the app's own stop, its red card on top,
 #      and the saved-take card only after OK.
 #
@@ -131,12 +133,18 @@ TAKE_COUNT="$(printf '%s\n' "$TAKES" | grep -c . || true)"
 if [ "$TAKE_COUNT" -lt 2 ]; then
   echo "FAIL: the walk left $TAKE_COUNT take folder(s), expected 2"; FAILED=1
 fi
+# The first take also has its local backup unticked part way through, so its
+# copy is short on purpose and its record must say so.
+FIRST_TAKE=1
 while IFS= read -r TAKE; do
   [ -n "$TAKE" ] || continue
   echo "---- the walk's take: $TAKE ----"
+  EXPECT=()
+  if [ "$FIRST_TAKE" = 1 ]; then EXPECT=(--expect-loss "Local backup copy turned off in Settings"); fi
+  FIRST_TAKE=0
   # The walk renames microphone 1 "Walker Vox", so its tone is found by that.
   python3 Tools/verify_take.py "$TAKE" --seconds 3 --silent-ok mma_out \
-    --tone Walker=440 --tone mma_mic2=1000 --mirror-root "$HOME1/RECORDINGS-MIRROR" || {
+    --tone Walker=440 --tone mma_mic2=1000 --mirror-root "$HOME1/RECORDINGS-MIRROR" ${EXPECT[@]+"${EXPECT[@]}"} || {
     echo "FAIL: the take $TAKE recorded during the walk does not verify"; FAILED=1; }
 done <<< "$TAKES"
 
@@ -163,13 +171,26 @@ launch "$HOME2" "$WORK/recovered.txt" MMA_UI_WALK_EXPECT_RECOVERED=1
 STATUS=0; wait_for_exit 420 || STATUS=$?
 judge "launch after a crash" "$WORK/recovered.txt" "$STATUS"
 
-# 4. A microphone dies in the middle of a take. The shim kills mma_mic2 the
-#    moment the walker creates the trigger file, right after the take starts.
+# 4. A microphone dies in the middle of a take. The shim kills mma_mic2 while
+#    the walker's trigger file exists: created right after the take starts,
+#    removed before Stop, as a mic plugged back into the same port.
 HOME4="$(fresh_home fault)"
 launch "$HOME4" "$WORK/fault.txt" MMA_UI_WALK_MODE=fault MMA_UI_WALK_FAULT_FILE="$WORK/kill-mic2" \
-  MMA_SHIM_MODE=dead MMA_SHIM_DEVICE=mma_mic2 MMA_SHIM_FAIL_WHEN_FILE="$WORK/kill-mic2"
+  MMA_SHIM_MODE=dead MMA_SHIM_DEVICE=mma_mic2 MMA_SHIM_FAIL_WHILE_FILE="$WORK/kill-mic2"
 STATUS=0; wait_for_exit 300 || STATUS=$?
 judge "a microphone dies mid-take" "$WORK/fault.txt" "$STATUS"
+
+# The take after it. Nothing used to reopen a stream that died while its
+# device stayed listed, so this take's mma_mic2 stem was silence.
+SECOND="$(sed -n 's/^SECOND-TAKE //p' "$WORK/fault.txt" | tail -1)"
+if [ -z "$SECOND" ]; then
+  echo "FAIL: the fault run never recorded a second take"; FAILED=1
+else
+  echo "---- the take after the microphone came back: $SECOND ----"
+  python3 Tools/verify_take.py "$SECOND" --seconds 3 --silent-ok mma_out \
+    --tone mma_mic1=440 --tone mma_mic2=1000 --mirror-root "$HOME4/RECORDINGS-MIRROR" || {
+    echo "FAIL: the take after a microphone died does not carry both microphones"; FAILED=1; }
+fi
 
 # 5. A take whose files never grow. The app stops it three seconds in; the red
 #    card saying so must stay the card on screen, with the saved-take card

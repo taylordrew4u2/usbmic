@@ -55,17 +55,35 @@ public:
     /// worker owns its remaining cleanup and cannot refer back to this object.
     void cancel() noexcept;
 
-    /// The ffmpeg this will use, or empty when none was found. Resolved once
-    /// and cached, since the answer cannot change while the app runs.
+    /// The ffmpeg this will use, or empty when none was found. A find is
+    /// cached; a miss is not, because the user may install ffmpeg while the
+    /// app runs -- the message says the next take will combine, so it must.
+    /// Misses are re-checked at most every kFfmpegRetryMs here, since this is
+    /// asked from the message thread and a PATH probe spawns a process;
+    /// start() always looks again.
     juce::String findFfmpeg();
+
+    static constexpr juce::uint32 kFfmpegRetryMs = 10000;
 
     /// Test seam: run this instead of looking for ffmpeg on the machine.
     void setFfmpegOverride (const juce::String& path) { ffmpegOverride = path; }
 
+    /// Test seam: look in these places instead of ffmpegSearchPaths().
+    void setFfmpegSearchPathsForTesting (std::vector<std::string> paths)
+    {
+        searchPathsForTesting = std::move (paths);
+        hasSearchPathsForTesting = true;
+    }
+
 private:
     juce::String ffmpegOverride;
+    std::vector<std::string> searchPathsForTesting;
+    bool hasSearchPathsForTesting = false;
     juce::String resolvedFfmpeg;
-    bool haveResolved = false;
+    bool haveMissed = false;
+    juce::uint32 lastMissMs = 0;
+
+    juce::String probeFfmpeg();
 
     struct QueuedTake
     {

@@ -13,6 +13,8 @@
  *   MMA_SHIM_DEVICE        only this PCM fails; others read normally
  *   MMA_SHIM_FAIL_AFTER    let this many reads through first
  *   MMA_SHIM_FAIL_AFTER_MS let this many milliseconds of reading through first
+ *   MMA_SHIM_FAIL_WHEN_FILE nothing fails until this file exists; then latched
+ *   MMA_SHIM_FAIL_WHILE_FILE fails only while this file exists (a replug)
  *   MMA_SHIM_STREAM        capture (default) | playback | both
  *   MMA_SHIM_OPEN_MATCH    snd_pcm_open of a name with this prefix is...
  *   MMA_SHIM_OPEN_AS       ...redirected to this name instead
@@ -99,6 +101,10 @@ struct Config
     /// test fail a device at a moment it chooses -- a take that starts half a
     /// minute after launch -- which a delay counted from the first read cannot.
     const char* failWhenFile = nullptr;
+    /// MMA_SHIM_FAIL_WHILE_FILE: the same, but not latched -- the device fails
+    /// only while the file exists, as a mic unplugged and plugged back in to
+    /// the same port would. A reopen after the file has gone succeeds.
+    const char* failWhileFile = nullptr;
     const char* openMatch = nullptr;
     const char* openAs = nullptr;
     long refuseRate = 0;
@@ -123,7 +129,8 @@ struct Config
                                     || std::getenv ("MMA_SHIM_STREAM") != nullptr
                                     || std::getenv ("MMA_SHIM_FAIL_AFTER") != nullptr
                                     || std::getenv ("MMA_SHIM_FAIL_AFTER_MS") != nullptr
-                                    || std::getenv ("MMA_SHIM_FAIL_WHEN_FILE") != nullptr;
+                                    || std::getenv ("MMA_SHIM_FAIL_WHEN_FILE") != nullptr
+                                    || std::getenv ("MMA_SHIM_FAIL_WHILE_FILE") != nullptr;
         const char* realtime = std::getenv ("MMA_SIM_REALTIME");
         injectFailures = anyFailureSetting || realtime == nullptr || std::strcmp (realtime, "0") == 0;
 
@@ -147,6 +154,7 @@ struct Config
             failAfterMs = std::atol (n);
 
         failWhenFile = std::getenv ("MMA_SHIM_FAIL_WHEN_FILE");
+        failWhileFile = std::getenv ("MMA_SHIM_FAIL_WHILE_FILE");
 
         openMatch = std::getenv ("MMA_SHIM_OPEN_MATCH");
         openAs = std::getenv ("MMA_SHIM_OPEN_AS");
@@ -452,6 +460,9 @@ bool shouldFail (snd_pcm_t* pcm, Stream direction)
             triggered.store (true, std::memory_order_relaxed);
         }
     }
+
+    if (c.failWhileFile != nullptr && ::access (c.failWhileFile, F_OK) != 0)
+        return false;
 
     if (reads.fetch_add (1, std::memory_order_relaxed) < c.failAfterReads)
         return false;

@@ -360,9 +360,50 @@ int main (int argc, char** argv)
         || ! queuedStatus.written.contains ("second-take-output.mov"))
         return fail ("the status did not account for both queued takes");
 
+    // "Install ffmpeg and the next take will combine them" has to be true.
+    // A failed lookup used to be cached for the life of the app, so ffmpeg
+    // installed after the first take was never found until a restart.
+    {
+        const auto installed = root.getChildFile ("later-installed").getChildFile ("ffmpeg");
+
+        mma::TakeCombiner laterCombiner;
+        laterCombiner.setFfmpegSearchPathsForTesting ({ installed.getFullPathName().toStdString() });
+
+        if (laterCombiner.findFfmpeg().isNotEmpty())
+            return fail ("an ffmpeg that is not there yet was reported as found");
+
+        if (! installed.getParentDirectory().createDirectory().wasOk()
+            || ! juce::File (executable).copyFileTo (installed)
+            || ! installed.setExecutePermission (true))
+            return fail ("could not install the stand-in ffmpeg");
+
+        const auto laterTake = root.getChildFile ("later-take");
+        if (! laterTake.createDirectory().wasOk()
+            || ! laterTake.getChildFile ("success-input.mov").replaceWithText ("video")
+            || ! laterTake.getChildFile ("MIX.wav").replaceWithText ("audio"))
+            return fail ("could not make the later take's fake inputs");
+
+        mma::CombinedTakePlan laterPlan;
+        laterPlan.jobs.push_back ({ "success-input.mov", "MIX.wav",
+                                    "later-take-output.mov", 24, 0.0 });
+
+        if (! laterCombiner.start (laterTake, laterPlan))
+            return fail ("ffmpeg installed after a failed lookup was never found");
+
+        const auto laterDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (2);
+        while (laterCombiner.isRunning() && std::chrono::steady_clock::now() < laterDeadline)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        if (! laterTake.getChildFile ("later-take-output.mov").existsAsFile())
+            return fail ("the take after ffmpeg was installed did not combine");
+
+        if (laterCombiner.findFfmpeg() != installed.getFullPathName())
+            return fail ("an ffmpeg that was found was not remembered");
+    }
+
     if (checkSplitMixReachesTheCombinedFile (root) != 0)
         return 1;
 
-    std::printf ("ALL CHECKS PASSED (20 checks, 0 failing)\n");
+    std::printf ("ALL CHECKS PASSED (24 checks, 0 failing)\n");
     return 0;
 }
