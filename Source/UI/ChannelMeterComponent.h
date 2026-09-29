@@ -50,6 +50,9 @@ public:
 
     Face getFace() const noexcept;
 
+    /// The level the strip is showing right now, after ballistics.
+    float getDisplayedLevelDb() const noexcept { return currentLevelDb; }
+
     /// Where the badge is drawn, in this component's coordinates.
     juce::Rectangle<float> getBadgeBounds() const;
 

@@ -80,6 +80,22 @@ void run (int ms)
     juce::MessageManager::getInstance()->runDispatchLoopUntil (ms);
 }
 
+/// Runs the app's timers until the strip is showing a level within 1.5 dB of
+/// target. The meter's ballistics count timer ticks, not wall time, and a busy
+/// CI machine ticks slower than 60 Hz -- so waiting a fixed time checked the
+/// face mid-decay on macOS. Waiting on the level checks it where it lands.
+void settleAt (ChannelMeterComponent& meter, float targetDb, int timeoutMs = 15000)
+{
+    const auto start = juce::Time::getMillisecondCounter();
+    while (std::abs (meter.getDisplayedLevelDb() - targetDb) > 1.5f
+           && juce::Time::getMillisecondCounter() - start < (juce::uint32) timeoutMs)
+        run (50);
+    run (100); // one more repaint at the settled level
+    check (std::abs (meter.getDisplayedLevelDb() - targetDb) <= 1.5f,
+           "the meter settles at " + juce::String (targetDb, 1) + " dBFS (shows "
+               + juce::String (meter.getDisplayedLevelDb(), 1) + ")");
+}
+
 juce::String snapshotDir;
 
 void snapshot (ChannelMeterComponent& meter, const juce::String& name)
@@ -167,7 +183,7 @@ int main (int argc, char** argv)
         snapshot (meter, "02-silent");
 
         mic.setPeakDb (-30.0f);
-        run (600);
+        settleAt (meter, -30.0f);
         expectFace (meter, Face::Frown, "a microphone peaking at -30 dBFS");
         {
             const auto p = MeterFaceProbe::of (meter);
@@ -178,16 +194,16 @@ int main (int argc, char** argv)
 
         std::printf ("\n-- the -18 dBFS line --\n");
         mic.setPeakDb (-19.5f);
-        run (600);
+        settleAt (meter, -19.5f, 15000);
         expectFace (meter, Face::Frown, "just under the line, at -19.5 dBFS");
 
         mic.setPeakDb (-16.5f);
-        run (600);
+        settleAt (meter, -16.5f);
         expectFace (meter, Face::OneTear, "just over the line, at -16.5 dBFS");
         snapshot (meter, "04-over-the-line");
 
         mic.setPeakDb (-8.0f);   // the virtual mics' tone, 0.4 of full scale
-        run (600);
+        settleAt (meter, -8.0f);
         expectFace (meter, Face::OneTear, "a loud microphone at -8 dBFS");
         {
             const auto p = MeterFaceProbe::of (meter);
@@ -198,7 +214,7 @@ int main (int argc, char** argv)
 
         std::printf ("\n-- clipping --\n");
         mic.setClipping();
-        run (400);
+        settleAt (meter, 0.0f);
         expectFace (meter, Face::Sob, "a microphone driven into full scale");
         {
             const auto p = MeterFaceProbe::of (meter);
@@ -211,7 +227,7 @@ int main (int argc, char** argv)
 
         mic.setSine();
         mic.setPeakDb (-30.0f);
-        run (2500);
+        settleAt (meter, -30.0f);
         expectFace (meter, Face::Sob, "once quiet again, the clip stays latched");
 
         check (meter.keyPressed (juce::KeyPress (juce::KeyPress::returnKey)),
@@ -227,15 +243,15 @@ int main (int argc, char** argv)
 
         std::printf ("\n-- falling back --\n");
         mic.setPeakDb (-8.0f);
-        run (600);
+        settleAt (meter, -8.0f);
         expectFace (meter, Face::OneTear, "loud again");
         mic.setPeakDb (-40.0f);
-        run (3000);
+        settleAt (meter, -40.0f);
         expectFace (meter, Face::Frown, "the tear dries once the level falls away");
 
         std::printf ("\n-- the microphone goes away --\n");
         mic.setPeakDb (-8.0f);
-        run (400);
+        settleAt (meter, -8.0f);
         meter.setNoSignal (true);
         run (200);
         expectFace (meter, Face::Asleep, "a microphone lost while loud");
@@ -269,11 +285,11 @@ int main (int argc, char** argv)
         const auto at = juce::String (size.x) + "x" + juce::String (size.y);
 
         mic.setPeakDb (-8.0f);
-        run (500);
+        settleAt (meter, -8.0f);
         expectFace (meter, Face::OneTear, at + ", loud");
 
         mic.setClipping();
-        run (300);
+        settleAt (meter, 0.0f);
         expectFace (meter, Face::Sob, at + ", clipping");
         snapshot (meter, "10-size-" + at);
 
