@@ -9,6 +9,7 @@
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
 #include "TakeAlertCard.h"
+#include "TakeBanner.h"
 #include "SkullMeterComponent.h"
 #include "../App/Application.h"
 #include <algorithm>
@@ -38,6 +39,8 @@ namespace mma {
 ///                               Tools/alsa_readi_shim.cpp watches to kill a
 ///                               microphone), and walk the mid-take alert card
 ///   MMA_UI_WALK_EXPECT_RECOVERED=1   the recovery card must appear at launch
+///   MMA_UI_WALK_SNAPSHOT_DIR=<dir>   save PNGs of the window at the banners
+///                               and the alarm card, for a person to look at
 class UiWalker : private juce::Timer
 {
 public:
@@ -54,6 +57,8 @@ public:
         faultMode = mode != nullptr && juce::String (mode) == "fault";
         if (const char* f = std::getenv ("MMA_UI_WALK_FAULT_FILE"))
             faultFile = f;
+        if (const char* dir = std::getenv ("MMA_UI_WALK_SNAPSHOT_DIR"))
+            snapshotDir = dir;
         const char* recovered = std::getenv ("MMA_UI_WALK_EXPECT_RECOVERED");
         expectRecovered = recovered != nullptr && juce::String (recovered) == "1";
 
@@ -407,8 +412,27 @@ private:
                 juce::File (faultFile).replaceWithText ("dead");
             }, [this] { return juce::File (faultFile).existsAsFile(); });
             check ("the mid-take alert card says so", [this] { return isUp<TakeAlertCard>(); }, 30000);
+            check ("the card is flashing its alarm", [this]
+            {
+                auto* card = find<TakeAlertCard>();
+                return card != nullptr && card->isAlarming() && card->getBannerText().contains ("WRONG");
+            });
+            check ("the siren is on in the headphones", [this] { return application.isFaultAlarmOn(); });
+            add ({}, [this] { snapshot ("alarm-card-lit"); }, [] { return true; });
+            add ({}, [] {}, [n = std::make_shared<int> (3)] { return --*n <= 0; });
+            add ({}, [this] { snapshot ("alarm-card-dark"); }, [] { return true; });
+            add ("and it keeps sounding", [this] { sirenSamplesAt = application.getAlarmSamplesRendered(); },
+                 [this] { return application.getAlarmSamplesRendered() > sirenSamplesAt + 4800; }, 5000);
+            settle (1500);
+            add ("it is still sounding a second and a half later", [] {},
+                 [this] { return application.isFaultAlarmOn() && application.getAlarmSamplesRendered() > sirenSamplesAt + 48000; });
             add ("Keep recording closes the card and the take carries on", [this] { click<TakeAlertCard> ("Keep recording"); },
                  [this] { return ! isUp<TakeAlertCard>() && recording(); });
+            add ("and the siren stops", [this] { sirenSamplesAt = application.getAlarmSamplesRendered(); },
+                 [this] { return ! application.isFaultAlarmOn(); });
+            settle (500);
+            add ("with nothing more rendered after", [] {},
+                 [this] { return ! application.isFaultAlarmOn() && application.getAlarmSamplesRendered() <= sirenSamplesAt + 2400; });
             settle (2000);
             add ("the take still stops normally", [this]
             {
@@ -509,7 +533,14 @@ private:
         add ("Cameras' Done goes back", [this] { click<CameraPanel> ("< Done"); }, [this] { return ! isUp<CameraPanel>(); });
 
         // A take.
-        add ("recording starts", [this] { startRecording(); }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+        add ("recording starts", [this]
+        {
+            alarmSamplesBefore = application.getAlarmSamplesRendered();
+            startRecording();
+        }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+        add ("the whole window says RECORDING", [] {}, [this] { return bannerSays (TakeBanner::Kind::Started); });
+        add ({}, [this] { snapshot ("banner-recording"); }, [] { return true; });
+        add ("and the headphones chirp", [] {}, [this] { return application.getAlarmSamplesRendered() > alarmSamplesBefore; }, 5000);
         add ("the button says it is recording", [] {}, [this]
         {
             return button<MainScreen> ("Recording. Tap to stop.") != nullptr;
@@ -547,8 +578,13 @@ private:
         add ("recording stops", [this]
         {
             takeFolder = application.getCurrentSessionFolder();
+            alarmSamplesBefore = application.getAlarmSamplesRendered();
             click<MainScreen> ("Recording. Tap to stop.");
         }, [this] { return ! recording(); }, 20000);
+        add ("the whole window says RECORDING STOPPED", [] {}, [this] { return bannerSays (TakeBanner::Kind::Stopped); });
+        add ({}, [this] { snapshot ("banner-stopped"); }, [] { return true; });
+        add ("and the headphones chirp again", [] {}, [this] { return application.getAlarmSamplesRendered() > alarmSamplesBefore; }, 5000);
+        add ("the banner goes away on its own", [] {}, [this] { return banner() == nullptr; }, TakeBanner::kHoldMs + 2000);
         check ("the saved-take card says the take is saved", [this] { return isUp<SavedTakePanel>(); }, 30000);
         add ("the take's files are on disk, with the renamed microphone", [] {}, [this] { return takeFilesLookRight(); }, 10000);
         add ("the saved-take card's Done closes it", [this] { click<SavedTakePanel> ("Done"); },
@@ -594,6 +630,41 @@ private:
     }
 
     int ticksSinceRecordPress = 0;
+    uint64_t alarmSamplesBefore = 0;
+    juce::String snapshotDir;
+
+    /// A PNG of the whole window as it is right now, when a directory was
+    /// given. Rendered through the same paint calls the screen gets.
+    void snapshot (const juce::String& name)
+    {
+        if (snapshotDir.isEmpty())
+            return;
+
+        auto* top = root.getTopLevelComponent();
+        if (top == nullptr)
+            return;
+
+        const auto image = top->createComponentSnapshot (top->getLocalBounds());
+        const juce::File file = juce::File (snapshotDir).getChildFile (name + ".png");
+        file.getParentDirectory().createDirectory();
+        juce::FileOutputStream out (file);
+        if (out.openedOk())
+        {
+            out.setPosition (0);
+            out.truncate();
+            juce::PNGImageFormat().writeImageToStream (image, out);
+        }
+    }
+    uint64_t sirenSamplesAt = 0;
+
+    /// The take banner, if it is up right now.
+    TakeBanner* banner() const { return find<TakeBanner>(); }
+
+    bool bannerSays (TakeBanner::Kind kind) const
+    {
+        auto* b = banner();
+        return b != nullptr && b->getKind() == kind;
+    }
     int bufferOverrideBefore = -12345;
 
     bool takeFilesLookRight()
