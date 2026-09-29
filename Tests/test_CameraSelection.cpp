@@ -12,15 +12,17 @@ std::vector<CameraDeviceInfo> twoCameras()
 
 } // namespace
 
-TEST_CASE (CameraSelection_newCamerasStayOffUntilTheUserEnablesOne)
+TEST_CASE (CameraSelection_everyCameraPluggedInRecordsUnlessSwitchedOff)
 {
     CameraSelection selection;
     selection.setAvailableCameras (twoCameras());
 
-    // Merely launching or plugging a camera in is not consent to open it.
-    REQUIRE_FALSE (selection.isEnabled ("cam-a"));
-    REQUIRE_FALSE (selection.isEnabled ("cam-b"));
-    REQUIRE (selection.getEnabledCount() == 0);
+    // Plugging a camera in is enough: it is in the take, in its own file,
+    // until someone switches it off in the Cameras panel.
+    REQUIRE (selection.isEnabled ("cam-a"));
+    REQUIRE (selection.isEnabled ("cam-b"));
+    REQUIRE (selection.getEnabledCount() == 2);
+    REQUIRE (selection.buildPlans().size() == 2);
 }
 
 TEST_CASE (CameraSelection_noCamerasEnablesNothing)
@@ -32,17 +34,19 @@ TEST_CASE (CameraSelection_noCamerasEnablesNothing)
     REQUIRE (selection.buildPlans().empty());
 }
 
-TEST_CASE (CameraSelection_aCameraPluggedInLaterIsNotSwitchedOnBehindTheUser)
+TEST_CASE (CameraSelection_aCameraSwitchedOffStaysOffWhenAnotherIsPluggedIn)
 {
     CameraSelection selection;
     selection.setAvailableCameras ({ { "cam-a", "Logitech C920" } });
     selection.setEnabled ("cam-a", false);
 
-    // Discovery is never an enable action. Plugging another camera in must not
-    // switch it -- or any previously seen camera -- on behind the user.
+    // A later discovery must not undo a choice: the switched-off camera stays
+    // off, and only the newcomer joins.
     selection.setAvailableCameras (twoCameras());
 
-    REQUIRE (selection.getEnabledCount() == 0);
+    REQUIRE_FALSE (selection.isEnabled ("cam-a"));
+    REQUIRE (selection.isEnabled ("cam-b"));
+    REQUIRE (selection.getEnabledCount() == 1);
 }
 
 TEST_CASE (CameraSelection_choicesSurviveAnUnplug)
@@ -151,12 +155,13 @@ TEST_CASE (CameraSelection_videoCountsAgainstRemainingTime)
     CameraSelection selection;
     REQUIRE (selection.getEstimatedBytesPerSecond() == (int64_t) 0);
 
+    // Two cameras plugged in are two cameras recording, and both count
+    // against the room left on the card.
     selection.setAvailableCameras (twoCameras());
-    REQUIRE (selection.getEstimatedBytesPerSecond() == 0);
-
-    selection.setEnabled ("cam-a", true);
-    selection.setEnabled ("cam-b", true);
     REQUIRE (selection.getEstimatedBytesPerSecond() == 2 * CameraSelection::kEstimatedVideoBytesPerSecond);
+
+    selection.setEnabled ("cam-b", false);
+    REQUIRE (selection.getEstimatedBytesPerSecond() == CameraSelection::kEstimatedVideoBytesPerSecond);
 }
 
 TEST_CASE (CameraSelection_previewSizeNeverDrivesCaptureSize)
