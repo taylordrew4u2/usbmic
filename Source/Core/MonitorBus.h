@@ -56,6 +56,10 @@ public:
     bool isRunawayMuted() const noexcept { return runawayMuted.load (std::memory_order_acquire); }
     void manuallyUnmute() noexcept;
 
+    /// Latches the runaway cut on a bus that replaces one that was cut. A
+    /// rebuild is not the user unmuting, and §5 holds the cut until they do.
+    void engageRunawayCut() noexcept { runawayMuted.store (true, std::memory_order_release); }
+
     /// Global instantaneous mute (spacebar), independent of runaway cut.
     void setGlobalMute (bool shouldMute) noexcept { globallyMuted.store (shouldMute, std::memory_order_release); }
     bool isGloballyMuted() const noexcept { return globallyMuted.load (std::memory_order_acquire); }
