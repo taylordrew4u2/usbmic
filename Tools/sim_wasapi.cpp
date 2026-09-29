@@ -274,6 +274,73 @@ void aBufferAlignmentRejectionIsRetried()
     backend.closeAllStreams();
 }
 
+/// A device whose re-Activate fails between the rejected period and the retry.
+/// The open fails -- and must say so: the backend returned without a reason.
+void aFailedReactivationSaysWhy()
+{
+    std::printf ("\nA device that goes away between the rejected period and the retry\n");
+    fakewasapi::reset();
+
+    auto spec = microphone ("mic-gone", "Vanishing Mic", { fakewasapi::Format::pcm (1, 32, 48000.0) });
+    spec.alignedFrames = 480;
+    spec.failActivateAfterAlignment = true;
+    fakewasapi::addEndpoint (spec);
+
+    mma::WasapiAsioBackend backend;
+    Capture capture;
+
+    check (! backend.openInputStream ("mic-gone", 48000.0, 256, capture.callback()),
+           "the open fails");
+    check (! backend.getLastOpenError().empty(), "and says why, rather than nothing");
+}
+
+/// A buffer below the device's minimum period. Windows rejects it with
+/// AUDCLNT_E_INVALID_DEVICE_PERIOD; the backend must ask GetDevicePeriod and
+/// open at the minimum instead, not blame another app for holding the device.
+void aBufferBelowTheDeviceMinimumOpensAtTheMinimum()
+{
+    std::printf ("\nA buffer smaller than the device's minimum period\n");
+    fakewasapi::reset();
+
+    auto spec = microphone ("mic-min", "Slow Mic", { fakewasapi::Format::pcm (1, 32, 48000.0) });
+    spec.minimumPeriodFrames = 128;
+    fakewasapi::addEndpoint (spec);
+
+    mma::WasapiAsioBackend backend;
+    Capture capture;
+
+    check (backend.openInputStream ("mic-min", 48000.0, 64, capture.callback()),
+           "a 64-sample request on a 128-sample device still opens");
+    check (backend.getLastOpenError().empty(), "with no error left behind");
+    check (fakewasapi::isRunning ("mic-min"), "and the stream starts");
+    backend.closeAllStreams();
+}
+
+/// JUCE's message thread is a single-threaded apartment (OleInitialize), so
+/// the backend's CoInitializeEx(MULTITHREADED) there fails with
+/// RPC_E_CHANGED_MODE. Its open worker and stream threads then belong to no
+/// apartment, and COM calls from them fail unless they join the MTA
+/// themselves. On Windows that read as every microphone refusing to open.
+void microphonesOpenWhenTheMessageThreadIsSingleThreaded()
+{
+    std::printf ("\nThe backend built on a single-threaded-apartment message thread\n");
+    fakewasapi::reset();
+    fakewasapi::addEndpoint (microphone ("mic-sta", "STA Mic", { fakewasapi::Format::pcm (1, 32, 48000.0) }));
+
+    fakewasapi::enterSingleThreadedApartment();
+    {
+        mma::WasapiAsioBackend backend;
+        Capture capture;
+
+        check (backend.openInputStream ("mic-sta", 48000.0, 256, capture.callback()),
+               "the microphone still opens");
+        check (backend.getLastOpenError().empty(), "with no error");
+        check (fakewasapi::isRunning ("mic-sta"), "and its stream runs");
+        backend.closeAllStreams();
+    }
+    fakewasapi::leaveApartment();
+}
+
 /// §5.4 quotes the singer a monitoring latency. Quoting it from the period we
 /// ASKED for is a lie whenever the device names its own: the app must report
 /// the granted size. Nothing else in this file opens an output at a size the
@@ -1184,6 +1251,9 @@ int main()
     aStereoOnlyMicrophoneIsOpenedAsStereo();
     aDeviceThatAcceptsNothingFailsWithAReason();
     aBufferAlignmentRejectionIsRetried();
+    aFailedReactivationSaysWhy();
+    aBufferBelowTheDeviceMinimumOpensAtTheMinimum();
+    microphonesOpenWhenTheMessageThreadIsSingleThreaded();
     aSilentFlaggedPacketIsTreatedAsSilence();
     theMonitorMixIsWrittenInTheNegotiatedFormat();
     anOverRangeMonitorSumClipsRatherThanWraps();

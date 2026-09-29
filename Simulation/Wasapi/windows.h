@@ -118,6 +118,12 @@ namespace mmasim { template <> struct SimUuid<IUnknown> { static constexpr GUID 
 // --- COM lifecycle ----------------------------------------------------------
 constexpr DWORD CLSCTX_ALL = 23;
 constexpr DWORD COINIT_MULTITHREADED = 0;
+constexpr DWORD COINIT_APARTMENTTHREADED = 2;
+
+// A thread already in one apartment asking for the other; and a COM call from
+// a thread in no apartment while no thread in the process is in the MTA.
+constexpr HRESULT RPC_E_CHANGED_MODE  = static_cast<HRESULT> (0x80010106);
+constexpr HRESULT CO_E_NOTINITIALIZED = static_cast<HRESULT> (0x800401F0);
 
 HRESULT CoInitializeEx (void* reserved, DWORD flags);
 void CoUninitialize();

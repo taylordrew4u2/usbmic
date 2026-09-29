@@ -214,7 +214,7 @@ bool SessionWriter::writeInterleaved (const float* interleaved, size_t numFrames
         // Auto-split at 3.9GB (§6.1) before writing would push us over.
         if (dataBytesWrittenToCurrentFile + frameBytes > autoSplitBytes)
         {
-            if (! rewriteHeaderSizes())
+            if (! appendPadByteIfOdd() || ! rewriteHeaderSizes())
             {
                 writeProblem = "Couldn't finish " + currentFilePath
                              + " before starting the next file. Recording has stopped to protect the take.";
@@ -374,6 +374,19 @@ bool SessionWriter::rewriteHeaderSizes()
     return file.good() && syncCurrentFileToStorage();
 }
 
+bool SessionWriter::appendPadByteIfOdd()
+{
+    if ((dataBytesWrittenToCurrentFile & 1u) == 0)
+        return true;
+
+    file.clear();
+    const auto currentPos = file.tellp();
+    file.seekp (0, std::ios::end);
+    file.put ('\0');
+    file.seekp (currentPos);
+    return file.good();
+}
+
 bool SessionWriter::syncCurrentFileToStorage()
 {
     // std::fstream::flush() only reaches the operating-system cache. §6.6's
@@ -425,8 +438,10 @@ bool SessionWriter::close()
         return false;
 
     // Taken before close(), because closing clears the stream state that says
-    // whether the final header actually landed.
-    const bool headerLanded = rewriteHeaderSizes();
+    // whether the final header actually landed. The pad goes first so the
+    // RIFF size, taken from the file's end, counts it.
+    const bool padded = appendPadByteIfOdd();
+    const bool headerLanded = rewriteHeaderSizes() && padded;
 
     file.close();
 
