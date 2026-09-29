@@ -212,6 +212,7 @@ jobs:
           bash Tools/alsa_mid_take_loss.sh
           bash Tools/alsa_monitor_loss.sh
           bash Tools/alsa_rate_refusal.sh
+          bash Tools/alsa_busy_probe.sh
           bash Tools/e2e_disk_full.sh
           bash Tools/e2e_card_stall.sh
           bash Tools/e2e_realtime_mics.sh 75

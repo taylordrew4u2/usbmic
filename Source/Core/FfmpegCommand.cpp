@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 
 namespace mma {
 
@@ -112,6 +113,57 @@ std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutab
     args.push_back (outputPath);
 
     return args;
+}
+
+std::vector<std::string> buildFfmpegArguments (const std::string& ffmpegExecutable,
+                                               const std::string& videoPath,
+                                               const std::vector<std::string>& audioPaths,
+                                               const std::string& concatListPath,
+                                               const std::string& outputPath,
+                                               double audioLeadSeconds,
+                                               int audioBitDepth)
+{
+    if (audioPaths.size() <= 1)
+        return buildFfmpegArguments (ffmpegExecutable, videoPath,
+                                     audioPaths.empty() ? std::string() : audioPaths.front(),
+                                     outputPath, audioLeadSeconds, audioBitDepth);
+
+    auto args = buildFfmpegArguments (ffmpegExecutable, videoPath, concatListPath,
+                                      outputPath, audioLeadSeconds, audioBitDepth);
+
+    // The list is read by the concat demuxer, which joins the parts into one
+    // continuous input -- so the -ss already in front of it seeks the whole
+    // take's sound, and -shortest measures against all of it. -safe 0 because
+    // the parts are named by absolute path, which the demuxer otherwise
+    // refuses. Both are input options, so they go before that input's -i.
+    const auto input = std::find (args.begin(), args.end(), concatListPath);
+    args.insert (std::prev (input), { "-f", "concat", "-safe", "0" });
+
+    return args;
+}
+
+std::string buildFfmpegConcatList (const std::vector<std::string>& audioPaths)
+{
+    std::string list = "ffconcat version 1.0\n";
+
+    for (const auto& path : audioPaths)
+    {
+        // Single-quoted, so spaces and backslashes are taken literally; a quote
+        // inside the path closes the string, adds an escaped quote and reopens.
+        list += "file '";
+
+        for (const char c : path)
+        {
+            if (c == '\'')
+                list += "'\\''";
+            else
+                list += c;
+        }
+
+        list += "'\n";
+    }
+
+    return list;
 }
 
 } // namespace mma

@@ -1,4 +1,5 @@
 #include "SystemPermissions.h"
+#include "../Core/Utf8Path.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -131,17 +132,23 @@ PermissionState queryVolumeWritePermission (const std::string& destinationPath) 
         return PermissionState::NotApplicable;
 
     std::error_code ec;
-    if (! std::filesystem::is_directory (destinationPath, ec) || ec)
+    if (! std::filesystem::is_directory (pathFromUtf8 (destinationPath), ec) || ec)
         return PermissionState::NotApplicable;
 
     // A fixed name would collide between two copies of the app probing at
     // once; the point is to learn whether the OS lets us create anything here.
     static std::atomic<unsigned> counter { 0 };
-    const auto probe = std::filesystem::path (destinationPath)
+    const auto probe = pathFromUtf8 (destinationPath)
                      / (".sobstage-access-probe-" + std::to_string (counter.fetch_add (1)));
 
     errno = 0;
-    std::FILE* handle = std::fopen (probe.string().c_str(), "wb");
+    // _wfopen on Windows: probe.string() there is the ANSI code page, which
+    // cannot name a folder like C:\Users\Zoë and throws on some that it can't.
+#if defined(_WIN32)
+    std::FILE* handle = _wfopen (probe.c_str(), L"wb");
+#else
+    std::FILE* handle = std::fopen (probe.c_str(), "wb");
+#endif
     const int openErrno = (handle != nullptr) ? 0 : errno;
 
     if (handle != nullptr)

@@ -1106,7 +1106,11 @@ void Application::onDeviceListChanged()
             state.identity.serial = d.serialNumber;
         state.displayName = d.name;
         state.isBuiltIn = d.isBuiltIn;
-        state.inputChannelCount = std::max (1, d.maxInputChannels);
+        // 0 passes through as "not reported": syncToEnumeration keeps the
+        // count it already has, and a newcomer is one microphone. Clamping it
+        // to 1 here told a four-input interface being recorded from -- which
+        // the ALSA probe cannot open -- that it had one input.
+        state.inputChannelCount = std::max (0, d.maxInputChannels);
 
         // §2.3: carried through rather than dropped here, which is where it was
         // being dropped. The field existed on the descriptor, one backend
@@ -1559,8 +1563,11 @@ ProofReading Application::snapshotProof() const
     if (currentSessionFolder.isNotEmpty())
     {
         bool snapshotAvailable = false;
+        // Only the WAVs: the camera's movie in the same folder keeps growing
+        // when the audio writer has stalled.
         for (const auto& file : getCurrentSessionFiles (&snapshotAvailable))
-            reading.bytesOnDisk += static_cast<uint64_t> (std::max<int64_t> (0, file.sizeBytes));
+            if (countsAsRecordedAudio (file.name.toStdString()))
+                reading.bytesOnDisk += static_cast<uint64_t> (std::max<int64_t> (0, file.sizeBytes));
         reading.diskObservationAvailable = snapshotAvailable;
     }
 

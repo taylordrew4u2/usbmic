@@ -324,6 +324,45 @@ TEST_CASE (DeviceManager_ReEnumerationRefreshesHowManyInputsADeviceHas)
     REQUIRE (m.getDevices()[0].inputChannelCount == 4);
 }
 
+TEST_CASE (DeviceManager_AnInputCountTheOsCouldNotReadKeepsTheKnownOne)
+{
+    // A backend that could not ask the device reports 0 -- "not reported" --
+    // and that is not the device shrinking. On Linux the commonest reason is
+    // that this app is recording from it: the probe's second open is busy.
+    // Taking that as one input collapsed a four-input interface's strips on
+    // every device-list change, mid-take.
+    DeviceManager m;
+
+    MicDeviceState known;
+    known.identity.locationId = "loc-interface";
+    known.displayName = "Interface";
+    known.inputChannelCount = 4;
+    m.syncToEnumeration ({ known });
+
+    MicDeviceState busy = known;
+    busy.inputChannelCount = 0;
+    m.syncToEnumeration ({ busy });
+
+    REQUIRE (m.getDevices().size() == 1);
+    REQUIRE (m.getDevices()[0].inputChannelCount == 4);
+
+    // A device first seen without a count is one microphone, as before.
+    MicDeviceState unknownNewcomer;
+    unknownNewcomer.identity.locationId = "loc-new";
+    unknownNewcomer.displayName = "New";
+    unknownNewcomer.inputChannelCount = 0;
+    m.syncToEnumeration ({ known, unknownNewcomer });
+
+    REQUIRE (m.getDevices().size() == 2);
+    REQUIRE (m.getDevices()[1].inputChannelCount == 1);
+
+    // And a real answer still wins over what was known.
+    MicDeviceState shrunk = known;
+    shrunk.inputChannelCount = 2;
+    m.syncToEnumeration ({ shrunk, unknownNewcomer });
+    REQUIRE (m.getDevices()[0].inputChannelCount == 2);
+}
+
 TEST_CASE (DeviceManager_AnInterfaceContributesOneChannelPerInput)
 {
     // The rule that decides how many strips and files a device produces.

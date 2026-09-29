@@ -475,6 +475,11 @@ if (MMA_BUILD_TOOLS)
         target_link_libraries(alsa_rate_refusal PRIVATE mma_core)
         target_link_libraries(alsa_rate_refusal PRIVATE mma_warnings)
 
+        # A multi-input interface held open while it is re-probed; see the file.
+        add_executable(alsa_busy_probe Tools/alsa_busy_probe.cpp)
+        target_link_libraries(alsa_busy_probe PRIVATE mma_core)
+        target_link_libraries(alsa_busy_probe PRIVATE mma_warnings)
+
         # A recording card that stops answering on demand; see the file.
         add_library(fs_stall_shim SHARED Tools/fs_stall_shim.cpp)
         target_link_libraries(fs_stall_shim PRIVATE ${CMAKE_DL_LIBS})

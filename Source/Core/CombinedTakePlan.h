@@ -81,6 +81,22 @@ struct CombinedTakeInput
 ///                     copy holds on both streams.)
 std::string combinedFileNameFor (const std::string& videoFileName);
 
+/// Every file one recording was written to, in the order it was written.
+///
+/// A take long enough to cross SessionWriter's 3.9 GB limit carries on in
+/// "MIX_001.wav", "MIX_002.wav" and so on, and the mix is all of them end to
+/// end -- not the first. The combined file used to be laid against the first
+/// alone, so a long take's video stopped where that part did.
+///
+/// `namesInFolder` is what the take folder actually holds. The parts are
+/// collected from _001 upward and stop at the first one missing, since a gap
+/// means the ones after it are not a continuation of this recording. Empty
+/// when `firstFileName` itself is not there.
+///
+/// Pure: the caller lists the folder.
+std::vector<std::string> splitPartsInOrder (const std::string& firstFileName,
+                                            const std::vector<std::string>& namesInFolder);
+
 /// Builds the plan for a finished take.
 ///
 /// `mixFileName` is the audio to lay under the picture -- the mix rather than a

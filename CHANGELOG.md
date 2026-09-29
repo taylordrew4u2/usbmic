@@ -4,6 +4,27 @@
 
 ### Fixed
 
+- **Clicking a microphone's strip no longer takes the space bar away from
+  mute.** After a click to clear a clip or rename a microphone, the next
+  Space reopened the rename dialog instead of muting the headphones.
+- **Cards cover the whole window again after a resize with Settings or Help
+  open.** They shrank to the main screen, leaving the drawer's controls
+  usable beside a card that should have been in charge.
+- **Linux: a multi-input interface records every input, not just one.**
+  Opening the interface asked how many inputs it had by opening it a
+  second time, which the hardware refuses while it is in use, so a
+  four-input interface recorded a single track.
+- **Linux: an interface being recorded from keeps all its strips when the
+  device list changes.** Plugging or unplugging anything re-checked every
+  device, the one in use could not be opened to ask, and its four strips
+  collapsed to one. A device that cannot be asked now keeps what was known.
+- **A long take's combined video keeps its sound to the end.** Once the
+  mix passed 3.9 GB and carried on in `MIX_001.wav`, the video-with-sound
+  file was cut off where `MIX.wav` ended. Every part of the mix is now
+  joined, in order, under the picture.
+- **Windows: recording into a folder with an accent in its name works.** A
+  recordings folder under a path like `C:\Users\Zoë` failed every take before
+  it started, and recovery could not open what was there.
 - **A stalled drive raises the alarm once, not twice a second.** When the
   take's files stopped growing, the stall verdict repeated on every tick:
   each one added another alert row and brought the card and the siren back
@@ -13,6 +34,13 @@
   recording.** A same-name group that only grew mid-take is still held out
   of the list, but its running recording is kept; nothing left. A group
   whose count drops is still treated as before.
+- **Pulling that second camera out again no longer stops the one
+  recording either.** The camera count going back down to where the take
+  began was read as the recording camera leaving, and its movie was closed.
+- **A stalled audio writer is caught while a camera is recording.** The
+  check that the take's files are growing counted the camera's movie too,
+  so a growing video hid audio that had stopped reaching the drive. Only the
+  audio files count now.
 - **Renaming a microphone during a take now shows on its strip at once.**
   The take's own files keep the name they started with, as before, but the
   strip kept the old name until the take ended. The UI walk renames a
