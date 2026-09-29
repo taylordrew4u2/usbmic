@@ -69,6 +69,12 @@ public:
     /// Null only on a build with no platform audio backend.
     MonitorBus* getMonitorBus();
 
+    /// Bumped each time the capture coordinator -- and with it the monitor bus
+    /// -- is built anew (§2.2 rate change, §5.4 buffer change). Lets the UI
+    /// walk see a rebuild happen without comparing pointers a new allocation
+    /// could reuse.
+    int getCaptureGeneration() const noexcept { return captureGeneration; }
+
     /// The sounds the app makes about itself: a chirp when a take starts and
     /// stops, a siren while something is wrong mid-take. They go through the
     /// headphone output when one is open, and through the computer's default
@@ -133,6 +139,13 @@ public:
     /// §5.1 master monitor volume, 0-100. Recorded files are unaffected.
     void setMasterVolume (double volume0to100);
     double getMasterVolume() const;
+
+    /// §5.1: the room's mute. Held here, like the volume, because §2.2 and
+    /// §5.4 rebuild the coordinator -- and the bus with it -- underneath the
+    /// user, and a fresh bus starts unmuted. Toggling also clears a §5 runaway
+    /// cut, which the mute button is the way out of.
+    void toggleMonitorMute();
+    bool isMonitorMuted() const noexcept { return monitorMuted; }
 
     int getIncludedMicCount() const;
 
@@ -861,6 +874,8 @@ private:
     // §5.1 listening level. Owned here, not on the bus, because the coordinator
     // that owns the bus is rebuilt on a rate or buffer change.
     double masterVolume = MonitorBus::kDefaultMonitorVolume;
+    int captureGeneration = 0;
+    bool monitorMuted = false;
 
     /// (Re)opens the streams for the current mic set and output device. §5.1
     /// makes monitoring live from launch, and a hot-plug changes the channel
