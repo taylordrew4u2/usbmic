@@ -113,8 +113,9 @@ audio faster than real time, and SobStage reports it.
   <img src="docs/images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help and Settings in the masthead" width="660">
 </p>
 
-One strip per microphone: a skull that fills with the level, the name, a
-peak-hold bar and the number. The summed **MIX** sits on the same row in its own
+One strip per microphone: a little crying face that fills with the level (it
+sheds a tear when you get loud, two when you clip), the name, a level track with
+a peak tick, and the number. The summed **MIX** sits on the same row in its own
 lighter cell, because §9.1 requires the bus to be distinguishable from a channel
 at a glance rather than by reading the label. Under them the take name and the
 one button worth pressing; everything else — how much room is left, where the
@@ -154,7 +155,7 @@ Close on the Settings drawer, and opens as a drawer the same way. It answers "wh
 order the causes actually turn up. First the checklist for a mixer or
 interface: the box ticked in Settings, microphone permission, the channel
 unmuted with its faders up, the USB send (LOOPBACK on a PUPGSIS T12S)
-switched on, the gain up, and then speak and watch the skull. Then whether the
+switched on, the gain up, and then speak and watch the meter. Then whether the
 microphone is dynamic or a condenser that needs 48 V the mixer may not have;
 what the amber line under the strips means and what to do about each cause it
 names; what to choose for sample rate, bit depth and buffer size and why; how
@@ -386,7 +387,7 @@ unsigned on Windows; the workflow signs and notarizes once the credentials in
 
 1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
    and an arrow pointing at your **Applications** folder.
-2. Drag the skull onto **Applications**. That is the install.
+2. Drag the crying face onto **Applications**. That is the install.
 3. Open **Terminal** and run this once before first launch:
 
    ```sh
@@ -477,8 +478,8 @@ staples the app and this step goes away.
   quits. On Windows this needs the §7 virtual-device driver — the Settings
   panel says so rather than pretending.
 
-- **Tell your mics apart** — tap (or speak into) a microphone and its skull
-  lights up. Click a skull to name that mic; the name sticks to the physical
+- **Tell your mics apart** — tap (or speak into) a microphone and its strip
+  lights up. Click a strip to name that mic; the name sticks to the physical
   port across replug and goes into that mic's recording filename.
 - **Name the take** — type into the *Session name* box before pressing record;
   the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
@@ -679,7 +680,7 @@ remove those too if you want nothing left.
 Source/Core/        platform-independent engine logic, no JUCE dependency
                     (including settings persistence and §6.6 crash recovery)
 Source/Platform/    shipping CoreAudio/WASAPI backends + isolated post-v1 stubs
-Source/UI/          JUCE components: skull meters, main screen, settings and
+Source/UI/          JUCE components: channel meters, main screen, settings and
                     camera panels, the save-location and saved-take cards
 Source/App/         composition root wiring devices + engine + monitor + UI
 Tests/              headless unit tests for Source/Core
@@ -960,7 +961,7 @@ platform](#what-to-expect-on-your-platform).
 The full application builds and links in CI on Linux, macOS and Windows, so
 `Source/UI` is not unverified code either:
 
-- `SkullMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
+- `ChannelMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
   `CameraPanel`, `ModalCard`, `SaveLocationPrompt`, `SavedTakePanel`,
   `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
 - `CameraController` compiles twice: once as it ships (camera path compiled out

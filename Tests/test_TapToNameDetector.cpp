@@ -41,7 +41,7 @@ TEST_CASE (TapToName_TwoLoudChannelsAreAmbiguous)
 {
     TapToNameDetector d (3);
 
-    // §14.6: guessing would name the wrong skull, so it must refuse.
+    // §14.6: guessing would name the wrong meter, so it must refuse.
     const auto r = d.processBlock ({ -10.0f, -12.0f, -80.0f }, kBlock);
 
     REQUIRE (r == TapResult::Ambiguous);

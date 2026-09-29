@@ -614,7 +614,7 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput, bool 
             d.name = (desc != nullptr) ? std::string (desc) : std::string (name);
 
             // The first line of DESC is the human name; the rest is detail that
-            // would make a skull label unreadable.
+            // would make a meter label unreadable.
             const auto newline = d.name.find ('\n');
             if (newline != std::string::npos)
                 d.name.erase (newline);

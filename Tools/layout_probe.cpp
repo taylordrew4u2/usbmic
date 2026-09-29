@@ -70,16 +70,16 @@ int main()
     failures += focusContainerIsCard ? 0 : 1;
     failures += traversalStaysOnCard ? 0 : 1;
 
-    std::printf ("-- skull-meter keyboard button semantics --\n");
+    std::printf ("-- channel-meter keyboard button semantics --\n");
 
-    mma::SkullMeterComponent skull;
+    mma::ChannelMeterComponent meter;
     int primaryActions = 0;
-    skull.onNameClicked = [&primaryActions] { ++primaryActions; };
-    const bool spaceConsumed = skull.keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
+    meter.onNameClicked = [&primaryActions] { ++primaryActions; };
+    const bool spaceConsumed = meter.keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
     const bool spaceActivated = spaceConsumed && primaryActions == 1;
-    const bool returnConsumed = skull.keyPressed (juce::KeyPress (juce::KeyPress::returnKey));
+    const bool returnConsumed = meter.keyPressed (juce::KeyPress (juce::KeyPress::returnKey));
     const bool returnActivated = returnConsumed && primaryActions == 2;
-    const bool hintNamesBothKeys = skull.getDescription().containsIgnoreCase ("Return or Space");
+    const bool hintNamesBothKeys = meter.getDescription().containsIgnoreCase ("Return or Space");
 
     std::printf ("Space activates focused meter: %s\n", spaceActivated ? "PASS" : "FAIL");
     std::printf ("Return still activates focused meter: %s\n", returnActivated ? "PASS" : "FAIL");

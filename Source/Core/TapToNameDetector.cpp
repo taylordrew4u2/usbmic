@@ -32,7 +32,7 @@ TapResult TapToNameDetector::processBlock (const std::vector<float>& peaksDb, do
     }
 
     // §14.6: two mics hearing the same tap cannot be told apart, and guessing
-    // would name the wrong skull. Say so and let them try again.
+    // would name the wrong meter. Say so and let them try again.
     if (loudCount > 1)
     {
         result = TapResult::Ambiguous;
