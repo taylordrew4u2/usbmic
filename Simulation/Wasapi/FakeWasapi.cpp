@@ -59,6 +59,7 @@ struct Endpoint
     bool pendingCaptureSilent = false;
     bool captureConsumed = false;
     bool invalidated = false;
+    std::atomic<bool> alignmentRejected { false };
 
     // Render: the worker fills this, then acknowledges.
     bool renderRequested = false;
@@ -421,6 +422,23 @@ struct FakeAudioClient : RefCounted<IAudioClient>
         return S_OK;
     }
 
+    HRESULT STDMETHODCALLTYPE GetDevicePeriod (REFERENCE_TIME* defaultPeriod,
+                                               REFERENCE_TIME* minimumPeriod) override
+    {
+        if (endpoint == nullptr)
+            return E_POINTER;
+
+        // In 100 ns units at the mix rate, as Windows reports it.
+        const double rate = endpoint->spec.mixFormat.sampleRate > 0 ? endpoint->spec.mixFormat.sampleRate : 48000.0;
+        const auto frames = [rate] (int f) { return static_cast<REFERENCE_TIME> (f * 10000000.0 / rate + 0.5); };
+
+        if (defaultPeriod != nullptr)
+            *defaultPeriod = frames (endpoint->spec.bufferFrames);
+        if (minimumPeriod != nullptr)
+            *minimumPeriod = frames (endpoint->spec.minimumPeriodFrames);
+        return S_OK;
+    }
+
     HRESULT STDMETHODCALLTYPE Initialize (AUDCLNT_SHAREMODE mode, DWORD flags,
                                           REFERENCE_TIME bufferDuration, REFERENCE_TIME,
                                           const WAVEFORMATEX* format, const GUID*) override
@@ -457,8 +475,18 @@ struct FakeAudioClient : RefCounted<IAudioClient>
             {
                 std::lock_guard<std::mutex> lock (endpoint->mutex);
                 endpoint->bufferFrames = endpoint->spec.alignedFrames;
+                endpoint->alignmentRejected = true;
                 return AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED;
             }
+        }
+
+        if (endpoint->spec.minimumPeriodFrames > 0)
+        {
+            const auto requestedFrames = static_cast<int> (
+                (static_cast<double> (bufferDuration) * format->nSamplesPerSec / 10000000.0) + 0.5);
+
+            if (requestedFrames < endpoint->spec.minimumPeriodFrames)
+                return AUDCLNT_E_INVALID_DEVICE_PERIOD;
         }
 
         const auto& extensible = *reinterpret_cast<const WAVEFORMATEXTENSIBLE*> (format);
@@ -622,7 +650,8 @@ struct FakeDevice : RefCounted<IMMDevice>
             return S_OK;
         }
 
-        if (! endpoint->spec.allowActivate || riid != __uuidof (IAudioClient))
+        if (! endpoint->spec.allowActivate || riid != __uuidof (IAudioClient)
+            || (endpoint->spec.failActivateAfterAlignment && endpoint->alignmentRejected.load()))
         {
             *out = nullptr;
             return E_FAIL;
@@ -863,13 +892,59 @@ constexpr auto kHandshakeTimeout = std::chrono::seconds (2);
 
 // --- Windows API surface ----------------------------------------------------
 
-HRESULT CoInitializeEx (void*, DWORD) { return S_OK; }
-void CoUninitialize() {}
+namespace {
+// 0: no apartment, 1: MTA, 2: STA. Per thread, as COM is.
+thread_local int comApartment = 0;
+thread_local int comInitCount = 0;
+std::atomic<int> threadsInMta { 0 };
+}
+
+HRESULT CoInitializeEx (void*, DWORD flags)
+{
+    const int wanted = flags == COINIT_APARTMENTTHREADED ? 2 : 1;
+
+    if (comApartment == 0)
+    {
+        comApartment = wanted;
+        comInitCount = 1;
+        if (wanted == 1)
+            ++threadsInMta;
+        return S_OK;
+    }
+
+    if (comApartment != wanted)
+        return RPC_E_CHANGED_MODE;
+
+    ++comInitCount;
+    return S_FALSE;
+}
+
+void CoUninitialize()
+{
+    if (comApartment == 0 || --comInitCount > 0)
+        return;
+
+    if (comApartment == 1)
+        --threadsInMta;
+    comApartment = 0;
+}
+
+namespace fakewasapi {
+void enterSingleThreadedApartment() { CoInitializeEx (nullptr, COINIT_APARTMENTTHREADED); }
+void leaveApartment() { CoUninitialize(); }
+}
 
 HRESULT CoCreateInstance (REFCLSID clsid, IUnknown*, DWORD, REFIID riid, void** out)
 {
     if (out == nullptr)
         return E_POINTER;
+
+    // A thread in no apartment borrows the MTA only if some thread keeps it.
+    if (comApartment == 0 && threadsInMta.load() == 0)
+    {
+        *out = nullptr;
+        return CO_E_NOTINITIALIZED;
+    }
 
     if (clsid == __uuidof (MMDeviceEnumerator) && riid == __uuidof (IMMDeviceEnumerator))
     {

@@ -22,6 +22,7 @@ constexpr HRESULT AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED = static_cast<HRESULT> (0
 constexpr HRESULT AUDCLNT_E_NOT_INITIALIZED         = static_cast<HRESULT> (0x88890001);
 constexpr HRESULT AUDCLNT_E_NOT_STOPPED             = static_cast<HRESULT> (0x88890005);
 constexpr HRESULT AUDCLNT_E_EVENTHANDLE_NOT_SET     = static_cast<HRESULT> (0x88890014);
+constexpr HRESULT AUDCLNT_E_INVALID_DEVICE_PERIOD   = static_cast<HRESULT> (0x88890020);
 
 struct IAudioRenderClient : IUnknown
 {
@@ -50,6 +51,8 @@ struct IAudioClient : IUnknown
                                                          const WAVEFORMATEX* format,
                                                          WAVEFORMATEX** closestMatch) = 0;
     virtual HRESULT STDMETHODCALLTYPE GetMixFormat (WAVEFORMATEX** format) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDevicePeriod (REFERENCE_TIME* defaultPeriod,
+                                                       REFERENCE_TIME* minimumPeriod) = 0;
     virtual HRESULT STDMETHODCALLTYPE SetEventHandle (HANDLE event) = 0;
     virtual HRESULT STDMETHODCALLTYPE GetService (REFIID riid, void** out) = 0;
     virtual HRESULT STDMETHODCALLTYPE Start() = 0;

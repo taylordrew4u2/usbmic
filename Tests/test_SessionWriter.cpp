@@ -312,3 +312,58 @@ TEST_CASE (SessionWriter_AHealthyWriteLeavesNoFullDriveClaim)
     REQUIRE (w.close());
     REQUIRE (w.getWriteProblem().empty());
 }
+
+// RIFF requires every chunk to occupy an even number of bytes: an odd data
+// chunk is followed by one pad byte that its size does not count. A mono
+// 24-bit stem with an odd frame count used to end on an odd byte, with the
+// RIFF size odd too -- strict readers reject that or read the next chunk from
+// the wrong offset.
+TEST_CASE (SessionWriter_AnOddDataChunkIsPaddedToAnEvenLength)
+{
+    std::string path = tempBasePath ("mma_test_pad");
+    SessionWriter writer;
+    writer.open (path, 48000.0, 1, 24, "2026-08-26T14:32:00Z");
+
+    std::vector<float> frames (3, 0.25f); // 3 frames x 3 bytes = 9, odd
+    writer.writeInterleaved (frames.data(), frames.size());
+    REQUIRE (writer.close());
+
+    std::ifstream f (writer.getCurrentFilePath(), std::ios::binary);
+    const std::streampos dataSizePos = 12 + (8 + 16) + (8 + 602) + 4;
+    const uint32_t dataSize = readU32LE (f, dataSizePos);
+    REQUIRE (dataSize == 9u); // the pad is not counted in the chunk's size
+
+    f.seekg (0, std::ios::end);
+    const auto fileSize = static_cast<uint64_t> (f.tellg());
+    REQUIRE (fileSize % 2 == 0);
+    REQUIRE (fileSize == static_cast<uint64_t> (dataSizePos) + 4 + 9 + 1);
+    REQUIRE (readU32LE (f, 4) == static_cast<uint32_t> (fileSize - 8));
+
+    f.seekg (static_cast<std::streamoff> (fileSize - 1));
+    char last = 1;
+    f.read (&last, 1);
+    REQUIRE (last == 0);
+
+    f.close();
+    std::remove (writer.getCurrentFilePath().c_str());
+}
+
+// And an even chunk gets no pad.
+TEST_CASE (SessionWriter_AnEvenDataChunkIsNotPadded)
+{
+    std::string path = tempBasePath ("mma_test_nopad");
+    SessionWriter writer;
+    writer.open (path, 48000.0, 1, 24, "2026-08-26T14:32:00Z");
+
+    std::vector<float> frames (4, 0.25f); // 12 bytes
+    writer.writeInterleaved (frames.data(), frames.size());
+    REQUIRE (writer.close());
+
+    std::ifstream f (writer.getCurrentFilePath(), std::ios::binary);
+    const std::streampos dataSizePos = 12 + (8 + 16) + (8 + 602) + 4;
+    f.seekg (0, std::ios::end);
+    REQUIRE (static_cast<uint64_t> (f.tellg()) == static_cast<uint64_t> (dataSizePos) + 4 + 12);
+
+    f.close();
+    std::remove (writer.getCurrentFilePath().c_str());
+}

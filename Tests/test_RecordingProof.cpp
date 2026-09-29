@@ -118,3 +118,28 @@ TEST_CASE (RecordingProof_EveryVerdictThatMattersHasWordsForTheUser)
     REQUIRE (RecordingProof::message (ProofVerdict::Healthy).empty());
     REQUIRE (RecordingProof::message (ProofVerdict::NothingWritten).find ("stopped") != std::string::npos);
 }
+
+// A stall is news once. The app acts on every Stalled verdict -- a new alert
+// row, the card brought back, the siren -- and the verdict used to repeat on
+// every half-second tick for as long as the drive stayed stuck, so pressing
+// Keep recording brought the card and the siren straight back.
+TEST_CASE (RecordingProof_AStallIsReportedOnceUntilTheFilesGrowAgain)
+{
+    RecordingProof p;
+    p.begin (at (0.0, 0, kHeaders));
+    const uint64_t perSecond = 7 * 48000 * 3;
+
+    for (int s = 1; s <= 10; ++s)
+        REQUIRE (p.observe (at (s, 48000ull * s, kHeaders + perSecond * s)) != ProofVerdict::Stalled);
+
+    const uint64_t frozen = kHeaders + perSecond * 10;
+    REQUIRE (p.observe (at (16.0, 48000ull * 16, frozen)) == ProofVerdict::Stalled);
+    REQUIRE (p.observe (at (16.5, 48000ull * 16, frozen)) != ProofVerdict::Stalled);
+    REQUIRE (p.observe (at (30.0, 48000ull * 30, frozen)) != ProofVerdict::Stalled);
+
+    // The drive recovers, then sticks again: that is a second stall, and it
+    // is reported.
+    REQUIRE (p.observe (at (31.0, 48000ull * 31, frozen + perSecond)) != ProofVerdict::Stalled);
+    REQUIRE (p.observe (at (37.0, 48000ull * 37, frozen + perSecond)) == ProofVerdict::Stalled);
+    REQUIRE (p.observe (at (37.5, 48000ull * 37, frozen + perSecond)) != ProofVerdict::Stalled);
+}

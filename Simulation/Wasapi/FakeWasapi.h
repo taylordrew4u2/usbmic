@@ -114,10 +114,27 @@ struct EndpointSpec
     /// and reports this size, which the backend must retry at.
     int alignedFrames = 0;
 
+    /// With alignedFrames: the re-Activate the backend must do before its
+    /// retry fails, as a device yanked mid-open would.
+    bool failActivateAfterAlignment = false;
+
+    /// The smallest period the device runs at, as GetDevicePeriod reports it.
+    /// Initialize rejects anything shorter with AUDCLNT_E_INVALID_DEVICE_PERIOD.
+    /// 0 reports no minimum.
+    int minimumPeriodFrames = 0;
+
     int bufferFrames = 256;
 };
 
 void reset();
+
+/// Puts the calling thread in a single-threaded apartment, which is what
+/// JUCE's OleInitialize does to the Windows message thread. COM is modelled
+/// per thread: CoInitializeEx(MULTITHREADED) on an STA thread returns
+/// RPC_E_CHANGED_MODE, and CoCreateInstance from a thread in no apartment
+/// fails with CO_E_NOTINITIALIZED unless some thread holds the MTA open.
+void enterSingleThreadedApartment();
+void leaveApartment();
 
 /// false makes RegisterEndpointNotificationCallback fail, which models a
 /// Windows session that will not tell the app about devices coming and going.

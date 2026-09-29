@@ -113,6 +113,12 @@ private:
 
     std::string makePathForSplit (int index) const;
     bool openNewFile (int index);
+
+    /// RIFF chunks occupy an even number of bytes: an odd data chunk is
+    /// followed by one pad byte its size does not count. Appended only when a
+    /// file is finished (close, or the rollover to the next split) -- never
+    /// mid-take, where the next frame would land after it.
+    bool appendPadByteIfOdd();
     void writeHeaderPlaceholder();
     /// False when the seek/write/flush behind the header patch failed.
     bool rewriteHeaderSizes();
