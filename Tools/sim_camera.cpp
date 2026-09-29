@@ -1075,6 +1075,53 @@ void aChangingSameNameGroupIsDeferredTogether()
     takeFolder.deleteRecursively();
 }
 
+/// A second camera of the same model plugged in mid-take. Nothing left: the
+/// camera that was recording is still there and still recording, and closing
+/// it loses the rest of a take that cannot be redone. The group may be held out
+/// of the list for identity's sake, but the running writer must not be cut.
+void aSameNameCameraArrivingMidTakeDoesNotStopTheOneRecording()
+{
+    std::printf ("\nA same-name camera plugged in while one is recording\n");
+
+    fakecamera::setDevices ({ "Twin Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+
+    const auto cameras = controller.getSelection().getAvailableCameras();
+    check (cameras.size() == 1, "the one camera is discovered");
+    if (cameras.size() != 1)
+        return;
+
+    controller.getSelection().setEnabled (cameras[0].id, true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-arrival", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "a temporary take folder is available");
+    check (controller.startRecording (takeFolder), "the camera starts recording");
+    check (fakecamera::getActiveRecordingCount() == 1, "its writer is active");
+
+    fakecamera::setDevices ({ "Twin Camera", "Twin Camera" });
+    refreshNow (controller);
+    controller.applyPendingCameraList();
+
+    check (fakecamera::getActiveRecordingCount() == 1 && fakecamera::getStopRecordingCallCount() == 0,
+           "the recording camera keeps recording when its twin arrives");
+    const auto states = controller.getTakeCameraStates();
+    check (states.size() == 1 && states[0].recording,
+           "and the watchdog still sees it recording");
+
+    controller.stopRecording();
+    controller.applyPendingCameraList();
+    check (fakecamera::getStopRecordingCallCount() == 1, "its movie is finalized once, at Stop");
+
+    takeFolder.deleteRecursively();
+}
+
 /// Submitting startRecordingToFile is not proof that AVFoundation accepted the
 /// movie. The UI stays STARTING until didStart, and the alignment offset is
 /// measured at that callback rather than at the request call.
@@ -1440,6 +1487,7 @@ int main()
     aRuntimeFailureRetriesAfterTheTakeEnds();
     aRecordedCameraThatReconnectsWaitsForTheNextTake();
     aChangingSameNameGroupIsDeferredTogether();
+    aSameNameCameraArrivingMidTakeDoesNotStopTheOneRecording();
     recordingTruthWaitsForTheStartCallback();
     delayedFinalizationBlocksClaimsAndTheNextTake();
     finishWithoutStartIsAStartFailure();
