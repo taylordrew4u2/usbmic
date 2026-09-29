@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **A stalled drive raises the alarm once, not twice a second.** When the
+  take's files stopped growing, the stall verdict repeated on every tick:
+  each one added another alert row and brought the card and the siren back
+  half a second after Keep recording. It is now reported once per stall,
+  and again only if the files grow and then stall a second time.
+- **Plugging in a second camera of the same model no longer stops the one
+  recording.** A same-name group that only grew mid-take is still held out
+  of the list, but its running recording is kept; nothing left. A group
+  whose count drops is still treated as before.
 - **Renaming a microphone during a take now shows on its strip at once.**
   The take's own files keep the name they started with, as before, but the
   strip kept the old name until the take ended. The UI walk renames a

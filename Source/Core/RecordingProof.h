@@ -61,6 +61,12 @@ private:
     double lastGrowthSeconds = 0.0;
     bool everGrew = false;
     bool silenceReported = false;
+
+    /// A stall is said once. The caller alarms on every Stalled verdict, and
+    /// repeating it each tick brought the card and the siren back half a
+    /// second after Keep recording. Cleared when the files grow again, so a
+    /// second stall later in the take is still reported.
+    bool stallReported = false;
 };
 
 } // namespace mma

@@ -10,6 +10,7 @@ void RecordingProof::begin (const ProofReading& atArm)
     lastGrowthSeconds = atArm.elapsedSeconds;
     everGrew = false;
     silenceReported = false;
+    stallReported = false;
 }
 
 ProofVerdict RecordingProof::observe (const ProofReading& now)
@@ -22,6 +23,7 @@ ProofVerdict RecordingProof::observe (const ProofReading& now)
         lastBytes = now.bytesOnDisk;
         lastGrowthSeconds = now.elapsedSeconds;
         everGrew = true;
+        stallReported = false;
     }
 
     // Grace period: files are created, headers are written, the first block
@@ -41,7 +43,13 @@ ProofVerdict RecordingProof::observe (const ProofReading& now)
 
     if (now.diskObservationAvailable
         && now.elapsedSeconds - lastGrowthSeconds >= kStallSeconds)
+    {
+        if (stallReported)
+            return ProofVerdict::Healthy;
+
+        stallReported = true;
         return ProofVerdict::Stalled;
+    }
 
     // Sound is a separate question from bytes: a take can write silence
     // perfectly. Said once, after enough time that a quiet start is not
