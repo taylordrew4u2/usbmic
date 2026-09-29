@@ -455,6 +455,11 @@ private:
                  [this] { return ! isUp<TakeAlertCard>() && recording(); });
             add ("and the siren stops", [this] { sirenSamplesAt = application.getAlarmSamplesRendered(); },
                  [this] { return ! application.isFaultAlarmOn(); });
+            check ("with the card gone, the dead microphone is still asleep and the live one still cries",
+                   [this] { return stripsNamed ("mma_mic", ChannelMeterComponent::Face::Asleep) == 1
+                                && stripsNamed ("mma_mic", ChannelMeterComponent::Face::OneTear) == 1
+                                && facesMatchPixels(); }, 5000);
+            add ({}, [this] { line (describeStrips()); snapshot ("meters-mic-dead"); }, [] { return true; });
             settle (500);
             add ("with nothing more rendered after", [] {},
                  [this] { return ! application.isFaultAlarmOn() && application.getAlarmSamplesRendered() <= sirenSamplesAt + 2400; });
