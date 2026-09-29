@@ -37,6 +37,25 @@ public:
     /// affordance. Clearing a clip stays the first click's job (§9.1).
     std::function<void()> onNameClicked;
 
+    /// What the badge's face is showing. Public so the simulators can check
+    /// the face against the level that produced it, and then find the badge's
+    /// pixels to prove it was drawn that way.
+    enum class Face
+    {
+        Asleep,   ///< no signal: eyes closed, flat mouth
+        Frown,    ///< live and below -18 dBFS
+        OneTear,  ///< -18 dBFS and up
+        Sob       ///< clip latched: two tears
+    };
+
+    Face getFace() const noexcept;
+
+    /// Where the badge is drawn, in this component's coordinates.
+    juce::Rectangle<float> getBadgeBounds() const;
+
+    /// The tear threshold, shared by the painter and the simulators.
+    static constexpr float kTearThresholdDb = -18.0f;
+
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseUp (const juce::MouseEvent& event) override;
@@ -76,6 +95,7 @@ private:
     /// level is loud, two on a clip, closed eyes with no signal.
     void paintFace (juce::Graphics& g, juce::Rectangle<float> badge, float norm);
     static juce::Path teardrop (juce::Point<float> tip, float height);
+    static juce::Rectangle<float> badgeFor (juce::Rectangle<float> bounds);
     juce::Colour fillColourForLevel (float levelDb) const;
     void performPrimaryAction();
     void updateAccessibilityText();

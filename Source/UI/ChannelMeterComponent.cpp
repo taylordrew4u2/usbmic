@@ -222,15 +222,35 @@ void ChannelMeterComponent::paintFace (juce::Graphics& g, juce::Rectangle<float>
 
     // Tears: one once somebody is really going for it, both on a clip -- a
     // full sob. Cyan, like the one tear on the icon.
-    const bool oneTear = currentLevelDb >= -18.0f || currentClip;
-    if (! oneTear)
+    const auto face = getFace();
+    if (face != Face::OneTear && face != Face::Sob)
         return;
 
     const float tearH = w * 0.26f;
     g.setColour (juce::Colour (palette::accent));
     g.fillPath (teardrop ({ cx - eyeDx, eyeY + eyeR + 0.5f }, tearH));
-    if (currentClip)
+    if (face == Face::Sob)
         g.fillPath (teardrop ({ cx + eyeDx, eyeY + eyeR + 0.5f }, tearH));
+}
+
+juce::Rectangle<float> ChannelMeterComponent::badgeFor (juce::Rectangle<float> bounds)
+{
+    auto inner = bounds.reduced (1.0f).reduced (10.0f, 6.0f);
+    const float badgeSize = juce::jmin (inner.getHeight(), 26.0f);
+    return inner.removeFromLeft (badgeSize).withSizeKeepingCentre (badgeSize, badgeSize);
+}
+
+juce::Rectangle<float> ChannelMeterComponent::getBadgeBounds() const
+{
+    return badgeFor (getLocalBounds().toFloat());
+}
+
+ChannelMeterComponent::Face ChannelMeterComponent::getFace() const noexcept
+{
+    if (noSignal)                           return Face::Asleep;
+    if (currentClip)                        return Face::Sob;
+    if (currentLevelDb >= kTearThresholdDb) return Face::OneTear;
+    return Face::Frown;
 }
 
 void ChannelMeterComponent::paintStrip (juce::Graphics& g, juce::Rectangle<float> bounds)
@@ -251,7 +271,8 @@ void ChannelMeterComponent::paintStrip (juce::Graphics& g, juce::Rectangle<float
     // The badge: a ring that fills from the bottom with the level, with the
     // app icon's crying face drawn inside it.
     const float badgeSize = juce::jmin (inner.getHeight(), 26.0f);
-    auto badge = inner.removeFromLeft (badgeSize).withSizeKeepingCentre (badgeSize, badgeSize);
+    inner.removeFromLeft (badgeSize);
+    const auto badge = badgeFor (bounds);
 
     if (noSignal)
     {

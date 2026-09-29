@@ -11,6 +11,7 @@
 #include "TakeAlertCard.h"
 #include "TakeBanner.h"
 #include "ChannelMeterComponent.h"
+#include "MeterFaceProbe.h"
 #include "../App/Application.h"
 #include <algorithm>
 #include <cmath>
@@ -398,6 +399,26 @@ private:
             return ms != nullptr && ms->getMicCount() > 0;
         }, 30000);
 
+        // The crying face, on the real screen with real audio behind it. The
+        // virtual microphones play their tones at 0.4 of full scale (-8 dBFS),
+        // over the -18 dBFS line, and nothing clips them: every strip must
+        // show one tear, and the tears on screen must be the ones its face
+        // says it is showing (Tools/sim_channel_meter.cpp covers every other
+        // state).
+        check ("the two tone microphones each cry one tear at -8 dBFS",
+               [this] { return stripsNamed ("mma_mic", ChannelMeterComponent::Face::OneTear) == 2; }, 10000);
+        check ("a silent input frowns, with no tear", [this]
+        {
+            // The fixture's output device also enumerates as an input, and
+            // carries nothing: -60 dBFS, a frown. Only checked when present.
+            const auto all = strips();
+            const int others = (int) all.size() - stripsNamed ("mma_mic");
+            return others == 0 || stripsNamed ("mma_out", ChannelMeterComponent::Face::Frown) == others;
+        }, 10000);
+        add ({}, [this] { line (describeStrips()); }, [] { return true; });
+        check ("and the tears on screen match every strip's face", [this] { return facesMatchPixels(); });
+        add ({}, [this] { snapshot ("meters-live"); }, [] { return true; });
+
         // A leftover card from an earlier run must not swallow every click.
         add ("nothing is covering the main screen", [this] { backToMain(); },
              [this] { return ! isUp<RecoveredTakesPanel>() && ! isUp<SavedTakePanel>(); }, 5000, false);
@@ -412,6 +433,10 @@ private:
                 juce::File (faultFile).replaceWithText ("dead");
             }, [this] { return juce::File (faultFile).existsAsFile(); });
             check ("the mid-take alert card says so", [this] { return isUp<TakeAlertCard>(); }, 30000);
+            check ("the dead microphone's face closes its eyes, and its tear stops",
+                   [this] { return countStrips (ChannelMeterComponent::Face::Asleep) >= 1
+                                && countStrips (ChannelMeterComponent::Face::OneTear) >= 1
+                                && facesMatchPixels(); }, 15000);
             check ("the card is flashing its alarm", [this]
             {
                 auto* card = find<TakeAlertCard>();
@@ -656,6 +681,75 @@ private:
         }
     }
     uint64_t sirenSamplesAt = 0;
+
+    /// Every channel strip on the main screen.
+    std::vector<ChannelMeterComponent*> strips() const
+    {
+        std::vector<ChannelMeterComponent*> all;
+        if (auto* ms = find<MainScreen>())
+            for (int i = 0; i < ms->getMicCount(); ++i)
+                if (auto* m = ms->getChannelMeter (i); m != nullptr && m->isShowing())
+                    all.push_back (m);
+        return all;
+    }
+
+    /// One line per strip -- name, face, what a screen reader hears, tear
+    /// pixels -- so a failed face check says what the screen showed.
+    juce::String describeStrips() const
+    {
+        static const char* names[] = { "asleep", "frown", "one tear", "sob" };
+        juce::String out;
+        for (auto* m : strips())
+        {
+            const auto p = MeterFaceProbe::of (*m);
+            out << "  strip \"" << m->getTitle() << "\": " << names[(int) m->getFace()]
+                << ", tears " << p.tearLeft << "/" << p.tearRight << ", \"" << m->getDescription() << "\"\n";
+        }
+        return out.trimEnd();
+    }
+
+    int countStrips (ChannelMeterComponent::Face face) const
+    {
+        int n = 0;
+        for (auto* m : strips())
+            n += m->getFace() == face ? 1 : 0;
+        return n;
+    }
+
+    /// Strips whose microphone name starts with prefix -- showing face, when
+    /// one is given.
+    int stripsNamed (const juce::String& prefix,
+                     std::optional<ChannelMeterComponent::Face> face = std::nullopt) const
+    {
+        int n = 0;
+        for (auto* m : strips())
+            if (m->getTitle().startsWith (prefix) && (! face || m->getFace() == *face))
+                ++n;
+        return n;
+    }
+
+    /// Reads each strip's badge back from its own pixels: no tear for asleep
+    /// and frown, the left one for one tear, both for a sob.
+    bool facesMatchPixels() const
+    {
+        using Face = ChannelMeterComponent::Face;
+        const auto all = strips();
+        if (all.empty())
+            return false;
+
+        for (auto* m : all)
+        {
+            const auto p = MeterFaceProbe::of (*m);
+            const auto face = m->getFace();
+            const bool ok = (face == Face::Asleep || face == Face::Frown)
+                                ? p.tears() < MeterFaceProbe::kTearMinPixels
+                          : face == Face::OneTear ? (p.tearOnLeft() && ! p.tearOnRight())
+                                                  : (p.tearOnLeft() && p.tearOnRight());
+            if (! ok)
+                return false;
+        }
+        return true;
+    }
 
     /// The take banner, if it is up right now.
     TakeBanner* banner() const { return find<TakeBanner>(); }
