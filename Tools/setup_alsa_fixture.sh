@@ -46,6 +46,12 @@ pcm.mma_mic2 { type file; slave.pcm "null"; file "/dev/null"; infile "$FIXTURE_D
 # screenshotting and filled the disk, which presents as "Room for 2m 04s of
 # feelings" on the main screen rather than as a full disk.
 pcm.mma_out  { type file; slave.pcm "null"; file "/dev/null"; format "raw" }
+# The system's default output: where the app's alarm sounds go when no monitor
+# output is open (Source/App/AlarmSpeaker.h), and where the tests prove they
+# went. The app's microphone list skips it by name (AlsaInputPolicy), and its
+# output picker never offers it as a monitor.
+pcm.!default { type file; slave.pcm "null"; file "/dev/null"; format "raw" }
+ctl.!default { type hw; card 0 }
 CONF
 
 echo "ALSA fixture ready in $FIXTURE_DIR (mma_mic1 = 440 Hz, mma_mic2 = 1000 Hz)"
