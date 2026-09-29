@@ -311,6 +311,23 @@ if (MMA_BUILD_APP)
         add_test (NAME layout_probe COMMAND layout_probe)
     endif()
 
+    # The channel strip's crying face, driven by a real Metering through the
+    # strip's own 60 Hz timer and checked from its pixels in every state:
+    # asleep, frown, the -18 dBFS tear line, a sob on clip, the clip clearing,
+    # and every strip size. Headless, like layout_probe. Modal loops are on
+    # for this one target only, so the simulation can pump the message loop
+    # for a set time between states.
+    add_executable(sim_channel_meter Tools/sim_channel_meter.cpp
+        Source/UI/ChannelMeterComponent.cpp
+        Source/UI/AppLookAndFeel.cpp)
+    target_compile_definitions(sim_channel_meter PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_include_directories(sim_channel_meter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_channel_meter PRIVATE mma_core juce::juce_gui_basics)
+    if (MMA_BUILD_TESTS)
+        add_test (NAME sim_channel_meter COMMAND sim_channel_meter)
+    endif()
+
     if (NOT WIN32)
         # Runnable, not merely compiled. The stand-in camera layer takes a
         # settable device list, so arrival, removal, duplicate names and a list
