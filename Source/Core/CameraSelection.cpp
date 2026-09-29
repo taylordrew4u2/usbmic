@@ -13,14 +13,19 @@ void CameraSelection::setAvailableCameras (std::vector<CameraDeviceInfo> cameras
     // and unplugging it does not turn it back on when it returns.
     for (const auto& camera : available)
     {
+        const bool newlySeen = choices.count (camera.id) == 0;
         auto& choice = choices[camera.id];
         choice.lastDisplayName = camera.displayName;
-    }
 
-    // Discovery is not consent. A newly seen camera stays off until the user
-    // deliberately enables it in the camera panel; otherwise a fresh launch
-    // can light the built-in camera and raise a privacy prompt before the user
-    // has asked SobStage to use video at all.
+        // A camera seen for the first time records. Every camera plugged in
+        // is meant to be in the take, each in its own file, without a trip to
+        // the Cameras panel first; that panel is where one is switched OFF,
+        // and that choice is kept across an unplug and a relaunch. The cost is
+        // that a first launch may raise the OS camera prompt before anyone
+        // has pressed record, which the panel's own wording explains.
+        if (newlySeen)
+            choice.enabled = true;
+    }
 }
 
 std::vector<CameraDeviceInfo> CameraSelection::getUnavailableEnabledCameras() const
