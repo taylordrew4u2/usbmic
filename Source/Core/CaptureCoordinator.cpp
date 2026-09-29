@@ -386,6 +386,11 @@ void CaptureCoordinator::runSoftwareClock()
     // scheduler jitter, well inside the rings' capacity.
     constexpr auto kMaxCatchUp = std::chrono::milliseconds (100);
 
+    // The one catch-up that is allowed to be longer: a takeover's, which
+    // starts from the dead output's last callback and so is always at least
+    // lostAfter behind -- plus the standby loop's quarter window, plus slack.
+    const auto takeoverCatchUp = lostAfter + lostAfter / 4 + kMaxCatchUp;
+
     // A wake this late is a stall the whole process shared, not this thread's
     // alone. The device threads woke from it at the same instant, each with a
     // driver ring full of audio to hand over; pulled first, the catch-up ticks
@@ -399,6 +404,7 @@ void CaptureCoordinator::runSoftwareClock()
     auto next = clock::now() + period;
     bool wasTakingOver = ! outputStreamOpen;
     bool catchingUp = false;
+    bool handingOver = false; // pulling back a takeover's owed ticks
 
     while (clockRunning.load (std::memory_order_acquire))
     {
@@ -414,12 +420,36 @@ void CaptureCoordinator::runSoftwareClock()
 
         outputClockLost.store (outputStreamOpen && takeOver, std::memory_order_relaxed);
 
-        // A takeover begins on a fresh deadline. The standby loop below leaves
-        // `next` up to a quarter of the loss window stale, and catching that
-        // up would open the takeover with a burst of pulls into rings the
-        // dead output had already stopped draining.
+        // A takeover picks up where the dead output left off: the first tick
+        // it owes is one period after that output's last callback, not one
+        // after the loss was noticed. Starting from `now` threw away the
+        // lostAfter-plus that it took to notice -- never pulled, so every
+        // stem and the mix came out a tenth of a second shorter than the wall
+        // clock, and the camera. Those ticks are pulled back to back below.
+        //
+        // The rings hold only a fraction of that gap, so most of it is gone
+        // before the takeover starts: the ring kept the oldest of it and the
+        // rest overflowed, counted. The catch-up plays what the ring kept in
+        // its place and writes the overflowed span as counted silence, so the
+        // take stays wall-clock length and the audio after the gap lands where
+        // it happened. Nothing that was lost is made to look recorded.
         if (takeOver && ! wasTakingOver)
+        {
             next = now + period;
+            handingOver = false; // not one left over from an earlier takeover
+
+            if (outputStreamOpen)
+            {
+                const auto last = clock::time_point (std::chrono::duration_cast<clock::duration> (
+                    std::chrono::nanoseconds (lastOutputCallbackNs.load (std::memory_order_relaxed))));
+
+                if (last + period < next && now - last < takeoverCatchUp)
+                {
+                    next = last + period;
+                    handingOver = true;
+                }
+            }
+        }
 
         wasTakingOver = takeOver;
 
@@ -455,7 +485,8 @@ void CaptureCoordinator::runSoftwareClock()
             const auto woke = clock::now();
             const bool late = woke > next && woke - next >= period;
 
-            if (woke > next)
+            // A takeover's owed ticks are late by design, not by scheduling.
+            if (woke > next && ! handingOver)
             {
                 const auto lateUs = static_cast<uint64_t> (
                     std::chrono::duration_cast<std::chrono::microseconds> (woke - next).count());
@@ -473,8 +504,10 @@ void CaptureCoordinator::runSoftwareClock()
         }
 
         next += period;
-        if (clock::now() - next > kMaxCatchUp)
+        if (clock::now() - next > (handingOver ? takeoverCatchUp : kMaxCatchUp))
             next = clock::now() + period;
+        if (next > clock::now())
+            handingOver = false;
 
         if (pulling.exchange (true, std::memory_order_acq_rel))
             continue;

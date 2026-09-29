@@ -507,14 +507,7 @@ void MainComponent::showRecoveredTakes()
     std::vector<RecoveredTakesPanel::TakeRow> rows;
 
     for (const auto& session : sessions)
-    {
-        const juce::File folder { juce::String (session.folder) };
-        rows.push_back ({ folder.getFileName(),
-                          folder.getFullPathName(),
-                          session.keptFileCount(),
-                          session.emptyFileCount(),
-                          session.longestSeconds() });
-    }
+        rows.push_back (recoveredTakeRow (session));
 
     recoveredTakesPanel.setTakes (rows);
     growWindowToFit (recoveredTakesPanel.getRequiredHeight() + 32);

@@ -176,6 +176,14 @@ bool openedExclusive (const std::string& id);
 /// worker thread has consumed it. Returns false on timeout.
 bool pushCapture (const std::string& id, const std::vector<std::vector<float>>& channels);
 
+/// Delivers a packet the way Windows does after the driver's ring overran:
+/// the device position jumps `lostFrames` past the previous packet's end and
+/// AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY is set. The lost frames never reach
+/// the backend; noticing them is its job. `lostFrames` of 0 is the flag alone,
+/// which is what the first packet after Start often carries.
+bool pushCaptureAfterOverrun (const std::string& id, int lostFrames,
+                              const std::vector<std::vector<float>>& channels);
+
 /// Delivers a packet the device marks AUDCLNT_BUFFERFLAGS_SILENT, whose
 /// contents are undefined and must be treated as silence rather than read.
 bool pushSilentCapture (const std::string& id, int frames);

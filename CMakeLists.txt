@@ -66,6 +66,7 @@ add_library(mma_core STATIC
     Source/Core/SessionRecovery.cpp
     Source/Core/ActivityJournal.cpp
     Source/Core/CardRemovalNotice.cpp
+    Source/Core/QuitGate.cpp
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp

@@ -368,6 +368,45 @@ bool findExclusiveFormat (IAudioClient* client, double rate, int channels,
     return false;
 }
 
+/// The channel counts an exclusive open tries, in order, and the one layout
+/// search both the open and the capability probe run over them.
+///
+/// Outputs try stereo, then mono, then the device's own mix width. Inputs must
+/// open every advertised socket, even when the driver also accepts mono -- a
+/// mono fallback would silently omit the other tracks -- so an input with a
+/// readable mix format tries that width alone.
+///
+/// Shared because the probe once asked about stereo alone while the open went
+/// on to try the rest: mono-only and four-channel outputs were declared
+/// incapable, and the user blamed a Windows setting, for hardware the open
+/// would have taken on its next candidate.
+bool findExclusiveFormatForAnyChannelCount (IAudioClient* client, double rate, bool isInput,
+                                            WAVEFORMATEXTENSIBLE& format)
+{
+    int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
+    int numChannelCandidates = 2;
+
+    WAVEFORMATEX* mixFormat = nullptr;
+    if (SUCCEEDED (client->GetMixFormat (&mixFormat)) && mixFormat != nullptr)
+    {
+        const int mixChannels = mixFormat->nChannels;
+        if (mixChannels > 0 && isInput)
+        {
+            channelCandidates[0] = mixChannels;
+            numChannelCandidates = 1;
+        }
+        else if (mixChannels > 0 && mixChannels != channelCandidates[0] && mixChannels != channelCandidates[1])
+            channelCandidates[numChannelCandidates++] = mixChannels;
+        CoTaskMemFree (mixFormat);
+    }
+
+    for (int c = 0; c < numChannelCandidates; ++c)
+        if (findExclusiveFormat (client, rate, channelCandidates[c], format))
+            return true;
+
+    return false;
+}
+
 /// §2.3: the depths this endpoint will actually accept exclusively.
 ///
 /// The same IsFormatSupported question findExclusiveFormat above already asks,
@@ -475,6 +514,16 @@ void runStreamThread (WasapiStream* stream)
     /// A run this long means the device is refusing everything, not glitching.
     constexpr int kCaptureFailuresBeforeGivingUp = 200;
 
+    // Where the device's clock says the next capture packet should start.
+    // Unknown until the first packet after Start, whose DISCONTINUITY flag is
+    // routine (there is nothing before it) and so is not read as loss.
+    bool haveCapturePosition = false;
+    UINT64 expectedCapturePosition = 0;
+
+    // Loss already counted by a failure run and not yet matched against the
+    // position jump that follows it, so the same gap is not counted twice.
+    uint64_t lossChargedAhead = 0;
+
     while (stream->running.load (std::memory_order_acquire))
     {
         if (WaitForSingleObject (stream->readyEvent, 2000) != WAIT_OBJECT_0)
@@ -530,8 +579,11 @@ void runStreamThread (WasapiStream* stream)
                 if (FAILED (stream->capture->GetNextPacketSize (&packetFrames)))
                 {
                     if (consecutiveCaptureFailures == 0)
+                    {
                         stream->framesDropped.fetch_add (stream->bufferFrames,
                                                          std::memory_order_relaxed);
+                        lossChargedAhead += stream->bufferFrames;
+                    }
 
                     if (++consecutiveCaptureFailures >= kCaptureFailuresBeforeGivingUp)
                     {
@@ -548,8 +600,9 @@ void runStreamThread (WasapiStream* stream)
                 BYTE* data = nullptr;
                 UINT32 frames = 0;
                 DWORD flags = 0;
+                UINT64 devicePosition = 0;
 
-                if (FAILED (stream->capture->GetBuffer (&data, &frames, &flags, nullptr, nullptr)))
+                if (FAILED (stream->capture->GetBuffer (&data, &frames, &flags, &devicePosition, nullptr)))
                 {
                     // Counted once per run of failures, not once per attempt.
                     // GetNextPacketSize keeps reporting the same undelivered
@@ -557,8 +610,11 @@ void runStreamThread (WasapiStream* stream)
                     // the reported loss 200x the real one -- and an inflated
                     // number is its own kind of wrong answer.
                     if (consecutiveCaptureFailures == 0)
+                    {
                         stream->framesDropped.fetch_add (stream->bufferFrames,
                                                          std::memory_order_relaxed);
+                        lossChargedAhead += stream->bufferFrames;
+                    }
 
                     // A device that refuses every packet is not dropping audio,
                     // it is gone. Counting alone reported that as drift and
@@ -574,6 +630,40 @@ void runStreamThread (WasapiStream* stream)
                 }
 
                 consecutiveCaptureFailures = 0;
+
+                // A driver overrun is not an error return. The packet after it
+                // simply starts further along the device's clock, flagged
+                // DATA_DISCONTINUITY. Reading neither, the loss went unreported
+                // and skewed drift. The position says how much went; the flag
+                // alone, from a driver whose position does not move, is
+                // charged a buffer's worth. Only a flagged packet is read at
+                // all: a driver whose positions drift from its frame counts
+                // must not report loss on every packet.
+                //
+                // Told to the stream as well as counted: no inputs, that many
+                // frames -- the produced-and-lost signal AlsaBackend sends
+                // after an xrun and CaptureCoordinator forwards, so drift
+                // counts the device's clock rather than reading a gap as the
+                // clock running slow. A failure run above only counted.
+                {
+                    uint64_t lost = 0;
+
+                    if (haveCapturePosition && (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0)
+                        lost = devicePosition > expectedCapturePosition
+                                 ? devicePosition - expectedCapturePosition
+                                 : static_cast<uint64_t> (stream->bufferFrames);
+
+                    if (lost > lossChargedAhead)
+                        stream->framesDropped.fetch_add (lost - lossChargedAhead, std::memory_order_relaxed);
+
+                    if (lost > 0)
+                        stream->callback (nullptr, 0, nullptr, 0,
+                                          static_cast<int> (std::min<uint64_t> (lost, uint64_t { 1 } << 30)));
+
+                    lossChargedAhead = 0;
+                    haveCapturePosition = true;
+                    expectedCapturePosition = devicePosition + frames;
+                }
 
                 if (frames > stream->bufferFrames)
                 {
@@ -887,9 +977,11 @@ ExclusiveModeCapability WasapiAsioBackend::checkExclusiveModeCapability (const s
     // settings -- advice about a setting that was already correct, for hardware
     // the app could have opened on the very next layout it never asked about.
     // Monitoring simply went off, blamed on Windows.
+    // And every channel count it would try, for the same reason: the
+    // probe asked about stereo alone.
     WAVEFORMATEXTENSIBLE format {};
 
-    if (! findExclusiveFormat (client.Get(), sampleRate, 2, format))
+    if (! findExclusiveFormatForAnyChannelCount (client.Get(), sampleRate, false, format))
     {
         // §5.4: shared mode is never the fallback. Name the cause instead.
         cap.unavailableReason = "Your headphones won't accept direct low-latency audio. In Windows sound settings, "
@@ -977,29 +1069,8 @@ std::unique_ptr<WasapiStream> WasapiAsioBackend::buildExclusiveStream (const std
     // Try the engine's own format first, then descend through the fixed-point
     // layouts, and try the device's native channel count before giving up.
     WAVEFORMATEXTENSIBLE format {};
-    bool formatFound = false;
-
-    int channelCandidates[3] = { isInput ? 1 : 2, isInput ? 2 : 1, 0 };
-    int numChannelCandidates = 2;
-
-    // Input streams must open every advertised socket, even when the driver
-    // also accepts mono. A mono fallback would silently omit the other tracks.
-    WAVEFORMATEX* mixFormat = nullptr;
-    if (SUCCEEDED (stream->client->GetMixFormat (&mixFormat)) && mixFormat != nullptr)
-    {
-        const int mixChannels = mixFormat->nChannels;
-        if (mixChannels > 0 && isInput)
-        {
-            channelCandidates[0] = mixChannels;
-            numChannelCandidates = 1;
-        }
-        else if (mixChannels > 0 && mixChannels != channelCandidates[0] && mixChannels != channelCandidates[1])
-            channelCandidates[numChannelCandidates++] = mixChannels;
-        CoTaskMemFree (mixFormat);
-    }
-
-    for (int c = 0; c < numChannelCandidates && ! formatFound; ++c)
-        formatFound = findExclusiveFormat (stream->client.Get(), sampleRate, channelCandidates[c], format);
+    const bool formatFound =
+        findExclusiveFormatForAnyChannelCount (stream->client.Get(), sampleRate, isInput, format);
 
     if (! formatFound)
     {

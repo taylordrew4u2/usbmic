@@ -264,6 +264,12 @@ private:
         return dynamic_cast<MainComponent*> (&root) != nullptr ? &root : nullptr;
     }
 
+    /// The app's one window, found from the root even while it is hidden.
+    juce::ResizableWindow* mainWindow() const
+    {
+        return dynamic_cast<juce::ResizableWindow*> (root.getTopLevelComponent());
+    }
+
     bool pressKey (int keyCode)
     {
         if (auto* mc = mainComponent())
@@ -765,6 +771,34 @@ private:
                 if (auto* b = muteButton())
                     b->triggerClick();
         }, [] { return true; });
+
+        // Launching SobStage again while it is minimised must bring the one
+        // window back: only one instance is allowed, so the second launch is
+        // handed to this one, and doing nothing with it looked like the app
+        // had failed to start. Xvfb has no window manager, so a minimise is
+        // never observable there (JUCE reads it back from _NET_WM_STATE); the
+        // window is also hidden outright, which is, and asserted on.
+        add ("a second launch brings a minimised window back", [this]
+        {
+            if (auto* window = mainWindow())
+            {
+                window->setMinimised (true);
+                line ("      (minimise observable here: " + juce::String (window->isMinimised() ? "yes" : "no") + ")");
+                window->setVisible (false);
+            }
+
+            if (auto* app = juce::JUCEApplication::getInstance())
+                app->anotherInstanceStarted ({});
+        }, [this]
+        {
+            auto* window = mainWindow();
+            return window != nullptr && window->isVisible() && window->isShowing() && ! window->isMinimised();
+        });
+        add ("  (window put back)", [this]
+        {
+            if (auto* window = mainWindow())
+                window->setVisible (true);
+        }, [this] { auto* window = mainWindow(); return window != nullptr && window->isShowing(); }, 3000, false);
 
         // Settings drawer.
         add ("Settings opens", [this] { click<MainScreen> ("Settings"); }, [this] { return isUp<AdvancedPanel>(); });
