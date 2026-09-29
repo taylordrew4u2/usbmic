@@ -62,7 +62,7 @@ std::string RecordingProof::message (ProofVerdict verdict)
     {
         case ProofVerdict::NothingWritten:
             return "Nothing was recorded. The take was stopped after three seconds because "
-                   "the files on the drive were not growing. Check the microphones' skulls "
+                   "the files on the drive were not growing. Check the microphones' meters "
                    "move when you speak, then try again -- and if they do not, open Help.";
         case ProofVerdict::Stalled:
             return "The files have stopped growing. The drive may have been removed or filled, "

@@ -10,7 +10,7 @@
 #include "RecoveredTakesPanel.h"
 #include "TakeAlertCard.h"
 #include "TakeBanner.h"
-#include "SkullMeterComponent.h"
+#include "ChannelMeterComponent.h"
 #include "../App/Application.h"
 #include <algorithm>
 #include <cmath>
@@ -488,8 +488,8 @@ private:
         add ("clicking a microphone's name asks for a new one", [this]
         {
             if (auto* ms = find<MainScreen>())
-                if (auto* skull = ms->getSkullMeter (0); skull != nullptr && skull->onNameClicked)
-                    skull->onNameClicked();
+                if (auto* meter = ms->getChannelMeter (0); meter != nullptr && meter->onNameClicked)
+                    meter->onNameClicked();
         }, [this] { return find<juce::AlertWindow>() != nullptr; });
         add ("typing a name and pressing Save renames it", [this]
         {

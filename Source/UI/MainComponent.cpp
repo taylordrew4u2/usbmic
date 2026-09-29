@@ -73,8 +73,8 @@ MainComponent::MainComponent (Application& app)
     // §5.1: spacebar is the instant mute, so the window has to take keys.
     setWantsKeyboardFocus (true);
 
-    // A capture rebuild destroys the Metering objects the skull meters point
-    // at, and each skull's own timer dereferences its pointer on the next
+    // A capture rebuild destroys the Metering objects the channel meters point
+    // at, and each meter's own timer dereferences its pointer on the next
     // tick. Rebinding inside the rebuild's call stack closes that window.
     application.onCaptureRebuilt = [this] { rebindMeters(); };
 
@@ -785,14 +785,14 @@ void MainComponent::chooseDestinationFolder (std::function<void()> onChosen)
 
 void MainComponent::promptRenameMic (int index)
 {
-    // §14.6: click the skull that lit up when you tapped the mic, type who it
+    // §14.6: click the meter that lit up when you tapped the mic, type who it
     // is. The name follows the physical port across replug (§2.4).
     const auto target = application.getMicRenameTarget (index);
     if (! target.isValid())
         return;
 
     auto* window = new juce::AlertWindow ("Name this microphone",
-                                          "The name goes on its skull and into its recording's filename.",
+                                          "The name goes on its strip and into its recording's filename.",
                                           juce::MessageBoxIconType::QuestionIcon, this);
     window->addTextEditor ("name", application.getMicDisplayName (index));
     window->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
@@ -836,11 +836,11 @@ void MainComponent::refreshStatus()
     // This is cheap state, unlike names/product strings: those require a
     // channel-plan rebuild and are bound only when capture itself changes.
     for (int i = 0; i < micCount; ++i)
-        if (auto* skull = mainScreen.getSkullMeter (i))
-            skull->setNoSignal (application.getChannelMetering (i) == nullptr
+        if (auto* meter = mainScreen.getChannelMeter (i))
+            meter->setNoSignal (application.getChannelMetering (i) == nullptr
                                 || ! application.isMicLive (i));
 
-    // §14.6: light the skull of whoever was just heard alone.
+    // §14.6: light the meter of whoever was just heard alone.
     mainScreen.setHighlightedMic (application.getTappedChannel());
 
     // The mute button reflects the bus, including a §5 runaway cut it must
@@ -989,14 +989,14 @@ void MainComponent::rebindMeters()
 
     for (int i = 0; i < micCount; ++i)
     {
-        if (auto* skull = mainScreen.getSkullMeter (i))
+        if (auto* meter = mainScreen.getChannelMeter (i))
         {
             auto* metering = application.getChannelMetering (i);
-            skull->setMetering (metering);
-            skull->setMicName (application.getMicDisplayName (i));
+            meter->setMetering (metering);
+            meter->setMicName (application.getMicDisplayName (i));
 
-            // §6.5 "skull goes dashed", and §8.1's live numbers. This was never
-            // called: noSignal defaults to true, so every skull stayed dashed
+            // §6.5 "meter goes dashed", and §8.1's live numbers. This was never
+            // called: noSignal defaults to true, so every meter stayed dashed
             // for the life of the app and both readouts were a hardcoded
             // "--.-" no matter what the microphone was doing.
             //
@@ -1005,19 +1005,13 @@ void MainComponent::rebindMeters()
             // microphone was unplugged mid-take. A connected microphone in a
             // quiet room is not dashed: it reads its real level, which is the
             // difference between "nobody is talking" and "this is not working".
-            skull->setNoSignal (metering == nullptr || ! application.isMicLive (i));
+            meter->setNoSignal (metering == nullptr || ! application.isMicLive (i));
 
             // The faint second line under the name: the hardware's own product
             // string. The strip has always reserved and painted this row and
             // setDeviceName() had no callers, so it drew an empty line on every
             // channel for the life of the app.
-            skull->setDeviceName (application.getMicProductName (i));
-
-            // §9.3: "Respect prefers-reduced-motion: glow and pulse off, fill
-            // and numbers still live." The gate on the clip glow has always
-            // been there; nothing ever set it, so it sat at its default and the
-            // glow drew for everyone regardless of the setting.
-            skull->setReducedMotion (application.prefersReducedMotion());
+            meter->setDeviceName (application.getMicProductName (i));
         }
     }
 }

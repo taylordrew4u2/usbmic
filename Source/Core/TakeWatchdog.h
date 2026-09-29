@@ -78,7 +78,7 @@ struct TakeAlert
 /// §0.1 and §6.5: nothing that goes wrong mid-take may go unsaid. The main
 /// screen has always shown the state; this turns a CHANGE in it into an
 /// alert, once per change, so a pop-up can name it the moment it happens
-/// rather than leaving the user to notice a dashed skull.
+/// rather than leaving the user to notice a dashed meter.
 ///
 /// Plain data in and alerts out, no clock and no UI, so every rule here is
 /// held by a test.

@@ -31,7 +31,7 @@ Reference hardware: Blue Yeti (standard model). Section 14 is written against it
 That input is corrected onto the monitor/output callback's clock like every
 other input; “master” is a reporting reference, not a resampling exemption.
 Nothing in the UI changes shape.
-**Zero-microphone case.** The app opens, shows an empty skull row, and displays one line: "Plug in a USB microphone or audio interface to get started." Monitoring and recording are unavailable but no error state is shown. This is a normal condition, not a failure.
+**Zero-microphone case.** The app opens, shows an empty meter row, and displays one line: "Plug in a USB microphone or audio interface to get started." Monitoring and recording are unavailable but no error state is shown. This is a normal condition, not a failure.
 ---
 ## 2. Device aggregation
 - Enumerate eligible external audio input devices at launch and after OS
@@ -200,7 +200,7 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 ### 6.5 Mid-recording events
 | Event | Behavior |
 |---|---|
-| Microphone unplugged | Continue writing silence to that channel. Never change channel count or file layout mid-file. Log the dropout. Skull goes dashed. |
+| Microphone unplugged | Continue writing silence to that channel. Never change channel count or file layout mid-file. Log the dropout. Meter goes hollow. |
 | Microphone reconnected mid-take | Resume writing its live signal to its existing channel. Restore name and trim per §2.4. Log the reconnection. |
 | New microphone plugged in mid-take | Add to the monitor mix immediately. Do **not** add to the in-progress recording. State in one line: "Mic added to monitoring. It'll be recorded starting with your next take." |
 | Clock master unplugged | Failover per §3.3. Recording continues. |
@@ -261,33 +261,39 @@ Keep future app-facing outputs behind a swappable interface:
 - UI thread polls at 60 Hz. Meter rendering never blocks and is never blocked by the audio callback.
 - Metering is lossless with respect to recording: dropping a meter frame is fine, dropping a sample is not.
 ---
-## 9. Visual treatment — skull meters
-The signature element. Each microphone is a skull; the skull **is** the meter, not decoration beside one.
+## 9. Visual treatment — channel meters
+The signature element. Each microphone is a channel strip whose badge is the app icon's crying face; the badge **is** the meter, not decoration beside one.
 ### 9.1 Behavior
-- Level fills the silhouette from the jaw upward. Empty = −60 dBFS, full = 0 dBFS, mapped on the §8.1 scale.
-- Peak hold is a 2.5 px bone-white bar across the skull at the peak position.
-- Eye sockets are the clip indicator: dark by default, lit amber with a glow on clip, latched until tapped.
-- No signal renders as a dashed hollow outline at 42% opacity.
-- Mic name, device name, numeric dBFS, and peak value below each skull.
-- The shared mix uses a horizontal bar, not a skull — visually distinct so the bus is never confused with a channel.
+- Level fills the badge ring from the bottom upward, and the level track beside it from the left. Empty = −60 dBFS, full = 0 dBFS, mapped on the §8.1 scale.
+- Peak hold is a 2 px bone-white tick across the level track.
+- Clip turns the ring and the readout clip-yellow and the readout says `CLIP n`, latched until tapped.
+- The face cries along: one cyan tear at −18 dBFS and above, two on clip. Decoration only — the fill, track and number carry the meaning.
+- No signal renders as a hollow outline with closed eyes, the readout `--.-`.
+- Mic name and numeric dBFS on each strip.
+- The shared mix uses a horizontal bar, not a badge — visually distinct so the bus is never confused with a channel.
 ### 9.2 Palette
+Source of truth: `palette` in `Source/UI/AppLookAndFeel.h`.
 | Role | Hex |
 |---|---|
-| Background | `#16110F` |
-| Panel | `#1E1816` |
-| Skull outline / bone | `#EDE4D3` |
-| Empty skull interior | `#2A2320` |
-| Fill, below −18 dBFS | `#7A9E7E` |
-| Fill, −18 to −3 dBFS | `#D9A441` |
-| Fill, above −3 dBFS | `#C3352B` |
-| Clip eyes | `#F2C14A` |
-| Dimmed / no signal outline | `#6E645B` |
-| Secondary text | `#8C8177` |
-| Tertiary text | `#5E554D` |
+| Background | `#0A0E13` |
+| Surface (panels, strips) | `#121A23` |
+| Surface high (controls, empty well) | `#1C2733` |
+| Bone (primary text, ring, peak) | `#E3EAF2` |
+| Secondary text | `#8496A8` |
+| Tertiary text | `#566372` |
+| Accent (record button, focus, tears) | `#22D3EE` |
+| Danger (recording, clipping) | `#FF4D5E` |
+| Warning | `#FBBF24` |
+| Hairline outline | `#27333F` |
+| Fill, below −18 dBFS | `#2DD4A7` |
+| Fill, −18 to −3 dBFS | `#FACC15` |
+| Fill, above −3 dBFS | `#FF4D5E` |
+| Clip | `#FDE047` |
+| Dimmed / no signal outline | `#4A5B6D` |
 ### 9.3 Constraints
 - **Color never carries meaning alone.** Every colored state also changes shape, text, or number. Clip indication cannot depend on hue.
-- Silhouette legible at 48 px. Test small before committing to detail.
-- Respect `prefers-reduced-motion`: glow and pulse off, fill and numbers still live.
+- Badge legible at 26 px. Test small before committing to detail.
+- Respect `prefers-reduced-motion`: flashing and pulse softened or off, fill and numbers still live.
 - Numeric readouts in a monospace face so digits do not jitter as values change.
 ---
 ## 10. User experience — zero-knowledge setup
@@ -307,7 +313,7 @@ Target user has never configured an audio device, does not know what a sample ra
 ### 10.2 Main screen
 One window. One primary control: a large record button. Everything else is status.
 Visible by default:
-- Skull row with names and levels
+- Channel-strip row with names and levels
 - Record button
 - Elapsed time
 - Remaining recording time
@@ -409,9 +415,9 @@ Most laptops route all USB ports to one controller. Sustained SD card writes on 
 - The standard Yeti's analog direct monitoring **cannot be disabled** — there is no blend control, and the direct signal is always present at the jack.
 - This is why §5.2 prohibits using the mic jacks. It is a hardware property, not a configuration choice.
 ### 14.6 Identical device names — first-run blocker
-Four Yetis enumerate with the same product string. A novice cannot tell which skull is which person.
+Four Yetis enumerate with the same product string. A novice cannot tell which strip is which person.
 - Disambiguate internally per §2.4.
-- **Tap-to-name flow:** prompt the user to tap or speak into one microphone. Detect which channel exceeds −25 dBFS while all others stay below −45 dBFS for 300 ms, highlight that skull, and let them type a name. Repeat per mic. If two channels trigger together, say "Two mics heard that — try tapping closer to one" and retry.
+- **Tap-to-name flow:** prompt the user to tap or speak into one microphone. Detect which channel exceeds −25 dBFS while all others stay below −45 dBFS for 300 ms, highlight that strip, and let them type a name. Repeat per mic. If two channels trigger together, say "Two mics heard that — try tapping closer to one" and retry.
 - Takes seconds, requires no technical understanding, and works without headphones plugged into the mics.
 - Names persist per §2.4 so the second session does not repeat setup.
 ### 14.7 Room reality

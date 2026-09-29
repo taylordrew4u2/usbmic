@@ -216,7 +216,7 @@ if (MMA_BUILD_APP)
         Source/Platform/LicensedVirtualCableBackend.cpp
         Source/Platform/AttestationDriverBackend.cpp
         Source/UI/AppLookAndFeel.cpp
-        Source/UI/SkullMeterComponent.cpp
+        Source/UI/ChannelMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/MainScreen.cpp
         Source/UI/AdvancedPanel.cpp
@@ -298,7 +298,7 @@ if (MMA_BUILD_APP)
         Source/UI/AdvancedPanel.cpp
         Source/UI/MainScreen.cpp
         Source/UI/CameraPanel.cpp
-        Source/UI/SkullMeterComponent.cpp
+        Source/UI/ChannelMeterComponent.cpp
         Source/UI/MixBarComponent.cpp
         Source/UI/AppLookAndFeel.cpp
         Source/UI/ModalCard.cpp
