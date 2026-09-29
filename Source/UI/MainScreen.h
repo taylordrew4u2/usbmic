@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "SkullMeterComponent.h"
+#include "ChannelMeterComponent.h"
 #include "MixBarComponent.h"
 
 namespace mma {
@@ -22,8 +22,8 @@ public:
     void resized() override;
     void paint (juce::Graphics& g) override;
 
-    /// Rebuilds the skull row for the given mic count. Ownership of the
-    /// SkullMeterComponents stays with this class.
+    /// Rebuilds the meter row for the given mic count. Ownership of the
+    /// ChannelMeterComponents stays with this class.
     void setMicCount (int count);
 
     /// How many channel strips currently exist. Callers rebinding meter
@@ -57,7 +57,7 @@ public:
     /// an input from the owner rather than something derived from the content.
     /// Unset (0) means "no owner has said", and getHeight() stands.
     void setVisibleHeight (int height);
-    SkullMeterComponent* getSkullMeter (int index);
+    ChannelMeterComponent* getChannelMeter (int index);
 
     void setMixMetering (Metering* meteringSource) { mixBar.setMetering (meteringSource); }
     /// Repaints only the meters, so status-label updates don't redraw the whole screen.
@@ -74,7 +74,7 @@ public:
     void setNoMicsMessage (bool show);
     void setRecordButtonEnabled (bool enabled, const juce::String& disabledReason);
 
-    /// §14.6: light the skull of the mic currently being heard (-1 for none).
+    /// §14.6: light the meter of the mic currently being heard (-1 for none).
     void setHighlightedMic (int index);
 
     /// The mute button always tells the truth about the bus, including the
@@ -192,7 +192,7 @@ public:
     /// closes it again, and it should look like it will.
     void setDoorsOpen (bool settingsOpen, bool helpOpen);
     std::function<void()> onMuteToggled;
-    std::function<void (int)> onMicNameClicked; // skull index
+    std::function<void (int)> onMicNameClicked; // meter index
 
 private:
     // The masthead. A window with no name in it is a window you have to
@@ -215,7 +215,7 @@ private:
     /// Where the mark goes, set by resized() and read by paint().
     juce::Rectangle<int> brandMarkBounds;
 
-    juce::OwnedArray<SkullMeterComponent> skullMeters;
+    juce::OwnedArray<ChannelMeterComponent> channelMeters;
     MixBarComponent mixBar;
 
     struct CameraView

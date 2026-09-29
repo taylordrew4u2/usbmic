@@ -15,7 +15,7 @@ enum class TapResult
 };
 
 /// §14.6 tap-to-name. Four Yetis enumerate with the same product string, so a
-/// novice cannot tell which skull is which person -- the spec calls this a
+/// novice cannot tell which meter is which person -- the spec calls this a
 /// first-run blocker. The user taps one microphone and it names itself.
 class TapToNameDetector
 {

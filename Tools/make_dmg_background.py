@@ -65,7 +65,7 @@ def main():
     d = ImageDraw.Draw(img)
 
     centred(d, 40 * SS, "SobStage", load_font(25 * SS, bold=True), BONE)
-    centred(d, 78 * SS, "Drag the skull onto Applications", load_font(14 * SS), SECONDARY)
+    centred(d, 78 * SS, "Drag the crying face onto Applications", load_font(14 * SS), SECONDARY)
 
     # Arrow between the two icon positions the AppleScript sets (165 and 495).
     y = 205 * SS

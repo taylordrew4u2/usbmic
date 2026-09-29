@@ -268,7 +268,7 @@ MainScreen::~MainScreen() = default;
 
 void MainScreen::repaintMeters()
 {
-    for (auto* meter : skullMeters)
+    for (auto* meter : channelMeters)
         meter->repaint();
 
     mixBar.repaint();
@@ -276,16 +276,16 @@ void MainScreen::repaintMeters()
 
 void MainScreen::setMicCount (int count)
 {
-    skullMeters.clear();
+    channelMeters.clear();
     for (int i = 0; i < count; ++i)
     {
-        auto* meter = new SkullMeterComponent();
+        auto* meter = new ChannelMeterComponent();
         meter->onNameClicked = [this, i] { if (onMicNameClicked) onMicNameClicked (i); };
         // A hand over the strip: the name is clickable, and nothing on the
         // strip itself said so.
         meter->setMouseCursor (juce::MouseCursor::PointingHandCursor);
         addAndMakeVisible (meter);
-        skullMeters.add (meter);
+        channelMeters.add (meter);
     }
     setNoMicsMessage (count == 0);
     resized();
@@ -338,7 +338,7 @@ int MainScreen::nonCameraHeight() const noexcept
     constexpr int kFooter      = 40;
 
     // MIX is laid out with the microphones, so it counts towards the wrap.
-    const int cells = juce::jmax (1, skullMeters.size() + 1);
+    const int cells = juce::jmax (1, channelMeters.size() + 1);
     const int available = juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32);
     const int perRow = juce::jlimit (1, cells, (available + kStripGap) / (190 + kStripGap));
     const int rows = (cells + perRow - 1) / perRow;
@@ -652,12 +652,12 @@ int MainScreen::getPreferredHeight() const
 
 int MainScreen::getMicCount() const
 {
-    return skullMeters.size();
+    return channelMeters.size();
 }
 
-SkullMeterComponent* MainScreen::getSkullMeter (int index)
+ChannelMeterComponent* MainScreen::getChannelMeter (int index)
 {
-    return skullMeters[index];
+    return channelMeters[index];
 }
 
 void MainScreen::setRecording (bool isRecording)
@@ -707,8 +707,8 @@ void MainScreen::setRecording (bool isRecording)
 
 void MainScreen::setHighlightedMic (int index)
 {
-    for (int i = 0; i < skullMeters.size(); ++i)
-        skullMeters[i]->setHighlighted (i == index);
+    for (int i = 0; i < channelMeters.size(); ++i)
+        channelMeters[i]->setHighlighted (i == index);
 }
 
 void MainScreen::setMuteState (bool muted, bool runawayMuted)
@@ -916,7 +916,7 @@ void MainScreen::resized()
     micSectionLabel.setBounds (area.removeFromTop (16));
     area.removeFromTop (6);
 
-    if (skullMeters.isEmpty())
+    if (channelMeters.isEmpty())
     {
         noMicsLabel.setBounds (area.removeFromTop (56));
         mixBar.setBounds ({});
@@ -928,7 +928,7 @@ void MainScreen::resized()
         constexpr int kMinStripWidth = 190;
 
         // MIX is laid out with them, so the wrap has to count it.
-        const int cells = skullMeters.size() + 1;
+        const int cells = channelMeters.size() + 1;
         const int available = area.getWidth();
 
         const int perRow = juce::jlimit (1, cells,
@@ -960,10 +960,9 @@ void MainScreen::resized()
 
             auto cell = row.removeFromLeft (juce::jmin (cellWidth, row.getWidth()));
 
-            if (i < skullMeters.size())
+            if (i < channelMeters.size())
             {
-                skullMeters[i]->setOrientation (SkullMeterComponent::Orientation::Strip);
-                skullMeters[i]->setBounds (cell);
+                channelMeters[i]->setBounds (cell);
             }
             else
             {

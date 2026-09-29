@@ -5,34 +5,15 @@
 
 namespace mma {
 
-/// §9: the skull-shaped meter. The skull silhouette IS the meter -- level
-/// fills it from the jaw upward, eye sockets are the clip indicator, peak
-/// hold is a bone-white bar. Palette values are §9.2 verbatim.
-class SkullMeterComponent : public juce::Component, private juce::Timer
+/// §9: one microphone's channel strip -- a ring badge that fills with the
+/// level, the mic name, a level track with a peak tick, and the dBFS number.
+/// The badge wears the app icon's crying face. Clip turns the ring and the
+/// number `clipEyes` and reads "CLIP n".
+class ChannelMeterComponent : public juce::Component, private juce::Timer
 {
 public:
-    /// Which way round the strip is drawn.
-    ///
-    /// Same meter, same state, same §9.3 rules -- only the arrangement differs.
-    /// Tall is the mixing-desk channel: skull above, labels beneath. Strip is
-    /// the horizontal row: a small skull badge, the name, a level track, and
-    /// the number, which is what fits when the picture is the thing taking the
-    /// height and the levels are a glance rather than a study.
-    enum class Orientation
-    {
-        Tall,
-        Strip
-    };
-
-    SkullMeterComponent();
-    ~SkullMeterComponent() override;
-
-    void setOrientation (Orientation newOrientation)
-    {
-        if (orientation != newOrientation) { orientation = newOrientation; repaint(); }
-    }
-
-    Orientation getOrientation() const noexcept { return orientation; }
+    ChannelMeterComponent();
+    ~ChannelMeterComponent() override;
 
     void setMetering (Metering* meteringSource) { metering = meteringSource; }
     void setMicName (const juce::String& name)
@@ -47,10 +28,9 @@ public:
     {
         if (noSignal != isNoSignal) { noSignal = isNoSignal; updateAccessibilityText(); repaint(); }
     }
-    void setReducedMotion (bool shouldReduceMotion) { reducedMotion = shouldReduceMotion; }
 
     /// §14.6: lit while this mic is the one being heard, so a user with four
-    /// identical mics can see which skull is which person.
+    /// identical mics can see which strip is which person.
     void setHighlighted (bool shouldHighlight);
 
     /// Fired on click when there is no clip latch to acknowledge -- the rename
@@ -66,11 +46,9 @@ public:
 private:
     void timerCallback() override;
 
-    Orientation orientation = Orientation::Tall;
     Metering* metering = nullptr;
     juce::String micName, deviceName;
     bool noSignal = true;
-    bool reducedMotion = false;
     bool highlighted = false;
 
     float currentLevelDb = Metering::kMinDb;
@@ -81,8 +59,7 @@ private:
     int currentClipCount = 0;
     int lastAccessibleLevelDb = -1000;
 
-    // §9.2 palette, verbatim.
-    static const juce::Colour kBackground;
+    // §9.2 palette.
     static const juce::Colour kPanel;
     static const juce::Colour kBone;
     static const juce::Colour kEmptyInterior;
@@ -91,23 +68,19 @@ private:
     static const juce::Colour kFillHigh;
     static const juce::Colour kClipEyes;
     static const juce::Colour kDimmedOutline;
-    static const juce::Colour kSecondaryText;
     static const juce::Colour kTertiaryText;
 
-    void paintTall (juce::Graphics& g, juce::Rectangle<float> bounds);
     void paintStrip (juce::Graphics& g, juce::Rectangle<float> bounds);
 
-    /// The skull, filled to the current level, inside the given box. Shared by
-    /// both orientations so the meter cannot come to mean two different things
-    /// depending on which way round it is drawn.
-    void paintSkull (juce::Graphics& g, juce::Rectangle<float> skullBounds, bool withEyes);
-
-    juce::Path buildSkullSilhouette (juce::Rectangle<float> bounds) const;
+    /// The icon's face inside the badge: eyes and a frown, a tear once the
+    /// level is loud, two on a clip, closed eyes with no signal.
+    void paintFace (juce::Graphics& g, juce::Rectangle<float> badge, float norm);
+    static juce::Path teardrop (juce::Point<float> tip, float height);
     juce::Colour fillColourForLevel (float levelDb) const;
     void performPrimaryAction();
     void updateAccessibilityText();
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SkullMeterComponent)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChannelMeterComponent)
 };
 
 } // namespace mma

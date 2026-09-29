@@ -129,16 +129,16 @@ public:
 
     /// §6.5: false while this channel's microphone is unplugged mid-take. The
     /// channel stays in the file writing silence; this is what the UI dashes
-    /// its skull on. Index is into the included-mic list, as everywhere else.
+    /// its meter on. Index is into the included-mic list, as everywhere else.
     bool isMicLive (int index) const;
 
         /// §14.6: the mic whose tap/voice was just heard alone, or -1. The UI
-    /// highlights that skull so a user can see which meter is which person --
+    /// highlights that meter so a user can see which meter is which person --
     /// four identical USB mics enumerate with the same product string.
     int getTappedChannel() const noexcept { return tappedChannel; }
 
     /// §14.6 / §2.4: names a microphone. Persisted against the physical port so
-    /// the name follows the mic across replug, shown on its skull, and used in
+    /// the name follows the mic across replug, shown on its meter, and used in
     /// its stem filename (§6.2).
     struct MicRenameTarget
     {
@@ -452,12 +452,6 @@ public:
     /// microphone does not print its product string twice.
     juce::String getMicProductName (int index) const;
 
-    /// §9.3: whether this machine's owner has asked for reduced motion. Read
-    /// once at construction -- it is an accessibility preference, not something
-    /// that changes between repaints, and asking the OS at 60Hz per strip would
-    /// be absurd.
-    bool prefersReducedMotion() const noexcept { return reducedMotionPreferred; }
-
     /// The picture side of a take: which cameras are connected, which are in,
     /// and the live views. Video only -- see CameraController for why there is
     /// no audio anywhere near it.
@@ -632,8 +626,6 @@ private:
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
 
-    // §9.3, read once at construction. See prefersReducedMotion().
-    bool reducedMotionPreferred = false;
     juce::String midTakeNotice;
     double midTakeNoticeSeconds = 0.0;
 
