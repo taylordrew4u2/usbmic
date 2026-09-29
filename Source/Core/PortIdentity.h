@@ -75,6 +75,12 @@ struct PersistedDeviceSettings
         trimDb = db;
         inputTrimDb.erase (input);
     }
+
+    /// A rename from the user, sanitized per §6.2. perInput as for trim: an
+    /// interface's socket takes the name, a single microphone's box does. A
+    /// cleared name (or one with nothing usable in it) removes the override,
+    /// so the device's own name comes back.
+    void setNameForInput (int input, bool perInput, const std::string& rawName);
 };
 
 /// In-memory persistence map keyed by PortIdentity::key(). Actual disk

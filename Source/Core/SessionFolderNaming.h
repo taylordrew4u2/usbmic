@@ -17,6 +17,13 @@ public:
     /// runs of whitespace to a single hyphen, truncate to 40 characters.
     static std::string sanitizeName (const std::string& rawName);
 
+    /// sanitizeName for a name the user gives a microphone, input or camera,
+    /// where empty means "no name of my own". Surrounding whitespace is
+    /// trimmed, and a name with no letter or digit left in it (cleared, or
+    /// only symbols like "!!!") comes back empty rather than as "Session" --
+    /// so the caller clears its override instead of storing a name nobody typed.
+    static std::string sanitizeNameOrEmpty (const std::string& rawName);
+
     /// Build "YYYY-MM-DD_HHMM_<name>" from calendar fields (already in local time).
     static std::string buildFolderName (int year, int month, int day, int hour, int minute,
                                         const std::string& sanitizedName);

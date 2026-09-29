@@ -683,7 +683,16 @@ private:
     // Take channels whose input stream died while the device stayed plugged
     // in. The device is still listed, so without this the next device-list
     // refresh would read it as "plugged back in" and relabel a dead stream live.
+    //
+    // Kept across takes: only a reopen clears it. It used to be cleared at
+    // take start while nothing had reopened the stream, so the next take
+    // wrote that microphone as silence with its strip lit as live.
     std::set<std::string> deadInputStreams;
+
+    // When restartCapture() last reopened a dead stream, by device, on the
+    // millisecond counter. One that dies again inside
+    // kDeadInputReopenBackoffMs is left dead rather than reopened in a loop.
+    std::map<std::string, double> deadInputReopenedAtMs;
 
     // Whether the mirror was still writing when this take was stopped, sampled
     // before stopRecording() tears the pipeline down. Read after, isMirroring()

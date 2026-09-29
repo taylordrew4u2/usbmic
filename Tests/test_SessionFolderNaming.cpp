@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "Core/SessionFolderNaming.h"
+#include "Core/PortIdentity.h"
 #include <set>
 #include <cctype>
 
@@ -57,4 +58,41 @@ TEST_CASE (SessionFolderNaming_NoCollisionReturnsOriginalName)
     auto exists = [] (const std::string&) { return false; };
     std::string resolved = SessionFolderNaming::resolveCollision ("2026-08-26_1432_Session", exists);
     REQUIRE (resolved == "2026-08-26_1432_Session");
+}
+
+// A name the user gives a microphone or camera is an override: clearing it (or
+// typing only symbols) must hand the device its own name back, not rename it
+// "Session" -- which then became the strip, the stem file and the .mov.
+TEST_CASE (SessionFolderNaming_OverrideNameWithNothingUsableIsEmpty)
+{
+    REQUIRE (SessionFolderNaming::sanitizeNameOrEmpty ("").empty());
+    REQUIRE (SessionFolderNaming::sanitizeNameOrEmpty ("   ").empty());
+    REQUIRE (SessionFolderNaming::sanitizeNameOrEmpty ("!!!").empty());
+    REQUIRE (SessionFolderNaming::sanitizeNameOrEmpty (" - _ ").empty());
+    REQUIRE (SessionFolderNaming::sanitizeNameOrEmpty ("  Alex Kim  ") == "Alex-Kim");
+    REQUIRE (SessionFolderNaming::sanitizeNameOrEmpty ("Sam!") == "Sam");
+}
+
+TEST_CASE (PortIdentity_ClearingAnInputNameRemovesTheOverride)
+{
+    PersistedDeviceSettings settings;
+    settings.setNameForInput (1, true, "Alex");
+    REQUIRE (settings.inputNames.at (1) == "Alex");
+
+    settings.setNameForInput (1, true, "");
+    REQUIRE (settings.inputNames.count (1) == 0);
+
+    settings.setNameForInput (1, true, "Sam");
+    settings.setNameForInput (1, true, "!!!");
+    REQUIRE (settings.inputNames.count (1) == 0);
+}
+
+TEST_CASE (PortIdentity_ClearingASingleMicNameRemovesTheOverride)
+{
+    PersistedDeviceSettings settings;
+    settings.setNameForInput (0, false, "  Host  ");
+    REQUIRE (settings.assignedName == "Host");
+
+    settings.setNameForInput (0, false, "   ");
+    REQUIRE (settings.assignedName.empty());
 }

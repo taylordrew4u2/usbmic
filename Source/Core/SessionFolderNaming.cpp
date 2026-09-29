@@ -1,4 +1,5 @@
 #include "SessionFolderNaming.h"
+#include <algorithm>
 #include <cctype>
 #include <sstream>
 #include <iomanip>
@@ -45,6 +46,28 @@ std::string SessionFolderNaming::sanitizeName (const std::string& rawName)
         collapsed = kDefaultName;
 
     return collapsed;
+}
+
+std::string SessionFolderNaming::sanitizeNameOrEmpty (const std::string& rawName)
+{
+    const auto isSpace = [] (char c) { return std::isspace (static_cast<unsigned char> (c)) != 0; };
+
+    auto first = rawName.begin();
+    auto last = rawName.end();
+    while (first != last && isSpace (*first))       ++first;
+    while (last != first && isSpace (*(last - 1)))  --last;
+
+    // Nothing but separators is not a name either: "-" would become the strip,
+    // the stem and the movie just as "Session" did.
+    const bool hasLetterOrDigit = std::any_of (first, last, [] (char c)
+    {
+        return std::isalnum (static_cast<unsigned char> (c)) != 0;
+    });
+
+    if (! hasLetterOrDigit)
+        return {};
+
+    return sanitizeName (std::string (first, last));
 }
 
 std::string SessionFolderNaming::buildFolderName (int year, int month, int day, int hour, int minute,
