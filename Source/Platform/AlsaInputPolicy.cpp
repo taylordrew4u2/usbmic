@@ -1,4 +1,5 @@
 #include "AlsaInputPolicy.h"
+#include <cstring>
 
 #include <fstream>
 #include <string>
@@ -58,6 +59,22 @@ bool isDirectExternalHardwareCard (int cardNumber,
 bool shouldUseHintEnumeration (bool wantInput, bool testInputsCompiledIn) noexcept
 {
     return ! wantInput || testInputsCompiledIn;
+}
+
+bool alsaInputNameIsASystemAlias (const std::string& inputName) noexcept
+{
+    static constexpr const char* kAliases[] = { "default", "sysdefault", "dsnoop", "dmix", "dshare", "plug" };
+
+    for (const char* alias : kAliases)
+    {
+        const auto length = std::strlen (alias);
+
+        // Bare, or with arguments ("sysdefault:CARD=USB").
+        if (inputName == alias || (inputName.rfind (alias, 0) == 0 && inputName.size() > length && inputName[length] == ':'))
+            return true;
+    }
+
+    return false;
 }
 
 bool alsaRecoveryRunMeansDeviceIsDead (int consecutiveRecoveries) noexcept

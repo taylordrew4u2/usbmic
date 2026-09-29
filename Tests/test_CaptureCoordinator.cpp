@@ -221,6 +221,32 @@ TEST_CASE (CaptureCoordinator_OneMicThatWillNotOpenDoesNotSilenceTheRest)
     REQUIRE (problem.find ("took too long") != std::string::npos);
 }
 
+TEST_CASE (CaptureCoordinator_ADeadMicIsStillNamedWhenTheOutputIsRefusedToo)
+{
+    // A shared output and a dead microphone at once. The output's sentence
+    // used to replace the microphone's, so the rig was told about its
+    // headphones and nothing about the track that would be silent.
+    FakeBackend backend;
+    backend.exclusiveAvailable = false;
+    backend.exclusiveReason = "This sound output is shared with other apps.";
+    backend.failInputDevices.insert ("dev-b");
+    backend.inputOpenError = "This microphone took too long to connect.";
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.isMonitoring());
+    REQUIRE_FALSE (c.hasOutputStream());
+    REQUIRE (c.getDevicesThatFailedToOpen().size() == 1u);
+
+    const auto problem = c.getMonitorProblem();
+    REQUIRE (problem.find ("shared with other apps") != std::string::npos);
+    REQUIRE (problem.find ("headphone monitoring is off") != std::string::npos);
+    REQUIRE (problem.find ("Couch") != std::string::npos);
+    REQUIRE (problem.find ("took too long") != std::string::npos);
+}
+
 TEST_CASE (CaptureCoordinator_ARigWhereOnlyOneMicOpensStillRecordsThatOne)
 {
     // The same thing from the other side: it is the SURVIVING count that has to

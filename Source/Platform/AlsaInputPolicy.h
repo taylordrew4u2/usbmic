@@ -23,6 +23,13 @@ bool isDirectExternalHardwareCard (
 // is exposed here solely so the small platform-neutral policy can be tested.
 bool shouldUseHintEnumeration (bool wantInput, bool testInputsCompiledIn) noexcept;
 
+// Whether a hinted PCM name is an alias for "whatever the system routes" --
+// default, sysdefault, dsnoop -- rather than a microphone of its own. An
+// alias re-records a microphone already on the list, or the machine's
+// speaker when there is no capture behind it; either way it is not a track
+// anyone asked for, so hint enumeration leaves it out of the microphone list.
+bool alsaInputNameIsASystemAlias (const std::string& inputName) noexcept;
+
 // A run this long with no successful read in between means the PCM is refusing
 // everything, not glitching under load.
 inline constexpr int kRecoveriesBeforeGivingUp = 200;
