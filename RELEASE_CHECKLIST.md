@@ -21,6 +21,8 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
   is **595 unit tests**; if tests change, record the final discovered count here.
+- [ ] `sim_channel_meter` passes on all three operating systems: every
+  crying-face state is checked against the pixels drawn.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
   `sim_camera_sync_lifecycle` pass. The candidate baseline is **201 CoreAudio
   checks**, **108 WASAPI checks**, **262 camera checks** and **7 synchronous
