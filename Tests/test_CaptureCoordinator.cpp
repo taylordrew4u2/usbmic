@@ -1719,10 +1719,34 @@ TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
     REQUIRE (beforeLoss >= kEightBlocks);
 
     // Then it stops. Only inputs arrive for a quarter of a second.
+    const auto lastOutputCallback = std::chrono::steady_clock::now();
     pushInputsForAWhile (backend, 190, 1333);
 
     REQUIRE (c.isOutputClockLost());
     REQUIRE (c.getFramesAccepted() > beforeLoss + 64 * 20);
+
+    // And the take covers ALL of that quarter second, not just the part after
+    // the loss was noticed. The software clock takes over a tenth of a second
+    // after the last callback, and it used to start pulling from that moment:
+    // the tenth of a second before it was never pulled, so every stem and the
+    // mix came out that much shorter than the wall clock -- and the camera.
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - lastOutputCallback;
+        const auto accepted = static_cast<int64_t> (c.getFramesAccepted() - beforeLoss);
+        const auto wallFrames = static_cast<int64_t> (
+            std::chrono::duration<double> (elapsed).count() * 48000.0);
+
+        // Scheduling slack on a busy runner: a couple of late ticks, not the
+        // hundred milliseconds this is here to catch.
+        constexpr int64_t kTolerance = 48000 * 25 / 1000;
+
+        if (std::llabs (accepted - wallFrames) > kTolerance)
+            std::printf ("  across the output loss: accepted %lld frames in %lld frames of wall time\n",
+                         (long long) accepted, (long long) wallFrames);
+
+        REQUIRE (accepted >= wallFrames - kTolerance);
+        REQUIRE (accepted <= wallFrames + 64);
+    }
 
     // And it comes back: the output callback resumes and reclaims the pull.
     for (int i = 0; i < 100; ++i)

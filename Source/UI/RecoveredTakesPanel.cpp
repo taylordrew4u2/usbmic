@@ -6,16 +6,6 @@ namespace mma {
 namespace {
     constexpr int kRowPitch = 38;
     constexpr int kMaxListedTakes = 5;
-
-    juce::String describeLength (double seconds)
-    {
-        const int total = juce::roundToInt (seconds);
-        const int minutes = total / 60;
-        const int remainder = total % 60;
-
-        return minutes > 0 ? juce::String (minutes) + "m " + juce::String (remainder) + "s"
-                           : juce::String (remainder) + "s";
-    }
 }
 
 RecoveredTakesPanel::RecoveredTakesPanel()
@@ -45,14 +35,9 @@ void RecoveredTakesPanel::setTakes (const std::vector<TakeRow>& takes)
     // card's own heading with it.
     rows.clear();
 
-    folderToOpen = takes.empty() ? juce::String() : takes.front().fullPath;
+    folderToOpen = takes.empty() ? juce::String() : juce::String::fromUTF8 (takes.front().fullPath.c_str());
 
-    explanation.setText (takes.size() == 1
-                             ? "The app stopped before this take was finished -- a crash, a power cut, "
-                               "or the card coming out. The sound was still on the disk, and it has been "
-                               "repaired and is playable."
-                             : "The app stopped before these takes were finished. The sound was still on "
-                               "the disk, and it has been repaired and is playable.",
+    explanation.setText (juce::String::fromUTF8 (recoveredTakesExplanation (takes).c_str()),
                          juce::dontSendNotification);
 
     const int listed = juce::jmin ((int) takes.size(), kMaxListedTakes);
@@ -64,24 +49,13 @@ void RecoveredTakesPanel::setTakes (const std::vector<TakeRow>& takes)
         Row row;
         row.name = std::make_unique<juce::Label>();
         stylePath (*row.name, AppLookAndFeel::bone);
-        row.name->setText (take.folderName, juce::dontSendNotification);
+        row.name->setText (juce::String::fromUTF8 (take.folderName.c_str()), juce::dontSendNotification);
         addAndMakeVisible (*row.name);
-
-        juce::String detail = juce::String (take.fileCount)
-                            + (take.fileCount == 1 ? " file, " : " files, ")
-                            + describeLength (take.longestSeconds) + " of sound";
-
-        // Named rather than hidden: §6.6 would rather report a stub as empty
-        // than present it, and a user counting files needs to know why there
-        // are fewer than they expected.
-        if (take.emptyFileCount > 0)
-            detail += ", and " + juce::String (take.emptyFileCount)
-                    + (take.emptyFileCount == 1 ? " empty file left alone"
-                                                : " empty files left alone");
 
         row.detail = std::make_unique<juce::Label>();
         styleBody (*row.detail, AppLookAndFeel::secondary);
-        row.detail->setText (detail, juce::dontSendNotification);
+        row.detail->setText (juce::String::fromUTF8 (recoveredTakeDetail (take).c_str()),
+                             juce::dontSendNotification);
         addAndMakeVisible (*row.detail);
 
         rows.push_back (std::move (row));

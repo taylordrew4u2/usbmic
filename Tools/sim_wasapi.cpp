@@ -406,6 +406,93 @@ void aSilentFlaggedPacketIsTreatedAsSilence()
     backend.closeAllStreams();
 }
 
+/// Counts what a CaptureCoordinator would be told: delivered blocks, and the
+/// produced-and-lost signal (no inputs, that many frames) in the order they
+/// arrived.
+struct LossAwareCapture
+{
+    std::mutex mutex;
+    std::vector<std::pair<bool, int>> events;   ///< { isLossSignal, frames }
+
+    mma::AudioCallback callback()
+    {
+        return [this] (const float* const* inputs, int numInputs,
+                       float* const*, int, int numSamples)
+        {
+            std::lock_guard<std::mutex> lock (mutex);
+            events.emplace_back (inputs == nullptr && numInputs == 0, numSamples);
+        };
+    }
+
+    std::vector<std::pair<bool, int>> log()
+    {
+        std::lock_guard<std::mutex> lock (mutex);
+        return events;
+    }
+};
+
+/// A driver overrun on Windows is not an error return: the next packet simply
+/// starts further along the device's clock, flagged DATA_DISCONTINUITY. The
+/// worker read neither, so the missing stretch was spliced out of the file,
+/// reported as zero dropped frames, and read by drift as the clock running slow.
+void aCaptureOverrunIsCountedAndReportedAsLost()
+{
+    std::printf ("\nA capture overrun the driver flags as a discontinuity\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (microphone ("mic-overrun", "Overrun Mic",
+                                         { fakewasapi::Format::pcm (1, 24, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    LossAwareCapture capture;
+
+    check (backend.openInputStream ("mic-overrun", 48000.0, 256, capture.callback()), "the stream opens");
+
+    const auto signal = tone (128, 0.25f, 0.0f);
+    check (fakewasapi::pushCapture ("mic-overrun", { signal }), "a first packet arrives");
+    const auto droppedBefore = backend.getFramesDroppedByBackend();
+
+    check (fakewasapi::pushCaptureAfterOverrun ("mic-overrun", 256, { signal }),
+           "the packet after a 256-frame overrun arrives");
+
+    check (backend.getFramesDroppedByBackend() - droppedBefore == 256,
+           "the 256 frames the driver lost are counted as dropped");
+
+    const auto log = capture.log();
+    const bool signalled = log.size() == 3 && log[1].first && log[1].second == 256
+                        && ! log[2].first && log[2].second == 128;
+    check (signalled,
+           "the callback is told 256 frames were produced and lost, before the packet itself");
+
+    backend.closeAllStreams();
+}
+
+/// Windows commonly flags the first packet after Start as discontinuous: there
+/// is nothing before it to be discontinuous with. That must not read as loss.
+void aDiscontinuityOnTheFirstPacketIsNotLoss()
+{
+    std::printf ("\nA discontinuity flag on the first packet after Start\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (microphone ("mic-first", "First-packet Mic",
+                                         { fakewasapi::Format::pcm (1, 24, 48000.0) }));
+
+    mma::WasapiAsioBackend backend;
+    LossAwareCapture capture;
+
+    check (backend.openInputStream ("mic-first", 48000.0, 256, capture.callback()), "the stream opens");
+    check (fakewasapi::pushCaptureAfterOverrun ("mic-first", 0, { tone (128, 0.25f, 0.0f) }),
+           "the flagged first packet arrives");
+
+    check (backend.getFramesDroppedByBackend() == 0, "nothing is counted as dropped");
+
+    const auto log = capture.log();
+    check (log.size() == 1 && ! log[0].first && log[0].second == 128,
+           "and the callback sees only the packet, with no loss signal");
+
+    backend.closeAllStreams();
+}
+
 /// The monitor path. A packing error here is a silent or crossed monitor mix,
 /// which no recording test would catch.
 void theMonitorMixIsWrittenInTheNegotiatedFormat()
@@ -975,6 +1062,37 @@ void anIntegerOnlyOutputIsNotCalledIncapable()
     backend.closeAllStreams();
 }
 
+/// The probe asked about stereo alone, while the open goes on to try mono and
+/// the device's own channel count. Hardware that is mono-only, or a
+/// four-channel interface that takes nothing narrower, was declared incapable
+/// -- and blamed on a Windows setting -- although it opened on the next try.
+void aNonStereoOutputIsNotCalledIncapable()
+{
+    std::printf ("\nHeadphone outputs that take only mono, or only four channels\n");
+    fakewasapi::reset();
+
+    fakewasapi::addEndpoint (headphones ("out-quad", "Four-channel Out",
+                                         { fakewasapi::Format::pcm (4, 24, 48000.0) }));
+    fakewasapi::addEndpoint (headphones ("out-mono", "Mono Out",
+                                         { fakewasapi::Format::pcm (1, 16, 48000.0) }));
+
+    for (const char* id : { "out-quad", "out-mono" })
+    {
+        mma::WasapiAsioBackend backend;
+        const auto cap = backend.checkExclusiveModeCapability (id, 48000.0, 256);
+
+        check (cap.exclusiveModeAvailable,
+               std::string (id) + ": the probe tries the layouts the open will try");
+
+        Capture capture;
+        check (backend.openExclusiveOutputStream (id, 48000.0, 256, capture.callback()),
+               std::string (id) + ": and the stream it promised opens");
+        check (fakewasapi::openedExclusive (id), std::string (id) + ": exclusively");
+
+        backend.closeAllStreams();
+    }
+}
+
 /// 16-bit-only hardware is the same argument one layout further down.
 void aSixteenBitOnlyOutputIsNotCalledIncapable()
 {
@@ -1255,6 +1373,8 @@ int main()
     aBufferBelowTheDeviceMinimumOpensAtTheMinimum();
     microphonesOpenWhenTheMessageThreadIsSingleThreaded();
     aSilentFlaggedPacketIsTreatedAsSilence();
+    aCaptureOverrunIsCountedAndReportedAsLost();
+    aDiscontinuityOnTheFirstPacketIsNotLoss();
     theMonitorMixIsWrittenInTheNegotiatedFormat();
     anOverRangeMonitorSumClipsRatherThanWraps();
     hotplugArrivesThroughTheNotificationClient();
@@ -1264,6 +1384,7 @@ int main()
     theGrantedOutputPeriodIsWhatTheBackendReports();
     anIntegerOnlyOutputIsNotCalledIncapable();
     aSixteenBitOnlyOutputIsNotCalledIncapable();
+    aNonStereoOutputIsNotCalledIncapable();
     anOutputThatRefusesEveryLayoutIsStillReported();
     theReportedLatencyIsTheRoundTrip();
     aStalledMicrophoneIsReportedRatherThanSpunOnForever();

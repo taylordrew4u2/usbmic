@@ -1,5 +1,6 @@
 #pragma once
 #include "ModalCard.h"
+#include "../Core/SessionRecovery.h"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -20,14 +21,9 @@ public:
     RecoveredTakesPanel();
     ~RecoveredTakesPanel() override;
 
-    struct TakeRow
-    {
-        juce::String folderName;
-        juce::String fullPath;
-        int fileCount = 0;
-        int emptyFileCount = 0;
-        double longestSeconds = 0.0;
-    };
+    /// Built by recoveredTakeRow(), which is also where the card's wording
+    /// lives -- so it can be tested without a window.
+    using TakeRow = RecoveredTakeRow;
 
     void setTakes (const std::vector<TakeRow>& takes);
 

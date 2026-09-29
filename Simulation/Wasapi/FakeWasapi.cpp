@@ -57,7 +57,14 @@ struct Endpoint
     std::vector<BYTE> pendingCapture;
     int pendingCaptureFrames = 0;
     bool pendingCaptureSilent = false;
+    bool pendingCaptureDiscontinuity = false;
     bool captureConsumed = false;
+
+    // The device's own frame counter, as GetBuffer reports it: the position of
+    // the pending packet's first frame, and of the one after it. An overrun
+    // advances the counter past frames the backend never sees.
+    UINT64 pendingCapturePosition = 0;
+    UINT64 nextCapturePosition = 0;
     bool invalidated = false;
     std::atomic<bool> alignmentRejected { false };
 
@@ -331,7 +338,7 @@ struct FakeCaptureClient : RefCounted<IAudioCaptureClient>
     }
 
     HRESULT STDMETHODCALLTYPE GetBuffer (BYTE** data, UINT32* frames, DWORD* flags,
-                                         UINT64*, UINT64*) override
+                                         UINT64* devicePosition, UINT64*) override
     {
         if (data == nullptr || frames == nullptr || flags == nullptr || endpoint == nullptr)
             return E_POINTER;
@@ -345,7 +352,11 @@ struct FakeCaptureClient : RefCounted<IAudioCaptureClient>
             return E_FAIL;
 
         *frames = static_cast<UINT32> (endpoint->pendingCaptureFrames);
-        *flags = endpoint->pendingCaptureSilent ? AUDCLNT_BUFFERFLAGS_SILENT : 0;
+        *flags = (endpoint->pendingCaptureSilent ? AUDCLNT_BUFFERFLAGS_SILENT : 0u)
+               | (endpoint->pendingCaptureDiscontinuity ? AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY : 0u);
+
+        if (devicePosition != nullptr)
+            *devicePosition = endpoint->pendingCapturePosition;
 
         // A silent packet's contents are undefined on Windows. Handing back the
         // real pointer with the flag set is what catches a backend that reads
@@ -1378,7 +1389,8 @@ bool openedExclusive (const std::string& id)
 
 namespace {
 
-bool deliverCapture (const std::string& id, std::vector<BYTE> bytes, int frames, bool silent)
+bool deliverCapture (const std::string& id, std::vector<BYTE> bytes, int frames, bool silent,
+                     int overrunFrames = 0, bool discontinuity = false)
 {
     auto* endpoint = findEndpoint (id);
     if (endpoint == nullptr)
@@ -1393,6 +1405,10 @@ bool deliverCapture (const std::string& id, std::vector<BYTE> bytes, int frames,
         endpoint->pendingCapture = std::move (bytes);
         endpoint->pendingCaptureFrames = frames;
         endpoint->pendingCaptureSilent = silent;
+        endpoint->pendingCaptureDiscontinuity = discontinuity;
+        endpoint->nextCapturePosition += static_cast<UINT64> (overrunFrames);
+        endpoint->pendingCapturePosition = endpoint->nextCapturePosition;
+        endpoint->nextCapturePosition += static_cast<UINT64> (frames);
         endpoint->captureConsumed = false;
     }
 
@@ -1408,7 +1424,10 @@ bool deliverCapture (const std::string& id, std::vector<BYTE> bytes, int frames,
 
 } // namespace
 
-bool pushCapture (const std::string& id, const std::vector<std::vector<float>>& channels)
+namespace {
+
+bool pushEncodedCapture (const std::string& id, const std::vector<std::vector<float>>& channels,
+                         int overrunFrames, bool discontinuity)
 {
     auto* endpoint = findEndpoint (id);
     if (endpoint == nullptr || channels.empty())
@@ -1441,7 +1460,20 @@ bool pushCapture (const std::string& id, const std::vector<std::vector<float>>& 
                                       bytes, format.isFloat, value);
         }
 
-    return deliverCapture (id, std::move (wire), frames, false);
+    return deliverCapture (id, std::move (wire), frames, false, overrunFrames, discontinuity);
+}
+
+} // namespace
+
+bool pushCapture (const std::string& id, const std::vector<std::vector<float>>& channels)
+{
+    return pushEncodedCapture (id, channels, 0, false);
+}
+
+bool pushCaptureAfterOverrun (const std::string& id, int lostFrames,
+                              const std::vector<std::vector<float>>& channels)
+{
+    return pushEncodedCapture (id, channels, lostFrames, true);
 }
 
 bool pushSilentCapture (const std::string& id, int frames)

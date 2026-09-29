@@ -3,6 +3,7 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#include "../Core/QuitGate.h"
 #if defined (MMA_STALL_METER)
  #include "MessageThreadStallMeter.h"
 #endif
@@ -72,6 +73,19 @@ public:
        #endif
     }
     bool moreThanOneInstanceAllowed() override          { return false; }
+
+    /// Only one SobStage runs, so a second launch is handed to this one. With
+    /// the window minimised or behind others, ignoring it looked like the app
+    /// had failed to start; bring the window back instead.
+    void anotherInstanceStarted (const juce::String&) override
+    {
+        if (mainWindow == nullptr)
+            return;
+
+        mainWindow->setMinimised (false);
+        mainWindow->setVisible (true);
+        mainWindow->toFront (true);
+    }
 
     void initialise (const juce::String&) override
     {
@@ -162,35 +176,46 @@ public:
 
     void systemRequestedQuit() override
     {
-        if (quitPending)
-        {
-            // A second explicit quit is the user's escape hatch for a driver
-            // which outlives even the bounded finalization window. Audio was
-            // already drained by the first request; no saved-video claim is
-            // made for a movie whose didFinish callback never arrived.
-            juce::Logger::writeToLog (
-                "Quit requested again while camera files were finishing; forcing shutdown.");
-            quit();
-            return;
-        }
+        const bool ready = application == nullptr || application->prepareToQuit();
 
-        if (application == nullptr || application->prepareToQuit())
+        switch (quitGate.onQuitRequested (ready, juce::Time::getMillisecondCounterHiRes()))
         {
-            quit();
-            return;
-        }
+            case QuitGate::Decision::QuitNow:
+                stopTimer();
+                quit();
+                return;
 
-        quitPending = true;
-        startTimer (50);
+            case QuitGate::Decision::StartWaiting:
+                startTimer (50);
+                return;
+
+            case QuitGate::Decision::Ignore:
+                // Forcing now would tear the camera down mid-write and leave a
+                // truncated movie. Its finalization is bounded, so the first
+                // request's wait ends by itself.
+                juce::Logger::writeToLog (
+                    "Quit requested again while camera files were finishing; still waiting for them.");
+                return;
+
+            case QuitGate::Decision::ForceQuit:
+                // The user's escape hatch, once the wait has outlived even the
+                // camera's own bound. Audio was already drained by the first
+                // request; no saved-video claim is made for a movie whose
+                // didFinish callback never arrived.
+                juce::Logger::writeToLog (
+                    "Quit requested again after camera files outlived their time limit; forcing shutdown.");
+                stopTimer();
+                quit();
+                return;
+        }
     }
 
     void timerCallback() override
     {
-        if (application != nullptr && ! application->prepareToQuit())
+        if (! quitGate.onPoll (application == nullptr || application->prepareToQuit()))
             return;
 
         stopTimer();
-        quitPending = false;
         quit();
     }
 
@@ -202,7 +227,7 @@ private:
     // outlives the look-and-feel it points at.
     AppLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
-    bool quitPending = false;
+    QuitGate quitGate;
 
    #if defined (MMA_STALL_METER)
     std::unique_ptr<MessageThreadStallMeter> stallMeter;

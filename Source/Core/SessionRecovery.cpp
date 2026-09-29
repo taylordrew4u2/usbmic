@@ -2,6 +2,7 @@
 #include "Utf8Path.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -228,13 +229,29 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
 
     result.frames = wholeFrameBytes / blockAlign;
     result.seconds = static_cast<double> (result.frames) / static_cast<double> (sampleRate);
-    result.headerWasStale = declaredDataSize != wholeFrameBytes;
+    // Chunks are word-aligned: an odd data chunk (mono 24-bit, odd frames) is
+    // followed by a pad byte the RIFF size counts, as SessionWriter's
+    // appendPadByteIfOdd does on a clean stop. Without it the repaired file's
+    // RIFF size stops one byte short of the chunk's padded end.
+    const uint64_t padBytes = wholeFrameBytes & 1u;
+    // RIFF size counts everything after the size field itself.
+    const uint64_t expectedRiffSize = dataStart + wholeFrameBytes + padBytes - 8;
+
+    result.headerWasStale = declaredDataSize != wholeFrameBytes || riffSize != expectedRiffSize;
 
     if (result.headerWasStale)
     {
         writeU32LE (file, dataSizeFieldPos, static_cast<uint32_t> (wholeFrameBytes));
-        // RIFF size counts everything after the size field itself.
-        writeU32LE (file, riffSizeFieldPos, static_cast<uint32_t> (dataStart + wholeFrameBytes - 8));
+        writeU32LE (file, riffSizeFieldPos, static_cast<uint32_t> (expectedRiffSize));
+
+        // Overwrites a trailing partial-frame byte if one is there, which is
+        // not audio anyone can play; appends one otherwise.
+        if (padBytes != 0)
+        {
+            file.seekp (static_cast<std::streamoff> (dataStart + wholeFrameBytes), std::ios::beg);
+            file.put ('\0');
+        }
+
         file.flush();
 
         // Checked. A card that is read-only, full or failing takes the repair
@@ -266,6 +283,75 @@ std::string folderName (const std::string& folder)
 }
 
 } // namespace
+
+namespace {
+
+std::string describeLength (double seconds)
+{
+    const auto total = static_cast<long> (std::lround (seconds));
+    const auto minutes = total / 60;
+    const auto remainder = total % 60;
+
+    return minutes > 0 ? std::to_string (minutes) + "m " + std::to_string (remainder) + "s"
+                       : std::to_string (remainder) + "s";
+}
+
+} // namespace
+
+RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session)
+{
+    RecoveredTakeRow row;
+    row.folderName = folderName (session.folder);
+    row.fullPath = session.folder;
+    row.fileCount = session.keptFileCount();
+    row.playableFileCount = session.playableFileCount();
+    row.emptyFileCount = session.emptyFileCount();
+    row.longestSeconds = session.longestSeconds();
+    return row;
+}
+
+std::string recoveredTakesExplanation (const std::vector<RecoveredTakeRow>& takes)
+{
+    // A file the card would not take the repair on still has its old header,
+    // so "playable" is only said when it is true of every file listed.
+    const bool allPlayable = std::all_of (takes.begin(), takes.end(),
+                                          [] (const RecoveredTakeRow& t)
+                                          { return t.playableFileCount == t.fileCount; });
+
+    const std::string opening = takes.size() == 1
+        ? "The app stopped before this take was finished -- a crash, a power cut, "
+          "or the card coming out. The sound was still on the disk"
+        : "The app stopped before these takes were finished. The sound was still on the disk";
+
+    if (allPlayable)
+        return opening + ", and it has been repaired and is playable.";
+
+    return opening + ", but some files couldn't be repaired on this card. "
+                     "Copy them off the card before playing them.";
+}
+
+std::string recoveredTakeDetail (const RecoveredTakeRow& take)
+{
+    std::string detail = std::to_string (take.fileCount)
+                       + (take.fileCount == 1 ? " file, " : " files, ")
+                       + describeLength (take.longestSeconds) + " of sound";
+
+    // Said per take, so the user knows which folder the warning above is about.
+    const int unrepaired = take.fileCount - take.playableFileCount;
+
+    if (unrepaired > 0)
+        detail += ", " + std::to_string (unrepaired) + " couldn't be repaired";
+
+    // Named rather than hidden: §6.6 would rather report a stub as empty
+    // than present it, and a user counting files needs to know why there
+    // are fewer than they expected.
+    if (take.emptyFileCount > 0)
+        detail += ", and " + std::to_string (take.emptyFileCount)
+                + (take.emptyFileCount == 1 ? " empty file left alone"
+                                            : " empty files left alone");
+
+    return detail;
+}
 
 RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
                                                  std::vector<RecoveredSession> scanned,
