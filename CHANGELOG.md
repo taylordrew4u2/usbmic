@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Every camera plugged in records**, each to its own file for the whole
+  take. A newly seen camera used to stay off until it was switched on in the
+  Cameras panel; now it is in the take from the start, and the panel is where
+  one is switched off. That choice is still remembered across an unplug and a
+  relaunch. The first launch may raise the OS camera prompt before record is
+  pressed, which is the price of never missing a camera from a take that
+  cannot be redone.
+- **The mid-take card is now an alarm.** When anything goes wrong during a
+  take -- a microphone unplugged or gone silent, a camera lost or switched
+  off, sound dropped, the drive falling behind, the headphone output gone --
+  the whole window flashes red, a banner across the card says SOMETHING IS
+  WRONG in letters that read across a room, and a two-tone siren sounds in
+  the headphones, until Keep recording or Stop recording is pressed. The card
+  used to dim the room politely and wait, which is what got missed on a loud
+  stage.
+- **Starts and stops are announced.** For three seconds the whole window
+  flashes RECORDING in red, or RECORDING STOPPED in cyan, with the take's
+  name, and the headphones play a rising chirp for a start and a falling one
+  for a stop. Whatever started or stopped the take -- the button, the card,
+  the proof, the drive -- the announcement is the same. The banner takes no
+  clicks, so the saved-take card behind it works through it.
+- The alarm and the banners honour the system's reduced-motion setting by
+  pulsing once a second instead of flashing four times a second. The sounds
+  go through the monitor output when one is open, and through the computer's
+  own default output when none is, so a laptop with nothing plugged in still
+  hears the siren.
+
+### Fixed
+
+- A microphone that would not open was not mentioned when the headphone
+  output had a problem of its own: the output's sentence replaced the
+  microphone's, so a rig with a shared output and a dead cable was told about
+  its headphones and nothing about the track that would be silent. Both are
+  said now.
+- On Linux test builds, ALSA's `default`, `sysdefault` and `dsnoop` aliases
+  no longer appear in the microphone list as a fifth, silent microphone.
+
+### Added
+
+- `AlarmTone`, the app's own sounds, rendered into the headphone mix by the
+  audio callback rather than played through the OS, which would fight the
+  exclusive monitor stream for the device. Unit-tested for pattern, level and
+  timing.
+- The UI walk now checks the start and stop banners, that the headphones
+  chirp for each, and in its dead-microphone run that the card flashes, the
+  siren sounds and keeps sounding, and both stop the moment Keep recording is
+  pressed.
+
 ## v1.12.1 -- 2026-09-28 (release candidate)
 
 A fix release on v1.12.0. Two faults that could spoil a take without saying

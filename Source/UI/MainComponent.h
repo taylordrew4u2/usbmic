@@ -8,6 +8,7 @@
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
 #include "TakeAlertCard.h"
+#include "TakeBanner.h"
 #include "../Core/TakeWatchdog.h"
 #include "../Core/RecordingProof.h"
 #include <functional>
@@ -120,6 +121,10 @@ private:
     // watcher is fed one reading per slow tick while a take runs and speaks
     // only when something changes; the card collects what it says.
     TakeAlertCard takeAlertCard;
+    TakeBanner takeBanner;
+    bool lastAnnouncedRecording = false;
+    juce::String announcedTakeFolder;
+    void announceTakeTransitions();
     TakeWatchdog takeWatchdog;
     RecordingProof recordingProof;
     bool takeStoppedByProof = false;

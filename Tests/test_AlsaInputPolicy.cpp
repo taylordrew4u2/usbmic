@@ -206,3 +206,15 @@ TEST_CASE (AlsaInputPolicy_TheExclusiveNamesAreMatchedAsPrefixesWithTheirSeparat
     REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("fronting:CARD=USB"));
     REQUIRE_FALSE (alsa_detail::alsaOutputNameIsExclusiveCapable ("not-hw:CARD=USB"));
 }
+
+TEST_CASE (AlsaInputPolicy_SystemAliasesAreNotMicrophones)
+{
+    REQUIRE (alsa_detail::alsaInputNameIsASystemAlias ("default"));
+    REQUIRE (alsa_detail::alsaInputNameIsASystemAlias ("sysdefault:CARD=USB"));
+    REQUIRE (alsa_detail::alsaInputNameIsASystemAlias ("dsnoop:CARD=USB,DEV=0"));
+    REQUIRE_FALSE (alsa_detail::alsaInputNameIsASystemAlias ("hw:CARD=USB,DEV=0"));
+    REQUIRE_FALSE (alsa_detail::alsaInputNameIsASystemAlias ("front:CARD=USB,DEV=0"));
+    REQUIRE_FALSE (alsa_detail::alsaInputNameIsASystemAlias ("mma_mic1"));
+    // A name that merely starts with an alias's letters is its own device.
+    REQUIRE_FALSE (alsa_detail::alsaInputNameIsASystemAlias ("defaultmic"));
+}

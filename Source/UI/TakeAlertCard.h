@@ -11,7 +11,8 @@ namespace mma {
 /// falling behind or running out of room. Each is one line, newest at the
 /// top, with when in the take it happened. The take carries on behind the
 /// card either way; the two buttons are "carry on" and "stop now".
-class TakeAlertCard : public ModalCard
+class TakeAlertCard : public ModalCard,
+                      private juce::Timer
 {
 public:
     /// How much a line matters, which decides its colour bar and how the
@@ -46,6 +47,23 @@ public:
     bool keyPressed (const juce::KeyPress& key) override;
     void prepareToShow() { keepButton.grabKeyboardFocus(); }
 
+    /// The alarm: the backdrop flashes red, a banner across the card says
+    /// SOMETHING IS WRONG in letters the whole room can read, and the owner
+    /// keeps the siren going in the headphones for as long as this is true.
+    /// Cleared by Keep recording, Stop recording, or the card being hidden.
+    void setAlarming (bool shouldAlarm);
+    bool isAlarming() const noexcept { return alarming; }
+    void setReducedMotion (bool shouldReduceMotion) { reducedMotion = shouldReduceMotion; }
+    juce::String getBannerText() const;
+
+    /// Fast enough to be impossible to miss, slow enough to read the card
+    /// through. Reduced motion pulses once a second instead.
+    static constexpr int kFlashMs = 250;
+    static constexpr int kReducedFlashMs = 1000;
+    static constexpr int kBannerHeight = 96;
+
+    void visibilityChanged() override;
+
 protected:
     int getContentHeight() const override;
     void layOutContent (juce::Rectangle<int> area) override;
@@ -67,6 +85,13 @@ private:
     std::unique_ptr<juce::Label> overflowLabel;
 
     bool severeHeading = false;
+    bool severeTakeStopped = false;
+    bool alarming = false;
+    bool reducedMotion = false;
+    double alarmStartedMs = 0.0;
+    juce::Rectangle<int> bannerBounds;
+    void timerCallback() override;
+    bool litNow() const;
 
     juce::TextButton keepButton { "Keep recording" };
     juce::TextButton stopButton { "Stop recording" };

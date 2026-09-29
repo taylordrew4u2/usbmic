@@ -55,6 +55,7 @@ add_library(mma_core STATIC
     Source/Core/ControllerContentionDetector.cpp
     Source/Core/Metering.cpp
     Source/Core/MonitorBus.cpp
+    Source/Core/AlarmTone.cpp
     Source/Core/MixBusLimiter.cpp
     Source/Core/RingBuffer.cpp
     Source/Core/SessionWriter.cpp
@@ -226,11 +227,13 @@ if (MMA_BUILD_APP)
         Source/UI/SavedTakePanel.cpp
         Source/UI/RecoveredTakesPanel.cpp
         Source/UI/TakeAlertCard.cpp
+        Source/UI/TakeBanner.cpp
         Source/UI/MainComponent.cpp
         Source/UI/Main.cpp
         Source/App/Application.cpp
         Source/App/CameraController.cpp
         Source/App/TakeCombiner.cpp
+        Source/App/AlarmSpeaker.cpp
     )
 
     target_compile_definitions(SobStage PRIVATE

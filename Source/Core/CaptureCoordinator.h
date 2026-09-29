@@ -9,6 +9,7 @@
 #include <vector>
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
+#include "AlarmTone.h"
 #include "DeviceInputStream.h"
 #include "ChannelLayoutAnalyzer.h"
 #include "Metering.h"
@@ -194,6 +195,11 @@ public:
     const std::vector<CaptureChannel>& getChannels() const noexcept { return channels; }
 
     MonitorBus& getMonitorBus() noexcept { return monitorBus; }
+
+    /// The app's own sounds -- take started, take stopped, something is
+    /// wrong -- mixed into the headphone output by the callback.
+    AlarmTone& getAlarm() noexcept { return alarm; }
+    const AlarmTone& getAlarm() const noexcept { return alarm; }
     Metering* getChannelMetering (int index) noexcept;
     Metering& getMixMetering() noexcept { return mixMeter; }
 
@@ -476,6 +482,7 @@ private:
 
     std::vector<CaptureChannel> channels;
     MonitorBus monitorBus;
+    AlarmTone alarm;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
 
