@@ -1,4 +1,5 @@
 #include "App/TakeCombiner.h"
+#include "Core/SessionWriter.h"
 #include <chrono>
 #include <cstring>
 #include <cstdio>
@@ -11,6 +12,131 @@ int fail (const char* message)
 {
     std::fprintf (stderr, "FAIL  %s\n", message);
     return 1;
+}
+
+/// Runs a real ffmpeg to completion, output discarded. False on any failure.
+bool runToCompletion (const juce::StringArray& argv)
+{
+    juce::ChildProcess process;
+    return process.start (argv, 0)
+        && process.waitForProcessToFinish (8000)
+        && process.getExitCode() == 0;
+}
+
+} // namespace
+
+namespace mma {
+
+struct SessionWriterTestAccess
+{
+    static void useSplitSize (SessionWriter& writer, uint64_t bytes)
+    {
+        writer.setAutoSplitBytesForTesting (bytes);
+    }
+};
+
+} // namespace mma
+
+namespace {
+
+/// A mix that rolled over into MIX_001.wav, MIX_002.wav... must reach the
+/// combined file whole. The plan named MIX.wav alone and ffmpeg was told to
+/// stop at the shorter stream, so a take long enough to split (3.9 GB, a few
+/// hours) came back as a video cut off where the first part ended.
+///
+/// Uses the real ffmpeg, because what is being checked is what ffmpeg does
+/// with the arguments -- not what they look like. Skipped, loudly, on a
+/// machine without one.
+int checkSplitMixReachesTheCombinedFile (const juce::File& root)
+{
+    mma::TakeCombiner locator;
+    const auto ffmpeg = locator.findFfmpeg();
+
+    if (ffmpeg.isEmpty())
+    {
+        std::printf ("SKIP  no ffmpeg on this machine; the split-mix combine was not run\n");
+        return 0;
+    }
+
+    const auto take = root.getChildFile ("split-take");
+    if (! take.createDirectory().wasOk())
+        return fail ("could not make the split take's folder");
+
+    constexpr double kRate = 48000.0;
+    constexpr double kSeconds = 6.0;
+    constexpr double kLead = 0.5;
+
+    // Six seconds of picture, as a camera would have written it.
+    if (! runToCompletion ({ ffmpeg, "-nostdin", "-loglevel", "error", "-y",
+                             "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25",
+                             "-t", "6", "-c:v", "mpeg4",
+                             take.getChildFile ("V01_Camera.mov").getFullPathName() }))
+        return fail ("could not make the split take's fake video");
+
+    int parts = 0;
+
+    // Six seconds of mix, split after about two: mono 24-bit is 144 kB a
+    // second, so this is MIX.wav plus MIX_001.wav and MIX_002.wav.
+    {
+        mma::SessionWriter writer;
+        mma::SessionWriterTestAccess::useSplitSize (writer, 300000);
+
+        if (! writer.open (take.getChildFile ("MIX").getFullPathName().toStdString(),
+                           kRate, 1, 24, "2026-09-29T12:00:00Z"))
+            return fail ("could not open the split take's mix");
+
+        std::vector<float> block (4800, 0.25f);
+        for (int i = 0; i < static_cast<int> (kSeconds * kRate) / 4800; ++i)
+            if (! writer.writeInterleaved (block.data(), block.size()))
+                return fail ("could not write the split take's mix");
+
+        parts = writer.getSplitFileCount() + 1;
+
+        if (! writer.close() || parts < 3)
+            return fail ("the mix did not split the way the check needs it to");
+    }
+
+    mma::CombinedTakePlan plan;
+    plan.jobs.push_back ({ "V01_Camera.mov", "MIX.wav",
+                           "V01_Camera_with-sound.mov", 24, kLead });
+
+    mma::TakeCombiner combiner;
+    if (! combiner.start (take, plan))
+        return fail ("the split take's real combine did not start");
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds (6);
+    while (combiner.isRunning() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+    if (combiner.isRunning())
+        return fail ("the split take's real combine did not finish");
+
+    const auto status = combiner.getStatus();
+    if (status.problem.isNotEmpty() || ! status.written.contains ("V01_Camera_with-sound.mov"))
+        return fail ("the split take's real combine reported a failure");
+
+    // Decoded back to bare 16-bit mono: the byte count is the duration.
+    const auto decoded = take.getChildFile ("decoded.raw");
+    if (! runToCompletion ({ ffmpeg, "-nostdin", "-loglevel", "error", "-y",
+                             "-i", take.getChildFile ("V01_Camera_with-sound.mov").getFullPathName(),
+                             "-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", "48000",
+                             decoded.getFullPathName() }))
+        return fail ("could not read the sound back out of the combined file");
+
+    const double audioSeconds = static_cast<double> (decoded.getSize()) / 2.0 / kRate;
+    std::printf ("  split mix: %d parts, combined sound %.2f s of %.2f expected\n",
+                 parts, audioSeconds, kSeconds - kLead);
+
+    if (audioSeconds < kSeconds - kLead - 0.25)
+        return fail ("the combined file's sound stopped where the mix's first part ended");
+
+    // Nothing of the combine's own left in the take folder.
+    for (const auto& entry : take.findChildFiles (juce::File::findFiles, false))
+        if (entry.getFileExtension() != ".wav" && entry.getFileExtension() != ".mov"
+            && entry.getFileExtension() != ".raw")
+            return fail ("the combine left a working file in the take folder");
+
+    return 0;
 }
 
 } // namespace
@@ -234,6 +360,9 @@ int main (int argc, char** argv)
         || ! queuedStatus.written.contains ("second-take-output.mov"))
         return fail ("the status did not account for both queued takes");
 
-    std::printf ("ALL CHECKS PASSED (19 checks, 0 failing)\n");
+    if (checkSplitMixReachesTheCombinedFile (root) != 0)
+        return 1;
+
+    std::printf ("ALL CHECKS PASSED (20 checks, 0 failing)\n");
     return 0;
 }

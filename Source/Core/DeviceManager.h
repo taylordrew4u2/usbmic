@@ -70,7 +70,8 @@ struct MicDeviceState
     ///
     /// One device is not one microphone. An interface with four mics plugged
     /// into it reports four, and each is a separate person who expects their
-    /// own track.
+    /// own track. syncToEnumeration() reads 0 or less in an enumeration as
+    /// "not reported" and keeps the count it already had.
     int inputChannelCount = 1;
 };
 

@@ -21,6 +21,12 @@ struct ProofReading
     float peakArrived = -1.0f;
 };
 
+/// Whether a file in the take's folder is audio the writer grows, and so
+/// counts toward ProofReading::bytesOnDisk. The camera's movie shares the
+/// folder and keeps growing when the audio writer has stalled; counting it
+/// hid the stall for as long as the camera recorded.
+bool countsAsRecordedAudio (const std::string& fileName);
+
 enum class ProofVerdict
 {
     TooEarly,        // inside the grace period; nothing to say yet

@@ -349,12 +349,12 @@ private:
     std::set<std::string> startingCameraIds;
     std::map<std::string, int> takeDeviceNameCounts;
     std::set<std::string> ambiguousTakeDeviceNames;
-    /// Same-name groups whose count has dropped at some point this take. Only
-    /// a drop can mean a recording camera left; a group that has only grown
-    /// is held out of the list for identity's sake, but its running writers
-    /// are not cut (a twin plugged in mid-take used to stop the one recording).
+    /// Same-name groups whose count has fallen below the take's baseline at
+    /// some point this take. Only that can mean a recording camera left; a
+    /// group that has only grown (or grown and come back) is held out of the
+    /// list for identity's sake, but its running writers are not cut (a twin
+    /// plugged in, or plugged in and pulled, used to stop the one recording).
     std::set<std::string> shrunkTakeDeviceNames;
-    std::map<std::string, int> lastTakeDeviceNameCounts;
     void stopRecordingInternal (bool reconcileForNextTake);
     bool hiddenOnlyByGrowth (const std::string& id) const;
     uint64_t takeGeneration = 0;

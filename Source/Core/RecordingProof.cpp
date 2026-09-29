@@ -2,6 +2,22 @@
 
 namespace mma {
 
+bool countsAsRecordedAudio (const std::string& fileName)
+{
+    const std::string suffix = ".wav";
+    if (fileName.size() <= suffix.size())
+        return false;
+
+    for (size_t i = 0; i < suffix.size(); ++i)
+    {
+        const char c = fileName[fileName.size() - suffix.size() + i];
+        const char lower = (c >= 'A' && c <= 'Z') ? static_cast<char> (c - 'A' + 'a') : c;
+        if (lower != suffix[i])
+            return false;
+    }
+    return true;
+}
+
 void RecordingProof::begin (const ProofReading& atArm)
 {
     watching = true;

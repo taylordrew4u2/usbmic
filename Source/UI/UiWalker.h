@@ -102,6 +102,7 @@ private:
     std::set<juce::String> exercised;
     int diagnosticsZipsBefore = 0;
     juce::String takeFolder;
+    juce::Rectangle<int> windowBoundsBefore;
 
     // --- reporting -------------------------------------------------------
 
@@ -268,6 +269,62 @@ private:
         if (auto* mc = mainComponent())
             return mc->keyPressed (juce::KeyPress (keyCode));
         return false;
+    }
+
+    /// A real left click, delivered through the window the way the OS would
+    /// deliver one. triggerClick() and calling mouseUp() skip everything JUCE
+    /// does on the way in -- in particular which component the click hands
+    /// the keyboard to.
+    bool clickWithMouse (juce::Component& target)
+    {
+        auto* peer = target.getPeer();
+        if (peer == nullptr)
+            return false;
+
+        const auto at = peer->globalToLocal (target.localPointToGlobal (target.getLocalBounds().getCentre()).toFloat());
+        const auto now = juce::Time::currentTimeMillis();
+        const auto source = juce::MouseInputSource::InputSourceType::mouse;
+        peer->handleMouseEvent (source, at, juce::ModifierKeys::leftButtonModifier,
+                                juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now);
+        peer->handleMouseEvent (source, at, juce::ModifierKeys(),
+                                juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation, now + 50);
+        return true;
+    }
+
+    /// A key delivered through the window, so it goes to whatever has the
+    /// keyboard focus -- unlike pressKey(), which hands it to MainComponent
+    /// whoever has the focus.
+    bool pressKeyThroughWindow (int keyCode)
+    {
+        if (auto* mc = mainComponent())
+            if (auto* peer = mc->getPeer())
+                return peer->handleKeyPress (juce::KeyPress (keyCode));
+        return false;
+    }
+
+    /// Every modal card, and the take banner, is the size of the whole window
+    /// -- not of whatever the Settings or Help drawer left beside it, or the
+    /// drawer's controls stay live beside a card that is meant to own the
+    /// screen. Asked of the cards whether or not they are showing: the layout
+    /// is the same either way, and a hidden card is the next one to appear.
+    bool overlaysCoverWindow() const
+    {
+        auto* mc = mainComponent();
+        if (mc == nullptr)
+            return false;
+
+        int overlays = 0;
+        for (auto* c : mc->getChildren())
+            if (dynamic_cast<SaveLocationPrompt*> (c) != nullptr || dynamic_cast<SavedTakePanel*> (c) != nullptr
+                || dynamic_cast<RecoveredTakesPanel*> (c) != nullptr || dynamic_cast<TakeAlertCard*> (c) != nullptr
+                || dynamic_cast<TakeBanner*> (c) != nullptr)
+            {
+                if (c->getBounds() != mc->getLocalBounds())
+                    return false;
+                ++overlays;
+            }
+
+        return overlays == 5;
     }
 
     static juce::File desktop() { return juce::File::getSpecialLocation (juce::File::userDesktopDirectory); }
@@ -646,8 +703,86 @@ private:
             }
         }, [this] { return find<juce::AlertWindow>() == nullptr && application.getMicDisplayName (0).contains ("Walker"); });
 
+        // A strip is clicked with the mouse far more often than it is tabbed
+        // to. The click must not keep the keyboard afterwards: Space is the
+        // room's mute, and a strip holding the focus took it to clear a clip
+        // or reopen the rename dialog instead.
+        add ("a strip that has clipped", [this]
+        {
+            if (auto* mc = mainComponent())
+                mc->grabKeyboardFocus();
+            if (auto* metering = application.getChannelMetering (1))
+                metering->pushBlockStats (1.0f, 512);
+        }, [this]
+        {
+            auto* ms = find<MainScreen>();
+            auto* meter = ms != nullptr ? ms->getChannelMeter (1) : nullptr;
+            return meter != nullptr && meter->getDescription().contains ("Clipping");
+        });
+        add ("clicking it with the mouse clears the clip", [this]
+        {
+            if (auto* ms = find<MainScreen>())
+                if (auto* meter = ms->getChannelMeter (1))
+                    clickWithMouse (*meter);
+        }, [this]
+        {
+            auto* metering = application.getChannelMetering (1);
+            return metering != nullptr && ! metering->isClipped() && find<juce::AlertWindow>() == nullptr;
+        });
+        add ("then the space bar still mutes the monitor",
+             [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { return muted() && busMuted() && find<juce::AlertWindow>() == nullptr; });
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { return ! muted() && ! busMuted() && find<juce::AlertWindow>() == nullptr; });
+        add ({}, [this]
+        {
+            click<juce::AlertWindow> ("Cancel");
+            if (muted())
+                if (auto* b = muteButton())
+                    b->triggerClick();
+        }, [] { return true; });
+        add ("clicking a strip with the mouse opens its rename dialog", [this]
+        {
+            if (auto* mc = mainComponent())
+                mc->grabKeyboardFocus();
+            if (auto* ms = find<MainScreen>())
+                if (auto* meter = ms->getChannelMeter (0))
+                    clickWithMouse (*meter);
+        }, [this] { return find<juce::AlertWindow>() != nullptr; });
+        add ("Cancel closes it", [this] { click<juce::AlertWindow> ("Cancel"); },
+             [this] { return find<juce::AlertWindow>() == nullptr; });
+        add ("after clicking a strip, the space bar still mutes the monitor",
+             [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { return muted() && busMuted() && find<juce::AlertWindow>() == nullptr; });
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { return ! muted() && ! busMuted() && find<juce::AlertWindow>() == nullptr; });
+        add ({}, [this]
+        {
+            // So a failure above does not leave a dialog or a mute in the way
+            // of everything after it.
+            click<juce::AlertWindow> ("Cancel");
+            if (muted())
+                if (auto* b = muteButton())
+                    b->triggerClick();
+        }, [] { return true; });
+
         // Settings drawer.
         add ("Settings opens", [this] { click<MainScreen> ("Settings"); }, [this] { return isUp<AdvancedPanel>(); });
+        add ("with Settings open, a resized window's cards still cover all of it", [this]
+        {
+            if (auto* mc = mainComponent())
+                if (auto* window = mc->getTopLevelComponent())
+                {
+                    windowBoundsBefore = window->getBounds();
+                    window->setSize (window->getWidth() + 40, window->getHeight() + 20);
+                }
+        }, [this] { return overlaysCoverWindow(); });
+        add ("  (window size put back)", [this]
+        {
+            if (auto* mc = mainComponent())
+                if (auto* window = mc->getTopLevelComponent())
+                    window->setBounds (windowBoundsBefore);
+        }, [this] { return overlaysCoverWindow(); });
         add ("every control in Settings", [this] { insertNext (exerciseControlsIn<AdvancedPanel> ("Settings")); }, [] { return true; });
         add ("Export diagnostics in Settings writes a zip", [this]
         {

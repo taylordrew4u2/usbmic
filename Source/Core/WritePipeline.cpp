@@ -1,4 +1,5 @@
 #include "WritePipeline.h"
+#include "Utf8Path.h"
 #include <filesystem>
 #include <system_error>
 #include <algorithm>
@@ -36,7 +37,7 @@ void discardPartiallyOpenedWriters (std::vector<std::unique_ptr<SessionWriter>>&
         w->close();
 
         std::error_code ignored;
-        std::filesystem::remove (path, ignored);
+        std::filesystem::remove (pathFromUtf8 (path), ignored);
     }
 
     writers.clear();
@@ -131,7 +132,7 @@ bool WritePipeline::start (const std::string& sessionFolder,
             mixWriter.reset();
 
             std::error_code ignored;
-            std::filesystem::remove (mixPath, ignored);
+            std::filesystem::remove (pathFromUtf8 (mixPath), ignored);
         }
 
         startProblem = ! why.empty()
@@ -361,7 +362,7 @@ bool WritePipeline::openMirrorWriters (const std::string& mirrorFolder,
             mix->close();
 
             std::error_code ignored;
-            std::filesystem::remove (path, ignored);
+            std::filesystem::remove (pathFromUtf8 (path), ignored);
         }
 
         return false;

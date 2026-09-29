@@ -1,4 +1,5 @@
 #include "SessionRecovery.h"
+#include "Utf8Path.h"
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -98,7 +99,9 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
     result.fileName = slash == std::string::npos ? path : path.substr (slash + 1);
     result.reportedEmpty = true; // until proven otherwise
 
-    std::fstream file (path, std::ios::in | std::ios::out | std::ios::binary);
+    // UTF-8 on the way in; see Utf8Path.h for what a narrow open does on Windows.
+    const auto nativePath = pathFromUtf8 (path);
+    std::fstream file (nativePath, std::ios::in | std::ios::out | std::ios::binary);
 
     if (! file.is_open())
     {
@@ -116,7 +119,7 @@ RecoveredFile SessionRecovery::repairWavFile (const std::string& path)
         // interrogated is, for our purposes, a path with nothing at it.
         std::error_code ec;
 
-        if (! std::filesystem::exists (path, ec) || ec)
+        if (! std::filesystem::exists (nativePath, ec) || ec)
             return result;
 
         // A file this app cannot even open is not a file that holds under a

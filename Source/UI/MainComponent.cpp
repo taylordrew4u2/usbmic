@@ -809,6 +809,10 @@ void MainComponent::promptRenameMic (int index)
                 // The name on screen is not part of the take; show it now.
                 rebindMeters();
             }
+
+            // Saved or cancelled, the dialog took the keyboard with it. Hand
+            // it back, or the next Space -- the room's mute -- goes nowhere.
+            grabKeyboardFocus();
         }),
         true); // delete the window when dismissed
 }
@@ -1464,7 +1468,10 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::resized()
 {
-    auto bounds = getLocalBounds();
+    // Taken before the drawer comes off the side: the cards below cover the
+    // whole window, drawer included.
+    const auto full = getLocalBounds();
+    auto bounds = full;
 
     cameraViewport.setBounds (bounds);
 
@@ -1484,11 +1491,11 @@ void MainComponent::resized()
 
     // The modal cards cover whichever screen is underneath, so they follow the
     // window rather than the viewport they happen to be over.
-    saveLocationPrompt.setBounds (bounds);
-    savedTakePanel.setBounds (bounds);
-    recoveredTakesPanel.setBounds (bounds);
-    takeAlertCard.setBounds (bounds);
-    takeBanner.setBounds (bounds);
+    saveLocationPrompt.setBounds (full);
+    savedTakePanel.setBounds (full);
+    recoveredTakesPanel.setBounds (full);
+    takeAlertCard.setBounds (full);
+    takeBanner.setBounds (full);
 
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one

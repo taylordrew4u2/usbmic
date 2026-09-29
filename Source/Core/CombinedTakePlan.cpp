@@ -1,6 +1,7 @@
 #include "CombinedTakePlan.h"
 #include <algorithm>
 #include <cctype>   // std::tolower, which <algorithm> only happens to drag in
+#include <cstdio>
 
 namespace mma {
 
@@ -38,6 +39,40 @@ std::string combinedFileNameFor (const std::string& videoFileName)
     const auto container = extensionOf (videoFileName) == ".mov" ? ".mov" : ".mkv";
 
     return stemOf (videoFileName) + "_with-sound" + container;
+}
+
+std::vector<std::string> splitPartsInOrder (const std::string& firstFileName,
+                                            const std::vector<std::string>& namesInFolder)
+{
+    const auto isThere = [&namesInFolder] (const std::string& name)
+    {
+        return std::find (namesInFolder.begin(), namesInFolder.end(), name) != namesInFolder.end();
+    };
+
+    if (! isThere (firstFileName))
+        return {};
+
+    std::vector<std::string> parts { firstFileName };
+
+    // Named exactly as SessionWriter::makePathForSplit names them.
+    const auto dot = firstFileName.find_last_of ('.');
+    const auto stem = stemOf (firstFileName);
+    const auto ext = dot == std::string::npos ? std::string() : firstFileName.substr (dot);
+
+    for (int index = 1;; ++index)
+    {
+        char suffix[16];
+        std::snprintf (suffix, sizeof (suffix), "_%03d", index);
+
+        auto name = stem + suffix + ext;
+
+        if (! isThere (name))
+            break;
+
+        parts.push_back (std::move (name));
+    }
+
+    return parts;
 }
 
 CombinedTakePlan buildCombinedTakePlan (CombinedVideoMode mode,

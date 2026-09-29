@@ -85,6 +85,11 @@ bool DeviceManager::syncToEnumeration (const std::vector<MicDeviceState>& seen)
         {
             MicDeviceState added = s;
             added.enumerationOrder = nextEnumerationOrder++;
+
+            // Not reported is one microphone, never zero.
+            if (added.inputChannelCount <= 0)
+                added.inputChannelCount = 1;
+
             devices.push_back (std::move (added));
             changed = true;
             continue;
@@ -110,7 +115,12 @@ bool DeviceManager::syncToEnumeration (const std::vector<MicDeviceState>& seen)
         // arrived through addDevice() or was restored at startup -- so the app
         // went on believing a four-input interface had one microphone on it, and
         // the fix for exactly that bug never fired.
-        if (it->inputChannelCount != s.inputChannelCount)
+        //
+        // Zero is the OS declining to say, not the device shrinking. On Linux
+        // it is what a device this app is recording from answers -- the probe
+        // cannot open it -- and taking that as one input collapsed a recording
+        // interface's strips on every device-list change.
+        if (s.inputChannelCount > 0 && it->inputChannelCount != s.inputChannelCount)
         {
             it->inputChannelCount = s.inputChannelCount;
             changed = true;

@@ -670,11 +670,11 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
             if (currentCount != baselineCount && (baselineCount > 1 || currentCount > 1))
                 ambiguousTakeDeviceNames.insert (name);
 
-            auto last = lastTakeDeviceNameCounts.find (name);
-            const int previousCount = last != lastTakeDeviceNameCounts.end() ? last->second : baselineCount;
-            if (currentCount < previousCount)
+            // Below the take's own count, a camera that began the take has
+            // left. A twin that arrived and was pulled again (1 -> 2 -> 1)
+            // never takes the group below it.
+            if (currentCount < baselineCount)
                 shrunkTakeDeviceNames.insert (name);
-            lastTakeDeviceNameCounts[name] = currentCount;
         }
     }
 
@@ -1152,7 +1152,6 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
     takeDeviceNameCounts.clear();
     ambiguousTakeDeviceNames.clear();
     shrunkTakeDeviceNames.clear();
-    lastTakeDeviceNameCounts.clear();
     recordingFinalizationState = RecordingFinalizationState::Idle;
     recordingFinalizationProblem.clear();
     reconcileWhenFinalized = false;
@@ -1364,7 +1363,6 @@ void CameraController::stopRecordingInternal (bool reconcileForNextTake)
     takeDeviceNameCounts.clear();
     ambiguousTakeDeviceNames.clear();
     shrunkTakeDeviceNames.clear();
-    lastTakeDeviceNameCounts.clear();
 
 #if JUCE_USE_CAMERA
     if (! wasTakeActive)
