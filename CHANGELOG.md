@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.13.0 -- 2026-09-29 (release candidate)
+
+A feature release on v1.12.1: every camera records, faults during a take are
+an alarm you cannot miss, starts and stops are announced, and each microphone
+strip now wears the app's crying face. Physical-hardware validation and code
+signing remain open in `RELEASE_CHECKLIST.md`, as for v1.12.1.
 
 ### Changed
 
@@ -30,6 +35,13 @@
   go through the monitor output when one is open, and through the computer's
   own default output when none is, so a laptop with nothing plugged in still
   hears the siren.
+- **Each microphone strip wears the app icon's crying face.** The level ring
+  now has two eyes and a frown in it; it sheds one cyan tear once a microphone
+  is loud (−18 dBFS and up) and two when it clips, and closes its eyes when
+  there is no signal. The fill, the level track and the number still say
+  everything; the face is for fun. The help text and prompts talk about the
+  meter and the strip rather than a skull, and the macOS disk image says to
+  drag the crying face onto Applications.
 
 ### Fixed
 
