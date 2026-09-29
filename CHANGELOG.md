@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **macOS: unplugging one interface no longer locks out the rest until
+  relaunch.** Closing a rig after an interface was pulled treated the
+  vanished device as refusing to let go, and every later open said macOS
+  was still releasing the previous rig. Only a device that is still
+  present and refuses now holds that lock.
+- **Trim on one input of an interface no longer moves the others.** Setting
+  one person's trim on a multi-input interface showed it on every input and
+  applied it to all of them after a relaunch. Each input keeps its own trim
+  now, and session.json records it per input.
+- **A settings file cut short no longer brings back half a value.** After a
+  power cut mid-save, the recordings folder could come back as
+  `/Users/me/RECO` and a microphone named "Lead Vocal" as "Lea", then be
+  saved that way. Settings that finished writing are kept; the one that was
+  cut off goes back to its default.
 - **Clicking a microphone's strip no longer takes the space bar away from
   mute.** After a click to clear a clip or rename a microphone, the next
   Space reopened the rename dialog instead of muting the headphones.
@@ -142,6 +156,14 @@
   `Tools/e2e_ui_walk.sh`) records a take whose files never grow. It checks
   that the red card is the one on screen while the siren sounds, and that
   the saved-take card comes up only after OK.
+- **A take's session.json lists only that take's buffer-size changes.**
+  Every take carried every change since SobStage opened, including earlier
+  takes' and ones made between takes, timed in seconds since the computer
+  started. Each take now records its own, timed from its start.
+- **Dismissing a recovered take also clears its local backup copy.** A take
+  found both on the card and in `~/RECORDINGS-MIRROR` was shown once, but
+  only the card copy was marked as dealt with, so the backup copy was
+  offered as interrupted again at the next launch.
 
 ## v1.13.1 -- 2026-09-29 (release candidate)
 

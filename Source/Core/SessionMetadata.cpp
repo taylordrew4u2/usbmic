@@ -23,6 +23,20 @@ JsonValue SessionMetadata::toJson() const
         dv["name"] = JsonValue (d.name);
         dv["usbId"] = JsonValue (d.usbId);
         dv["trimDb"] = JsonValue (static_cast<double> (d.trimDb));
+
+        if (! d.inputTrimDb.empty())
+        {
+            JsonValue inputTrims = JsonValue::makeArray();
+            for (const auto& [input, db] : d.inputTrimDb)
+            {
+                JsonValue entry = JsonValue::makeObject();
+                entry["input"] = JsonValue (static_cast<double> (input));
+                entry["trimDb"] = JsonValue (static_cast<double> (db));
+                inputTrims.push_back (entry);
+            }
+            dv["inputTrims"] = inputTrims;
+        }
+
         deviceArr.push_back (dv);
     }
     root["devices"] = deviceArr;
@@ -116,6 +130,18 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
             if (auto* n = dv.find ("name")) d.name = n->asString();
             if (auto* n = dv.find ("usbId")) d.usbId = n->asString();
             if (auto* n = dv.find ("trimDb")) d.trimDb = static_cast<float> (n->asDouble());
+
+            if (auto* n = dv.find ("inputTrims"))
+                for (const auto& ev : n->asArray())
+                {
+                    const auto* inputV = ev.find ("input");
+                    const auto* trimV = ev.find ("trimDb");
+
+                    if (inputV != nullptr && trimV != nullptr)
+                        if (const int input = static_cast<int> (inputV->asDouble (-1.0)); input >= 0)
+                            d.inputTrimDb[input] = static_cast<float> (trimV->asDouble());
+                }
+
             m.devices.push_back (d);
         }
 

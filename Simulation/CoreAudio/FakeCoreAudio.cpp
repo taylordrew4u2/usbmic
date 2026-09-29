@@ -533,9 +533,14 @@ OSStatus AudioObjectRemovePropertyListener (AudioObjectID object,
         && ! state().allowSystemPropertyListenerRemoval)
         return kAudioHardwareUnspecifiedError;
 
-    if (auto* device = find (object);
-        device != nullptr && ! device->spec.allowPropertyListenerRemoval)
+    auto* device = find (object);
+    if (device != nullptr && ! device->spec.allowPropertyListenerRemoval)
         return kAudioHardwareUnspecifiedError;
+
+    // An unplugged device's object is gone, and the real HAL reports that
+    // rather than pretending the removal happened.
+    if (device == nullptr && object != kAudioObjectSystemObject)
+        return kAudioHardwareBadObjectError;
 
     auto& listeners = state().listeners;
     listeners.erase (std::remove_if (listeners.begin(), listeners.end(),

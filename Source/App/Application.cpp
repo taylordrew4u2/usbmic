@@ -216,6 +216,30 @@ juce::String baseSessionFolderName (juce::Time now, const juce::String& name)
         now.getHours(), now.getMinutes(), cleaned));
 }
 
+// Whether this port records as more than one channel, and so keeps a trim per
+// input the way it keeps a name per input.
+bool keepsTrimPerInput (const MicDeviceState& d, const PersistedDeviceSettings& settings)
+{
+    const bool knownDuplicateStereo = settings.hasChannelLayoutDecision && settings.channelLayoutIsMono;
+    return takeChannelsForDevice (d.inputChannelCount, knownDuplicateStereo) > 1;
+}
+
+// session.json's trim for a device: the box's for a single microphone, and one
+// per recorded input for an interface, whose inputs are trimmed separately.
+void recordTrims (DeviceRecord& record, const MicDeviceState& d, const PersistedDeviceSettings& settings)
+{
+    record.trimDb = settings.trimDb;
+    record.inputTrimDb.clear();
+
+    if (! keepsTrimPerInput (d, settings))
+        return;
+
+    for (int input = 0; input < d.inputChannelCount; ++input)
+        if (std::find (settings.disabledInputs.begin(), settings.disabledInputs.end(), input)
+                == settings.disabledInputs.end())
+            record.inputTrimDb[input] = settings.trimDbForInput (input);
+}
+
 } // namespace
 
 Application::Application()
@@ -604,8 +628,9 @@ std::vector<CaptureChannel> Application::buildCaptureChannels() const
             if (d.identity.key() != planned.deviceKey)
                 continue;
 
+            // Per input: on an interface each socket is trimmed on its own.
             if (const auto persisted = portIdentityStore.get (d.identity))
-                c.trimDb = persisted->trimDb;
+                c.trimDb = persisted->trimDbForInput (planned.deviceChannel);
 
             // §2.3: this channel is written at its own device's depth. A rig
             // can hold a 16-bit microphone and a 24-bit interface at once and
@@ -2113,6 +2138,7 @@ void Application::toggleRecording()
                 // throttle -- wants "seconds since audio began" too, so all of
                 // them get more accurate here, not just the camera offsets.
                 recordingStartMs = juce::Time::getMillisecondCounterHiRes();
+                takeBufferChangeStart = bufferLadder.getChangeLog().size();
 
                 recordStartProblem.clear();
                 takeCardUnresponsive = false;
@@ -2152,7 +2178,7 @@ void Application::toggleRecording()
                     record.usbId = d.identity.key();
 
                     if (const auto persisted = portIdentityStore.get (d.identity))
-                        record.trimDb = persisted->trimDb;
+                        recordTrims (record, d, *persisted);
 
                     takeDevices.push_back (std::move (record));
                 }
@@ -3261,17 +3287,18 @@ void Application::setChannelTrimDb (int index, float trimDb)
     // `index` is a strip, resolved in channel space like every other strip
     // accessor. Walking included devices put the trim on the wrong device on
     // any interface with more than one socket, and the slider snapped back.
-    const auto deviceKey = deviceKeyForStrip (index);
+    const auto target = getMicRenameTarget (index);
 
     for (const auto& d : deviceManager.getDevices())
     {
-        if (d.identity.key() != deviceKey)
+        if (d.identity.key() != target.deviceKey)
             continue;
 
         // §4 persists trim against the physical port, not the slot, so it
-        // follows the mic when it is unplugged and moved.
+        // follows the mic when it is unplugged and moved. On an interface it
+        // is kept per input: one box-wide value came back on every socket.
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
-        settings.trimDb = quantised;
+        settings.setTrimDbForInput (target.deviceChannel, keepsTrimPerInput (d, settings), quantised);
         portIdentityStore.put (d.identity, settings);
         break;
     }
@@ -3288,35 +3315,20 @@ void Application::setChannelTrimDb (int index, float trimDb)
 
 float Application::getChannelTrimDb (int index) const
 {
-    const auto deviceKey = deviceKeyForStrip (index);
+    const auto target = getMicRenameTarget (index);
 
     for (const auto& d : deviceManager.getDevices())
     {
-        if (d.identity.key() != deviceKey)
+        if (d.identity.key() != target.deviceKey)
             continue;
 
         if (const auto settings = portIdentityStore.get (d.identity))
-            return settings->trimDb;
+            return settings->trimDbForInput (target.deviceChannel);
 
         return 0.0f;
     }
 
     return 0.0f;
-}
-
-std::string Application::deviceKeyForStrip (int index) const
-{
-    // Mid-take the channel list is the take's frozen one; otherwise the plan.
-    if (capture != nullptr && capture->isRecording())
-    {
-        const auto& channels = capture->getChannels();
-        return index >= 0 && index < static_cast<int> (channels.size())
-             ? channels[static_cast<size_t> (index)].deviceId : std::string();
-    }
-
-    const auto plan = planChannels (planDevices());
-    return index >= 0 && index < static_cast<int> (plan.size())
-         ? plan[static_cast<size_t> (index)].deviceKey : std::string();
 }
 
 juce::String Application::getActiveBackendDescription() const
@@ -3607,7 +3619,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                 continue;
 
             if (const auto persisted = portIdentityStore.get (d.identity))
-                record.trimDb = persisted->trimDb;
+                recordTrims (record, d, *persisted);
 
             // §3.2: drift is only claimed once 60 seconds of measurement exist.
             if (d.hasDriftMeasurement)
@@ -3619,8 +3631,13 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         meta.devices.push_back (std::move (record));
     }
 
-    // §5.4 requires every buffer step logged.
-    for (const auto& change : bufferLadder.getChangeLog())
+    // §5.4 requires every buffer step logged -- this take's steps, timed from
+    // its audio t=0 like the drift entries. The ladder's log spans the whole
+    // launch on the uptime clock, and copying it whole put earlier takes' and
+    // idle steps into every session.json at times no editor could place.
+    for (const auto& change : selectTakeBufferChanges (bufferLadder.getChangeLog(),
+                                                       takeBufferChangeStart,
+                                                       recordingStartMs / 1000.0))
         meta.bufferChanges.push_back ({ change.atSeconds, change.fromSamples, change.toSamples });
 
     // Only camera writers which actually started belong in session.json. The
@@ -5322,10 +5339,14 @@ void Application::clearRecoveredSessions()
     publishCompletedRecoveryAcknowledgement();
 
     std::vector<std::string> sessionFolders;
-    sessionFolders.reserve (recoveredSessions.size());
+    sessionFolders.reserve (recoveredSessions.size() + hiddenRecoveredFolders.size());
 
     for (const auto& session : recoveredSessions)
         sessionFolders.push_back (session.folder);
+
+    // The same-named copies the card never showed are just as interrupted.
+    for (const auto& folder : hiddenRecoveredFolders)
+        sessionFolders.push_back (folder);
 
     std::vector<std::string> mutationRoots;
     mutationRoots.reserve (sessionFolders.size());
@@ -5338,6 +5359,7 @@ void Application::clearRecoveredSessions()
     // live on the same removable volume whose disappearance interrupted it;
     // even existsAsFile() or loadFileAsString() can then wait indefinitely.
     recoveredSessions.clear();
+    hiddenRecoveredFolders.clear();
 
     if (sessionFolders.empty())
         return;
@@ -5453,6 +5475,7 @@ void Application::publishCompletedRecoveryAcknowledgement() const
 void Application::scanForInterruptedSessions()
 {
     recoveredSessions.clear();
+    hiddenRecoveredFolders.clear();
 
     // Separate tasks matter here. A destination can be replaced while its OS
     // call is stuck, and mirroring can be switched off to escape a stuck local
@@ -5666,8 +5689,8 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
             const auto parsed = JsonValue::parse (text);
 
             // The parser is lenient by design and hardly ever throws: a file
-            // cut short mid-key comes back as one dangling key with nothing
-            // under it. Judge it by whether a field carried a value.
+            // cut short mid-key comes back with that member dropped, possibly
+            // leaving none. Judge it by whether a field carried a value.
             if (parsed.getType() != JsonValue::Type::Object
                 || parsed.getValuedMemberCount() == 0)
             {
@@ -5804,21 +5827,14 @@ void Application::publishCompletedRecoveryScans() const
             noteActivity (entry.level, juce::String (entry.subject),
                           juce::String (entry.message));
 
-        for (auto& session : completed->sessions)
-        {
-            const auto name = juce::File (juce::String (session.folder)).getFileName();
-            const auto existing = std::find_if (
-                recoveredSessions.begin(), recoveredSessions.end(),
-                [&name] (const RecoveredSession& candidate)
-                {
-                    return juce::File (juce::String (candidate.folder)).getFileName() == name;
-                });
-
-            if (existing == recoveredSessions.end())
-                recoveredSessions.push_back (std::move (session));
-            else if (completed->isDestinationCopy)
-                *existing = std::move (session); // the user's primary copy wins
-        }
+        // A take mirrored to the local backup is found twice. It is shown
+        // once, and the hidden copy's folder is kept so that dismissing the
+        // card stamps it too -- otherwise it came back at every launch.
+        auto merged = SessionRecovery::mergeScan (
+            { std::move (recoveredSessions), std::move (hiddenRecoveredFolders) },
+            std::move (completed->sessions), completed->isDestinationCopy);
+        recoveredSessions = std::move (merged.shown);
+        hiddenRecoveredFolders = std::move (merged.hiddenFolders);
     };
 
     publish (mirrorRecoveryTask, mirrorRecoveryRoot, mirrorRecoveryStatus,

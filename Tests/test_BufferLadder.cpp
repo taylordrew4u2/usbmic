@@ -134,3 +134,38 @@ TEST_CASE (BufferLadder_StepsUpEvenWhileRecording)
     REQUIRE (ladder.noteOverrun (3.0));
     REQUIRE (ladder.getCurrentSize() == 128);
 }
+
+TEST_CASE (BufferLadder_ATakeRecordsOnlyItsOwnStepsTimedFromItsStart)
+{
+    BufferLadder ladder;
+
+    // An earlier take (or idle time) stepped the ladder at 100 s of uptime.
+    ladder.noteOverrun (98.0);
+    ladder.noteOverrun (99.0);
+    REQUIRE (ladder.noteOverrun (100.0));
+
+    // This take starts at 500 s of uptime and steps 20 s in.
+    const auto startIndex = ladder.getChangeLog().size();
+    const double takeStart = 500.0;
+    ladder.noteOverrun (518.0);
+    ladder.noteOverrun (519.0);
+    REQUIRE (ladder.noteOverrun (520.0));
+
+    const auto changes = selectTakeBufferChanges (ladder.getChangeLog(), startIndex, takeStart);
+    REQUIRE (changes.size() == 1);
+    REQUIRE (changes[0].fromSamples == 128);
+    REQUIRE (changes[0].toSamples == 256);
+    REQUIRE (changes[0].atSeconds > 19.99 && changes[0].atSeconds < 20.01);
+}
+
+TEST_CASE (BufferLadder_TakeStepsAreNeverBeforeZeroAndABadIndexIsEmpty)
+{
+    const std::vector<BufferSizeChange> log { { 499.5, 64, 128 } };
+
+    // A step logged a hair before the take's audio t=0 still belongs to it.
+    const auto changes = selectTakeBufferChanges (log, 0, 500.0);
+    REQUIRE (changes.size() == 1);
+    REQUIRE (changes[0].atSeconds == 0.0);
+
+    REQUIRE (selectTakeBufferChanges (log, 5, 500.0).empty());
+}

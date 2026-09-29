@@ -67,6 +67,26 @@ TEST_CASE (SessionMetadata_RoundTripsThroughJson)
     REQUIRE (roundTripped.mirrorPath == m.mirrorPath);
 }
 
+TEST_CASE (SessionMetadata_RecordsEachInterfaceInputsOwnTrim)
+{
+    // session.json says what trim each stem's mix was made with. On an
+    // interface that is one value per input, not one for the box.
+    SessionMetadata m;
+    DeviceRecord d;
+    d.name = "Scarlett 4i4";
+    d.usbId = "usb-3|SN123";
+    d.inputTrimDb[0] = 6.0f;
+    d.inputTrimDb[1] = -1.5f;
+    m.devices.push_back (d);
+
+    const auto back = SessionMetadata::fromJsonString (m.toJsonString());
+
+    REQUIRE (back.devices.size() == 1);
+    REQUIRE (back.devices[0].inputTrimDb.size() == 2);
+    REQUIRE_NEAR (back.devices[0].inputTrimDb.at (0), 6.0, 1e-4);
+    REQUIRE_NEAR (back.devices[0].inputTrimDb.at (1), -1.5, 1e-4);
+}
+
 TEST_CASE (SessionMetadata_EmptySessionRoundTrips)
 {
     SessionMetadata m;
