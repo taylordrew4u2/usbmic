@@ -291,6 +291,8 @@ void Application::initialise()
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
+        capture->getMonitorBus().setGlobalMute (monitorMuted);
+        ++captureGeneration;
         captureRate = currentSampleRate;
         captureBufferSize = desiredBufferSize();
 
@@ -726,6 +728,8 @@ void Application::restartCapture()
         capture = std::make_unique<CaptureCoordinator> (*audioBackend, currentSampleRate,
                                                         desiredBufferSize());
         capture->getMonitorBus().setMasterVolume (masterVolume);
+        capture->getMonitorBus().setGlobalMute (monitorMuted);
+        ++captureGeneration;
 
         captureRate = currentSampleRate;
         captureBufferSize = desiredBufferSize();
@@ -3134,6 +3138,28 @@ void Application::setMasterVolume (double volume0to100)
     // continuously while someone listens, and it is comfort rather than setup:
     // losing it costs a second to reset, where losing a trim costs the ear-work
     // that found it. It goes to disk with everything else at shutdown.
+}
+
+void Application::toggleMonitorMute()
+{
+    auto* bus = getMonitorBus();
+
+    // §5: the runaway cut stays muted until the user says otherwise. The mute
+    // button is that path -- without this, a runaway cut is a dead end the
+    // user can only escape by restarting the app.
+    if (bus != nullptr && bus->isRunawayMuted())
+    {
+        bus->manuallyUnmute();
+        monitorMuted = false;
+        bus->setGlobalMute (false);
+        return;
+    }
+
+    // Recorded even with no bus up (mid-rebuild), so the press is not lost:
+    // the next coordinator picks it up when it is built.
+    monitorMuted = ! monitorMuted;
+    if (bus != nullptr)
+        bus->setGlobalMute (monitorMuted);
 }
 
 double Application::getMasterVolume() const

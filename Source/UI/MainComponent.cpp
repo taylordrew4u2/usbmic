@@ -49,24 +49,7 @@ MainComponent::MainComponent (Application& app)
         application.setMasterVolume (volume0to100);
     };
 
-    mainScreen.onMuteToggled = [this] {
-        auto* bus = application.getMonitorBus();
-
-        if (bus == nullptr)
-            return;
-
-        // §5: the runaway cut stays muted until the user says otherwise. The
-        // mute button is that path -- without this, a runaway cut is a dead
-        // end the user can only escape by restarting the app.
-        if (bus->isRunawayMuted())
-        {
-            bus->manuallyUnmute();
-            bus->setGlobalMute (false);
-            return;
-        }
-
-        bus->setGlobalMute (! bus->isGloballyMuted());
-    };
+    mainScreen.onMuteToggled = [this] { application.toggleMonitorMute(); };
 
     mainScreen.onMicNameClicked = [this] (int index) { promptRenameMic (index); };
 

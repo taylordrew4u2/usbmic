@@ -503,6 +503,28 @@ private:
              [this] { return muted() && busMuted(); });
         add ("and space again unmutes it", [this] { pressKey (juce::KeyPress::spaceKey); },
              [this] { return ! muted() && ! busMuted(); });
+
+        // A buffer or rate change builds a new monitor bus (§2.2, §5.4). The
+        // room was muted for a reason; the rebuild must not quietly unmute it.
+        add ("muted again, before the audio engine rebuilds", [this] { pressKey (juce::KeyPress::spaceKey); },
+             [this] { return muted() && busMuted(); });
+        add ("a buffer-size change rebuilds the audio engine", [this]
+        {
+            generationBefore = application.getCaptureGeneration();
+            bufferOverrideBefore = application.getBufferSizeOverride();
+            application.setBufferSizeOverride (bufferOverrideBefore == 512 ? 1024 : 512);
+        }, [this] { return application.getCaptureGeneration() != generationBefore; }, 20000);
+        add ("the headphones are still muted after the rebuild", [] {},
+             [this] { return busMuted() && muted(); }, 5000);
+        add ("space still unmutes them", [this] { pressKey (juce::KeyPress::spaceKey); },
+             [this] { return ! muted() && ! busMuted(); });
+        add ("the buffer size goes back", [this]
+        {
+            generationBefore = application.getCaptureGeneration();
+            application.setBufferSizeOverride (bufferOverrideBefore);
+        }, [this] { return application.getCaptureGeneration() != generationBefore
+                        && application.getBufferSizeOverride() == bufferOverrideBefore; }, 20000);
+        add ("and stays unmuted through that rebuild", [] {}, [this] { return ! muted() && ! busMuted(); }, 5000);
         add ("the main screen's controls", [this] { insertNext (exerciseControlsIn<MainScreen> ("main screen")); }, [] { return true; });
 
         add ("the session name can be typed", [this]
@@ -765,6 +787,7 @@ private:
         return b != nullptr && b->getKind() == kind;
     }
     int bufferOverrideBefore = -12345;
+    int generationBefore = 0;
 
     bool takeFilesLookRight()
     {

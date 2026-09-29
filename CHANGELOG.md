@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Muting the headphones could come undone on its own.** When the app
+  rebuilt its audio engine -- which it does itself when it raises the buffer
+  size for a computer that can't keep up, or when the sample rate changes --
+  the new engine started unmuted, so a room muted with the space bar or the
+  Mute button was quietly un-muted, and a space press made during the
+  rebuild was lost. The mute is now held by the app, like the volume, and
+  carried into every rebuilt engine. The UI walk checks it: mute, force a
+  rebuild, still muted; unmute, rebuild, still unmuted.
+
 ## v1.13.1 -- 2026-09-29 (release candidate)
 
 A testing release on v1.13.0. The app itself behaves the same; what is new is
