@@ -17,6 +17,32 @@ WritePipelineState CapacityMonitor::evaluateFill (double fillFraction) noexcept
     return WritePipelineState::Healthy;
 }
 
+const char* CapacityMonitor::fillStatusLine (WritePipelineState state, bool alreadyMixOnly) noexcept
+{
+    switch (state)
+    {
+        case WritePipelineState::DegradedToMixOnly:
+            return "The drive can't keep up. Still recording everyone into the mixed file, but "
+                   "the separate microphone tracks have stopped. Close other apps using the disk.";
+
+        case WritePipelineState::FillWarning:
+            // The stems are not resumed when the ring drains, so "nothing lost"
+            // would be untrue for the rest of the take.
+            if (alreadyMixOnly)
+                return "The drive is falling behind again. Still recording everyone into the mixed "
+                       "file; the separate microphone tracks stopped earlier. Close other apps "
+                       "using the disk.";
+
+            return "The drive is falling behind. Nothing has been lost yet -- close any other "
+                   "apps using the disk.";
+
+        case WritePipelineState::Healthy:
+            break;
+    }
+
+    return "";
+}
+
 RemainingTimeWarning CapacityMonitor::evaluateRemaining (double remainingSeconds) noexcept
 {
     if (remainingSeconds <= 0.0)

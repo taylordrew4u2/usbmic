@@ -212,7 +212,13 @@ public:
     /// can look calm while the audio thread is already missing its deadline.
     double getAudioCallbackLoad() const noexcept { return callbackLoad.load (std::memory_order_relaxed); }
 
-    uint64_t getFramesDropped() const noexcept { return pipeline != nullptr ? pipeline->getFramesDropped() : 0; }
+    /// Frames the writer could not take this take. Still answers after the
+    /// take has stopped: session.json is rewritten at Stop, after
+    /// stopRecording() has destroyed the pipeline, and read as zero there.
+    uint64_t getFramesDropped() const noexcept
+    {
+        return pipeline != nullptr ? pipeline->getFramesDropped() : lastTakeFramesDropped;
+    }
 
     /// The loudest sample the current take has written, or -1 when there is no
     /// pipeline to have measured one. Negative means "not measured" to
@@ -585,6 +591,7 @@ private:
     double lastTakeLufs = LoudnessMeter::kSilenceLufs;
     double lastTakeTruePeakDbtp = LoudnessMeter::kSilenceLufs;
     int lastTakeLoudnessBlocks = 0;
+    uint64_t lastTakeFramesDropped = 0;
 
     /// The overrun total when the current take began. prepare() zeroes each
     /// stream's counter, but streams are prepared when monitoring starts, not

@@ -2146,6 +2146,7 @@ void Application::toggleRecording()
                 mirrorFinalizeFailureReported = false;
                 backendDropsAtTakeStart = audioBackend != nullptr
                                               ? audioBackend->getFramesDroppedByBackend() : 0;
+                takeStopSnapshot.clear();
 
                 // The coordinator zeroes the counter itself when a take begins,
                 // so the watermark has to follow it down or the first take's
@@ -2277,6 +2278,12 @@ void Application::toggleRecording()
                               juce::String (capture->getCardWriteProblem()));
             }
         }
+
+        // After the writer's final drain, so its drops are all counted, and
+        // while the engine is still Recording, so the clock is still running.
+        // The stop-time session.json is written from this, not from whatever
+        // the live state says by the time a camera finishes its movie.
+        takeStopSnapshot.capture (liveTakeFigures (true));
 
         // Before the folder is listed for the panel that shows what was saved,
         // so the video files are closed and their real sizes are on disk by the
@@ -2955,10 +2962,14 @@ juce::String Application::getRecordDisabledReason() const
 
     // §6.4: pre-flight blocks arming rather than degrading mid-take.
     const bool preflightRunning = publishCompletedPreflight();
-    if (preflightTaskDestination == destinationFolder && preflightRunning)
-        return "Checking this drive is fast enough...";
-
     const auto it = preflightResults.find (destinationFolder);
+
+    // A quiet re-check of a card that could not be written keeps saying so
+    // until the new verdict lands, rather than flashing "checking" every few
+    // seconds while the card is still missing.
+    if (preflightTaskDestination == destinationFolder && preflightRunning
+        && (it == preflightResults.end() || ! it->second.couldNotWrite))
+        return "Checking this drive is fast enough...";
 
     // There is no safe third state between "benchmark is running" and "a
     // verdict exists". In particular, a completion which lands between two
@@ -2979,8 +2990,12 @@ juce::String Application::getRecordDisabledReason() const
         // frozen at whatever the rig was when the 200 MB test last ran --
         // which would let a card pass for the audio and then fail mid-take
         // once a camera started, the exact outcome §6.4 exists to prevent.
-        const auto verdict = PreflightThroughputTest::evaluateMeasured (
-            it->second.sustainedMinBytesPerSec,
+        //
+        // A card that could not be written is refused as that: with no
+        // windows it read "too slow, 0 MB/s", and a run cut short by the
+        // failure could even have measured fast enough to pass.
+        const auto verdict = PreflightThroughputTest::evaluateCached (
+            it->second,
             std::max (1, getIncludedMicCount()),
             currentSampleRate,
             std::max (1, currentBitDepth / 8),
@@ -3012,9 +3027,16 @@ bool Application::publishCompletedPreflight() const
     if (! completed.has_value())
         return snapshot.running;
 
-    preflightResults[completed->destination] = completed->result;
+    // A re-check of a card that still cannot be written is not news; saying it
+    // again every retry interval would bury the rest of the activity list.
+    const auto previous = preflightResults.find (completed->destination);
+    const bool alreadyReported = completed->couldNotWrite && previous != preflightResults.end()
+                              && previous->second.couldNotWrite;
 
-    if (completed->couldNotWrite)
+    preflightResults[completed->destination] = completed->result;
+    preflightVerdictAtMs[completed->destination] = juce::Time::getMillisecondCounterHiRes();
+
+    if (completed->couldNotWrite && ! alreadyReported)
         noteActivity (ActivityLevel::Failed, "Save location",
                       juce::String (completed->result.reason));
 
@@ -3023,8 +3045,35 @@ bool Application::publishCompletedPreflight() const
 
 void Application::startPreflightIfNeeded() const
 {
-    if (destinationFolder.empty() || preflightResults.count (destinationFolder) > 0)
+    if (destinationFolder.empty())
         return;
+
+    if (const auto cached = preflightResults.find (destinationFolder); cached != preflightResults.end())
+    {
+        // A card that could not be written is usually fixed by the user --
+        // space freed, the card reinserted or unlocked -- without choosing the
+        // location again, which used to be the only thing that cleared this
+        // verdict. Try again now and then while idle. The failed verdict stays
+        // in place until the new one lands, so Record stays refused meanwhile.
+        //
+        // Published and polled in one step, before the age is read: a worker
+        // that finished since the caller's last publish must land first, or its
+        // verdict is thrown away and the card checked again at once.
+        const bool workerRunning = publishCompletedPreflight();
+        const auto verdictAt = preflightVerdictAtMs.find (destinationFolder);
+        const double secondsSince = verdictAt == preflightVerdictAtMs.end()
+            ? 0.0
+            : (juce::Time::getMillisecondCounterHiRes() - verdictAt->second) / 1000.0;
+
+        if (! PreflightThroughputTest::shouldRetryCached (
+                cached->second, secondsSince,
+                recordingEngine.getState() == RecordingState::Idle,
+                workerRunning))
+            return;
+
+        // The previous worker finished; nothing of it is left to abandon.
+        preflightTaskDestination.clear();
+    }
 
     const auto target = destinationFolder;
 
@@ -3223,6 +3272,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
     if (couldNotWrite)
     {
         result.passed = false;
+        result.couldNotWrite = true;
         result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
                          "is plugged in, has room, and isn't locked.";
     }
@@ -3539,6 +3589,7 @@ void Application::applyDestinationFolder (const juce::File& folder)
     // throughput pass cached for the previous occupant must not arm it. A
     // worker already stuck on this exact path is abandoned, never joined.
     preflightResults.erase (destinationFolder);
+    preflightVerdictAtMs.erase (destinationFolder);
     if (preflightTaskDestination == destinationFolder)
     {
         preflightTask.abandon();
@@ -3586,24 +3637,61 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
     return root.getFullPathName();
 }
 
+TakeFigures Application::liveTakeFigures (bool sessionHasStopped) const
+{
+    TakeFigures f;
+    f.elapsedSeconds = getElapsedRecordingSeconds();
+    f.stopTimestampIso = sessionHasStopped
+                             ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
+                             : std::string();
+
+    // The size the take's streams actually ran at. The ladder can have stepped
+    // on during the take; that step applies to the next one.
+    f.bufferSizeSamples = capture != nullptr ? capture->getBufferSizeSamples() : bufferLadder.getCurrentSize();
+
+    if (capture != nullptr)
+    {
+        // Each loaded once. Read twice, the number reported can differ from
+        // the one that passed the test.
+        f.framesDropped = capture->getFramesDropped();
+        f.overrunSamples = capture->getOverrunSamplesThisTake();
+        f.underrunSamples = capture->getUnderrunSamplesThisTake();
+        f.framesMissedByLayout = capture->getFramesMissedByLayout();
+    }
+
+    // Measured from the start of THIS take. The backend's counter runs for as
+    // long as its streams do, which is across takes. A total below the
+    // baseline means the streams were rebuilt mid-take and the count
+    // restarted; everything since is then this take's.
+    if (audioBackend != nullptr)
+    {
+        const auto total = audioBackend->getFramesDroppedByBackend();
+        f.backendFramesDropped = total >= backendDropsAtTakeStart ? total - backendDropsAtTakeStart : total;
+    }
+
+    return f;
+}
+
 void Application::writeSessionMetadata (bool sessionHasStopped)
 {
     if (currentSessionFolder.isEmpty())
         return;
 
+    // Every figure below that describes the moment the take ended comes from
+    // here -- see TakeStopSnapshot.
+    const auto figures = takeStopSnapshot.resolve (sessionHasStopped, liveTakeFigures (sessionHasStopped));
+
     SessionMetadata meta;
     meta.appVersion = appVersionString().toStdString();
     meta.startTimestampIso = sessionStartIso.toStdString();
-    meta.stopTimestampIso = sessionHasStopped
-                                ? juce::Time::getCurrentTime().toISO8601 (true).toStdString()
-                                : std::string();
+    meta.stopTimestampIso = figures.stopTimestampIso;
     // The take's own format (see toggleRecording), not the live setting,
     // which Settings can change mid-take for the next take.
     meta.sampleRate = takeSampleRate;
     meta.bitDepth = takeBitDepth;
     // The size the take's streams actually ran at. The ladder can have stepped
     // on during the take; that step applies to the next one.
-    meta.bufferSizeSamples = capture != nullptr ? capture->getBufferSizeSamples() : bufferLadder.getCurrentSize();
+    meta.bufferSizeSamples = figures.bufferSizeSamples;
     meta.measuredLatencyMs = measuredLatencyMs;
 
     // The take's roster, fixed when it started, not whoever is ticked and
@@ -3623,7 +3711,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
 
             // §3.2: drift is only claimed once 60 seconds of measurement exist.
             if (d.hasDriftMeasurement)
-                meta.driftLog.push_back ({ getElapsedRecordingSeconds(), d.identity.key(), d.measuredDriftPpm });
+                meta.driftLog.push_back ({ figures.elapsedSeconds, d.identity.key(), d.measuredDriftPpm });
 
             break;
         }
@@ -3661,21 +3749,21 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // dropout entry rather than a new field, because that is what it is: the
     // moment the stems stopped receiving audio they should have had.
     if (const auto degradedAt = capacityMonitor.getDegradationSamplePosition(); degradedAt >= 0)
-        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
                                    "Fell back to writing the mix only at sample "
                                        + std::to_string (degradedAt) });
 
     // §6.3: a mirror that stopped mid-take must be visible in the record --
     // otherwise the copy looks complete and is not.
     if (mirrorPolicy.wasStoppedForSpace())
-        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
                                    "Local backup copy stopped: the internal drive ran low on space." });
 
     // §6.3 again, for the other way a mirror can stop. Without this line a
     // backup copy truncated by a failed drive looks exactly like a complete
     // one -- the file is simply shorter, and nothing says why.
     if (mirrorPolicy.wasStoppedForWriteFailure())
-        meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
                                    mirrorMissingReported
                                        ? std::string ("Local backup copy was never made: its folder or "
                                                       "files could not be opened. There is no second "
@@ -3684,17 +3772,12 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                                       "accepting writes. The copy is incomplete from "
                                                       "this point.") });
 
-    if (capture != nullptr)
-    {
-        // Loaded once, like the layout figure below. Read twice, the number
-        // reported can differ from the one that passed the test.
-        const auto dropped = capture->getFramesDropped();
-
-        if (dropped > 0)
-            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                       "Dropped " + std::to_string (dropped)
-                                           + " frames: the drive could not keep up." });
-    }
+    // Not conditional on capture: at Stop these are the snapshot's, which
+    // outlives a coordinator rebuilt while a camera finished its movie.
+    if (figures.framesDropped > 0)
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
+                                   "Dropped " + std::to_string (figures.framesDropped)
+                                       + " frames: the drive could not keep up." });
 
     // The other end of the same loss. The count above is what the writer could
     // not put on disk; this is what never reached it -- audio the device handed
@@ -3703,67 +3786,41 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // The take's record carried the writer's drops, the layout's and the
     // backend's, and not this one -- so the one loss the app inflicts on itself
     // was the one the record did not mention.
-    if (capture != nullptr)
-    {
-        const auto overrun = capture->getOverrunSamplesThisTake();
-
-        if (overrun > 0)
-            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                       "Dropped " + std::to_string (overrun)
-                                           + " samples: audio arrived faster than it could be "
-                                             "taken away, so the buffer overflowed." });
-    }
+    if (figures.overrunSamples > 0)
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
+                                   "Dropped " + std::to_string (figures.overrunSamples)
+                                       + " samples: audio arrived faster than it could be "
+                                         "taken away, so the buffer overflowed." });
 
     // §0.1: the pull came and the microphone's block had not, so its stem got
     // silence. The stream has counted this since the first day; nothing wrote
     // it down. A take whose microphone ran dry every other block -- a machine
     // whose scheduling is wider than the cushion -- was recorded as lossless,
     // with half its blocks holding a step down to zero.
-    if (capture != nullptr)
-    {
-        const auto underrun = capture->getUnderrunSamplesThisTake();
-
-        if (underrun > 0)
-            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                       "Dropped " + std::to_string (underrun)
-                                           + " samples: a microphone's audio did not arrive in time, "
-                                             "so silence was written in its place." });
-    }
+    if (figures.underrunSamples > 0)
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
+                                   "Dropped " + std::to_string (figures.underrunSamples)
+                                       + " samples: a microphone's audio did not arrive in time, "
+                                         "so silence was written in its place." });
 
     // §0.1: audio the device delivered that did not fit the take's layout, so
     // a channel wrote silence instead. Recorded beside the other two losses.
-    if (capture != nullptr)
-    {
-        // Loaded once. Read twice, the number reported could differ from the
-        // one that passed the test above it.
-        const auto missed = capture->getFramesMissedByLayout();
-
-        if (missed > 0)
-            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                       "Dropped " + std::to_string (missed)
-                                           + " frames that didn't fit this take's channel layout: a "
-                                             "microphone delivered a different number of channels "
-                                             "than it was opened with." });
-    }
+    if (figures.framesMissedByLayout > 0)
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
+                                   "Dropped " + std::to_string (figures.framesMissedByLayout)
+                                       + " frames that didn't fit this take's channel layout: a "
+                                         "microphone delivered a different number of channels "
+                                         "than it was opened with." });
 
     // Measured from the start of THIS take. The backend's counter runs for as
     // long as its streams do, which is across takes, so writing it raw put
     // take one's losses into take three's record -- beside a card-side figure
-    // on a completely different clock.
-    if (audioBackend != nullptr)
-    {
-        const auto total = audioBackend->getFramesDroppedByBackend();
-
-        // A total below the baseline means the streams were rebuilt mid-take
-        // and the count restarted; everything since is then this take's.
-        const auto thisTake = total >= backendDropsAtTakeStart ? total - backendDropsAtTakeStart : total;
-
-        if (thisTake > 0)
-            meta.dropouts.push_back ({ getElapsedRecordingSeconds(), std::string(),
-                                       "Dropped " + std::to_string (thisTake)
-                                           + " frames before recording: the sound hardware delivered "
-                                             "more audio than it could hand over." });
-    }
+    // on a completely different clock. See liveTakeFigures.
+    if (figures.backendFramesDropped > 0)
+        meta.dropouts.push_back ({ figures.elapsedSeconds, std::string(),
+                                   "Dropped " + std::to_string (figures.backendFramesDropped)
+                                       + " frames before recording: the sound hardware delivered "
+                                         "more audio than it could hand over." });
 
     // Written to the card copy and the mirror alike, so either one stands alone.
     const auto json = meta.toJsonString();
@@ -4709,10 +4766,8 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 }
 
                 {
-                    const auto line = juce::String ("The drive can't keep up. Still recording "
-                                                    "everyone into the mixed file, but the separate "
-                                                    "microphone tracks have stopped. Close other "
-                                                    "apps using the disk.");
+                    const auto line = juce::String (CapacityMonitor::fillStatusLine (
+                        WritePipelineState::DegradedToMixOnly, true));
 
                     noteActivity (ActivityLevel::Failed, "Drive", line);
                     return line;
@@ -4720,9 +4775,10 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
             case WritePipelineState::FillWarning:
                 {
-                    const auto line = juce::String ("The drive is falling behind. Nothing has been "
-                                                    "lost yet -- close any other apps using the "
-                                                    "disk.");
+                    // After the fallback the stems are gone for the rest of the
+                    // take, so "nothing has been lost" would no longer be true.
+                    const auto line = juce::String (CapacityMonitor::fillStatusLine (
+                        WritePipelineState::FillWarning, capture->isMixOnly()));
 
                     noteActivity (ActivityLevel::Warning, "Drive", line);
                     return line;

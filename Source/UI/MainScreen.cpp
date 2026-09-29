@@ -288,7 +288,10 @@ void MainScreen::setMicCount (int count)
         channelMeters.add (meter);
     }
     setNoMicsMessage (count == 0);
-    resized();
+
+    // The strips wrap onto more rows as they are added, so the height asked
+    // for changes with the count even when the message does not.
+    requiredHeightChanged();
 }
 
 int MainScreen::getCameraScaleStepCount() noexcept
@@ -330,7 +333,13 @@ int MainScreen::nonCameraHeight() const noexcept
     constexpr int kMicHeading  = 16 + 6;
     constexpr int kStripHeight = 40;
     constexpr int kStripGap    = 12;
+    constexpr int kNoMicsBand  = 56;
     constexpr int kActionRow   = 16 + 52;
+    // The row under the record button that says why it is off, or the gap left
+    // when there is no reason to give. resized() spends one or the other, and a
+    // budget that counted neither handed the shortfall to the footer: at
+    // exactly this height the mute button came out 13px tall.
+    const int kReasonRow = disabledReasonLabel.isVisible() ? 20 + 8 : 14;
     // files, monitor problem, advice. The monitor problem is measured rather
     // than assumed: it grows to fit a reason, and a band reserved at one line
     // while three are drawn is content spilling past the bottom of the window.
@@ -343,9 +352,12 @@ int MainScreen::nonCameraHeight() const noexcept
     const int perRow = juce::jlimit (1, cells, (available + kStripGap) / (190 + kStripGap));
     const int rows = (cells + perRow - 1) / perRow;
 
-    return kMargins + kHeader + kMicHeading
-         + rows * kStripHeight + (rows - 1) * kStripGap
-         + kActionRow + kStatusLines + kFooter;
+    // No microphones is a message rather than a row of strips, and a taller one.
+    const int levels = channelMeters.isEmpty() ? kNoMicsBand
+                                               : rows * kStripHeight + (rows - 1) * kStripGap;
+
+    return kMargins + kHeader + kMicHeading + levels
+         + kActionRow + kReasonRow + kStatusLines + kFooter;
 }
 
 int MainScreen::cameraTileWidthFor (int step, int availableWidth,
@@ -736,13 +748,35 @@ void MainScreen::setAdviceText (const juce::String& text)
 
 void MainScreen::setMonitorProblemText (const juce::String& text)
 {
+    const int before = monitorProblemHeight();
+
     monitorProblemLabel.setText (text, juce::dontSendNotification);
     monitorProblemLabel.setVisible (text.isNotEmpty());
+
+    // The band is sized to the reason, so a longer one needs a taller screen.
+    // Compared first because this arrives on every status tick.
+    if (monitorProblemHeight() != before)
+        requiredHeightChanged();
 }
 
 void MainScreen::setNoMicsMessage (bool show)
 {
+    if (noMicsLabel.isVisible() == show)
+        return;
+
     noMicsLabel.setVisible (show);
+    requiredHeightChanged();
+}
+
+void MainScreen::requiredHeightChanged()
+{
+    resized();
+
+    // Laying out again inside the same height only moves the shortfall to the
+    // footer. The owner sizes this screen from getRequiredHeight(), so it is
+    // the owner that has to be asked to measure again.
+    if (onRequiredHeightChanged)
+        onRequiredHeightChanged();
 }
 
 void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disabledReason)
@@ -756,7 +790,7 @@ void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disab
     if (disabledReasonLabel.isVisible() == enabled)
     {
         disabledReasonLabel.setVisible (! enabled);
-        resized();
+        requiredHeightChanged();
     }
 }
 
@@ -1021,8 +1055,6 @@ void MainScreen::resized()
 
     muteButton.setBounds (bottomRow.removeFromRight (92));
     bottomRow.removeFromRight (8);
-    volumeSlider.setBounds (bottomRow.removeFromRight (220));
-    bottomRow.removeFromRight (16);
 
     // The door to the cameras only earns a place down here when there is no
     // camera row carrying "+ Add camera" -- otherwise the same door appears
@@ -1036,6 +1068,21 @@ void MainScreen::resized()
     {
         camerasButton.setBounds ({});
     }
+
+    // What the text wants: the capacity figure, and the elapsed time beside it
+    // during a take. Fixed rather than measured, so the row does not shuffle
+    // every time the figure ticks over.
+    constexpr int kElapsedWidth   = 150;
+    constexpr int kRemainingWidth = 190;
+    const int textWanted = recording ? kElapsedWidth + kRemainingWidth : 200;
+
+    // The slider gives way before the text does. At its full 220px beside an
+    // open drawer, or at the narrowest window, it left the remaining time about
+    // 100px and "Room for 1..." -- the one figure in this row anyone acts on,
+    // traded for a longer track on a control that works at a third the length.
+    const int sliderWidth = juce::jlimit (80, 220, bottomRow.getWidth() - 16 - textWanted);
+    volumeSlider.setBounds (bottomRow.removeFromRight (sliderWidth));
+    bottomRow.removeFromRight (16);
 
     remainingLabel.setJustificationType (juce::Justification::centredLeft);
     saveLocationLabel.setJustificationType (juce::Justification::centredLeft);
@@ -1052,14 +1099,24 @@ void MainScreen::resized()
 
     if (recording)
     {
-        elapsedLabel.setBounds (textRow.removeFromLeft (150));
-        remainingLabel.setBounds (textRow.removeFromLeft (190));
+        // Short of room, the two are shrunk in proportion rather than elapsed
+        // taking its full width first and leaving the remaining time nothing.
+        const int textWidth = textRow.getWidth();
+        const int elapsedWidth = textWidth >= textWanted
+                                     ? kElapsedWidth
+                                     : textWidth * kElapsedWidth / textWanted;
+
+        elapsedLabel.setBounds (textRow.removeFromLeft (elapsedWidth));
+        remainingLabel.setBounds (textRow.removeFromLeft (juce::jmin (kRemainingWidth, textRow.getWidth())));
         saveLocationLabel.setBounds (textRow);
     }
     else
     {
+        // The figure first, the destination with what is left. Halving the row
+        // between them cut the figure short at exactly the widths where the
+        // destination -- a long path -- was going to be ellipsized anyway.
         elapsedLabel.setBounds ({});
-        remainingLabel.setBounds (textRow.removeFromLeft (juce::jmin (200, textRow.getWidth() / 2)));
+        remainingLabel.setBounds (textRow.removeFromLeft (juce::jmin (textWanted, textRow.getWidth())));
         saveLocationLabel.setBounds (textRow);
     }
 }

@@ -422,5 +422,161 @@ int main()
         failures += mirrorRoundTrips ? 0 : 1;
     }
 
+    // --- The footer at the height the screen asked for ----------------------
+    //
+    // The budget getRequiredHeight() sums has to be the one resized() spends.
+    // It left out the row under the record button that says why it is off, and
+    // the taller band a rig with no microphones gets -- so at exactly the
+    // height it asked for, the footer took the shortfall and the mute button
+    // came out 13px tall.
+    const auto findChild = [] (juce::Component& parent, auto predicate) -> juce::Component*
+    {
+        for (int i = 0; i < parent.getNumChildComponents(); ++i)
+            if (predicate (parent.getChildComponent (i)))
+                return parent.getChildComponent (i);
+
+        return nullptr;
+    };
+
+    const auto findButton = [&findChild] (juce::Component& parent, const juce::String& text)
+    {
+        return findChild (parent, [&text] (juce::Component* c)
+        {
+            auto* b = dynamic_cast<juce::Button*> (c);
+            return b != nullptr && b->getButtonText() == text;
+        });
+    };
+
+    const auto findLabel = [&findChild] (juce::Component& parent, const juce::String& text)
+    {
+        return dynamic_cast<juce::Label*> (findChild (parent, [&text] (juce::Component* c)
+        {
+            auto* l = dynamic_cast<juce::Label*> (c);
+            return l != nullptr && l->getText() == text;
+        }));
+    };
+
+    const auto findSlider = [&findChild] (juce::Component& parent)
+    {
+        return findChild (parent, [] (juce::Component* c)
+        {
+            return dynamic_cast<juce::Slider*> (c) != nullptr;
+        });
+    };
+
+    {
+        std::printf ("\nFooter keeps its height at the required height\n");
+
+        struct FooterCase { const char* label; int mics; bool recordEnabled; bool camera; };
+        const FooterCase footerCases[] = {
+            { "3 mics, record enabled",  3, true,  false },
+            { "3 mics, record disabled", 3, false, false },
+            { "no mics",                 0, true,  false },
+            { "no mics, record disabled", 0, false, false },
+            { "16 mics, record disabled", 16, false, false },
+            { "camera, record disabled", 3, false, true  },
+        };
+
+        for (const auto& fc : footerCases)
+        {
+            for (const int width : { 1180, 707, 560 })
+            {
+                mma::MainScreen s;
+                s.setMicCount (fc.mics);
+                s.setMuteState (false, false);
+                s.setRecordButtonEnabled (fc.recordEnabled,
+                                          fc.recordEnabled ? juce::String()
+                                                           : juce::String ("Choose where recordings go first."));
+                if (fc.camera)
+                    s.setCameraTiles ({ { "cam", "FaceTime" } });
+
+                // Laid out at exactly what it asked for: the tightest height the
+                // owner will ever give it once the content outgrows the window.
+                s.setSize (width, 420);
+                s.setVisibleHeight (420);
+                s.setSize (width, s.getRequiredHeight());
+                s.resized();
+
+                auto* mute = findButton (s, "Mute");
+                auto* slider = findSlider (s);
+
+                const int muteHeight = mute != nullptr ? mute->getHeight() : 0;
+                const int sliderHeight = slider != nullptr ? slider->getHeight() : 0;
+                const bool insideWindow = mute != nullptr
+                                       && mute->getBottom() <= s.getHeight() - 16;
+                const bool ok = muteHeight >= 28 && sliderHeight >= 28 && insideWindow;
+
+                std::printf ("  %s  %-26s %4dpx wide: mute %2dpx, volume %2dpx tall\n",
+                             ok ? "PASS" : "FAIL", fc.label, width, muteHeight, sliderHeight);
+                failures += ok ? 0 : 1;
+            }
+        }
+    }
+
+    // --- The remaining-time line in a narrow window -------------------------
+    //
+    // Beside an open drawer the screen is ~707px wide, and the window can be
+    // dragged down to 560. The volume slider kept its full 220px and the
+    // capacity figure -- the one number in the footer anyone acts on -- was
+    // left ~100px and ellipsized to "Room for 1...".
+    {
+        std::printf ("\nRemaining time stays readable in a narrow window\n");
+
+        const juce::String remaining = "Room for 12h 40m of feelings";
+        const juce::String elapsed = "Recording for 1h 02m";
+
+        for (const bool takeRunning : { false, true })
+        {
+            for (const auto& size : { juce::Point<int> (707, 560), juce::Point<int> (560, 420),
+                                      juce::Point<int> (1180, 560) })
+            {
+                mma::MainScreen s;
+                s.setMicCount (2);
+                s.setRecording (takeRunning);
+                s.setRemainingTimeText (remaining);
+                s.setElapsedTimeText (takeRunning ? elapsed : juce::String());
+                s.setSaveLocationText ("Saves to /Users/someone/Music/SobStage");
+
+                s.setVisibleHeight (size.y);
+                s.setSize (size.x, juce::jmax (size.y, s.getRequiredHeight()));
+                s.resized();
+
+                // Idle, the figure is alone in the row and has to fit whole.
+                // During a take it shares with the elapsed time, and at 560px
+                // the two cannot both be whole -- but neither may be starved
+                // to a stub while the other is comfortable.
+                const double share = takeRunning ? 0.7 : 1.0;
+
+                const auto labelFits = [&s, &findLabel, share] (const juce::String& text, int& width, int& needed)
+                {
+                    auto* label = findLabel (s, text);
+                    width = label != nullptr ? label->getWidth() : 0;
+                    needed = label != nullptr
+                                 ? juce::roundToInt (label->getFont().getStringWidthFloat (text))
+                                       + label->getBorderSize().getLeftAndRight()
+                                 : 1;
+                    return width >= juce::roundToInt (share * needed);
+                };
+
+                int remainingWidth = 0, remainingNeeded = 0;
+                bool ok = labelFits (remaining, remainingWidth, remainingNeeded);
+
+                int elapsedWidth = 0, elapsedNeeded = 0;
+                if (takeRunning)
+                    ok = labelFits (elapsed, elapsedWidth, elapsedNeeded) && ok;
+
+                auto* slider = findSlider (s);
+                ok = ok && slider != nullptr && slider->getWidth() >= 80;
+
+                std::printf ("  %s  %4dx%-4d %-9s remaining %3d/%3dpx  elapsed %3d/%3dpx  volume %3dpx\n",
+                             ok ? "PASS" : "FAIL", size.x, size.y,
+                             takeRunning ? "recording" : "idle",
+                             remainingWidth, remainingNeeded, elapsedWidth, elapsedNeeded,
+                             slider != nullptr ? slider->getWidth() : 0);
+                failures += ok ? 0 : 1;
+            }
+        }
+    }
+
     return failures == 0 ? 0 : 1;
 }

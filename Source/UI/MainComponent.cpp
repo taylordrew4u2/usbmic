@@ -53,6 +53,11 @@ MainComponent::MainComponent (Application& app)
 
     mainScreen.onMicNameClicked = [this] (int index) { promptRenameMic (index); };
 
+    // A reason under the record button, a no-microphones message or another
+    // row of strips makes the screen taller. Re-fitted here, the viewport
+    // scrolls to show it; left alone, the footer was squeezed into what was left.
+    mainScreen.onRequiredHeightChanged = [this] { resized(); };
+
     // §5.1: spacebar is the instant mute, so the window has to take keys.
     setWantsKeyboardFocus (true);
 

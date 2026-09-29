@@ -53,6 +53,11 @@ public:
 
     void reset() noexcept;
 
+    /// The status line for a fill state. Once the stems have been shed, a
+    /// later warning-level fill must not claim nothing has been lost: the
+    /// separate tracks already have been. Empty for Healthy.
+    static const char* fillStatusLine (WritePipelineState state, bool alreadyMixOnly) noexcept;
+
 private:
     bool warnedTenMinutes = false;
     bool warnedTwoMinutes = false;
