@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `sim_channel_meter`, a simulator for the crying face: a real `Metering`
+  fed synthesized microphones through the strip's own 60 Hz timer, checked
+  in every state -- asleep, frown, either side of the -18 dBFS tear line, a
+  sob on clip, the clip latching and clearing, the tear drying as the level
+  falls, a microphone lost while loud, the highlight ring, and every strip
+  size -- both from what the strip says its face is and from the tear pixels
+  it actually drew. Runs in CI on Linux, macOS and Windows.
+- The UI walk now checks the faces in the real app on the virtual
+  microphones: the two -8 dBFS tone mics each cry one tear, the silent input
+  frowns, the pixels match every face, and the microphone killed mid-take
+  closes its eyes.
+
 ## v1.13.0 -- 2026-09-29 (release candidate)
 
 A feature release on v1.12.1: every camera records, faults during a take are
