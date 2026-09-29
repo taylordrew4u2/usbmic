@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/SystemThermalState.h"
@@ -217,7 +218,12 @@ juce::String baseSessionFolderName (juce::Time now, const juce::String& name)
 
 } // namespace
 
-Application::Application() = default;
+Application::Application()
+    // §9.3, asked once. The setting does not change between repaints, and the
+    // alternative -- querying the OS per frame at 60Hz -- would be absurd.
+    : reducedMotionPreferred (prefersReducedMotionOnThisSystem())
+{
+}
 Application::~Application() { shutdown(); }
 
 std::weak_ptr<int> Application::getAliveToken() const
@@ -926,6 +932,98 @@ void Application::applyClockMaster()
     // computer instead, every microphone's figure means the same thing, no
     // master can be unplugged mid-take, and there is nothing to choose.
     capture->setMasterChannel (-1);
+}
+
+AlarmTone& Application::alarmTarget()
+{
+    const bool monitorCarriesIt = capture != nullptr && capture->hasOutputStream();
+
+    if (monitorCarriesIt)
+    {
+        // Never both: on a machine where the default output is the monitor
+        // device, the speaker would be fighting the exclusive stream for it.
+        alarmSpeaker.setActive (false);
+        return capture->getAlarm();
+    }
+
+    if (! alarmSpeaker.isActive())
+    {
+        // Opening a device that is not there costs real time; ask again every
+        // few seconds rather than on every tick.
+        const auto now = juce::Time::getMillisecondCounterHiRes();
+
+        if (now >= alarmSpeakerRetryAtMs)
+        {
+            alarmSpeakerRetryAtMs = now + 5000.0;
+
+            if (! alarmSpeaker.setActive (true))
+                juce::Logger::writeToLog ("Alarm sounds have no output: " + alarmSpeaker.getProblem());
+        }
+    }
+
+    return alarmSpeaker.getAlarm();
+}
+
+const AlarmTone* Application::currentAlarm() const
+{
+    if (capture != nullptr && capture->hasOutputStream())
+        return &capture->getAlarm();
+
+    return alarmSpeaker.isActive() ? &alarmSpeaker.getAlarm() : nullptr;
+}
+
+void Application::announceRecordingStarted()
+{
+    alarmTarget().trigger (AlarmTone::Kind::Started);
+}
+
+void Application::announceRecordingStopped()
+{
+    alarmTarget().trigger (AlarmTone::Kind::Stopped);
+}
+
+void Application::setFaultAlarm (bool on)
+{
+    // Off is applied to both, so a route change mid-alarm never strands a
+    // siren on the path that is no longer playing.
+    if (! on)
+    {
+        if (capture != nullptr)
+            capture->getAlarm().setFault (false);
+        alarmSpeaker.getAlarm().setFault (false);
+        return;
+    }
+
+    alarmTarget().setFault (true);
+}
+
+bool Application::isFaultAlarmOn() const
+{
+    const auto* alarm = currentAlarm();
+    return alarm != nullptr && alarm->getKind() == AlarmTone::Kind::Fault;
+}
+
+bool Application::isAlarmChirping() const
+{
+    const auto* alarm = currentAlarm();
+
+    if (alarm == nullptr)
+        return false;
+
+    const auto kind = alarm->getKind();
+    return (kind == AlarmTone::Kind::Started || kind == AlarmTone::Kind::Stopped) && alarm->isSounding();
+}
+
+uint64_t Application::getAlarmSamplesRendered() const
+{
+    // Both paths, so a count taken before a route change still compares.
+    return (capture != nullptr ? capture->getAlarm().getSamplesRendered() : 0)
+         + alarmSpeaker.getAlarm().getSamplesRendered();
+}
+
+bool Application::isAlarmAudible() const
+{
+    return (capture != nullptr && capture->hasOutputStream()) || alarmSpeaker.isActive();
 }
 
 MonitorBus* Application::getMonitorBus()

@@ -607,7 +607,8 @@ std::vector<AudioDeviceDescriptor> AlsaBackend::enumerate (bool wantInput, bool 
         // A null IOID means the PCM serves both directions.
         const bool matches = (ioid == nullptr) || (std::strcmp (ioid, wanted) == 0);
 
-        if (name != nullptr && matches && std::strcmp (name, "null") != 0)
+        if (name != nullptr && matches && std::strcmp (name, "null") != 0
+            && ! (wantInput && alsa_detail::alsaInputNameIsASystemAlias (name)))
         {
             AudioDeviceDescriptor d;
             d.name = (desc != nullptr) ? std::string (desc) : std::string (name);

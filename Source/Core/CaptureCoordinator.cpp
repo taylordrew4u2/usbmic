@@ -100,6 +100,14 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         {
             monitorProblem = std::move (outputProblem)
                            + " Recording is available, but live headphone monitoring is off.";
+
+            // A microphone that would not open is still news when the output
+            // is the thing being explained. This used to keep only the output's
+            // sentence, so a rig with a shared output AND a dead microphone was
+            // told about the headphones and nothing about the silent track.
+            if (! inputProblem.empty())
+                monitorProblem += " " + inputProblem;
+
             return true;
         }
 
@@ -1333,6 +1341,14 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     }
 
     mixMeter.processAudioBlock (mixScratch.data(), numSamples);
+
+    // The app's own sounds go in after the meter, so the mix bar shows the
+    // room and not the siren, and after the mute: a fault alarm has to reach
+    // the headphones however the monitor is set. Clamped, because a siren over
+    // a mix at the ceiling would otherwise clip in the driver.
+    alarm.render (mixScratch.data(), numSamples, sampleRate);
+    for (int s = 0; s < numSamples; ++s)
+        mixScratch[static_cast<size_t> (s)] = std::clamp (mixScratch[static_cast<size_t> (s)], -1.0f, 1.0f);
 
     // §5.2: the same mix to every output channel -- no per-listener variation.
     for (int ch = 0; ch < numOutputs; ++ch)

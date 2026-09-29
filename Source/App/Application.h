@@ -41,6 +41,7 @@
 #include "../Core/PermissionGuidance.h"
 #include "CameraController.h"
 #include "TakeCombiner.h"
+#include "AlarmSpeaker.h"
 #include "../Platform/IAudioBackend.h"
 #include "../Platform/VirtualDeviceBackend.h"
 #include "../Platform/SystemAggregateDevice.h"
@@ -67,6 +68,24 @@ public:
     RecordingEngine& getRecordingEngine() { return recordingEngine; }
     /// Null only on a build with no platform audio backend.
     MonitorBus* getMonitorBus();
+
+    /// The sounds the app makes about itself: a chirp when a take starts and
+    /// stops, a siren while something is wrong mid-take. They go through the
+    /// headphone output when one is open, and through the computer's default
+    /// output when none is (AlarmSpeaker).
+    void announceRecordingStarted();
+    void announceRecordingStopped();
+    /// Idempotent, so the UI can re-assert it every tick while its alarm card
+    /// is up and a capture rebuilt mid-alarm keeps sounding.
+    void setFaultAlarm (bool on);
+    bool isFaultAlarmOn() const;
+    /// True while a start or stop chirp is still playing.
+    bool isAlarmChirping() const;
+    /// Samples of alarm tone that have reached the output so far.
+    uint64_t getAlarmSamplesRendered() const;
+    /// Whether any output is open to carry them: the monitor stream, or the
+    /// computer's default output standing in for it.
+    bool isAlarmAudible() const;
 
     /// §5.4: empty while the low-latency monitor path is healthy; otherwise the
     /// plain-language reason it isn't, which the UI must show rather than
@@ -452,6 +471,11 @@ public:
     /// microphone does not print its product string twice.
     juce::String getMicProductName (int index) const;
 
+    /// §9.3: whether this machine's owner has asked for reduced motion. Read
+    /// once at construction -- it is an accessibility preference, not something
+    /// that changes between repaints.
+    bool prefersReducedMotion() const noexcept { return reducedMotionPreferred; }
+
     /// The picture side of a take: which cameras are connected, which are in,
     /// and the live views. Video only -- see CameraController for why there is
     /// no audio anywhere near it.
@@ -557,6 +581,14 @@ public:
 private:
     std::unique_ptr<IAudioBackend> audioBackend;
     std::unique_ptr<CaptureCoordinator> capture;
+
+    // The app's own sounds go through the monitor output when one is open,
+    // and through the computer's default output when none is. Which is
+    // decided on every call, so a device coming or going switches the route.
+    AlarmSpeaker alarmSpeaker;
+    double alarmSpeakerRetryAtMs = 0.0;
+    AlarmTone& alarmTarget();
+    const AlarmTone* currentAlarm() const;
     // What the live coordinator was constructed with, so restartCapture() can
     // tell a plain channel-set change from one that needs a new coordinator.
     double captureRate = 0.0;
@@ -626,6 +658,8 @@ private:
     // §3.3: which device is currently holding the timebase, so a mid-take
     // switchover can be logged once rather than on every status poll.
 
+    // §9.3, read once at construction. See prefersReducedMotion().
+    bool reducedMotionPreferred = false;
     juce::String midTakeNotice;
     double midTakeNoticeSeconds = 0.0;
 

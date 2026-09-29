@@ -177,13 +177,24 @@ every press of record after this starts immediately.
   <img src="docs/images/mid-take-alert.png" alt="A card over a running take headed 'Something changed mid-take.', listing that a microphone stopped sending sound, a camera went away, and a microphone came back, each with how far into the take it happened, with Stop recording and Keep recording buttons" width="660">
 </p>
 
-If something goes wrong while a take is running -- a microphone unplugged, a
-camera switched off, sound dropped, the drive falling behind or nearly full
--- this card comes up the moment it happens and says so, with how far into
-the take it was. The take carries on behind it; Keep recording dismisses
-the card, Stop recording is the same press as the record button. Each
-change is said once, and good news (a mic coming back) joins the card
-quietly rather than raising it.
+If something goes wrong while a take is running -- a microphone unplugged or
+gone quiet, a camera switched off or lost, sound dropped, the drive falling
+behind or nearly full -- this card comes up the moment it happens and says
+so, with how far into the take it was. It does not come up quietly: the
+whole window flashes red, a banner across the card says SOMETHING IS WRONG
+in letters that read from the back of the room, and a two-tone siren sounds
+in the headphones, all until someone presses Keep recording or Stop
+recording. The take carries on behind it; Keep recording dismisses the card,
+Stop recording is the same press as the record button. Each change is said
+once, and good news (a mic coming back) joins the card quietly rather than
+raising it.
+
+Starting and stopping are announced the same way. For three seconds the
+whole window flashes RECORDING in red, or RECORDING STOPPED in cyan, with the
+take's name under it, and the headphones play a rising chirp for a start and
+a falling one for a stop. The banner takes no clicks, so nothing behind it
+waits on it. Both announcements and the alarm respect the system's
+reduced-motion setting by pulsing slowly instead of flashing.
 
 <p align="center">
   <img src="docs/images/recording.png" alt="A take in progress: the record button is red and reads 'Recording. Tap to stop.', a green line says '5 files -- 670 bytes so far', and the footer reads 'Recording for 0m 06s' beside the session folder being written into" width="660">
@@ -573,9 +584,11 @@ this feature works out for you.
 - **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
   under its name, updating as you rename it. Renaming is the moment you want to
   know what the name does.
-- A newly discovered camera is never opened until you switch it on. That first
-  explicit choice is remembered, so enabled cameras reopen on later launches
-  to keep their main-screen previews live until you switch them off.
+- **Every camera plugged in records**, each to its own file for the whole
+  take, without a trip to this panel first. Switching one off here is the
+  exception, and that choice is remembered across an unplug and a relaunch.
+  The first launch may therefore raise the operating system's camera
+  permission prompt before you have pressed record.
 - **macOS and Windows only.** JUCE implements camera capture on those two
   targets; the Linux build says so in one sentence instead of showing controls
   that cannot work. The sound recording works either way.
@@ -1122,8 +1135,10 @@ the matrix. In particular:
 - **Cameras are an addition, not a spec item.** `docs/SPEC.md` is about
   microphones and says nothing about video, so everything in the Cameras panel
   is a judgment call against the spec's own principles rather than a
-  requirement being met: opt-in per camera because §6.5's card-full failure is
-  the one a novice cannot recover from and video is what fills a card; capture
+  requirement being met: every plugged-in camera recording by default because
+  a take with a camera missing from it cannot be redone, while §6.5's
+  card-full failure is guarded by the remaining-time figure counting every
+  recording camera; capture
   requests JUCE's high-quality capture mode while only the *drawing* is made
   cheap (the OS/driver still chooses the actual format), because §6.6 is
   about not spending CPU where it costs audio; picture and sound as separate

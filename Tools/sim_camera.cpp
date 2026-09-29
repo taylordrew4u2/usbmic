@@ -310,6 +310,11 @@ void aReorderedListCannotOpenTheWrongCamera()
     fakecamera::resetOpenCallCount();
 
     mma::CameraController controller;
+
+    // Off before discovery, so nothing opens on the refresh itself: the open
+    // under test has to be the one made against the stale index below.
+    controller.getSelection().setEnabled ("Wide Camera", false);
+    controller.getSelection().setEnabled ("Close Camera", false);
     refreshNow (controller);
 
     const auto cameras = controller.getSelection().getAvailableCameras();
@@ -566,6 +571,9 @@ void aFailedViewerCanRecoverWithTheSameId()
     fakecamera::resetViewerCreateCallCount();
 
     mma::CameraController controller;
+    // Off before discovery, so the one preview attempt counted below is the
+    // explicit open and not the refresh's.
+    controller.getSelection().setEnabled ("Capture Card", false);
     refreshNow (controller);
     controller.getSelection().setEnabled ("Capture Card", true);
     controller.applySelection (true);

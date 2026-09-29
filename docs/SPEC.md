@@ -293,7 +293,7 @@ Source of truth: `palette` in `Source/UI/AppLookAndFeel.h`.
 ### 9.3 Constraints
 - **Color never carries meaning alone.** Every colored state also changes shape, text, or number. Clip indication cannot depend on hue.
 - Badge legible at 26 px. Test small before committing to detail.
-- No glow or pulse animations; fill and numbers are live.
+- Respect `prefers-reduced-motion`: flashing and pulse softened or off, fill and numbers still live.
 - Numeric readouts in a monospace face so digits do not jitter as values change.
 ---
 ## 10. User experience — zero-knowledge setup
