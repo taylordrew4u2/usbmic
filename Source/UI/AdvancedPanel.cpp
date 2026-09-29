@@ -521,6 +521,25 @@ void AdvancedPanel::setTrimChannels (const juce::StringArray& micNames,
     layOutTrimRows();
 }
 
+void AdvancedPanel::setTrimValues (const std::function<float (int)>& currentTrimDb)
+{
+    if (currentTrimDb == nullptr)
+        return;
+
+    for (size_t i = 0; i < trimSliders.size(); ++i)
+    {
+        auto& slider = *trimSliders[i];
+
+        if (slider.isMouseButtonDown())
+            continue;
+
+        const double value = currentTrimDb (static_cast<int> (i));
+
+        if (slider.getValue() != value)
+            slider.setValue (value, juce::dontSendNotification);
+    }
+}
+
 void AdvancedPanel::layOutTrimRows()
 {
     constexpr int rowHeight = 26;

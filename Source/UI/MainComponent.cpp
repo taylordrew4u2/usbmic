@@ -1118,12 +1118,29 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setStorageVolumes (volumes);
 
 
-    // Rebuilt only when the mic set changes: doing it every tick would reset a
-    // slider out from under the user mid-drag.
-    if (micCount != lastAdvancedMicCount)
+    // Rebuilt only when the rows themselves change: doing it every tick would
+    // reset a slider out from under the user mid-drag. Keyed on each row's
+    // physical input and name, not the count -- a rename kept the old name on
+    // its row, and two microphones swapping places left a slider labelled for
+    // one driving the other's trim.
+    const auto trimOf = [this] (int i) { return application.getChannelTrimDb (i); };
+    juce::StringArray trimRows;
+
+    for (int i = 0; i < micCount; ++i)
     {
-        advancedPanel.setTrimChannels (micNames, [this] (int i) { return application.getChannelTrimDb (i); });
-        lastAdvancedMicCount = micCount;
+        const auto target = application.getMicRenameTarget (i);
+        trimRows.add (juce::String (target.deviceKey) + ":" + juce::String (target.deviceChannel)
+                      + "|" + micNames[i]);
+    }
+
+    if (trimRows != lastAdvancedTrimRows)
+    {
+        advancedPanel.setTrimChannels (micNames, trimOf);
+        lastAdvancedTrimRows = trimRows;
+    }
+    else
+    {
+        advancedPanel.setTrimValues (trimOf);
     }
 }
 

@@ -122,9 +122,15 @@ MACHINE_STALL = (
 )
 
 
-def check_reported_losses(dropouts, check):
+def check_reported_losses(dropouts, check, expected=()):
+    # A loss the test itself caused on purpose must be reported -- and is then
+    # not a loss the app should not have taken.
+    for marker in expected:
+        check(any(marker in d.get('description', '') for d in dropouts),
+              'take reports the expected loss (%s)' % marker)
     real = [d for d in dropouts
-            if not any(marker in d.get('description', '') for marker in FIXTURE_INFLATED + MACHINE_STALL)]
+            if not any(marker in d.get('description', '')
+                       for marker in FIXTURE_INFLATED + MACHINE_STALL + tuple(expected))]
     # Device loss is reported here too and is a legitimate thing for a take to
     # survive; the gate's own fixture never unplugs anything, so anything in
     # this list on a healthy run is a loss the app should not have taken.
@@ -148,6 +154,9 @@ def main():
                          '(a source with nothing plugged into it)')
     ap.add_argument('--mirror-root', default=os.path.expanduser('~/RECORDINGS-MIRROR'))
     ap.add_argument('--no-mirror', action='store_true')
+    ap.add_argument('--expect-loss', action='append', default=[],
+                    help='TEXT: session.json must report a loss containing TEXT, which the '
+                         'test caused on purpose (it is then not an unexplained one)')
     a = ap.parse_args()
 
     failures = []
@@ -203,7 +212,7 @@ def main():
     if os.path.exists(meta):
         j = json.load(open(meta))
         check(bool(j.get('stopTimestamp')), 'session.json has a stop timestamp')
-        check_reported_losses(j.get('dropouts') or [], check)
+        check_reported_losses(j.get('dropouts') or [], check, a.expect_loss)
         mirror_ran = bool(j.get('mirrorActive'))
         if j.get('mirrorEnabled') and not mirror_ran:
             print('  NOTE  mirror was enabled but did not run (low space on the internal drive?)')

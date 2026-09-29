@@ -39,7 +39,9 @@ namespace mma {
 ///   MMA_UI_WALK_MODE=crash      record, write "RECORDING" and wait to be killed
 ///   MMA_UI_WALK_MODE=fault      record, create MMA_UI_WALK_FAULT_FILE (which
 ///                               Tools/alsa_readi_shim.cpp watches to kill a
-///                               microphone), and walk the mid-take alert card
+///                               microphone), walk the mid-take alert card,
+///                               remove the file and record a second take,
+///                               then kill it again between takes for a third
 ///   MMA_UI_WALK_MODE=proof      record a take whose files never grow (the proof's
 ///                               evidence is starved), and walk the app's own stop
 ///   MMA_UI_WALK_EXPECT_RECOVERED=1   the recovery card must appear at launch
@@ -335,6 +337,21 @@ private:
 
     static juce::File desktop() { return juce::File::getSpecialLocation (juce::File::userDesktopDirectory); }
 
+    /// The Settings trim slider with this accessible title, if it is there.
+    juce::Slider* trimSlider (const juce::String& title) const
+    {
+        auto* panel = find<AdvancedPanel>();
+        if (panel == nullptr)
+            return nullptr;
+
+        std::vector<juce::Component*> inside;
+        collect (*panel, inside);
+        for (auto* c : inside)
+            if (auto* s = dynamic_cast<juce::Slider*> (c); s != nullptr && s->getTitle() == title)
+                return s;
+        return nullptr;
+    }
+
     static int countDiagnosticsZips()
     {
         return desktop().getNumberOfChildFiles (juce::File::findFiles, "SobStage-diagnostics*.zip");
@@ -549,6 +566,13 @@ private:
             settle (500);
             add ("with nothing more rendered after", [] {},
                  [this] { return ! application.isFaultAlarmOn() && application.getAlarmSamplesRendered() <= sirenSamplesAt + 2400; });
+            // Plugged back in before Stop (MMA_SHIM_FAIL_WHILE_FILE: a reopen
+            // succeeds once the file has gone). The dead stream has already
+            // given up, so this take's track stays silent; only a reopen can
+            // bring the microphone back for the next one.
+            add ("the dead microphone is plugged back into the same port",
+                 [this] { juce::File (faultFile).deleteFile(); },
+                 [this] { return ! juce::File (faultFile).existsAsFile(); });
             settle (2000);
             add ("the take still stops normally", [this]
             {
@@ -568,6 +592,67 @@ private:
             }, 10000);
             add ("the saved-take card's Done closes it", [this] { click<SavedTakePanel> ("Done"); },
                  [this] { return ! isUp<SavedTakePanel>(); });
+
+            // §0.1: nothing used to reopen a stream that died. The device was
+            // still listed, so no replug ever came, and the next take recorded
+            // silence for that microphone -- with its strip lit as live and no
+            // card or dropout to say so. Stop owes the reopen.
+            add ("a second take starts", [this] { startRecording(); }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+            add ({}, [this]
+            {
+                takeFolder = application.getCurrentSessionFolder();
+                line ("SECOND-TAKE " + takeFolder);
+            }, [] { return true; });
+            check ("in the second take the microphone that died is heard again, beside the other",
+                   [this] { return stripsNamed ("mma_mic", ChannelMeterComponent::Face::OneTear) == 2
+                                && facesMatchPixels(); }, 15000);
+            add ({}, [this] { line (describeStrips()); }, [] { return true; });
+            settle (4000);
+            add ("the second take stops", [this]
+            {
+                backToMain();
+                click<MainScreen> ("Recording. Tap to stop.");
+            }, [this] { return ! recording(); }, 20000);
+            check ("its saved-take card comes up", [this] { return isUp<SavedTakePanel>(); }, 30000);
+            add ("and its record has no microphone stopping in it", [] {}, [this]
+            {
+                const auto json = juce::File (takeFolder).getChildFile ("session.json");
+                return json.existsAsFile() && ! json.loadFileAsString().contains ("Microphone stopped sending audio");
+            }, 10000);
+            add ("the saved-take card's Done closes it", [this] { click<SavedTakePanel> ("Done"); },
+                 [this] { return ! isUp<SavedTakePanel>(); });
+
+            // And one that dies between takes and stays dead. Its failure was
+            // dropped outright while nothing was recording: the strip stayed
+            // lit as live, and the next take wrote its track as silence with
+            // no card and no dropout. It is reopened once, dies again, and
+            // must then be shown dead and reported by the take.
+            add ("the same microphone dies again, between takes",
+                 [this] { juce::File (faultFile).replaceWithText ("dead"); },
+                 [this] { return juce::File (faultFile).existsAsFile(); });
+            check ("its strip goes to sleep, with nothing recording",
+                   [this] { return stripsNamed ("mma_mic2", ChannelMeterComponent::Face::Asleep) == 1
+                                && stripsNamed ("mma_mic1", ChannelMeterComponent::Face::OneTear) == 1
+                                && facesMatchPixels(); }, 15000);
+            add ({}, [this] { line (describeStrips()); }, [] { return true; });
+            add ("a third take starts", [this] { startRecording(); }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+            add ({}, [this] { takeFolder = application.getCurrentSessionFolder(); }, [] { return true; });
+            check ("the dead microphone is still asleep in it",
+                   [this] { return stripsNamed ("mma_mic2", ChannelMeterComponent::Face::Asleep) == 1; }, 5000);
+            settle (2000);
+            add ("the third take stops", [this]
+            {
+                backToMain();
+                click<MainScreen> ("Recording. Tap to stop.");
+            }, [this] { return ! recording(); }, 20000);
+            check ("its saved-take card comes up", [this] { return isUp<SavedTakePanel>(); }, 30000);
+            add ("and its record says the microphone was not sending audio", [] {}, [this]
+            {
+                return juce::File (takeFolder).getChildFile ("session.json").loadFileAsString()
+                           .contains ("stopped sending audio");
+            }, 10000);
+            add ("the saved-take card's Done closes it", [this] { backToMain(); },
+                 [this] { return ! isUp<SavedTakePanel>() && ! isUp<TakeAlertCard>(); }, 10000);
             return;
         }
 
@@ -817,6 +902,28 @@ private:
                 if (auto* window = mc->getTopLevelComponent())
                     window->setBounds (windowBoundsBefore);
         }, [this] { return overlaysCoverWindow(); });
+        // §4: the trim rows were rebuilt only when the NUMBER of microphones
+        // changed, so a rename left the old name on its row -- and a swap left
+        // a slider labelled for one microphone driving another.
+        add ("a microphone renamed with Settings open gets its own trim row", [this]
+        {
+            application.setMicAssignedName (0, "Walker Trim");
+        }, [this]
+        {
+            const auto stored = application.getMicDisplayName (0);
+            return stored.contains ("Trim") && trimSlider (stored + " monitor trim") != nullptr;
+        }, 5000);
+        add ("and a trim set elsewhere shows on that row", [this] { application.setChannelTrimDb (0, 3.5f); }, [this]
+        {
+            auto* s = trimSlider (application.getMicDisplayName (0) + " monitor trim");
+            return s != nullptr && std::abs (s->getValue() - 3.5) < 0.01;
+        }, 5000);
+        add ("  (name and trim put back)", [this]
+        {
+            application.setChannelTrimDb (0, 0.0f);
+            application.setMicAssignedName (0, "Walker Vox");
+        }, [this] { return application.getMicDisplayName (0).contains ("Vox")
+                        && trimSlider (application.getMicDisplayName (0) + " monitor trim") != nullptr; }, 5000);
         add ("every control in Settings", [this] { insertNext (exerciseControlsIn<AdvancedPanel> ("Settings")); }, [] { return true; });
         add ("Export diagnostics in Settings writes a zip", [this]
         {
@@ -942,6 +1049,16 @@ private:
                     && meter != nullptr && meter->getTitle() == stored + " meter";
             }, 2000);
         }
+        // §6.3: unticking the local backup mid-take. It used to change only the
+        // setting: the copy went on being written, the low-space stop no
+        // longer watched it, and session.json said the backup was off while
+        // the take's own record showed it running to the end.
+        add ("unticking the local backup mid-take stops this take's copy", [this]
+        {
+            takeFolder = application.getCurrentSessionFolder();
+            application.setMirrorEnabled (false);
+        }, [this] { return recording() && ! application.isMirrorEnabledByUser(); });
+        settle (1000);
         add ("recording stops", [this]
         {
             takeFolder = application.getCurrentSessionFolder();
@@ -954,6 +1071,14 @@ private:
         add ("the banner goes away on its own", [] {}, [this] { return banner() == nullptr; }, TakeBanner::kHoldMs + 2000);
         check ("the saved-take card says the take is saved", [this] { return isUp<SavedTakePanel>(); }, 30000);
         add ("the take's files are on disk, with the renamed microphone", [] {}, [this] { return takeFilesLookRight(); }, 10000);
+        add ("its record says the backup copy stopped when it was turned off", [] {}, [this]
+        {
+            const auto json = juce::JSON::parse (juce::File (takeFolder).getChildFile ("session.json"));
+            return json.isObject() && ! static_cast<bool> (json["mirrorActive"])
+                && juce::JSON::toString (json).contains ("Local backup copy turned off");
+        }, 10000);
+        add ("  (local backup ticked again for the next take)", [this] { application.setMirrorEnabled (true); },
+             [this] { return application.isMirrorEnabledByUser(); });
         add ("session.json gives the rate and bit depth MIX.wav was written at, not the ones picked mid-take",
              [] {}, [this]
         {
@@ -999,6 +1124,7 @@ private:
                 && application.getCaptureGeneration() == generationBefore;
         });
         settle (3000);
+
         add ("the second take stops", [this]
         {
             backToMain();

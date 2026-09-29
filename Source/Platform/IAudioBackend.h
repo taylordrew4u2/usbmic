@@ -63,6 +63,29 @@ constexpr bool streamFailureIsWarning (StreamFailureKind kind) noexcept
         || kind == StreamFailureKind::safetyMonitoringUnavailable;
 }
 
+/// §0.1: what the owner does about a microphone whose input stream has died
+/// while its device is still listed (one that has left the list is an unplug,
+/// handled as one).
+enum class DeadInputStreamAction
+{
+    reopenNow,    // nothing is recording: reopen the streams straight away
+    reopenAtStop, // a take is running: its channels are fixed, so Stop reopens
+    leaveDead     // reopened a moment ago and died again: show it dead, retry no more
+};
+
+/// A device that dies again within this long of its streams being reopened is
+/// left dead rather than reopened again, so one that keeps failing cannot hold
+/// the rig in a restart loop.
+constexpr double kDeadInputReopenBackoffMs = 30000.0;
+
+constexpr DeadInputStreamAction deadInputStreamAction (bool recording, bool reopenedRecently) noexcept
+{
+    if (reopenedRecently)
+        return DeadInputStreamAction::leaveDead;
+
+    return recording ? DeadInputStreamAction::reopenAtStop : DeadInputStreamAction::reopenNow;
+}
+
 /// A stream that died or became unsafe after it had been opened. See
 /// takeStreamFailures().
 struct StreamFailure

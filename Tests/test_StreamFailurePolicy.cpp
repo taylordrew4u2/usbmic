@@ -20,3 +20,16 @@ TEST_CASE (StreamFailurePolicy_RecoverableSafetyReportsAreWarnings)
     REQUIRE_FALSE (streamFailureIsWarning (StreamFailureKind::deviceUnavailable));
     REQUIRE_FALSE (streamFailureIsWarning (StreamFailureKind::unknown));
 }
+
+TEST_CASE (StreamFailurePolicy_ADeadInputStreamIsReopenedOnceThenLeftDead)
+{
+    // Idle: reopen now, or the next take records silence for that mic.
+    REQUIRE (deadInputStreamAction (false, false) == DeadInputStreamAction::reopenNow);
+
+    // Mid-take the channels are fixed; Stop owes the reopen.
+    REQUIRE (deadInputStreamAction (true, false) == DeadInputStreamAction::reopenAtStop);
+
+    // Died again straight after a reopen: no restart loop, it stays dead.
+    REQUIRE (deadInputStreamAction (false, true) == DeadInputStreamAction::leaveDead);
+    REQUIRE (deadInputStreamAction (true, true) == DeadInputStreamAction::leaveDead);
+}

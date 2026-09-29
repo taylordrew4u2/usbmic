@@ -19,13 +19,27 @@ juce::String TakeCombiner::findFfmpeg()
     if (ffmpegOverride.isNotEmpty())
         return ffmpegOverride;
 
-    if (haveResolved)
+    if (resolvedFfmpeg.isNotEmpty())
         return resolvedFfmpeg;
 
-    haveResolved = true;
-    resolvedFfmpeg = {};
+    if (haveMissed && juce::Time::getMillisecondCounter() - lastMissMs < kFfmpegRetryMs)
+        return {};
 
-    for (const auto& candidate : ffmpegSearchPaths (thisHostPlatform()))
+    return probeFfmpeg();
+}
+
+juce::String TakeCombiner::probeFfmpeg()
+{
+    if (ffmpegOverride.isNotEmpty())
+        return ffmpegOverride;
+
+    if (resolvedFfmpeg.isNotEmpty())
+        return resolvedFfmpeg;
+
+    const auto candidates = hasSearchPathsForTesting ? searchPathsForTesting
+                                                     : ffmpegSearchPaths (thisHostPlatform());
+
+    for (const auto& candidate : candidates)
     {
         const juce::String path (candidate);
 
@@ -56,7 +70,9 @@ juce::String TakeCombiner::findFfmpeg()
         }
     }
 
-    return resolvedFfmpeg;
+    haveMissed = true;
+    lastMissMs = juce::Time::getMillisecondCounter();
+    return {};
 }
 
 bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePlan& plan)
@@ -83,7 +99,9 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
         }
     }
 
-    const auto ffmpeg = findFfmpeg();
+    // Always a fresh look for a miss: this is the take the user was told
+    // would combine once ffmpeg was installed.
+    const auto ffmpeg = probeFfmpeg();
     auto next = std::make_shared<RunState>();
 
     {
