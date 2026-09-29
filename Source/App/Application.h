@@ -75,6 +75,12 @@ public:
     /// could reuse.
     int getCaptureGeneration() const noexcept { return captureGeneration; }
 
+    /// The buffer size the live coordinator's streams were opened with. It
+    /// trails getCurrentBufferSize() only while a take is running (§5.4
+    /// forbids a reopen mid-recording); once the take stops the two agree
+    /// again. Lets the UI walk see that the stop path paid the owed reopen.
+    int getOpenBufferSize() const noexcept { return captureBufferSize; }
+
     /// The sounds the app makes about itself: a chirp when a take starts and
     /// stops, a siren while something is wrong mid-take. They go through the
     /// headphone output when one is open, and through the computer's default
@@ -92,6 +98,15 @@ public:
     /// Whether any output is open to carry them: the monitor stream, or the
     /// computer's default output standing in for it.
     bool isAlarmAudible() const;
+    /// Whether the computer's default output is open for those sounds
+    /// (AlarmSpeaker). Never true while the monitor output is being opened.
+    bool isAlarmSpeakerOpen() const noexcept { return alarmSpeaker.isActive(); }
+
+    /// How many times a rebuild let go of the default output before opening
+    /// the monitor output (AlarmSpeaker.h: never both). For the UI walk, which
+    /// cannot see the moment itself: when the monitor then fails to open, the
+    /// speaker is given straight back.
+    int getSpeakerHandoversForMonitorOpen() const noexcept { return speakerHandoversForMonitorOpen; }
 
     /// §5.4: empty while the low-latency monitor path is healthy; otherwise the
     /// plain-language reason it isn't, which the UI must show rather than
@@ -158,6 +173,12 @@ public:
     /// drive -- frames the writer accepted, bytes the session folder holds,
     /// the loudest sample that has arrived. Read on the slow tick.
     ProofReading snapshotProof() const;
+
+    /// The UI walk only: while set, snapshotProof() reports a take whose files
+    /// never grow -- nothing accepted, nothing on the drive -- so §0.1's
+    /// automatic stop can be walked on a fixture whose drive always answers.
+    /// The take itself records normally; only the evidence is withheld.
+    void setProofStarvedForTesting (bool starved) noexcept { proofStarvedForTesting = starved; }
 
     /// §6.5: false while this channel's microphone is unplugged mid-take. The
     /// channel stays in the file writing silence; this is what the UI dashes
@@ -650,6 +671,9 @@ private:
     // §6.2: a take has finished and the UI has not yet shown where it went.
     bool savedTakePending = false;
 
+    // setProofStarvedForTesting(): the UI walk's take that writes nothing.
+    bool proofStarvedForTesting = false;
+
     // §6.5's mid-recording row: unplugs and reconnections during a take, kept
     // until the take ends so session.json carries them. RecordingEngine has
     // always tracked this and nothing ever told it anything.
@@ -759,6 +783,15 @@ private:
     int currentBitDepth = 24;
     // Buffer size lives in bufferLadder, which is the only thing allowed to
     // change it (§5.4). Keeping a second copy here would let the two disagree.
+
+    // The running take's own format and roster, fixed in toggleRecording once
+    // its files are open. currentSampleRate/currentBitDepth and `included` are
+    // the NEXT take's (Settings, a replug or a tick box can move them
+    // mid-take), so session.json and the combined file read these instead.
+    double takeSampleRate = 0.0;
+    int takeBitDepth = 0;
+    std::vector<DeviceRecord> takeDevices;
+
     std::string destinationFolder;
 
     // §10.1/§10.4. What the OS says about our privacy permissions, sampled off
@@ -876,6 +909,7 @@ private:
     double masterVolume = MonitorBus::kDefaultMonitorVolume;
     int captureGeneration = 0;
     bool monitorMuted = false;
+    int speakerHandoversForMonitorOpen = 0;
 
     /// (Re)opens the streams for the current mic set and output device. §5.1
     /// makes monitoring live from launch, and a hot-plug changes the channel

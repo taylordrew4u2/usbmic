@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -38,9 +39,13 @@ public:
 
     /// Starts combining. Returns immediately; poll getStatus().
     ///
-    /// A run already in flight is left alone and this returns false: two takes
-    /// combining at once would fight for the same cores the next recording
-    /// needs, and the second one can wait.
+    /// A run already in flight is never doubled: two takes combining at once
+    /// would fight for the same cores the next recording needs. The second
+    /// take waits instead -- it is queued behind the first on the same worker,
+    /// this returns true, and the run's status covers both. It used to return
+    /// false and drop the plan, and the app never asked twice, so a take
+    /// stopped while the last one was still muxing silently never got its
+    /// combined file.
     bool start (const juce::File& sessionFolder, const CombinedTakePlan& plan);
 
     bool isRunning() const;
@@ -62,12 +67,24 @@ private:
     juce::String resolvedFfmpeg;
     bool haveResolved = false;
 
+    struct QueuedTake
+    {
+        juce::File sessionFolder;
+        CombinedTakePlan plan;
+    };
+
     struct RunState
     {
         std::atomic<bool> running { false };
         std::atomic<bool> cancelling { false };
         mutable std::mutex statusLock;
         Status status;
+
+        /// Takes stopped while this run was busy, in the order they stopped.
+        /// Guarded by statusLock, which is also held while the worker decides
+        /// it has finished -- so a take is either picked up by this run or
+        /// finds it over and starts its own. Never neither.
+        std::deque<QueuedTake> queued;
     };
 
     std::shared_ptr<RunState> runState;
@@ -76,6 +93,13 @@ private:
                      juce::File sessionFolder,
                      CombinedTakePlan plan,
                      juce::String ffmpeg);
+
+    static void combineTake (const std::shared_ptr<RunState>& state,
+                             const juce::File& sessionFolder,
+                             const CombinedTakePlan& plan,
+                             const juce::String& ffmpeg,
+                             int& failures,
+                             juce::String& firstFailureDetail);
 };
 
 } // namespace mma

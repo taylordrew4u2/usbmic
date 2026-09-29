@@ -170,9 +170,13 @@ public:
     /// take carries on; the headphones are silent until the output returns.
     bool isOutputClockLost() const noexcept { return outputClockLost.load (std::memory_order_relaxed); }
 
-    /// Whether the rig was opened with an output stream at all. Without one
-    /// the software clock drives everything from the start.
-    bool hasOutputStream() const noexcept { return outputStreamOpen; }
+    /// Whether the rig has an output stream that is actually taking audio:
+    /// false without one, when the software clock drives everything from the
+    /// start, and false while an opened one has stopped calling back
+    /// (isOutputClockLost). Anything mixed into the headphones then reaches
+    /// nobody -- the software clock pulls with no buffer to fill -- so the
+    /// app's own sounds must go another way until the output returns.
+    bool hasOutputStream() const noexcept { return outputStreamOpen && ! isOutputClockLost(); }
 
     /// On by default. Off for harnesses that drive the output callback in
     /// simulated time, where a real-time thread deciding the output has

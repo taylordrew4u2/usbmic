@@ -5,16 +5,21 @@
 # and slider in the live window rather than clicking fixed pixels -- and writes
 # every check to a report this script reads.
 #
-# Three launches, each on a fresh profile of its own:
+# Five launches, each on a fresh profile of its own:
 #   1. The full walk: Settings, Help, Cameras, every control moved and put
 #      back, a microphone renamed, diagnostics exported twice, a real take
-#      recorded through a mid-take buffer change, the saved-take card, every
+#      recorded through a mid-take buffer change and a mid-take bit depth and
+#      rate change (its session.json must still match MIX.wav), the
+#      saved-take card, a
+#      second take whose mid-take buffer change must be applied at Stop, every
 #      remaining button, and a clean quit.
 #   2. A crash: record, then SIGKILL the app mid-take.
 #   3. The next launch after that crash: the interrupted take must be offered
 #      back before anything else, and the full walk must pass again.
 #   4. A microphone dies mid-take: the alert card must come up, Keep recording
 #      must keep the take going, and the take must still stop and save.
+#   5. A take whose files never grow: the app's own stop, its red card on top,
+#      and the saved-take card only after OK.
 #
 #   Tools/e2e_ui_walk.sh
 #
@@ -117,16 +122,23 @@ launch "$HOME1" "$WORK/walk.txt"
 STATUS=0; wait_for_exit 420 || STATUS=$?
 judge "full walk" "$WORK/walk.txt" "$STATUS"
 
-TAKE="$(find "$HOME1/RECORDINGS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | LC_ALL=C sort | tail -1)"
-if [ -n "$TAKE" ]; then
+# The full walk records two takes: the first with a buffer change, a format
+# change and renames in the middle of it, the second after Stop has applied
+# them. Every one is verified -- checking only the newest would leave the
+# first, the one most likely to break, unchecked.
+TAKES="$(find "$HOME1/RECORDINGS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | LC_ALL=C sort)"
+TAKE_COUNT="$(printf '%s\n' "$TAKES" | grep -c . || true)"
+if [ "$TAKE_COUNT" -lt 2 ]; then
+  echo "FAIL: the walk left $TAKE_COUNT take folder(s), expected 2"; FAILED=1
+fi
+while IFS= read -r TAKE; do
+  [ -n "$TAKE" ] || continue
   echo "---- the walk's take: $TAKE ----"
   # The walk renames microphone 1 "Walker Vox", so its tone is found by that.
   python3 Tools/verify_take.py "$TAKE" --seconds 3 --silent-ok mma_out \
     --tone Walker=440 --tone mma_mic2=1000 --mirror-root "$HOME1/RECORDINGS-MIRROR" || {
-    echo "FAIL: the take recorded during the walk does not verify"; FAILED=1; }
-else
-  echo "FAIL: the walk left no take folder"; FAILED=1
-fi
+    echo "FAIL: the take $TAKE recorded during the walk does not verify"; FAILED=1; }
+done <<< "$TAKES"
 
 # 2. A crash in the middle of a take.
 HOME2="$(fresh_home crash)"
@@ -158,6 +170,14 @@ launch "$HOME4" "$WORK/fault.txt" MMA_UI_WALK_MODE=fault MMA_UI_WALK_FAULT_FILE=
   MMA_SHIM_MODE=dead MMA_SHIM_DEVICE=mma_mic2 MMA_SHIM_FAIL_WHEN_FILE="$WORK/kill-mic2"
 STATUS=0; wait_for_exit 300 || STATUS=$?
 judge "a microphone dies mid-take" "$WORK/fault.txt" "$STATUS"
+
+# 5. A take whose files never grow. The app stops it three seconds in; the red
+#    card saying so must stay the card on screen, with the saved-take card
+#    after it rather than over it, and the siren only while that card is up.
+HOME5="$(fresh_home proof)"
+launch "$HOME5" "$WORK/proof.txt" MMA_UI_WALK_MODE=proof
+STATUS=0; wait_for_exit 300 || STATUS=$?
+judge "the app stops a take that writes nothing" "$WORK/proof.txt" "$STATUS"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "UI walk: FAILED (reports and logs in $WORK)"

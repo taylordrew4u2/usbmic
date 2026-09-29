@@ -13,6 +13,7 @@
 #include "ChannelMeterComponent.h"
 #include "MeterFaceProbe.h"
 #include "../App/Application.h"
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -39,6 +40,8 @@ namespace mma {
 ///   MMA_UI_WALK_MODE=fault      record, create MMA_UI_WALK_FAULT_FILE (which
 ///                               Tools/alsa_readi_shim.cpp watches to kill a
 ///                               microphone), and walk the mid-take alert card
+///   MMA_UI_WALK_MODE=proof      record a take whose files never grow (the proof's
+///                               evidence is starved), and walk the app's own stop
 ///   MMA_UI_WALK_EXPECT_RECOVERED=1   the recovery card must appear at launch
 ///   MMA_UI_WALK_SNAPSHOT_DIR=<dir>   save PNGs of the window at the banners
 ///                               and the alarm card, for a person to look at
@@ -56,6 +59,7 @@ public:
         const char* mode = std::getenv ("MMA_UI_WALK_MODE");
         crashMode = mode != nullptr && juce::String (mode) == "crash";
         faultMode = mode != nullptr && juce::String (mode) == "fault";
+        proofMode = mode != nullptr && juce::String (mode) == "proof";
         if (const char* f = std::getenv ("MMA_UI_WALK_FAULT_FILE"))
             faultFile = f;
         if (const char* dir = std::getenv ("MMA_UI_WALK_SNAPSHOT_DIR"))
@@ -91,6 +95,7 @@ private:
     int passes = 0;
     bool crashMode = false;
     bool faultMode = false;
+    bool proofMode = false;
     juce::String faultFile;
     bool expectRecovered = false;
     bool finished = false;
@@ -180,6 +185,17 @@ private:
     template <typename Panel>
     bool isUp() const { return find<Panel>() != nullptr; }
 
+    /// Whether Panel is what a person actually sees: the frontmost thing at the
+    /// middle of the window. isUp() only asks whether a card is showing, and to
+    /// JUCE a card buried under another one is still showing.
+    template <typename Panel>
+    bool onTop() const
+    {
+        auto* hit = root.getComponentAt (root.getLocalBounds().getCentre());
+        return hit != nullptr
+            && (dynamic_cast<Panel*> (hit) != nullptr || hit->findParentComponentOfClass<Panel>() != nullptr);
+    }
+
     /// A showing, enabled button with this text, inside a Panel if one is
     /// given (void: anywhere). Several screens have a "Done" or a "Close".
     template <typename Panel = void>
@@ -228,6 +244,13 @@ private:
     {
         auto* bus = application.getMonitorBus();
         return bus != nullptr && bus->isMuted();
+    }
+
+    /// A §5 runaway cut on the bus the headphones are fed from right now.
+    bool busCut()
+    {
+        auto* bus = application.getMonitorBus();
+        return bus != nullptr && bus->isRunawayMuted();
     }
 
     bool recording() { return application.getRecordingEngine().getState() == RecordingState::Recording; }
@@ -485,6 +508,46 @@ private:
             return;
         }
 
+        if (proofMode)
+        {
+            // §0.1's own stop: a take whose files never grow is ended by the
+            // app three seconds in. The red card saying so has to stay the
+            // card on screen. The saved-take card used to open over it, and the
+            // siren carried on behind a card that read "Saved.".
+            add ("a take whose files never grow starts", [this]
+            {
+                application.setProofStarvedForTesting (true);
+                startRecording();
+            }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+            add ("the app stops it by itself", [] {}, [this] { return ! recording(); }, 15000);
+            add ({}, [this] { application.setProofStarvedForTesting (false); }, [] { return true; });
+            check ("the red card says the recording failed", [this]
+            {
+                auto* card = find<TakeAlertCard>();
+                return card != nullptr && card->isAlarming() && card->getBannerText() == "RECORDING FAILED";
+            });
+            check ("and it is the card on top, with no saved-take card over it",
+                   [this] { return onTop<TakeAlertCard>() && ! isUp<SavedTakePanel>(); });
+            check ("the siren sounds while that card is the one on screen",
+                   [this] { return application.isFaultAlarmOn() && onTop<TakeAlertCard>(); }, 5000);
+            settle (1500);
+            check ("a second and a half later the red card is still the one on screen",
+                   [this] { return onTop<TakeAlertCard>() && ! isUp<SavedTakePanel>(); });
+
+            // The stop's banner flashes over everything for three seconds; the
+            // picture is of what a person is left looking at once it has gone.
+            add ({}, [] {}, [this] { return ! isUp<TakeBanner>(); }, 5000, false);
+            add ({}, [this] { snapshot ("proof-stop-card"); }, [] { return true; });
+            add ("OK closes the red card and the siren stops", [this] { click<TakeAlertCard> ("OK"); },
+                 [this] { return ! isUp<TakeAlertCard>() && ! application.isFaultAlarmOn(); });
+            check ("then the saved-take card comes up, on top",
+                   [this] { return isUp<SavedTakePanel>() && onTop<SavedTakePanel>(); }, 5000);
+            add ("the saved-take card's Done goes back to a quiet main screen",
+                 [this] { click<SavedTakePanel> ("Done"); },
+                 [this] { return ! isUp<SavedTakePanel>() && ! isUp<TakeAlertCard>() && ! application.isFaultAlarmOn(); });
+            return;
+        }
+
         if (crashMode)
         {
             add ("recording starts", [this] { startRecording(); }, [this] { return recordingOrAnswerPrompt(); }, 90000);
@@ -525,6 +588,36 @@ private:
         }, [this] { return application.getCaptureGeneration() != generationBefore
                         && application.getBufferSizeOverride() == bufferOverrideBefore; }, 20000);
         add ("and stays unmuted through that rebuild", [] {}, [this] { return ! muted() && ! busMuted(); }, 5000);
+
+        // §5: a runaway cut stays until someone presses Unmute. The cut lives
+        // on the bus, and a rebuild nobody asked for -- a buffer-ladder step,
+        // a hot-plug that moves the rate, the restart a take deferred -- builds
+        // a fresh one. The feedback detector latches the same cut the limiter
+        // does, and one grown band trips it without a howl in the fixture.
+        add ("feedback cuts the headphones", [this]
+        {
+            if (auto* bus = application.getMonitorBus())
+                bus->processFeedbackCandidate (-20.0, -20.0, MonitorBus::kFeedbackWindowSeconds);
+        }, [this] { return busCut() && button<MainScreen> ("Unmute (sound was cut)") != nullptr; });
+        add ("the audio engine rebuilds while they are cut", [this]
+        {
+            generationBefore = application.getCaptureGeneration();
+            application.setBufferSizeOverride (bufferOverrideBefore == 512 ? 1024 : 512);
+        }, [this] { return application.getCaptureGeneration() != generationBefore; }, 20000);
+        check ("the headphones are still cut after the rebuild", [this]
+        {
+            return busCut() && busMuted() && button<MainScreen> ("Unmute (sound was cut)") != nullptr;
+        });
+        add ("the cut's Unmute brings the sound back", [this] { click<MainScreen> ("Unmute (sound was cut)"); },
+             [this] { return ! busCut() && ! busMuted() && ! muted(); });
+        add ("the buffer size goes back after the cut", [this]
+        {
+            generationBefore = application.getCaptureGeneration();
+            application.setBufferSizeOverride (bufferOverrideBefore);
+        }, [this] { return application.getCaptureGeneration() != generationBefore
+                        && application.getBufferSizeOverride() == bufferOverrideBefore; }, 20000);
+        add ("and the sound stays on through that rebuild", [] {},
+             [this] { return ! busCut() && ! busMuted() && ! muted(); }, 5000);
         add ("the main screen's controls", [this] { insertNext (exerciseControlsIn<MainScreen> ("main screen")); }, [] { return true; });
 
         add ("the session name can be typed", [this]
@@ -624,6 +717,26 @@ private:
         });
         settle (2000);
         add ("the take is still running after it", [] {}, [this] { return recording(); });
+
+        // Settings does not stop anyone picking a new bit depth or rate mid-take,
+        // and both are for the NEXT take: this one's files are already open at
+        // the old format. session.json is rewritten at stop, and it has to
+        // describe those files, not whatever the setting says by then.
+        add ("a new bit depth and rate can be picked mid-take, for the next take", [this]
+        {
+            bitDepthBefore = application.getBitDepth();
+            rateOverrideBefore = application.getSampleRateOverride();
+            midTakeBitDepth = bitDepthBefore == 16 ? 24 : 16;
+            midTakeRate = juce::roundToInt (application.getSampleRate()) == 44100 ? 48000u : 44100u;
+            application.setBitDepthOverride (midTakeBitDepth);
+            application.setSampleRateOverride (midTakeRate);
+        }, [this]
+        {
+            return recording() && application.getBitDepth() == midTakeBitDepth
+                && juce::roundToInt (application.getSampleRate()) == static_cast<int> (midTakeRate);
+        });
+        settle (1000);
+        add ("the take is still running after that too", [] {}, [this] { return recording(); });
         add ("Settings closes during a take", [this] { pressKey (juce::KeyPress::escapeKey); },
              [this] { return ! isUp<AdvancedPanel>(); });
         settle (2000);
@@ -672,8 +785,94 @@ private:
         add ("the banner goes away on its own", [] {}, [this] { return banner() == nullptr; }, TakeBanner::kHoldMs + 2000);
         check ("the saved-take card says the take is saved", [this] { return isUp<SavedTakePanel>(); }, 30000);
         add ("the take's files are on disk, with the renamed microphone", [] {}, [this] { return takeFilesLookRight(); }, 10000);
+        add ("session.json gives the rate and bit depth MIX.wav was written at, not the ones picked mid-take",
+             [] {}, [this]
+        {
+            const auto f = takeFormats();
+            return f.has_value() && f->jsonBits == f->wavBits && std::abs (f->jsonRate - f->wavRate) < 0.5;
+        }, 10000);
+        add ({}, [this]
+        {
+            if (const auto f = takeFormats())
+                line ("      session.json " + juce::String (f->jsonRate, 0) + " Hz " + juce::String (f->jsonBits)
+                      + "-bit; MIX.wav " + juce::String (f->wavRate, 0) + " Hz " + juce::String (f->wavBits) + "-bit");
+        }, [] { return true; });
+        add ("the bit depth and rate go back to what they were", [this]
+        {
+            application.setBitDepthOverride (bitDepthBefore);
+            application.setSampleRateOverride (rateOverrideBefore);
+        }, [this]
+        {
+            return application.getBitDepth() == bitDepthBefore
+                && application.getSampleRateOverride() == rateOverrideBefore;
+        }, 20000);
         add ("the saved-take card's Done closes it", [this] { click<SavedTakePanel> ("Done"); },
              [this] { return ! isUp<SavedTakePanel>(); });
+
+        // A second, shorter take that changes the buffer size and nothing
+        // else. §5.4 fixes the size for the length of a take, so a size picked
+        // in Settings mid-take is owed to the stop, and Stop has to pay it.
+        // The take above cannot show that: its mid-take rename owes a reopen
+        // of its own, and paying that one hid a buffer change that was never
+        // owed.
+        check ("before the second take, the streams run at the buffer size Settings shows",
+               [this] { return application.getOpenBufferSize() == application.getCurrentBufferSize(); }, 10000);
+        add ("a second take starts", [this] { startRecording(); }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+        settle (2000);
+        add ("the buffer size is changed during the second take, and nothing reopens yet", [this]
+        {
+            generationBefore = application.getCaptureGeneration();
+            bufferOverrideBefore = application.getBufferSizeOverride();
+            application.setBufferSizeOverride (application.getOpenBufferSize() == 512 ? 1024 : 512);
+        }, [this]
+        {
+            return recording() && application.getBufferSizeOverride() != bufferOverrideBefore
+                && application.getCaptureGeneration() == generationBefore;
+        });
+        settle (3000);
+        add ("the second take stops", [this]
+        {
+            backToMain();
+            click<MainScreen> ("Recording. Tap to stop.");
+        }, [this] { return ! recording(); }, 20000);
+        add ("after Stop, the streams reopen at the buffer size picked mid-take", [] {}, [this]
+        {
+            return application.getCaptureGeneration() != generationBefore
+                && application.getOpenBufferSize() == application.getCurrentBufferSize();
+        }, 20000);
+        add ({}, [] {}, [this] { return banner() == nullptr; }, TakeBanner::kHoldMs + 2000);
+        check ("the second take's saved-take card comes up", [this] { return isUp<SavedTakePanel>(); }, 30000);
+        add ("and its Done closes it", [this] { click<SavedTakePanel> ("Done"); },
+             [this] { return ! isUp<SavedTakePanel>(); });
+
+        // AlarmSpeaker.h: the computer's default output and the monitor output
+        // are never open together. The fixture's only monitor candidate is its
+        // shared "default", which is refused for monitoring, so the takes'
+        // chirps went to the default output instead and left it open.
+        // Choosing the headphone output again -- what a user does in Settings
+        // -- must let go of it BEFORE the coordinator opens the output. On a
+        // real card the default output (dmix, PipeWire; WASAPI shared mode)
+        // holds the very device the exclusive open needs, the open is refused
+        // as "in use", monitoring falls back to input-only, and nothing ever
+        // closes the speaker again. Here the monitor still cannot open, so the
+        // speaker is given straight back; the handover count is what shows it
+        // was let go first.
+        add ("the takes' chirps left the computer's own output open", [] {},
+             [this] { return application.isAlarmSpeakerOpen()
+                          && ! application.getSelectedOutputDeviceName().empty(); }, 5000);
+        add ("choosing the headphone output again lets go of it before opening the output", [this]
+        {
+            speakerHandoversBefore = application.getSpeakerHandoversForMonitorOpen();
+            application.setOutputDeviceByName (juce::String (application.getSelectedOutputDeviceName()));
+        }, [this] { return application.getSpeakerHandoversForMonitorOpen() > speakerHandoversBefore; }, 2000);
+        add ("and with no monitor stream, the default output is given straight back", [] {},
+             [this] { return application.isAlarmSpeakerOpen(); }, 2000);
+        add ("and the next chirp still finds an output at once", [this]
+        {
+            alarmSamplesBefore = application.getAlarmSamplesRendered();
+            application.announceRecordingStopped();
+        }, [this] { return application.isAlarmAudible()
+                        && application.getAlarmSamplesRendered() > alarmSamplesBefore; }, 5000);
 
         // Anything with a label nobody above pressed: press it, then clear up.
         add ("every other button on the main screen", [this] { insertNext (pressEverythingElse()); }, [] { return true; });
@@ -821,6 +1020,47 @@ private:
     }
     int bufferOverrideBefore = -12345;
     int generationBefore = 0;
+    int speakerHandoversBefore = 0;
+    int bitDepthBefore = 24;
+    uint32_t rateOverrideBefore = 0;
+    int midTakeBitDepth = 0;
+    uint32_t midTakeRate = 0;
+
+    /// What session.json says the take was recorded at, beside what MIX.wav's
+    /// own header says. Returns nothing until the rewrite at stop is on disk:
+    /// the copy written at the start has no stop time and would pass for the
+    /// wrong reason.
+    struct TakeFormats
+    {
+        double jsonRate = 0.0, wavRate = 0.0;
+        int jsonBits = 0, wavBits = 0;
+    };
+
+    std::optional<TakeFormats> takeFormats() const
+    {
+        if (takeFolder.isEmpty())
+            return std::nullopt;
+
+        const juce::File folder (takeFolder);
+        const auto json = juce::JSON::parse (folder.getChildFile ("session.json"));
+        if (! json.isObject() || json["stopTimestamp"].toString().isEmpty())
+            return std::nullopt;
+
+        auto stream = folder.getChildFile ("MIX.wav").createInputStream();
+        if (stream == nullptr)
+            return std::nullopt;
+
+        std::unique_ptr<juce::AudioFormatReader> mix (juce::WavAudioFormat().createReaderFor (stream.release(), true));
+        if (mix == nullptr)
+            return std::nullopt;
+
+        TakeFormats f;
+        f.jsonRate = static_cast<double> (json["sampleRate"]);
+        f.jsonBits = static_cast<int> (json["bitDepth"]);
+        f.wavRate = mix->sampleRate;
+        f.wavBits = static_cast<int> (mix->bitsPerSample);
+        return f;
+    }
 
     bool takeFilesLookRight()
     {

@@ -1737,6 +1737,66 @@ TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
     c.stopRecording();
 }
 
+TEST_CASE (CaptureCoordinator_StopsOfferingItsOutputOnceTheOutputClockIsLost)
+{
+    // The headphones are unplugged mid-take and the fault siren goes on. The
+    // app routes its own sounds by hasOutputStream(): into the headphone mix
+    // while it says yes, through the computer's default output (AlarmSpeaker)
+    // when it says no. It went on saying yes after the output had stopped
+    // calling back, so the siren was set on an alarm only the output callback
+    // renders -- the software clock pulls with no headphone buffer, and the
+    // mix returns before the alarm when there is none. The siren meant to tell
+    // the operator the headphones had died was the one sound nobody could
+    // hear, and the speaker that exists for exactly this was held shut.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.hasOutputStream());
+
+    c.getAlarm().setFault (true);
+
+    std::vector<float> a (64, 0.5f), outL (64, 0.0f);
+    const float* ins[] = { a.data() };
+    float* outs[] = { outL.data() };
+
+    const auto driveWithTheOutput = [&] (int blocks)
+    {
+        for (int i = 0; i < blocks; ++i)
+        {
+            backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (ins, 1, nullptr, 0, 64);
+            backend.outputCallback (nullptr, 0, outs, 1, 64);
+            std::this_thread::sleep_for (std::chrono::microseconds (1333));
+        }
+    };
+
+    // While the headphones are there, they carry the siren.
+    driveWithTheOutput (50);
+    REQUIRE (c.hasOutputStream());
+    REQUIRE (c.getAlarm().getSamplesRendered() > 0);
+
+    // Then they stop taking audio. Only the microphones arrive.
+    pushInputsForAWhile (backend, 190, 1333);
+    REQUIRE (c.isOutputClockLost());
+
+    // Nothing renders the siren now...
+    const auto renderedAtLoss = c.getAlarm().getSamplesRendered();
+    pushInputsForAWhile (backend, 40, 1333);
+    REQUIRE (c.getAlarm().getSamplesRendered() == renderedAtLoss);
+
+    // ...so the rig must stop offering an output to carry it.
+    REQUIRE_FALSE (c.hasOutputStream());
+
+    // And once the headphones are back, they carry it again.
+    driveWithTheOutput (100);
+    REQUIRE (! c.isOutputClockLost());
+    REQUIRE (c.hasOutputStream());
+    REQUIRE (c.getAlarm().getSamplesRendered() > renderedAtLoss);
+
+    c.getAlarm().setFault (false);
+}
+
 TEST_CASE (CaptureCoordinator_CountsRingOverruns)
 {
     // §0.1: audio the rings had to throw away is counted, not swallowed.

@@ -61,8 +61,27 @@ juce::String TakeCombiner::findFfmpeg()
 
 bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePlan& plan)
 {
-    if (isRunning() || ! plan.hasWork())
+    if (! plan.hasWork())
         return false;
+
+    // A take stopped while the previous one is still muxing waits its turn on
+    // the worker already running, rather than being turned away: nothing else
+    // would ever ask again, and its combined file would silently never appear.
+    if (runState != nullptr)
+    {
+        const std::lock_guard<std::mutex> lock (runState->statusLock);
+
+        if (runState->running.load (std::memory_order_acquire))
+        {
+            // Quitting: nothing more may start, queued or otherwise.
+            if (runState->cancelling.load (std::memory_order_acquire))
+                return false;
+
+            runState->queued.push_back ({ sessionFolder, plan });
+            runState->status.total += static_cast<int> (plan.jobs.size());
+            return true;
+        }
+    }
 
     const auto ffmpeg = findFfmpeg();
     auto next = std::make_shared<RunState>();
@@ -117,18 +136,13 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     return true;
 }
 
-void TakeCombiner::run (std::shared_ptr<RunState> state,
-                        juce::File sessionFolder,
-                        CombinedTakePlan plan,
-                        juce::String ffmpeg)
+void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
+                                const juce::File& sessionFolder,
+                                const CombinedTakePlan& plan,
+                                const juce::String& ffmpeg,
+                                int& failures,
+                                juce::String& firstFailureDetail)
 {
-    int failures = 0;
-
-    // Kept from the first failure only. Two cameras failing for the same reason
-    // say it once; two failing for different reasons are still one sentence,
-    // and the first is the one that stopped the run being clean.
-    juce::String firstFailureDetail;
-
     for (const auto& job : plan.jobs)
     {
         if (state->cancelling.load (std::memory_order_acquire))
@@ -220,9 +234,40 @@ void TakeCombiner::run (std::shared_ptr<RunState> state,
         if (ok)
             state->status.written.add (output.getFileName());
     }
+}
 
+void TakeCombiner::run (std::shared_ptr<RunState> state,
+                        juce::File sessionFolder,
+                        CombinedTakePlan plan,
+                        juce::String ffmpeg)
+{
+    int failures = 0;
+
+    // Kept from the first failure only. Two cameras failing for the same reason
+    // say it once; two failing for different reasons are still one sentence,
+    // and the first is the one that stopped the run being clean.
+    juce::String firstFailureDetail;
+
+    for (;;)
     {
+        combineTake (state, sessionFolder, plan, ffmpeg, failures, firstFailureDetail);
+
+        // The next take stopped while this one was muxing, or the end of the
+        // run. Decided under the lock start() queues under, and the run is
+        // marked finished before that lock is let go, so a take queued at this
+        // instant is either picked up here or finds the run over and starts
+        // its own. Never neither.
         const std::lock_guard<std::mutex> lock (state->statusLock);
+
+        if (! state->queued.empty() && ! state->cancelling.load (std::memory_order_acquire))
+        {
+            sessionFolder = state->queued.front().sessionFolder;
+            plan = std::move (state->queued.front().plan);
+            state->queued.pop_front();
+            continue;
+        }
+
+        state->queued.clear();
         state->status.running = false;
 
         if (failures > 0)
@@ -235,9 +280,10 @@ void TakeCombiner::run (std::shared_ptr<RunState> state,
             if (firstFailureDetail.isNotEmpty())
                 state->status.problem += " (" + firstFailureDetail + ")";
         }
-    }
 
-    state->running.store (false, std::memory_order_release);
+        state->running.store (false, std::memory_order_release);
+        return;
+    }
 }
 
 void TakeCombiner::cancel() noexcept

@@ -36,6 +36,22 @@ int main (int argc, char** argv)
                 return 8;
             }
 
+            // A combine that takes a while and then succeeds: long enough that
+            // the next take can be stopped while this one is still running.
+            if (std::strstr (argv[index], "slow-input") != nullptr)
+            {
+                std::this_thread::sleep_for (std::chrono::milliseconds (400));
+
+                if (auto* complete = std::fopen (argv[argc - 1], "wb"))
+                {
+                    std::fputs ("complete", complete);
+                    std::fclose (complete);
+                    return 0;
+                }
+
+                return 8;
+            }
+
             if (std::strstr (argv[index], "fail-input") != nullptr)
             {
                 if (auto* partial = std::fopen (argv[argc - 1], "wb"))
@@ -167,6 +183,57 @@ int main (int argc, char** argv)
     if (! root.getChildFile ("successful-output.mov").existsAsFile())
         return fail ("a zero ffmpeg exit lost its completed output");
 
-    std::printf ("ALL CHECKS PASSED (11 checks, 0 failing)\n");
+    // A take stopped while the previous take is still being combined must get
+    // its combined file too. start() used to refuse it while a run was in
+    // flight, the app ignored the refusal, and nothing retried: the second
+    // take's "_with-sound" file silently never appeared.
+    const auto secondTake = root.getChildFile ("second-take");
+
+    if (! root.getChildFile ("slow-input.mov").replaceWithText ("video")
+        || ! secondTake.createDirectory().wasOk()
+        || ! secondTake.getChildFile ("success-input.mov").replaceWithText ("video")
+        || ! secondTake.getChildFile ("MIX.wav").replaceWithText ("audio"))
+        return fail ("could not make the two takes' fake inputs");
+
+    mma::CombinedTakePlan firstTakePlan;
+    firstTakePlan.jobs.push_back ({ "slow-input.mov", "MIX.wav",
+                                    "first-take-output.mov", 24, 0.0 });
+
+    mma::CombinedTakePlan secondTakePlan;
+    secondTakePlan.jobs.push_back ({ "success-input.mov", "MIX.wav",
+                                     "second-take-output.mov", 24, 0.0 });
+
+    mma::TakeCombiner queueingCombiner;
+    queueingCombiner.setFfmpegOverride (executable);
+
+    if (! queueingCombiner.start (root, firstTakePlan) || ! queueingCombiner.isRunning())
+        return fail ("the first take's simulated combine did not start");
+
+    if (! queueingCombiner.start (secondTake, secondTakePlan))
+        return fail ("a take stopped during another take's combine was turned away");
+
+    const auto queueDeadline = std::chrono::steady_clock::now() + std::chrono::seconds (3);
+    while (queueingCombiner.isRunning() && std::chrono::steady_clock::now() < queueDeadline)
+        std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+    if (queueingCombiner.isRunning())
+        return fail ("the queued simulated combine did not finish");
+
+    if (! root.getChildFile ("first-take-output.mov").existsAsFile())
+        return fail ("queueing a second take cost the first take its combined file");
+
+    if (! secondTake.getChildFile ("second-take-output.mov").existsAsFile())
+        return fail ("a take stopped during another take's combine never got its combined file");
+
+    const auto queuedStatus = queueingCombiner.getStatus();
+    if (queuedStatus.problem.isNotEmpty())
+        return fail ("two clean queued combines were reported as a failure");
+
+    if (queuedStatus.total != 2 || queuedStatus.done != 2
+        || ! queuedStatus.written.contains ("first-take-output.mov")
+        || ! queuedStatus.written.contains ("second-take-output.mov"))
+        return fail ("the status did not account for both queued takes");
+
+    std::printf ("ALL CHECKS PASSED (19 checks, 0 failing)\n");
     return 0;
 }
