@@ -53,8 +53,15 @@ private:
     // same reason; this is the same std::pow of the same kind of constant.
     float clipThresholdLinear;
 
-    // Written by the audio thread, read by the UI thread.
-    std::atomic<float> latestBlockPeakDb { kMinDb };
+    // Loudest block since the UI last read it. The audio thread is the only
+    // writer of a raised value (load, max, store -- no CAS needed); tick()
+    // exchange()s it to kNothingNew. If the exchange lands between the audio
+    // thread's load and store, that store republishes the already-consumed
+    // peak: it is seen by one extra tick, never lost. kNothingNew (below
+    // kMinDb) tells tick() that no block arrived, so it keeps the last level.
+    static constexpr float kNothingNew = kMinDb - 1.0f;
+    std::atomic<float> pendingPeakDb { kNothingNew };
+    float lastBlockDb = kMinDb; // UI thread: level held while no block arrives
     std::atomic<int> consecutiveClipSamples { 0 };
     std::atomic<bool> clipLatched { false };
     std::atomic<int> clipCount { 0 };
@@ -65,6 +72,7 @@ private:
     double peakHoldElapsed = kPeakHoldSeconds; // starts "expired" so it decays immediately if no signal
 
     static float linearToDb (float linear) noexcept;
+    void publishPeak (float blockDb) noexcept;
 };
 
 } // namespace mma

@@ -133,3 +133,16 @@ TEST_CASE (CapacityMonitor_AnExhaustedDriveDoesNotLaterEmitAStaleWarning)
     // the user has already been told is full.
     REQUIRE (monitor.evaluateRemaining (500.0) == RemainingTimeWarning::None);
 }
+
+TEST_CASE (CapacityMonitor_FillWarningAfterMixOnlyDoesNotSayNothingIsLost)
+{
+    const std::string before = CapacityMonitor::fillStatusLine (WritePipelineState::FillWarning, false);
+    REQUIRE (before.find ("Nothing has been lost") != std::string::npos);
+
+    // The stems were already shed; a later 50-89% fill must say so.
+    const std::string after = CapacityMonitor::fillStatusLine (WritePipelineState::FillWarning, true);
+    REQUIRE (after.find ("Nothing has been lost") == std::string::npos);
+    REQUIRE (after.find ("mixed file") != std::string::npos);
+
+    REQUIRE (std::string (CapacityMonitor::fillStatusLine (WritePipelineState::Healthy, true)).empty());
+}

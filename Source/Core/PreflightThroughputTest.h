@@ -12,6 +12,9 @@ struct PreflightResult
     double sustainedMinBytesPerSec = 0.0;
     double requiredBytesPerSec = 0.0;
     std::string reason; // human-readable reason when !passed
+    /// The card would not take the test file at all (read-only, full, gone).
+    /// Whatever windows were measured before that are not a speed verdict.
+    bool couldNotWrite = false;
 };
 
 /// §6.4 pre-flight throughput test. This class contains only the pure
@@ -59,6 +62,25 @@ public:
     static PreflightResult evaluateMeasured (double sustainedMinBytesPerSec,
                                              int numChannels, double sampleRate, int bytesPerSample,
                                              double videoBytesPerSecond = 0.0);
+
+    /// The gate applied to a cached benchmark. A card that could not be
+    /// written is refused as that, never as "too slow" -- with no windows it
+    /// read 0 MB/s, and a partial run measured before the failure could even
+    /// have passed.
+    static PreflightResult evaluateCached (const PreflightResult& cached,
+                                           int numChannels, double sampleRate, int bytesPerSample,
+                                           double videoBytesPerSecond = 0.0);
+
+    /// How long a "couldn't write" verdict is held before the card is tried
+    /// again. Long enough not to hammer a missing volume every UI tick, short
+    /// enough that freeing space or reinserting the card is noticed.
+    static constexpr double kWriteFailureRetrySeconds = 10.0;
+
+    /// True when a cached verdict should be thrown away and the benchmark run
+    /// again. Only a write failure is transient in that way; a slow card stays
+    /// slow until the user chooses the location again.
+    static bool shouldRetryCached (const PreflightResult& cached, double secondsSinceVerdict,
+                                   bool idle, bool workerRunning) noexcept;
 
     /// Formats remaining free space as recording time in "Xh Ym" form, per §6.4
     /// ("remaining recording time in hours and minutes, not bytes").

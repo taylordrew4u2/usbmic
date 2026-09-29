@@ -130,7 +130,10 @@ std::vector<TakeAlert> TakeWatchdog::observe (const TakeHealth& now)
         }
     }
 
-    if (now.writerBehind && ! last.writerBehind)
+    // Once only the mix is being written there are no separate tracks left to
+    // drop; MixOnly has already said so, and this warning would promise a loss
+    // that has happened.
+    if (now.writerBehind && ! last.writerBehind && ! now.mixOnly)
         alerts.push_back ({ TakeAlert::Kind::WriterBehind,
                             "The drive is falling behind the microphones. If this keeps up the "
                             "separate tracks will be dropped and only the mix kept. A faster drive "

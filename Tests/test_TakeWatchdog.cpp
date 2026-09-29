@@ -198,6 +198,25 @@ TEST_CASE (TakeWatchdog_DriveTroubleIsSaidWhenItStarts)
     REQUIRE (has (w.observe (now), TakeAlert::Kind::MixOnly));
 }
 
+TEST_CASE (TakeWatchdog_WriterBehindAfterMixOnlyDoesNotPromiseToDropTracks)
+{
+    TakeWatchdog w;
+    w.beginTake (healthyRig());
+
+    // Fell back to the mix at 90%, then drained below 50%.
+    auto now = healthyRig();
+    now.writerBehind = true;
+    now.mixOnly = true;
+    REQUIRE (has (w.observe (now), TakeAlert::Kind::MixOnly));
+    now.writerBehind = false;
+    REQUIRE (w.observe (now).empty());
+
+    // A later 50-89% fill: the separate tracks are already gone, so "will be
+    // dropped" would be a false promise about the past.
+    now.writerBehind = true;
+    REQUIRE_FALSE (has (w.observe (now), TakeAlert::Kind::WriterBehind));
+}
+
 TEST_CASE (TakeWatchdog_RoomWarningsFireOncePerThresholdOnTheWayDown)
 {
     TakeWatchdog w;

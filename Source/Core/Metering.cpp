@@ -44,12 +44,21 @@ void Metering::processAudioBlock (const float* samples, int numSamples) noexcept
     }
 
     consecutiveClipSamples.store (consecutive, std::memory_order_relaxed);
-    latestBlockPeakDb.store (linearToDb (maxAbs), std::memory_order_relaxed);
+    publishPeak (linearToDb (maxAbs));
+}
+
+void Metering::publishPeak (float blockDb) noexcept
+{
+    // Keep the loudest block since the last tick. At 64-sample buffers about
+    // twelve blocks land per UI tick; storing only the latest dropped a short
+    // transient before the meter, peak hold or SetupAdvisor ever saw it.
+    const float pending = pendingPeakDb.load (std::memory_order_relaxed);
+    pendingPeakDb.store (std::max (pending, blockDb), std::memory_order_relaxed);
 }
 
 void Metering::pushBlockStats (float maxAbsLinear, int /*numSamplesInBlock*/) noexcept
 {
-    latestBlockPeakDb.store (linearToDb (maxAbsLinear), std::memory_order_relaxed);
+    publishPeak (linearToDb (maxAbsLinear));
     if (maxAbsLinear >= clipThresholdLinear)
     {
         clipLatched.store (true, std::memory_order_relaxed);
@@ -59,7 +68,10 @@ void Metering::pushBlockStats (float maxAbsLinear, int /*numSamplesInBlock*/) no
 
 float Metering::tick (double dtSeconds) noexcept
 {
-    const float blockDb = latestBlockPeakDb.load (std::memory_order_relaxed);
+    const float pending = pendingPeakDb.exchange (kNothingNew, std::memory_order_relaxed);
+    if (pending > kNothingNew)
+        lastBlockDb = pending;
+    const float blockDb = lastBlockDb;
 
     // Exponential attack/decay envelope toward the incoming block level.
     const bool rising = blockDb > displayedDb;

@@ -194,6 +194,11 @@ public:
     std::function<void()> onMuteToggled;
     std::function<void (int)> onMicNameClicked; // meter index
 
+    /// getRequiredHeight() has changed for a reason the owner cannot see -- the
+    /// reason row under the record button, the no-microphones message, the
+    /// strip count, or a longer monitor problem. The owner re-fits the screen.
+    std::function<void()> onRequiredHeightChanged;
+
 private:
     // The masthead. A window with no name in it is a window you have to
     // remember the name of, and the tagline is the one place the app gets to
@@ -285,6 +290,9 @@ private:
     /// one line at this width. Clipping it leaves exactly the dead end the
     /// reason exists to end, so the band is measured from the text.
     int monitorProblemHeight() const noexcept;
+
+    /// Lays out again and tells the owner, via onRequiredHeightChanged.
+    void requiredHeightChanged();
 
     /// Height the camera row needs, or zero when no camera is switched on.
     int cameraRowHeight() const;
