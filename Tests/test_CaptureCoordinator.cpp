@@ -1736,9 +1736,11 @@ TEST_CASE (CaptureCoordinator_KeepsRecordingWhenTheOutputClockStops)
         const auto wallFrames = static_cast<int64_t> (
             std::chrono::duration<double> (elapsed).count() * 48000.0);
 
-        // Scheduling slack on a busy runner: a couple of late ticks, not the
-        // hundred milliseconds this is here to catch.
-        constexpr int64_t kTolerance = 48000 * 25 / 1000;
+        // Scheduling slack on a busy runner, not the tenth of a second (and
+        // more) this is here to catch. Windows' ~15 ms timer means the clock
+        // can trail by two coarse wakes; a Windows runner was measured 31 ms
+        // short on a correct build, while the bug leaves it 117 ms short.
+        constexpr int64_t kTolerance = 48000 * 60 / 1000;
 
         if (std::llabs (accepted - wallFrames) > kTolerance)
             std::printf ("  across the output loss: accepted %lld frames in %lld frames of wall time\n",
