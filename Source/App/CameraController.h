@@ -106,10 +106,17 @@ public:
     /// this file; it leaves once the camera delivers a frame, has been open for
     /// a while, is closed, or the app quits normally. If the file still names a
     /// camera at the next launch, the app went down while starting it, so that
-    /// camera is not started automatically again: the show goes on with sound,
-    /// and turning the camera off and on tries it again. Call once, at launch,
-    /// before the first applySelection().
+    /// camera is not started automatically again, on this or any later launch:
+    /// the show goes on with sound, and turning the camera off and on
+    /// (setCameraEnabledByUser) tries it again. Call once, at launch, before the
+    /// first applySelection().
     void setStartupGuardFile (const juce::File& file);
+
+    /// The user switched one camera on or off in the Cameras panel. Switching
+    /// a camera on is the explicit retry the crash-loop guard waits for: it is
+    /// the only thing that releases that camera's hold. Opening the panel, a
+    /// take, or switching some other camera on never does.
+    void setCameraEnabledByUser (const std::string& id, bool enabled);
 
     CameraSelection& getSelection() { return selection; }
     const CameraSelection& getSelection() const { return selection; }
@@ -274,6 +281,7 @@ private:
     std::set<std::string> crashedWhileStartingIds;
     std::set<std::string> startingGuardIds;
     void setStartingGuard (const std::string& id, bool starting);
+    void writeStartupGuard();
     std::map<std::string, uint64_t> viewerRevisions;
 
     struct RuntimeCameraError

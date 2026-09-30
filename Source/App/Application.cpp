@@ -424,7 +424,7 @@ void Application::initialise()
 
 void Application::setCameraEnabled (const std::string& id, bool enabled)
 {
-    cameraController.getSelection().setEnabled (id, enabled);
+    cameraController.setCameraEnabledByUser (id, enabled);
     saveSettings();
 }
 

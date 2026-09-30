@@ -106,9 +106,10 @@ CameraController::~CameraController()
 
     open.clear();
 
-    // A clean quit: nothing was left half-started.
-    if (startupGuardFile != juce::File())
-        startupGuardFile.deleteFile();
+    // A clean quit: nothing was left half-started. A camera still held from a
+    // crashed launch stays named until the user switches it back on.
+    startingGuardIds.clear();
+    writeStartupGuard();
 #else
     stopRecording();
 #endif
@@ -129,10 +130,24 @@ void CameraController::setStartupGuardFile (const juce::File& file)
             if (line.trim().isNotEmpty())
                 crashedWhileStartingIds.insert (line.trim().toStdString());
 
-        file.deleteFile();
+        // Left on disk: the hold lasts until the user switches that camera back
+        // on, not just for this one launch. writeStartupGuard() keeps it there.
     }
 #else
     juce::ignoreUnused (file);
+#endif
+}
+
+void CameraController::setCameraEnabledByUser (const std::string& id, bool enabled)
+{
+    selection.setEnabled (id, enabled);
+
+#if JUCE_USE_CAMERA
+    // Switching it on is the user's own retry of a camera the last launch went
+    // down on. The applySelection (true) that follows opens it, and openCamera()
+    // guards that start afresh.
+    if (enabled && crashedWhileStartingIds.erase (id) > 0)
+        writeStartupGuard();
 #endif
 }
 
@@ -144,18 +159,30 @@ void CameraController::setStartingGuard (const std::string& id, bool starting)
 
     const bool changed = starting ? startingGuardIds.insert (id).second
                                   : startingGuardIds.erase (id) > 0;
-    if (! changed)
+    if (changed)
+        writeStartupGuard();
+}
+
+void CameraController::writeStartupGuard()
+{
+    if (startupGuardFile == juce::File())
         return;
 
-    if (startingGuardIds.empty())
+    // Both the cameras being started now and the ones still held from a crashed
+    // launch: a crash (or a clean quit) before the user retries a held camera
+    // must not let the launch after it start that camera unattended.
+    std::set<std::string> guarded (startingGuardIds);
+    guarded.insert (crashedWhileStartingIds.begin(), crashedWhileStartingIds.end());
+
+    if (guarded.empty())
     {
         startupGuardFile.deleteFile();
         return;
     }
 
     juce::StringArray lines;
-    for (const auto& guarded : startingGuardIds)
-        lines.add (juce::String (guarded));
+    for (const auto& id : guarded)
+        lines.add (juce::String (id));
 
     // Written before the OS call it guards, so a crash inside that call still
     // leaves the name behind. Best effort: a read-only disk only loses the guard.
@@ -818,10 +845,7 @@ void CameraController::applySelection (bool retryFailures)
     if (retryFailures)
         for (const auto& camera : selection.getAvailableCameras())
             if (selection.isEnabled (camera.id))
-            {
                 finalizationRetryRequiredIds.erase (camera.id);
-                crashedWhileStartingIds.erase (camera.id);
-            }
 
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
@@ -884,8 +908,11 @@ void CameraController::applySelection (bool retryFailures)
 
         // The last launch went down while starting this camera. Starting it
         // again unattended could do the same on every launch; keep the app up
-        // and say so, and let the user's own off/on be the retry.
-        if (crashedWhileStartingIds.count (camera.id) > 0 && ! retryFailures)
+        // and say so, and let the user's own off/on be the retry. That is
+        // setCameraEnabledByUser(), not retryFailures: opening the Cameras
+        // panel (the only way to reach this camera's switch), starting a take
+        // or switching another camera on must not start it.
+        if (crashedWhileStartingIds.count (camera.id) > 0)
         {
             openFailures[camera.id] = "SobStage closed unexpectedly while starting "
                                     + juce::String (selection.getDisplayName (camera.id))
