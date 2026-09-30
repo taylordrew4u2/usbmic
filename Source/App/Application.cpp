@@ -1484,33 +1484,17 @@ void Application::reselectOutputDevice()
     outputDeviceNames.clear();
     outputDeviceIdByLabel.clear();
 
+    // Every microphone the device manager lists, recorded or not. A duplex
+    // mic's output shares its id on CoreAudio, so both states matter (§5.2,
+    // §5.5); the mapping itself is portable and unit-tested.
+    std::vector<KnownMicrophone> microphones;
+    for (const auto& mic : deviceManager.getDevices())
+        microphones.push_back ({ mic.identity.locationId, mic.included });
+
+    const auto recordingRate = static_cast<uint32_t> (currentSampleRate + 0.5);
+
     for (const auto& d : audioBackend->enumerateOutputDevices())
-    {
-        OutputDeviceCandidate c;
-        c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
-        c.displayName = d.name;
-        c.hasPhysicalHeadphoneJack = d.hasPhysicalHeadphoneJack;
-        c.isBuiltIn = d.isBuiltIn;
-
-        // The monitor output shares the recording clock. A fixed-48 kHz HDMI
-        // capture-card endpoint cannot serve a 44.1 kHz T12S take and must not
-        // displace a compatible Mac output merely because it hot-plugged most
-        // recently. An empty capability list means the backend cannot say, so
-        // keep it eligible and let the open path report any real refusal.
-        const auto recordingRate = static_cast<uint32_t> (currentSampleRate + 0.5);
-        c.supportsRecordingSampleRate = OutputDeviceSelector::supportsRecordingRate (
-            d.currentSampleRate, d.supportedSampleRates, recordingRate);
-
-        // §5.2: a microphone's own playback endpoint is never a monitor output.
-        c.isMicrophonePlaybackEndpoint = d.isMicrophone;
-
-        // §5.5: refuse to route output to a device that is also a capture device.
-        for (const auto& mic : deviceManager.getDevices())
-            if (mic.included && ! d.usbLocationId.empty() && mic.identity.locationId == d.usbLocationId)
-                c.isAlsoSelectedInput = true;
-
-        snapshot.push_back (std::move (c));
-    }
+        snapshot.push_back (OutputDeviceSelector::candidateFromDescriptor (d, recordingRate, microphones));
 
     // A later snapshot is not itself an arrival. The tracker remembers what
     // was present before and marks only ids that actually appeared, preserving
@@ -1542,12 +1526,12 @@ void Application::reselectOutputDevice()
     // when it left the user with nothing to listen on at all. A microphone's
     // own playback endpoint is skipped: it is the same physical thing the
     // microphone list already announced, and saying it twice under two names
-    // is noise rather than news.
+    // is noise rather than news. A switched-off mic's jack is the same case.
     {
         std::map<std::string, std::string> outputs;
 
         for (const auto& c : candidates)
-            if (! c.isMicrophonePlaybackEndpoint)
+            if (! c.isMicrophonePlaybackEndpoint && ! c.belongsToUnrecordedMicrophone)
                 outputs[c.id] = c.displayName;
 
         announceOutputChanges (outputs);

@@ -23,6 +23,14 @@ struct AudioDeviceDescriptor
     std::vector<int> supportedBitDepths;
     bool isMicrophone = false;
     bool hasPhysicalHeadphoneJack = false; // relevant for output-device candidates (§5.3)
+    /// Output only: this is the output the OS itself currently plays through
+    /// (§5.3 priority 4). On a Mac that is usually the headphones or amp the
+    /// user plugged in, because macOS switches its default to them.
+    bool isSystemDefault = false;
+    /// Output only: Bluetooth, Bluetooth LE or AirPlay. Such a device can
+    /// connect on its own (AirPods, a paired speaker powering on), so its
+    /// arrival is not evidence that the user plugged in monitoring headphones.
+    bool isWireless = false;
 };
 
 /// §5.4: the monitor path requires exclusive-mode audio. This describes what a

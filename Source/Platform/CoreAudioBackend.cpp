@@ -667,6 +667,65 @@ bool isDirectlyAttachedInputTransport (UInt32 transport)
         || transport == kAudioDeviceTransportTypeThunderbolt;
 }
 
+/// Bluetooth, Bluetooth LE and AirPlay outputs connect by themselves (AirPods
+/// reconnecting, a paired speaker powering on). They stay available as monitor
+/// outputs, but their arrival must not be read as headphones being plugged in.
+bool isWirelessTransport (UInt32 transport)
+{
+    return transport == kAudioDeviceTransportTypeBluetooth
+        || transport == kAudioDeviceTransportTypeBluetoothLE
+        || transport == kAudioDeviceTransportTypeAirPlay;
+}
+
+/// The output macOS itself plays through, or kAudioObjectUnknown. macOS moves
+/// it to headphones or an amp when they are plugged in, which is §5.3's
+/// priority 4 ("system default output").
+AudioObjectID readDefaultOutputDevice()
+{
+    AudioObjectPropertyAddress address { kAudioHardwarePropertyDefaultOutputDevice,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    AudioObjectID device = kAudioObjectUnknown;
+    UInt32 size = sizeof (device);
+
+    if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr,
+                                    &size, &device) != noErr)
+        return kAudioObjectUnknown;
+
+    return device;
+}
+
+/// kAudioDevicePropertyDataSource on the output scope, or 0 when the device
+/// has none. An Intel Mac's single "Built-in Output" reports 'hdpn' while
+/// headphones are in the jack and 'ispk' for its speakers.
+UInt32 readOutputDataSource (AudioObjectID device)
+{
+    AudioObjectPropertyAddress address { kAudioDevicePropertyDataSource,
+                                         kAudioObjectPropertyScopeOutput,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 source = 0;
+    UInt32 size = sizeof (source);
+
+    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &source) != noErr)
+        return 0;
+
+    return source;
+}
+
+/// §5.3 priority 3 on a Mac: only the Mac's own headphone jack. Apple Silicon
+/// exposes it as a separate built-in device ("External Headphones") that exists
+/// only while something is plugged in; Intel routes one built-in device to it.
+/// USB, FireWire and Thunderbolt outputs are deliberately not marked: a capture
+/// card's playback endpoint would otherwise outrank the Mac's own output.
+bool isBuiltInHeadphoneOutput (const std::string& uid, bool isBuiltIn, UInt32 dataSource)
+{
+    constexpr UInt32 kHeadphonesDataSource = (UInt32 ('h') << 24) | (UInt32 ('d') << 16)
+                                           | (UInt32 ('p') << 8)  |  UInt32 ('n');
+
+    return isBuiltIn
+        && (uid == "BuiltInHeadphoneOutputDevice" || dataSource == kHeadphonesDataSource);
+}
+
 /// Resolves a device UID (the stable identifier §2.4 stores) to a live
 /// AudioObjectID. Returns kAudioObjectUnknown when the device is not present,
 /// which is the normal case after an unplug.
@@ -1256,6 +1315,10 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
     if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr, &size, deviceIds.data()) != noErr)
         return result;
 
+    // Read once per enumeration, outputs only: an input is never a monitor
+    // candidate, even on a duplex device that is also the default output.
+    const AudioObjectID defaultOutput = wantInput ? kAudioObjectUnknown : readDefaultOutputDevice();
+
     for (auto deviceId : deviceIds)
     {
         // DeviceIsAlive can fall to zero before the AudioObject disappears
@@ -1299,6 +1362,15 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         d.supportedBitDepths = querySupportedBitDepths (deviceId);
         d.currentSampleRate = static_cast<uint32_t> (getNominalSampleRate (deviceId) + 0.5);
         d.isMicrophone = wantInput;
+
+        if (! wantInput)
+        {
+            d.hasPhysicalHeadphoneJack = isBuiltInHeadphoneOutput (
+                d.usbLocationId, d.isBuiltIn, readOutputDataSource (deviceId));
+            d.isSystemDefault = defaultOutput != kAudioObjectUnknown && deviceId == defaultOutput;
+            d.isWireless = isWirelessTransport (transport);
+        }
+
         result.push_back (d);
     }
 

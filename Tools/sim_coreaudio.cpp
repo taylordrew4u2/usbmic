@@ -1841,12 +1841,137 @@ void bitDepthFollowsWhatTheDeviceCanActuallyDeliver()
            "and that falls back to the take's depth, unchanged");
 }
 
+void outputsCarryWhatSection53NeedsToFindTheHeadphones()
+{
+    // §5.3 on a Mac. Nothing here used to report a headphone jack, the macOS
+    // default output, or a wireless transport, so with no saved choice the
+    // selector fell through to "first built-in output" -- on a MacBook Air M2
+    // that is usually "MacBook Air Speakers", and the live-mic mix played into
+    // the room while the performers' headphones stayed silent.
+    std::printf ("\nOutputs report headphone jack, macOS default, and wireless (§5.3)\n");
+    fakeca::reset();
+
+    const auto fourCC = [] (char a, char b, char c, char d)
+    {
+        return (static_cast<UInt32> (static_cast<unsigned char> (a)) << 24)
+             | (static_cast<UInt32> (static_cast<unsigned char> (b)) << 16)
+             | (static_cast<UInt32> (static_cast<unsigned char> (c)) << 8)
+             |  static_cast<UInt32> (static_cast<unsigned char> (d));
+    };
+
+    // Apple Silicon: two separate built-in devices. The speakers exist from
+    // boot, so they enumerate first.
+    auto speakers = headphones ("MacBook Air Speakers", "BuiltInSpeakerDevice", 2,
+                                fakeca::BufferShape::oneChannelPerBuffer);
+    speakers.transportType = kAudioDeviceTransportTypeBuiltIn;
+    speakers.outputDataSource = fourCC ('i', 's', 'p', 'k');
+    fakeca::addDevice (speakers);
+
+    auto jack = headphones ("External Headphones", "BuiltInHeadphoneOutputDevice", 2,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    jack.transportType = kAudioDeviceTransportTypeBuiltIn;
+    fakeca::addDevice (jack);
+
+    // Intel: one "Built-in Output" whose data source follows the jack.
+    auto intel = headphones ("Built-in Output", "AppleHDAEngineOutput:1B,0,1,1:0", 2,
+                             fakeca::BufferShape::oneChannelPerBuffer);
+    intel.transportType = kAudioDeviceTransportTypeBuiltIn;
+    intel.outputDataSource = fourCC ('h', 'd', 'p', 'n');
+    fakeca::addDevice (intel);
+
+    // A USB headphone amp and a capture card: USB outputs are not marked as
+    // jacks, or the capture-card rule in OutputDeviceSelector would break.
+    auto amp = headphones ("USB Headphone Amp", "usb-amp", 2,
+                           fakeca::BufferShape::oneChannelPerBuffer);
+    const auto ampId = fakeca::addDevice (amp);
+
+    auto airpods = headphones ("AirPods", "airpods", 2, fakeca::BufferShape::interleaved);
+    airpods.transportType = kAudioDeviceTransportTypeBluetooth;
+    fakeca::addDevice (airpods);
+
+    auto bleSpeaker = headphones ("LE speaker", "ble-speaker", 2, fakeca::BufferShape::interleaved);
+    bleSpeaker.transportType = kAudioDeviceTransportTypeBluetoothLE;
+    fakeca::addDevice (bleSpeaker);
+
+    auto appleTv = headphones ("Living Room", "airplay", 2, fakeca::BufferShape::interleaved);
+    appleTv.transportType = kAudioDeviceTransportTypeAirPlay;
+    fakeca::addDevice (appleTv);
+
+    fakeca::setDefaultOutputDevice (ampId);
+
+    mma::CoreAudioBackend backend;
+    auto outputs = backend.enumerateOutputDevices();
+
+    const auto find = [&outputs] (const std::string& uid) -> const mma::AudioDeviceDescriptor*
+    {
+        for (const auto& d : outputs)
+            if (d.usbLocationId == uid)
+                return &d;
+        return nullptr;
+    };
+
+    const auto* s = find ("BuiltInSpeakerDevice");
+    const auto* h = find ("BuiltInHeadphoneOutputDevice");
+    const auto* i = find ("AppleHDAEngineOutput:1B,0,1,1:0");
+    const auto* a = find ("usb-amp");
+    const auto* bt = find ("airpods");
+    const auto* le = find ("ble-speaker");
+    const auto* ap = find ("airplay");
+
+    check (s && h && i && a && bt && le && ap, "every output is enumerated");
+    if (! (s && h && i && a && bt && le && ap))
+        return;
+
+    check (h->hasPhysicalHeadphoneJack, "Apple Silicon External Headphones is a headphone jack");
+    check (! s->hasPhysicalHeadphoneJack, "the MacBook speakers are not");
+    check (i->hasPhysicalHeadphoneJack, "an Intel built-in output routed to headphones is a headphone jack");
+    check (! a->hasPhysicalHeadphoneJack, "a USB output is not marked as a jack (capture-card rule)");
+
+    check (a->isSystemDefault, "the macOS default output is reported");
+    check (! s->isSystemDefault && ! h->isSystemDefault && ! bt->isSystemDefault,
+           "and only that one");
+
+    check (bt->isWireless && le->isWireless && ap->isWireless,
+           "Bluetooth, Bluetooth LE and AirPlay outputs are marked wireless");
+    check (! s->isWireless && ! h->isWireless && ! a->isWireless,
+           "built-in and USB outputs are not");
+
+    // An Intel output with the speakers selected is not a jack, and the
+    // default follows macOS when it moves to the headphones.
+    fakeca::reset();
+    intel.outputDataSource = fourCC ('i', 's', 'p', 'k');
+    fakeca::addDevice (intel);
+    const auto headphonesId = fakeca::addDevice (jack);
+    fakeca::setDefaultOutputDevice (headphonesId);
+
+    outputs = backend.enumerateOutputDevices();
+    const auto* intelSpeakers = find ("AppleHDAEngineOutput:1B,0,1,1:0");
+    const auto* jackAgain = find ("BuiltInHeadphoneOutputDevice");
+    check (intelSpeakers != nullptr && ! intelSpeakers->hasPhysicalHeadphoneJack
+               && ! intelSpeakers->isSystemDefault,
+           "an Intel built-in output on its speakers is neither a jack nor the default");
+    check (jackAgain != nullptr && jackAgain->isSystemDefault,
+           "the default output follows macOS");
+
+    // Inputs never carry output-only flags, even on a duplex device that is
+    // also the default output.
+    fakeca::reset();
+    auto duplex = microphone ("Mixer", "mixer", 2, fakeca::BufferShape::oneChannelPerBuffer);
+    duplex.outputChannels = 2;
+    const auto mixerId = fakeca::addDevice (duplex);
+    fakeca::setDefaultOutputDevice (mixerId);
+    const auto inputs = backend.enumerateInputDevices();
+    check (inputs.size() == 1 && ! inputs[0].isSystemDefault && ! inputs[0].hasPhysicalHeadphoneJack,
+           "an input descriptor never carries the output default or jack flags");
+}
+
 int main()
 {
     std::printf ("CoreAudio backend, driven against a virtual HAL\n");
     std::printf ("===============================================\n");
 
     onlyDirectlyAttachedHardwareEnumeratesAsInput();
+    outputsCarryWhatSection53NeedsToFindTheHeadphones();
     openingAnInputRechecksTheExternalHardwarePolicy();
     interleavedStereoMicrophoneDeliversBothChannels();
     oneChannelPerBufferStillWorks();

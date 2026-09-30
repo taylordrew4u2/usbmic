@@ -259,3 +259,193 @@ TEST_CASE (OutputDeviceSelector_EligibilityRuleIsExplicit)
     REQUIRE (OutputDeviceSelector::supportsRecordingRate (48000, {}, 44100));
     REQUIRE_FALSE (OutputDeviceSelector::supportsRecordingRate (48000, { 48000 }, 44100));
 }
+
+TEST_CASE (OutputDeviceSelector_MacBookHeadphoneJackBeatsTheSpeakersInEitherOrder)
+{
+    // Apple Silicon lists "MacBook Air Speakers" and "External Headphones" as
+    // two built-in devices, both present at launch. Enumeration order must not
+    // decide which one the live-mic mix plays through.
+    auto speakers = makeDevice ("BuiltInSpeakerDevice");
+    speakers.isBuiltIn = true;
+    auto headphones = makeDevice ("BuiltInHeadphoneOutputDevice");
+    headphones.isBuiltIn = true;
+    headphones.hasPhysicalHeadphoneJack = true;
+
+    for (const auto& order : { std::vector<OutputDeviceCandidate> { speakers, headphones },
+                               std::vector<OutputDeviceCandidate> { headphones, speakers } })
+    {
+        OutputDeviceTracker tracker;
+        const auto result = OutputDeviceSelector::select (tracker.observe (order), "");
+
+        REQUIRE (result.found);
+        REQUIRE (result.id == "BuiltInHeadphoneOutputDevice");
+        REQUIRE (result.reason == OutputSelectionReason::PhysicalHeadphoneJack);
+    }
+}
+
+TEST_CASE (OutputDeviceSelector_MacDefaultUsbAmpBeatsTheBuiltInSpeakers)
+{
+    auto speakers = makeDevice ("speakers");
+    speakers.isBuiltIn = true;
+    auto amp = makeDevice ("usb-amp");
+    amp.isSystemDefault = true;
+
+    OutputDeviceTracker tracker;
+    const auto result = OutputDeviceSelector::select (tracker.observe ({ speakers, amp }), "");
+
+    REQUIRE (result.found);
+    REQUIRE (result.id == "usb-amp");
+    REQUIRE (result.reason == OutputSelectionReason::SystemDefault);
+}
+
+TEST_CASE (OutputDeviceSelector_AWirelessArrivalDoesNotTakeTheMonitor)
+{
+    // AirPods reconnecting, or a paired Bluetooth speaker powering on, is not
+    // the user plugging in headphones.
+    auto amp = makeDevice ("amp");
+    amp.isBuiltIn = true;
+    auto airpods = makeDevice ("airpods");
+    airpods.isWireless = true;
+
+    OutputDeviceTracker tracker;
+    tracker.observe ({ amp });
+    const auto candidates = tracker.observe ({ amp, airpods });
+    REQUIRE (candidates[1].appearedAfterLaunch);
+
+    const auto automatic = OutputDeviceSelector::select (candidates, "");
+    REQUIRE (automatic.found);
+    REQUIRE (automatic.id == "amp");
+    REQUIRE (automatic.reason == OutputSelectionReason::BuiltInOutput);
+
+    // An explicit pick of the wireless device is still honoured.
+    const auto explicitPick = OutputDeviceSelector::select (candidates, "airpods");
+    REQUIRE (explicitPick.id == "airpods");
+    REQUIRE (explicitPick.reason == OutputSelectionReason::RememberedFromPreviousSession);
+
+    // macOS often makes the arriving headset its default; that does not move
+    // the monitor off a wired output either.
+    auto defaultAirpods = airpods;
+    defaultAirpods.isSystemDefault = true;
+    const auto asDefault = OutputDeviceSelector::select (tracker.observe ({ amp, defaultAirpods }), "");
+    REQUIRE (asDefault.id == "amp");
+}
+
+TEST_CASE (OutputDeviceSelector_AWirelessArrivalDoesNotDisplaceANewlyConnectedAmp)
+{
+    auto speakers = makeDevice ("speakers");
+    speakers.isBuiltIn = true;
+    auto amp = makeDevice ("usb-amp");
+    auto speaker = makeDevice ("bluetooth-speaker");
+    speaker.isWireless = true;
+
+    OutputDeviceTracker tracker;
+    tracker.observe ({ speakers });
+    tracker.observe ({ speakers, amp });
+    const auto candidates = tracker.observe ({ speakers, amp, speaker });
+
+    const auto result = OutputDeviceSelector::select (candidates, "");
+    REQUIRE (result.id == "usb-amp");
+    REQUIRE (result.reason == OutputSelectionReason::NewlyConnected);
+}
+
+TEST_CASE (OutputDeviceSelector_WirelessOnlyStillGetsAMonitor)
+{
+    auto airpods = makeDevice ("airpods");
+    airpods.isWireless = true;
+    airpods.isSystemDefault = true;
+
+    const auto result = OutputDeviceSelector::select ({ airpods }, "");
+    REQUIRE (result.found);
+    REQUIRE (result.id == "airpods");
+}
+
+TEST_CASE (OutputDeviceSelector_AnUnrecordedMicsOutputIsNeverChosenAutomatically)
+{
+    // A Yeti switched off in Settings (or the 9th mic) is plugged in. Its
+    // headphone jack shares the mic's id and just "appeared", but §5.2 keeps a
+    // microphone's playback endpoint out at every priority.
+    auto builtIn = makeDevice ("built-in");
+    builtIn.isBuiltIn = true;
+
+    auto amp = makeDevice ("amp");
+    amp.appearedAfterLaunch = true;
+    amp.connectionOrder = 2;
+
+    auto yeti = makeDevice ("yeti");
+    yeti.appearedAfterLaunch = true;
+    yeti.connectionOrder = 3;
+    yeti.belongsToUnrecordedMicrophone = true;
+    yeti.hasPhysicalHeadphoneJack = true;
+    yeti.isSystemDefault = true;
+
+    const auto withAmp = OutputDeviceSelector::select ({ builtIn, amp, yeti }, "");
+    REQUIRE (withAmp.id == "amp");
+    REQUIRE (withAmp.reason == OutputSelectionReason::NewlyConnected);
+
+    // Still pickable by hand: this is how an interface's headphone output is
+    // used after unticking its inputs.
+    REQUIRE (OutputDeviceSelector::isEligible (yeti));
+    const auto explicitPick = OutputDeviceSelector::select ({ builtIn, amp, yeti }, "yeti");
+    REQUIRE (explicitPick.id == "yeti");
+    REQUIRE (explicitPick.reason == OutputSelectionReason::RememberedFromPreviousSession);
+
+    const auto withoutAmp = OutputDeviceSelector::select ({ builtIn, yeti }, "");
+    REQUIRE (withoutAmp.id == "built-in");
+
+    const auto onlyYeti = OutputDeviceSelector::select ({ yeti }, "");
+    REQUIRE_FALSE (onlyYeti.found);
+    REQUIRE_FALSE (onlyYeti.explanation.empty());
+}
+
+TEST_CASE (OutputDeviceSelector_CandidateFromDescriptorCarriesEveryBackendFlag)
+{
+    AudioDeviceDescriptor d;
+    d.name = "External Headphones";
+    d.usbLocationId = "BuiltInHeadphoneOutputDevice";
+    d.isBuiltIn = true;
+    d.hasPhysicalHeadphoneJack = true;
+    d.isSystemDefault = true;
+    d.isWireless = true;
+    d.currentSampleRate = 48000;
+    d.supportedSampleRates = { 48000 };
+
+    const auto c = OutputDeviceSelector::candidateFromDescriptor (d, 48000, {});
+    REQUIRE (c.id == "BuiltInHeadphoneOutputDevice");
+    REQUIRE (c.displayName == "External Headphones");
+    REQUIRE (c.isBuiltIn);
+    REQUIRE (c.hasPhysicalHeadphoneJack);
+    REQUIRE (c.isSystemDefault);
+    REQUIRE (c.isWireless);
+    REQUIRE (c.supportsRecordingSampleRate);
+    REQUIRE_FALSE (c.isMicrophonePlaybackEndpoint);
+    REQUIRE_FALSE (c.isAlsoSelectedInput);
+    REQUIRE_FALSE (c.belongsToUnrecordedMicrophone);
+
+    REQUIRE_FALSE (OutputDeviceSelector::candidateFromDescriptor (d, 44100, {}).supportsRecordingSampleRate);
+
+    // No UID: the name stands in as the id.
+    AudioDeviceDescriptor unnamed;
+    unnamed.name = "Speakers";
+    REQUIRE (OutputDeviceSelector::candidateFromDescriptor (unnamed, 48000, {}).id == "Speakers");
+
+    AudioDeviceDescriptor mic;
+    mic.name = "Yeti";
+    mic.usbLocationId = "yeti-uid";
+
+    const auto recorded = OutputDeviceSelector::candidateFromDescriptor (mic, 48000, { { "yeti-uid", true } });
+    REQUIRE (recorded.isAlsoSelectedInput);
+    REQUIRE_FALSE (recorded.belongsToUnrecordedMicrophone);
+
+    const auto switchedOff = OutputDeviceSelector::candidateFromDescriptor (mic, 48000, { { "yeti-uid", false } });
+    REQUIRE_FALSE (switchedOff.isAlsoSelectedInput);
+    REQUIRE (switchedOff.belongsToUnrecordedMicrophone);
+
+    const auto unrelated = OutputDeviceSelector::candidateFromDescriptor (mic, 48000, { { "other", false } });
+    REQUIRE_FALSE (unrelated.isAlsoSelectedInput);
+    REQUIRE_FALSE (unrelated.belongsToUnrecordedMicrophone);
+
+    AudioDeviceDescriptor micEndpoint;
+    micEndpoint.name = "mic endpoint";
+    micEndpoint.isMicrophone = true;
+    REQUIRE (OutputDeviceSelector::candidateFromDescriptor (micEndpoint, 48000, {}).isMicrophonePlaybackEndpoint);
+}
