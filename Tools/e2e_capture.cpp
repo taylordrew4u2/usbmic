@@ -85,6 +85,10 @@ int main (int argc, char** argv) {
 
     Fake backend;
     CaptureCoordinator c (backend, rate, block);
+    // Simulated time: this loop is the output clock. Left on, the real-time
+    // watchdog took any 100 ms runner stall for a dead output and pulled the
+    // rings underneath the simulation (CI: ~200 ms of master underrun).
+    c.setSoftwareClockEnabled (false);
 
     std::vector<CaptureChannel> mics = {
         { "dev-a", "Kitchen", "01_Kitchen", 0.0f },

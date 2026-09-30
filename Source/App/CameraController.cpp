@@ -13,6 +13,10 @@ namespace {
 
 #if JUCE_USE_CAMERA
 constexpr double kCameraSignalTimeoutMs = 5000.0;
+
+// How long a camera must stay open before a crash is no longer blamed on
+// starting it (the macOS 27 start race took the app down within a second).
+constexpr double kStartupGuardMs = 10000.0;
 constexpr double kCameraFinalizationTimeoutMs = 15000.0;
 
 #if JUCE_MAC || JUCE_WINDOWS || defined(SOBSTAGE_CAMERA_SIMULATION)
@@ -101,10 +105,64 @@ CameraController::~CameraController()
     }
 
     open.clear();
+
+    // A clean quit: nothing was left half-started.
+    if (startupGuardFile != juce::File())
+        startupGuardFile.deleteFile();
 #else
     stopRecording();
 #endif
 }
+
+void CameraController::setStartupGuardFile (const juce::File& file)
+{
+#if JUCE_USE_CAMERA
+    startupGuardFile = file;
+    crashedWhileStartingIds.clear();
+
+    if (file.existsAsFile())
+    {
+        juce::StringArray lines;
+        lines.addLines (file.loadFileAsString());
+
+        for (const auto& line : lines)
+            if (line.trim().isNotEmpty())
+                crashedWhileStartingIds.insert (line.trim().toStdString());
+
+        file.deleteFile();
+    }
+#else
+    juce::ignoreUnused (file);
+#endif
+}
+
+#if JUCE_USE_CAMERA
+void CameraController::setStartingGuard (const std::string& id, bool starting)
+{
+    if (startupGuardFile == juce::File())
+        return;
+
+    const bool changed = starting ? startingGuardIds.insert (id).second
+                                  : startingGuardIds.erase (id) > 0;
+    if (! changed)
+        return;
+
+    if (startingGuardIds.empty())
+    {
+        startupGuardFile.deleteFile();
+        return;
+    }
+
+    juce::StringArray lines;
+    for (const auto& guarded : startingGuardIds)
+        lines.add (juce::String (guarded));
+
+    // Written before the OS call it guards, so a crash inside that call still
+    // leaves the name behind. Best effort: a read-only disk only loses the guard.
+    startupGuardFile.getParentDirectory().createDirectory();
+    startupGuardFile.replaceWithText (lines.joinIntoString ("\n") + "\n");
+}
+#endif
 
 bool CameraController::isSupported() const
 {
@@ -307,6 +365,7 @@ bool CameraController::applyPendingRuntimeEvents()
                              || entry->second.signalTimedOut;
         entry->second.firstFrameReceived = true;
         entry->second.signalTimedOut = false;
+        setStartingGuard (frame.id, false);
         entry->second.lastFrameAtMs = signalClockMs();
         openFailures.erase (frame.id);
 
@@ -415,6 +474,11 @@ bool CameraController::applySignalTimeouts()
 
     for (auto& [id, entry] : open)
     {
+        // Open this long without taking the app down: it started. (An HDMI
+        // card with no signal never sends a frame, and that is not a crash.)
+        if (now - entry.openedAtMs >= kStartupGuardMs)
+            setStartingGuard (id, false);
+
         const auto lastProofAt = entry.firstFrameReceived ? entry.lastFrameAtMs
                                                           : entry.openedAtMs;
 
@@ -754,7 +818,10 @@ void CameraController::applySelection (bool retryFailures)
     if (retryFailures)
         for (const auto& camera : selection.getAvailableCameras())
             if (selection.isEnabled (camera.id))
+            {
                 finalizationRetryRequiredIds.erase (camera.id);
+                crashedWhileStartingIds.erase (camera.id);
+            }
 
     // Close first, so a machine that can only hold one camera open at a time
     // has the old one released before the new one is asked for.
@@ -815,6 +882,19 @@ void CameraController::applySelection (bool retryFailures)
 
         const auto index = osIndexById.find (camera.id);
 
+        // The last launch went down while starting this camera. Starting it
+        // again unattended could do the same on every launch; keep the app up
+        // and say so, and let the user's own off/on be the retry.
+        if (crashedWhileStartingIds.count (camera.id) > 0 && ! retryFailures)
+        {
+            openFailures[camera.id] = "SobStage closed unexpectedly while starting "
+                                    + juce::String (selection.getDisplayName (camera.id))
+                                    + " last time, so it wasn't started automatically. Sound "
+                                      "recording is unaffected. Turn this camera off and back on "
+                                      "to try it again.";
+            continue;
+        }
+
         if (index != osIndexById.end()
             && (retryFailures
                 || (openFailures.count (camera.id) == 0
@@ -862,6 +942,9 @@ void CameraController::openCamera (const std::string& id, int osIndex,
 {
     const auto viewerRevision = ++viewerRevisions[id];
 
+    // Kept until this camera proves it started (see setStartupGuardFile).
+    setStartingGuard (id, true);
+
     // Ask JUCE/the platform for high-quality capture. The driver ultimately
     // chooses the actual format, so neither the UI nor documentation promises
     // a resolution which the device has not reported.
@@ -888,6 +971,7 @@ void CameraController::openCamera (const std::string& id, int osIndex,
         openFailures[id] = "Couldn't open " + juce::String (selection.getDisplayName (id))
                          + ". Close any other app using it, and check this app is allowed "
                            "to use cameras and capture devices in your system privacy settings.";
+        setStartingGuard (id, false);
         return;
     }
 
@@ -904,6 +988,7 @@ void CameraController::openCamera (const std::string& id, int osIndex,
                          + ". Checking the cameras again.";
         topologyRetryIds.insert (id);
         requestDiscovery();
+        setStartingGuard (id, false);
         return;
     }
 
@@ -931,6 +1016,7 @@ void CameraController::openCamera (const std::string& id, int osIndex,
                          + juce::String (selection.getDisplayName (id))
                          + ". Check the camera or capture-device signal and cables, close any other app using it, "
                            "then turn this camera off and back on.";
+        setStartingGuard (id, false);
         return;
     }
 
@@ -970,6 +1056,8 @@ void CameraController::openCamera (const std::string& id, int osIndex,
 
 void CameraController::closeCamera (const std::string& id)
 {
+    setStartingGuard (id, false);
+
     const auto entry = open.find (id);
 
     if (entry == open.end())
