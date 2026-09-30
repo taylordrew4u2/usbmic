@@ -1537,7 +1537,10 @@ void Application::reselectOutputDevice()
         announceOutputChanges (outputs);
     }
 
-    const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
+    // The previous pick is passed in so a moved system default alone does not
+    // move the monitor; arrivals, the jack and an explicit choice still do.
+    const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId,
+                                                         selectedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
     selectedOutputDeviceName.clear();
 

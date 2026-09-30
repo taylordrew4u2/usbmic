@@ -449,3 +449,66 @@ TEST_CASE (OutputDeviceSelector_CandidateFromDescriptorCarriesEveryBackendFlag)
     micEndpoint.isMicrophone = true;
     REQUIRE (OutputDeviceSelector::candidateFromDescriptor (micEndpoint, 48000, {}).isMicrophonePlaybackEndpoint);
 }
+
+TEST_CASE (OutputDeviceSelector_ADefaultOutputChangeDoesNotMoveTheMonitorMidShow)
+{
+    // A MacBook with a USB headphone amp that macOS plays through at launch:
+    // priority 4 picks the amp. macOS then moves its default elsewhere -- to a
+    // USB mic with a headphone output that was just plugged in, or away from
+    // the amp once this app holds it in hog mode. The next device-list pass
+    // must not follow that default onto the room speakers.
+    auto speakers = makeDevice ("speakers");
+    speakers.isBuiltIn = true;
+    auto amp = makeDevice ("usb-amp");
+    amp.isSystemDefault = true;
+
+    OutputDeviceTracker tracker;
+    const auto atLaunch = OutputDeviceSelector::select (tracker.observe ({ speakers, amp }), "");
+    REQUIRE (atLaunch.id == "usb-amp");
+    REQUIRE (atLaunch.reason == OutputSelectionReason::SystemDefault);
+
+    // A recorded mic arrives and macOS makes its playback side the default.
+    auto amp2 = amp;
+    amp2.isSystemDefault = false;
+    auto mic = makeDevice ("usb-mic");
+    mic.isAlsoSelectedInput = true;
+    mic.isSystemDefault = true;
+    const auto afterMic = OutputDeviceSelector::select (
+        tracker.observe ({ speakers, amp2, mic }), "", atLaunch.id);
+    REQUIRE (afterMic.id == "usb-amp");
+    REQUIRE (afterMic.reason == OutputSelectionReason::CurrentOutput);
+
+    // Or the default simply falls back to the speakers.
+    auto defaultSpeakers = speakers;
+    defaultSpeakers.isSystemDefault = true;
+    const auto afterHog = OutputDeviceSelector::select (
+        tracker.observe ({ defaultSpeakers, amp2, mic }), "", atLaunch.id);
+    REQUIRE (afterHog.id == "usb-amp");
+
+    // Headphones that really were just plugged in still win (priority 2), and
+    // an output that has gone is not held on to.
+    auto headphones = makeDevice ("BuiltInHeadphoneOutputDevice");
+    headphones.isBuiltIn = true;
+    headphones.hasPhysicalHeadphoneJack = true;
+    const auto afterPlug = OutputDeviceSelector::select (
+        tracker.observe ({ defaultSpeakers, amp2, mic, headphones }), "", atLaunch.id);
+    REQUIRE (afterPlug.id == "BuiltInHeadphoneOutputDevice");
+    REQUIRE (afterPlug.reason == OutputSelectionReason::NewlyConnected);
+
+    const auto ampGone = OutputDeviceSelector::select (
+        tracker.observe ({ defaultSpeakers, mic }), "", "usb-amp");
+    REQUIRE (ampGone.id == "speakers");
+    REQUIRE (ampGone.reason == OutputSelectionReason::SystemDefault);
+
+    // A current output that has since become a switched-off mic's jack, or a
+    // wireless one while a wired output is eligible, is not held either.
+    auto airpods = makeDevice ("airpods");
+    airpods.isWireless = true;
+    const auto notWireless = OutputDeviceSelector::select ({ speakers, airpods }, "", "airpods");
+    REQUIRE (notWireless.id == "speakers");
+
+    auto unticked = amp2;
+    unticked.belongsToUnrecordedMicrophone = true;
+    const auto notUnticked = OutputDeviceSelector::select ({ speakers, unticked }, "", "usb-amp");
+    REQUIRE (notUnticked.id == "speakers");
+}

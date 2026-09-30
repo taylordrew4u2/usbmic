@@ -63,7 +63,8 @@ bool OutputDeviceSelector::supportsRecordingRate (
 }
 
 OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCandidate>& candidates,
-                                              const std::string& rememberedId)
+                                              const std::string& rememberedId,
+                                              const std::string& currentId)
 {
     OutputSelection result;
 
@@ -149,6 +150,24 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     {
         pick (*jack, OutputSelectionReason::PhysicalHeadphoneJack);
         return result;
+    }
+
+    // Nothing new and no headphone jack: keep the output already in use while
+    // it is still an automatic candidate. Priorities 4 and 5 are only a
+    // starting point. macOS moves its default output on its own -- onto a USB
+    // mic that was just plugged in, or off a device this app holds in hog mode
+    // -- and following it on the next device-list pass would move the monitor
+    // mix from the performers' amp to the room speakers mid-show.
+    if (! currentId.empty())
+    {
+        auto current = std::find_if (automatic.begin(), automatic.end(),
+                                     [&] (const OutputDeviceCandidate* c) { return c->id == currentId; });
+
+        if (current != automatic.end())
+        {
+            pick (*current, OutputSelectionReason::CurrentOutput);
+            return result;
+        }
     }
 
     // 4. Whatever the OS considers default.

@@ -70,6 +70,7 @@ enum class OutputSelectionReason
     PhysicalHeadphoneJack,         // priority 3
     SystemDefault,                 // priority 4
     BuiltInOutput,                 // safe fallback before arbitrary endpoints
+    CurrentOutput,                 // kept rather than re-deriving priorities 4 and 5
 };
 
 struct OutputSelection
@@ -124,9 +125,14 @@ class OutputDeviceSelector
 {
 public:
     /// rememberedId is the device the user explicitly chose in a previous
-    /// session, or empty if there is none.
+    /// session, or empty if there is none. currentId is the output the last
+    /// selection chose, or empty at launch. Once priorities 1-3 have nothing
+    /// to say it is kept while still present, so a later device-list pass does
+    /// not chase a moved system default (macOS moves it on a USB hot-plug, and
+    /// away from a device another process holds in hog mode) mid-show.
     static OutputSelection select (const std::vector<OutputDeviceCandidate>& candidates,
-                                   const std::string& rememberedId);
+                                   const std::string& rememberedId,
+                                   const std::string& currentId = {});
 
     /// A backend's advertised ranges can lag the nominal rate it is already
     /// running successfully. Either positive fact makes an output compatible;
