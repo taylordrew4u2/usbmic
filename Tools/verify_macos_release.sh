@@ -71,6 +71,13 @@ CAMERA_PERMISSION="$(plist_value NSCameraUsageDescription)" \
 [[ -n "$CAMERA_PERMISSION" ]] \
   || fail "NSCameraUsageDescription is empty"
 
+# macOS draws gesture Reactions into the camera frames of every app that has
+# not opted out, so they would end up in the recorded takes.
+REACTION_GESTURES="$(plist_value NSCameraReactionEffectGesturesEnabledDefault)" \
+  || fail "NSCameraReactionEffectGesturesEnabledDefault missing from Info.plist"
+[[ "$REACTION_GESTURES" == "false" ]] \
+  || fail "gesture Reactions must default off (got $REACTION_GESTURES)"
+
 # Without this key an older Mac is not told the app is unsupported; it just
 # fails to launch. It must match the floor the binary was linked for.
 PLIST_MINIMUM_MACOS="$(plist_value LSMinimumSystemVersion)" \

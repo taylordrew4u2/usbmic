@@ -212,7 +212,12 @@ if (MMA_BUILD_APP)
         # parses this plist first and then only adds the keys it does not
         # already hold, so the privacy strings above are kept (checked by the
         # juce_info_plist_minimum_macos test and Tools/verify_macos_release.sh).
-        PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>"
+        # macOS also turns gesture Reactions (fireworks, balloons, confetti) on
+        # for every app and draws them into the camera frames, so a performer's
+        # thumbs-up would be burned into the take. Since macOS 14.4 this key
+        # makes them default off for SobStage; a choice the user already made
+        # in the menu-bar Video menu still wins.
+        PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string><key>NSCameraReactionEffectGesturesEnabledDefault</key><false/></dict></plist>"
         ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon.png"
     )
 
