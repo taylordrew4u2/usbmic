@@ -21,7 +21,7 @@ index 21bd4f6367..bb7b16df20 100644
      /**
          Receives callbacks with individual frames from a CameraDevice. It is mainly
 diff --git a/modules/juce_video/native/juce_CameraDevice_mac.h b/modules/juce_video/native/juce_CameraDevice_mac.h
-index ddcba1f320..6af94b5375 100644
+index ddcba1f320..5a625518c0 100644
 --- a/modules/juce_video/native/juce_CameraDevice_mac.h
 +++ b/modules/juce_video/native/juce_CameraDevice_mac.h
 @@ -29,13 +29,17 @@
@@ -70,7 +70,7 @@ index ddcba1f320..6af94b5375 100644
  
          JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wundeclared-selector")
          [[NSNotificationCenter defaultCenter] addObserver: callbackDelegate
-@@ -67,14 +81,50 @@ struct CameraDevice::Pimpl
+@@ -67,14 +81,59 @@ struct CameraDevice::Pimpl
  
      ~Pimpl()
      {
@@ -99,8 +99,17 @@ index ddcba1f320..6af94b5375 100644
 +        {
 +            JUCE_AUTORELEASEPOOL
 +            {
-+                if ([retainedSession isRunning])
-+                    [retainedSession stopRunning];
++                // Uncaught on this queue an NSException aborts the app, and a
++                // stop at quit is never worth that.
++                @try
++                {
++                    if ([retainedSession isRunning])
++                        [retainedSession stopRunning];
++                }
++                @catch (NSException* exception)
++                {
++                    ignoreUnused (exception);
++                }
 +
 +                [retainedSession release];
 +                [retainedCallbackDelegate release];
@@ -125,7 +134,7 @@ index ddcba1f320..6af94b5375 100644
      }
  
      //==============================================================================
-@@ -82,8 +132,96 @@ struct CameraDevice::Pimpl
+@@ -82,8 +141,96 @@ struct CameraDevice::Pimpl
  
      void startSession()
      {
@@ -224,7 +233,7 @@ index ddcba1f320..6af94b5375 100644
      }
  
      void takeStillPicture (std::function<void (const Image&)> pictureTakenCallbackToUse)
-@@ -107,18 +245,28 @@ struct CameraDevice::Pimpl
+@@ -107,18 +254,28 @@ struct CameraDevice::Pimpl
          file.deleteFile();
  
          startSession();
@@ -260,7 +269,7 @@ index ddcba1f320..6af94b5375 100644
      }
  
      Time getTimeOfFirstRecordedFrame() const
-@@ -185,29 +333,45 @@ struct CameraDevice::Pimpl
+@@ -185,29 +342,45 @@ struct CameraDevice::Pimpl
          // `startRecordingToFile`, or `takeStillPicture` before calling this
          // function.
          jassert (! [session isRunning]);
@@ -310,7 +319,7 @@ index ddcba1f320..6af94b5375 100644
  
              JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wundeclared-selector")
              addMethod (@selector (captureSessionRuntimeError:), sessionRuntimeError);
-@@ -216,22 +380,61 @@ private:
+@@ -216,22 +389,61 @@ private:
              registerClass();
          }
  
@@ -376,7 +385,7 @@ index ddcba1f320..6af94b5375 100644
          }
      };
  
-@@ -256,6 +459,11 @@ private:
+@@ -256,6 +468,11 @@ private:
              delegate.reset ([cls.createInstance() init]);
          }
  
@@ -388,7 +397,7 @@ index ddcba1f320..6af94b5375 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -288,7 +496,7 @@ private:
+@@ -288,7 +505,7 @@ private:
              if (imageOutput == nil)
                  return;
  
@@ -397,7 +406,7 @@ index ddcba1f320..6af94b5375 100644
  
              [imageOutput capturePhotoWithSettings: [AVCapturePhotoSettings photoSettings]
                                           delegate: delegate.get()];
-@@ -308,23 +516,51 @@ private:
+@@ -308,23 +525,51 @@ private:
                          [[maybe_unused]] String errorString = error != nil ? nsStringToJuce (error.localizedDescription) : String();
  
                          JUCE_CAMERA_LOG ("Still picture capture failed, error: " + errorString);
@@ -454,7 +463,7 @@ index ddcba1f320..6af94b5375 100644
          };
  
          AVCapturePhotoOutput* imageOutput = nil;
-@@ -336,6 +572,11 @@ private:
+@@ -336,6 +581,11 @@ private:
      class PreCatalinaStillImageOutput  : public ImageOutputBase
      {
      public:
@@ -466,7 +475,7 @@ index ddcba1f320..6af94b5375 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -378,19 +619,27 @@ private:
+@@ -378,19 +628,27 @@ private:
          {
              if (auto* videoConnection = p.getVideoConnection())
              {
@@ -496,7 +505,7 @@ index ddcba1f320..6af94b5375 100644
                  }];
              }
          }
-@@ -446,31 +695,43 @@ private:
+@@ -446,31 +704,43 @@ private:
      {
          if (currentInput == nil)
          {
@@ -558,7 +567,7 @@ index ddcba1f320..6af94b5375 100644
              }
          }
      }
-@@ -499,6 +760,12 @@ private:
+@@ -499,6 +769,12 @@ private:
  
      void refreshIfNeeded()
      {
@@ -571,7 +580,7 @@ index ddcba1f320..6af94b5375 100644
          if (getVideoConnection() == nullptr)
              refreshConnections();
      }
-@@ -509,7 +776,7 @@ private:
+@@ -509,7 +785,7 @@ private:
  
          if (connections != nil)
              for (AVCaptureConnection* connection in connections)
@@ -580,7 +589,7 @@ index ddcba1f320..6af94b5375 100644
                      for (AVCaptureInputPort* port in [connection inputPorts])
                          if ([[port mediaType] isEqual: AVMediaTypeVideo])
                              return connection;
-@@ -534,17 +801,82 @@ private:
+@@ -534,17 +810,82 @@ private:
          listeners.call ([=] (Listener& l) { l.imageReceived (image); });
  
          if (! listeners.isEmpty())
@@ -667,7 +676,7 @@ index ddcba1f320..6af94b5375 100644
      }
  
      void cameraSessionRuntimeError (const String& error)
-@@ -557,6 +889,8 @@ private:
+@@ -557,6 +898,8 @@ private:
      //==============================================================================
      CameraDevice& owner;
      String deviceName;
@@ -676,7 +685,7 @@ index ddcba1f320..6af94b5375 100644
  
      AVCaptureSession* session = nil;
      AVCaptureMovieFileOutput* fileOutput = nil;
-@@ -566,7 +900,15 @@ private:
+@@ -566,7 +909,15 @@ private:
      id<AVCaptureFileOutputRecordingDelegate> callbackDelegate = nil;
      String openingError;
      Time firstPresentationTime;
