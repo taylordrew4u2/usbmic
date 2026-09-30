@@ -1606,8 +1606,55 @@ void aCrashWhileStartingACameraDoesNotRepeatEveryLaunch()
                    && controller.getProblem().containsIgnoreCase ("off and back on"),
                "and says so, with the way back");
 
+        // Opening the Cameras panel is an explicit retry for every other
+        // camera, but it is also the only way to reach this camera's switch.
         controller.applySelection (true);
-        check (fakecamera::getOpenCallCount() == 2, "turning it off and on starts it again");
+        check (fakecamera::getOpenCallCount() == 1,
+               "opening the Cameras panel does not start the held camera");
+        check (controller.getProblem().containsIgnoreCase ("closed unexpectedly while starting Crashy Camera"),
+               "and the panel still says why it is off");
+
+        // Switching a different camera on is not a retry of this one.
+        fakecamera::setDevices ({ "Crashy Camera", "Other" });
+        refreshNow (controller);
+        controller.setCameraEnabledByUser ("Other", true);
+        controller.applySelection (true);
+        check (fakecamera::getOpenCallCount() == 2,
+               "switching another camera on starts only that camera");
+        check (controller.getProblem().containsIgnoreCase ("closed unexpectedly while starting Crashy Camera"),
+               "and the held camera stays held");
+
+        // If this launch went down now, the next one must still hold it.
+        check (guard.loadFileAsString().contains ("Crashy Camera"),
+               "the hold is kept on disk while this launch runs");
+    }
+
+    // The user quit without trying the camera again.
+    check (guard.existsAsFile() && guard.loadFileAsString().contains ("Crashy Camera")
+               && ! guard.loadFileAsString().contains ("Other"),
+           "a clean quit keeps the hold for a camera that was never retried");
+    fakecamera::setDevices ({ "Crashy Camera" });
+
+    {
+        mma::CameraController controller;
+        controller.setStartupGuardFile (guard);
+        refreshNow (controller);
+        controller.getSelection().setEnabled ("Crashy Camera", true);
+        controller.applySelection();
+        check (fakecamera::getOpenCallCount() == 2,
+               "the launch after that still does not start it");
+        check (controller.getProblem().containsIgnoreCase ("closed unexpectedly while starting Crashy Camera"),
+               "and still says why");
+
+        controller.setCameraEnabledByUser ("Crashy Camera", false);
+        controller.applySelection (true);
+        check (fakecamera::getOpenCallCount() == 2, "turning it off starts nothing");
+        check (! controller.getProblem().containsIgnoreCase ("closed unexpectedly"),
+               "and a camera that is off has nothing to explain");
+
+        controller.setCameraEnabledByUser ("Crashy Camera", true);
+        controller.applySelection (true);
+        check (fakecamera::getOpenCallCount() == 3, "turning it back on starts it again");
         check (! controller.getProblem().containsIgnoreCase ("closed unexpectedly"),
                "and the explanation goes");
 
@@ -1622,7 +1669,7 @@ void aCrashWhileStartingACameraDoesNotRepeatEveryLaunch()
         refreshNow (controller);
         controller.getSelection().setEnabled ("Crashy Camera", true);
         controller.applySelection();
-        check (fakecamera::getOpenCallCount() == 3, "after a clean launch it starts automatically again");
+        check (fakecamera::getOpenCallCount() == 4, "after a clean launch it starts automatically again");
         check (guard.existsAsFile(), "an HDMI card with no signal is guarded while it starts");
         controller.advanceSignalClockForTesting (10001.0);
         check (! guard.existsAsFile(), "and cleared once it has stayed up ten seconds without a frame");

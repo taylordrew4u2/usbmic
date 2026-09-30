@@ -81,6 +81,12 @@ struct CoreAudioStream
     bool sampleRateMismatchReported = false;
     bool deviceUnavailableReported = false;
     uint64_t reportedProcessorOverloads = 0;
+
+    // When the callback watchdog called this input dead (0: not dead, or the
+    // resume already reported), on the same clock as lastCallbackSeconds. A
+    // callback after it means the HAL resumed the IOProc, and the app has to
+    // hear that or the mic's track stays silent for the rest of the take.
+    double deadReportedAt = 0.0;
     bool listenerProblemReported = false;
 
     // AudioObjectRemovePropertyListener must use the exact registrations that
@@ -148,7 +154,10 @@ constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
 // 150 ms against a 500 ms settle window).
 #if defined (MMA_SIMULATE_MAC)
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (250);
-constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (250);
+// The output open does the most HAL work (rate switch, hog mode, IOProc,
+// Start); a loaded macOS CI runner has needed more than 250 ms for a healthy
+// one, so its simulated deadline keeps the same headroom ratio as on a Mac.
+constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (400);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
 #else
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (1000);
@@ -665,6 +674,65 @@ bool isDirectlyAttachedInputTransport (UInt32 transport)
     return transport == kAudioDeviceTransportTypeUSB
         || transport == kAudioDeviceTransportTypeFireWire
         || transport == kAudioDeviceTransportTypeThunderbolt;
+}
+
+/// Bluetooth, Bluetooth LE and AirPlay outputs connect by themselves (AirPods
+/// reconnecting, a paired speaker powering on). They stay available as monitor
+/// outputs, but their arrival must not be read as headphones being plugged in.
+bool isWirelessTransport (UInt32 transport)
+{
+    return transport == kAudioDeviceTransportTypeBluetooth
+        || transport == kAudioDeviceTransportTypeBluetoothLE
+        || transport == kAudioDeviceTransportTypeAirPlay;
+}
+
+/// The output macOS itself plays through, or kAudioObjectUnknown. macOS moves
+/// it to headphones or an amp when they are plugged in, which is §5.3's
+/// priority 4 ("system default output").
+AudioObjectID readDefaultOutputDevice()
+{
+    AudioObjectPropertyAddress address { kAudioHardwarePropertyDefaultOutputDevice,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    AudioObjectID device = kAudioObjectUnknown;
+    UInt32 size = sizeof (device);
+
+    if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr,
+                                    &size, &device) != noErr)
+        return kAudioObjectUnknown;
+
+    return device;
+}
+
+/// kAudioDevicePropertyDataSource on the output scope, or 0 when the device
+/// has none. An Intel Mac's single "Built-in Output" reports 'hdpn' while
+/// headphones are in the jack and 'ispk' for its speakers.
+UInt32 readOutputDataSource (AudioObjectID device)
+{
+    AudioObjectPropertyAddress address { kAudioDevicePropertyDataSource,
+                                         kAudioObjectPropertyScopeOutput,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 source = 0;
+    UInt32 size = sizeof (source);
+
+    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &source) != noErr)
+        return 0;
+
+    return source;
+}
+
+/// §5.3 priority 3 on a Mac: only the Mac's own headphone jack. Apple Silicon
+/// exposes it as a separate built-in device ("External Headphones") that exists
+/// only while something is plugged in; Intel routes one built-in device to it.
+/// USB, FireWire and Thunderbolt outputs are deliberately not marked: a capture
+/// card's playback endpoint would otherwise outrank the Mac's own output.
+bool isBuiltInHeadphoneOutput (const std::string& uid, bool isBuiltIn, UInt32 dataSource)
+{
+    constexpr UInt32 kHeadphonesDataSource = (UInt32 ('h') << 24) | (UInt32 ('d') << 16)
+                                           | (UInt32 ('p') << 8)  |  UInt32 ('n');
+
+    return isBuiltIn
+        && (uid == "BuiltInHeadphoneOutputDevice" || dataSource == kHeadphonesDataSource);
 }
 
 /// Resolves a device UID (the stable identifier §2.4 stores) to a live
@@ -1256,6 +1324,10 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
     if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr, &size, deviceIds.data()) != noErr)
         return result;
 
+    // Read once per enumeration, outputs only: an input is never a monitor
+    // candidate, even on a duplex device that is also the default output.
+    const AudioObjectID defaultOutput = wantInput ? kAudioObjectUnknown : readDefaultOutputDevice();
+
     for (auto deviceId : deviceIds)
     {
         // DeviceIsAlive can fall to zero before the AudioObject disappears
@@ -1299,6 +1371,15 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         d.supportedBitDepths = querySupportedBitDepths (deviceId);
         d.currentSampleRate = static_cast<uint32_t> (getNominalSampleRate (deviceId) + 0.5);
         d.isMicrophone = wantInput;
+
+        if (! wantInput)
+        {
+            d.hasPhysicalHeadphoneJack = isBuiltInHeadphoneOutput (
+                d.usbLocationId, d.isBuiltIn, readOutputDataSource (deviceId));
+            d.isSystemDefault = defaultOutput != kAudioObjectUnknown && deviceId == defaultOutput;
+            d.isWireless = isWirelessTransport (transport);
+        }
+
         result.push_back (d);
     }
 
@@ -1803,6 +1884,21 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                                   {}, StreamFailureKind::processorOverload });
         }
 
+        // A stream the watchdog called dead whose IOProc has run since. The
+        // HAL resumes a paused IOProc on the same device -- after system
+        // sleep, another app's brief hog-mode grab, a clock re-lock -- and the
+        // callback already let go of reportedDead; the app, which silenced the
+        // channel, was never told. Said once per death.
+        if (! stream->isOutput
+            && inputStreamHasResumed (stream->deadReportedAt,
+                                      stream->lastCallbackSeconds.load (std::memory_order_relaxed),
+                                      stream->deviceUnavailableReported))
+        {
+            stream->deadReportedAt = 0.0;
+            failures.push_back ({ stream->uid, "is sending audio again.", {},
+                                  StreamFailureKind::resumed });
+        }
+
         // DeviceIsAlive already supplied the immediate, typed report. The
         // five-second callback watchdog is a fallback for devices/drivers that
         // stop silently; emitting it as well would describe one unplug twice.
@@ -1821,6 +1917,9 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
         // is dead, and repeating it every poll would bury everything else.
         if (stream->reportedDead.exchange (true, std::memory_order_relaxed))
             continue;
+
+        if (! stream->isOutput)
+            stream->deadReportedAt = now;
 
         failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
                               stream->isOutput

@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../Platform/IAudioBackend.h"
+
 namespace mma {
 
 struct OutputDeviceCandidate
@@ -35,7 +37,22 @@ struct OutputDeviceCandidate
     /// feedback loop by construction.
     bool isAlsoSelectedInput = false;
 
+    /// The output the OS itself currently plays through (§5.3 priority 4).
     bool isSystemDefault = false;
+
+    /// Bluetooth, Bluetooth LE or AirPlay. AirPods reconnecting or a paired
+    /// speaker powering on "appears" without anyone plugging in headphones, and
+    /// the monitor mix would then leave the performers' amp for a room speaker
+    /// or a 150+ ms wireless path. Such an output is never chosen automatically
+    /// while a wired one is eligible; an explicit pick is still honoured.
+    bool isWireless = false;
+
+    /// The output shares its id with a microphone that is listed but not being
+    /// recorded (switched off in Settings, or past the eight-mic cap). §5.2
+    /// keeps a mic's playback endpoint out of automatic selection at every
+    /// priority; it stays eligible so the user can still pick an interface's
+    /// headphone output by hand after unticking its inputs.
+    bool belongsToUnrecordedMicrophone = false;
 
     /// True for a device that appeared after launch. §5.3 assumes that is the
     /// one the user just plugged in.
@@ -53,6 +70,7 @@ enum class OutputSelectionReason
     PhysicalHeadphoneJack,         // priority 3
     SystemDefault,                 // priority 4
     BuiltInOutput,                 // safe fallback before arbitrary endpoints
+    CurrentOutput,                 // kept rather than re-deriving priorities 4 and 5
 };
 
 struct OutputSelection
@@ -65,6 +83,15 @@ struct OutputSelection
     /// Plain-language line for the user when nothing could be selected, per
     /// §10.6. Empty when a device was found.
     std::string explanation;
+};
+
+/// A microphone the device manager knows about, reduced to what output
+/// selection needs: the id its duplex output would share, and whether it is
+/// being recorded.
+struct KnownMicrophone
+{
+    std::string locationId;
+    bool included = false;
 };
 
 /// Keeps §5.3's "newly connected" priority tied to an actual arrival rather
@@ -98,9 +125,14 @@ class OutputDeviceSelector
 {
 public:
     /// rememberedId is the device the user explicitly chose in a previous
-    /// session, or empty if there is none.
+    /// session, or empty if there is none. currentId is the output the last
+    /// selection chose, or empty at launch. Once priorities 1-3 have nothing
+    /// to say it is kept while still present, so a later device-list pass does
+    /// not chase a moved system default (macOS moves it on a USB hot-plug, and
+    /// away from a device another process holds in hog mode) mid-show.
     static OutputSelection select (const std::vector<OutputDeviceCandidate>& candidates,
-                                   const std::string& rememberedId);
+                                   const std::string& rememberedId,
+                                   const std::string& currentId = {});
 
     /// A backend's advertised ranges can lag the nominal rate it is already
     /// running successfully. Either positive fact makes an output compatible;
@@ -113,6 +145,14 @@ public:
     /// microphone's playback endpoint, or is also a selected input. Every
     /// exclusion holds at every priority.
     static bool isEligible (const OutputDeviceCandidate& candidate);
+
+    /// Maps one enumerated output onto a selection candidate. Every flag the
+    /// backend reports has to reach the selector: a flag dropped here makes its
+    /// priority silently unreachable, which is how the macOS default output and
+    /// headphone jack were once never considered at all.
+    static OutputDeviceCandidate candidateFromDescriptor (const AudioDeviceDescriptor& device,
+                                                          uint32_t recordingRate,
+                                                          const std::vector<KnownMicrophone>& microphones);
 };
 
 } // namespace mma

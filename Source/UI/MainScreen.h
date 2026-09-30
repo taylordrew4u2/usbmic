@@ -126,6 +126,13 @@ public:
     /// camera is not open.
     std::function<std::unique_ptr<juce::Component> (const std::string&)> makeViewer;
 
+    /// Hides (or shows again) the live camera previews without closing or
+    /// rebuilding them, and keeps any rebuilt while hidden hidden. On macOS a
+    /// preview is a native view drawn above every JUCE component, so the owner
+    /// hides them while a card or the take banner is up -- otherwise the live
+    /// picture sits on top of the card's text and buttons.
+    void setCameraPreviewsHidden (bool hidden);
+
     /// §10.2: how big the pictures are drawn, as a step into a fixed size
     /// table. One camera across a table wants a bigger picture than four in a
     /// row, and which of those the user is doing is not something the app can
@@ -237,6 +244,7 @@ private:
     };
 
     std::vector<CameraView> cameraViews;
+    bool previewsHidden = false;
 
     int cameraScale = 1;
 

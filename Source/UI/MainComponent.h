@@ -9,6 +9,7 @@
 #include "RecoveredTakesPanel.h"
 #include "TakeAlertCard.h"
 #include "TakeBanner.h"
+#include "CameraPreviewCover.h"
 #include "../Core/TakeWatchdog.h"
 #include "../Core/RecordingProof.h"
 #include <functional>
@@ -142,6 +143,12 @@ private:
     /// and rebuilt only when the set of cameras or their state has moved.
     void refreshCameras();
     CameraPanel cameraPanel;
+
+    /// Hides the live camera previews while any card or the take banner is up.
+    /// On macOS they are native views drawn above every card; see
+    /// CameraPreviewCover. Declared after everything it watches or drives, so
+    /// it is destroyed first and never calls into a half-destroyed window.
+    CameraPreviewCover cameraPreviewCover;
 
     /// §10.3 panel contents. Refreshed on the slow tick and whenever the panel
     /// is opened, so it is never showing a stale rig.

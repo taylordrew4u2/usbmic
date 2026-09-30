@@ -39,6 +39,7 @@
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
+#include "../Core/FailedOpenRetry.h"
 #include "../Core/PermissionGuidance.h"
 #include "../Platform/SleepInhibitor.h"
 #include "CameraController.h"
@@ -833,6 +834,11 @@ private:
     /// Latched so the journal entry is written once, not on every poll.
     bool journalledPermissionProblems = false;
     double secondsSinceMicrophonePermissionCheck = 0.0;
+
+    /// Reopens the microphones, with backoff, while none of them is open. A
+    /// failed open was otherwise final: fixing the cause (the interface's
+    /// rate, another app holding it) fires no notification the app hears.
+    FailedOpenRetry failedOpenRetry;
 
     /// Re-reads the microphone permission (cheap; never prompts). On a change
     /// it stores the answer and re-arms the permission journal entry, and the

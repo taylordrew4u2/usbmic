@@ -54,7 +54,9 @@ TEST_CASE (RecordingEngine_NewMicMidTakeNeverJoinsRecording)
     engine.start (twoChannels());
     std::string message = engine.onNewMicPluggedMidTake ("usb-3", true);
     REQUIRE (engine.getChannels().size() == 2); // still not part of the file
-    REQUIRE (message == "Mic added to monitoring. It'll be recorded starting with your next take.");
+    // Mid-take nothing opens its stream, so it is not in the headphones either,
+    // and the line must not say it is.
+    REQUIRE (message == "Mic plugged in. It isn't in this take or the headphones yet. It'll be recorded starting with your next take.");
 }
 
 TEST_CASE (RecordingEngine_UnpluggingUnknownDeviceIsANoop)
@@ -78,4 +80,104 @@ TEST_CASE (RecordingEngine_EventsAreNoopsWhenNotRecording)
     RecordingEngine engine;
     REQUIRE_FALSE (engine.onMicUnplugged ("usb-1"));
     REQUIRE_FALSE (engine.onMicReconnected ("usb-1"));
+}
+
+// §6.5 unplug and replug mid-take. A device that leaves the device list takes
+// its stream with it: on macOS the replugged mic is a new AudioObjectID, and
+// the take's only IOProc is still bound to the destroyed one. Nothing may
+// reopen a stream mid-take, so the channel stays silent until the next take --
+// and must never be announced as recording again.
+TEST_CASE (RecordingEngine_ReplugMidTakeStaysSilentAndIsNotAnnouncedAsLive)
+{
+    RecordingEngine engine;
+    engine.start (twoChannels());
+
+    REQUIRE (engine.onDeviceListSeen ("usb-1", false, false) == MidTakeMicChange::Unplugged);
+    REQUIRE (engine.isWritingSilence ("usb-1"));
+
+    // Still gone on a later notification: nothing new to say.
+    REQUIRE (engine.onDeviceListSeen ("usb-1", false, false) == MidTakeMicChange::None);
+
+    // Back in the list, same key. It must not be called live.
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, false) == MidTakeMicChange::BackNextTake);
+    REQUIRE (engine.isWritingSilence ("usb-1"));
+
+    // Told once, however many times the list is re-read.
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, false) == MidTakeMicChange::None);
+    REQUIRE (engine.isWritingSilence ("usb-1"));
+
+    // The other mic is untouched throughout.
+    REQUIRE (engine.onDeviceListSeen ("usb-2", true, false) == MidTakeMicChange::None);
+    REQUIRE_FALSE (engine.isWritingSilence ("usb-2"));
+}
+
+TEST_CASE (RecordingEngine_ReplugIsLiveAgainFromTheNextTake)
+{
+    RecordingEngine engine;
+    engine.start (twoChannels());
+    engine.onDeviceListSeen ("usb-1", false, false);
+    engine.onDeviceListSeen ("usb-1", true, false);
+    engine.stop();
+
+    // Stop pays the deferred restart, which reopens the mic on its new device.
+    engine.start (twoChannels());
+    REQUIRE_FALSE (engine.isWritingSilence ("usb-1"));
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, false) == MidTakeMicChange::None);
+}
+
+TEST_CASE (RecordingEngine_DeadStreamStillListedIsSilencedOnce)
+{
+    RecordingEngine engine;
+    engine.start (twoChannels());
+    REQUIRE (engine.onDeviceListSeen ("usb-2", true, true) == MidTakeMicChange::Unplugged);
+    REQUIRE (engine.isWritingSilence ("usb-2"));
+    REQUIRE (engine.onDeviceListSeen ("usb-2", true, true) == MidTakeMicChange::None);
+
+    // It then leaves the list and comes back: still no claim that it is live.
+    REQUIRE (engine.onDeviceListSeen ("usb-2", false, false) == MidTakeMicChange::None);
+    REQUIRE (engine.onDeviceListSeen ("usb-2", true, false) == MidTakeMicChange::BackNextTake);
+    REQUIRE (engine.isWritingSilence ("usb-2"));
+}
+
+TEST_CASE (RecordingEngine_DeviceListOutsideATakeChangesNothing)
+{
+    RecordingEngine engine;
+    REQUIRE (engine.onDeviceListSeen ("usb-1", false, false) == MidTakeMicChange::None);
+}
+
+// A still-listed mic whose stream went quiet long enough to be called dead,
+// and then started delivering again on the same stream (macOS: the HAL paused
+// its IOProc across sleep, a hog-mode grab or a clock re-lock). Its audio is
+// arriving, so its track must go back to recording it -- even after a device
+// list pass in between marked the stream lost.
+TEST_CASE (RecordingEngine_DeadStreamThatResumesIsLiveAgain)
+{
+    RecordingEngine engine;
+    engine.start (twoChannels());
+
+    REQUIRE (engine.onMicUnplugged ("usb-1"));
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, true) == MidTakeMicChange::None);
+    REQUIRE (engine.isWritingSilence ("usb-1"));
+
+    REQUIRE (engine.onStreamResumed ("usb-1"));
+    REQUIRE_FALSE (engine.isWritingSilence ("usb-1"));
+
+    // The next device-list pass sees it listed with a running stream and must
+    // not silence it again or call it "back next take".
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, false) == MidTakeMicChange::None);
+    REQUIRE_FALSE (engine.isWritingSilence ("usb-1"));
+
+    // Already live: nothing to announce.
+    REQUIRE_FALSE (engine.onStreamResumed ("usb-1"));
+    REQUIRE_FALSE (engine.onStreamResumed ("usb-2"));
+    REQUIRE_FALSE (engine.onStreamResumed ("unknown"));
+
+    // And a genuine second death is reported like the first.
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, true) == MidTakeMicChange::Unplugged);
+}
+
+TEST_CASE (RecordingEngine_StreamResumedOutsideATakeChangesNothing)
+{
+    RecordingEngine engine;
+    REQUIRE_FALSE (engine.onStreamResumed ("usb-1"));
 }

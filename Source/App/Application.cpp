@@ -424,7 +424,7 @@ void Application::initialise()
 
 void Application::setCameraEnabled (const std::string& id, bool enabled)
 {
-    cameraController.getSelection().setEnabled (id, enabled);
+    cameraController.setCameraEnabledByUser (id, enabled);
     saveSettings();
 }
 
@@ -1387,17 +1387,21 @@ void Application::onDeviceListChanged()
 
         for (const auto& ch : capture->getChannels())
         {
-            const bool live = present.count (ch.deviceId) > 0
-                           && deadInputStreams.count (ch.deviceId) == 0;
+            // The decision is RecordingEngine's: a device that left the list
+            // this take stays silent until Stop even once it is back, because
+            // its stream went with it (§6.5 below).
+            const bool listed = present.count (ch.deviceId) > 0;
+            const bool streamDead = deadInputStreams.count (ch.deviceId) > 0;
+            const auto change = recordingEngine.onDeviceListSeen (ch.deviceId, listed, streamDead);
+            const bool live = listed && ! streamDead && ! recordingEngine.isWritingSilence (ch.deviceId);
             capture->setChannelLive (ch.deviceId, live);
 
             // §6.5: "Log the dropout" on an unplug, and log the reconnection
             // too. RecordingEngine has always tracked both and nothing had ever
             // told it anything, so a mic could fall out of a four-hour take and
             // leave no trace anywhere.
-            if (! live && ! recordingEngine.isWritingSilence (ch.deviceId))
+            if (change == MidTakeMicChange::Unplugged)
             {
-                recordingEngine.onMicUnplugged (ch.deviceId);
                 midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                              "Microphone unplugged: writing silence to its channel." });
 
@@ -1406,19 +1410,39 @@ void Application::onDeviceListChanged()
                               "as silence.");
 
                 // The other half of §14.2's heuristic: a "device drop". Already
-                // edge-triggered by the isWritingSilence guard above, so one
-                // unplug counts once however many times the device list is
-                // re-read while it is gone.
+                // edge-triggered by RecordingEngine, so one unplug counts once
+                // however many times the device list is re-read while it is
+                // gone.
                 noteDeviceDropout();
             }
-            else if (live && recordingEngine.isWritingSilence (ch.deviceId))
+            else if (change == MidTakeMicChange::Reconnected)
             {
-                recordingEngine.onMicReconnected (ch.deviceId);
                 midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                              "Microphone reconnected: its channel is live again." });
 
                 noteActivity (ActivityLevel::Recovered, juce::String (ch.displayName),
                               "Plugged back in. Its track is live again.");
+            }
+            else if (change == MidTakeMicChange::BackNextTake)
+            {
+                // Plugged back in, but its stream is still bound to the device
+                // that left: on macOS the one that came back is a new
+                // AudioObjectID, and streams are only reopened at Stop. This
+                // used to mark the channel live and log "live again" while its
+                // track stayed silence for the rest of the take -- so nobody
+                // knew to press Stop and Record, the one thing that brings it
+                // back.
+                midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                             "Microphone plugged back in: it can't rejoin a take in "
+                                             "progress, so its channel stays silent until the next take." });
+
+                noteActivity (ActivityLevel::Warning, juce::String (ch.displayName),
+                              "Plugged back in, but it can't rejoin this take. Its track stays "
+                              "silent until you press Stop, then Record.");
+
+                midTakeNotice = juce::String (ch.displayName)
+                              + " is back but can't rejoin this take. Press Stop, then Record to include it.";
+                midTakeNoticeSeconds = 12.0;
             }
         }
 
@@ -1438,7 +1462,8 @@ void Application::onDeviceListChanged()
             // fifteen used to have no way of learning that the mic they just
             // plugged in is not in the take.
             noteActivity (ActivityLevel::Warning, juce::String (d.displayName),
-                          "Added to monitoring only. It'll be recorded starting with your next take.");
+                          "Plugged in. It isn't in this take or the headphones yet. It'll be "
+                          "recorded starting with your next take.");
             break;
         }
 
@@ -1484,33 +1509,17 @@ void Application::reselectOutputDevice()
     outputDeviceNames.clear();
     outputDeviceIdByLabel.clear();
 
+    // Every microphone the device manager lists, recorded or not. A duplex
+    // mic's output shares its id on CoreAudio, so both states matter (§5.2,
+    // §5.5); the mapping itself is portable and unit-tested.
+    std::vector<KnownMicrophone> microphones;
+    for (const auto& mic : deviceManager.getDevices())
+        microphones.push_back ({ mic.identity.locationId, mic.included });
+
+    const auto recordingRate = static_cast<uint32_t> (currentSampleRate + 0.5);
+
     for (const auto& d : audioBackend->enumerateOutputDevices())
-    {
-        OutputDeviceCandidate c;
-        c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
-        c.displayName = d.name;
-        c.hasPhysicalHeadphoneJack = d.hasPhysicalHeadphoneJack;
-        c.isBuiltIn = d.isBuiltIn;
-
-        // The monitor output shares the recording clock. A fixed-48 kHz HDMI
-        // capture-card endpoint cannot serve a 44.1 kHz T12S take and must not
-        // displace a compatible Mac output merely because it hot-plugged most
-        // recently. An empty capability list means the backend cannot say, so
-        // keep it eligible and let the open path report any real refusal.
-        const auto recordingRate = static_cast<uint32_t> (currentSampleRate + 0.5);
-        c.supportsRecordingSampleRate = OutputDeviceSelector::supportsRecordingRate (
-            d.currentSampleRate, d.supportedSampleRates, recordingRate);
-
-        // §5.2: a microphone's own playback endpoint is never a monitor output.
-        c.isMicrophonePlaybackEndpoint = d.isMicrophone;
-
-        // §5.5: refuse to route output to a device that is also a capture device.
-        for (const auto& mic : deviceManager.getDevices())
-            if (mic.included && ! d.usbLocationId.empty() && mic.identity.locationId == d.usbLocationId)
-                c.isAlsoSelectedInput = true;
-
-        snapshot.push_back (std::move (c));
-    }
+        snapshot.push_back (OutputDeviceSelector::candidateFromDescriptor (d, recordingRate, microphones));
 
     // A later snapshot is not itself an arrival. The tracker remembers what
     // was present before and marks only ids that actually appeared, preserving
@@ -1542,18 +1551,21 @@ void Application::reselectOutputDevice()
     // when it left the user with nothing to listen on at all. A microphone's
     // own playback endpoint is skipped: it is the same physical thing the
     // microphone list already announced, and saying it twice under two names
-    // is noise rather than news.
+    // is noise rather than news. A switched-off mic's jack is the same case.
     {
         std::map<std::string, std::string> outputs;
 
         for (const auto& c : candidates)
-            if (! c.isMicrophonePlaybackEndpoint)
+            if (! c.isMicrophonePlaybackEndpoint && ! c.belongsToUnrecordedMicrophone)
                 outputs[c.id] = c.displayName;
 
         announceOutputChanges (outputs);
     }
 
-    const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId);
+    // The previous pick is passed in so a moved system default alone does not
+    // move the monitor; arrivals, the jack and an explicit choice still do.
+    const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId,
+                                                         selectedOutputDeviceId);
     selectedOutputDeviceId = selection.id;
     selectedOutputDeviceName.clear();
 
@@ -4239,6 +4251,29 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         onDeviceListChanged();
     }
 
+    // Record says "The microphones aren't open: ..." and tells the user what
+    // to fix -- the interface's rate, another app holding it, macOS still
+    // finishing. Nothing reports that fix: a rate or hog-mode change is not a
+    // device-list change, and a device that never opened has no stream to
+    // listen on. So while NOTHING is open, try again, backing off. Never while
+    // anything is open: the reopen closes every stream first, and on a rig
+    // that is partly up that would cut the headphones on every attempt.
+    {
+        FailedOpenRetry::Situation situation;
+        situation.idle = recordingEngine.getState() == RecordingState::Idle
+                      && pendingStoppedTakeCompletion == nullptr
+                      && ! cameraController.isFinalizingRecording();
+        situation.includedMicCount = getIncludedMicCount();
+        situation.monitoring = capture != nullptr && capture->isMonitoring();
+        situation.permissionDenied = microphonePermission == PermissionState::Denied;
+
+        // The full device-list pass rather than restartCapture(): it re-reads
+        // each device's current rate and re-takes the vote, which is exactly
+        // what a rate changed in Audio MIDI Setup needs.
+        if (capture != nullptr && failedOpenRetry.tick (sinceLastCallSeconds, situation))
+            onDeviceListChanged();
+    }
+
     // Cleared first, not inside the tap block: a capacity or performance
     // warning returns early below, and a stale index would leave one meter
     // lit indefinitely.
@@ -4559,6 +4594,34 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                 for (const auto& d : deviceManager.getDevices())
                     if (d.identity.key() == failure.deviceId)
                         subject = juce::String (d.displayName);
+            }
+
+            // §6.5: a still-listed mic called dead below whose stream is
+            // delivering again. It is the same stream -- a macOS IOProc the HAL
+            // paused and resumed, across system sleep or another app's hog-mode
+            // grab -- so its audio is arriving, and nothing else would ever let
+            // its channel go: mid-take deadInputStreams is only cleared by the
+            // device leaving the list. The mic's track stayed silent for the
+            // rest of the take. The reopen at Stop, if owed, stays owed; it is
+            // harmless. Only a mic this owner silenced is taken back.
+            if (failure.kind == StreamFailureKind::resumed)
+            {
+                if (capture != nullptr && ! failure.deviceId.empty()
+                    && deadInputStreams.erase (failure.deviceId) > 0)
+                {
+                    // setChannelLive (true) restarts the channel from an empty
+                    // ring, so no audio from before the gap is replayed.
+                    capture->setChannelLive (failure.deviceId, true);
+
+                    if (recordingEngine.onStreamResumed (failure.deviceId))
+                        midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), failure.deviceId,
+                                                     "Microphone started sending audio again: its "
+                                                     "channel is live again." });
+
+                    noteActivity (ActivityLevel::Recovered, subject,
+                                  "Sending audio again. Its track is live again.");
+                }
+                continue;
             }
 
             // §5.4's buffer ladder lives or dies here. noteCallbackOverrun()

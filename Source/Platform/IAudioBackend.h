@@ -23,6 +23,14 @@ struct AudioDeviceDescriptor
     std::vector<int> supportedBitDepths;
     bool isMicrophone = false;
     bool hasPhysicalHeadphoneJack = false; // relevant for output-device candidates (§5.3)
+    /// Output only: this is the output the OS itself currently plays through
+    /// (§5.3 priority 4). On a Mac that is usually the headphones or amp the
+    /// user plugged in, because macOS switches its default to them.
+    bool isSystemDefault = false;
+    /// Output only: Bluetooth, Bluetooth LE or AirPlay. Such a device can
+    /// connect on its own (AirPods, a paired speaker powering on), so its
+    /// arrival is not evidence that the user plugged in monitoring headphones.
+    bool isWireless = false;
 };
 
 /// §5.4: the monitor path requires exclusive-mode audio. This describes what a
@@ -44,7 +52,12 @@ enum class StreamFailureKind
     sampleRateChanged,
     deviceUnavailable,
     processorOverload,
-    safetyMonitoringUnavailable
+    safetyMonitoringUnavailable,
+
+    /// Not a failure: an input stream reported dead has started delivering
+    /// again on the same stream. The owner takes back what the dead report
+    /// did -- its channel goes live again -- and says so.
+    resumed
 };
 
 /// Application policy for typed backend events. A live sample-rate change
@@ -84,6 +97,23 @@ constexpr DeadInputStreamAction deadInputStreamAction (bool recording, bool reop
         return DeadInputStreamAction::leaveDead;
 
     return recording ? DeadInputStreamAction::reopenAtStop : DeadInputStreamAction::reopenNow;
+}
+
+/// §0.1: whether an input stream that was called dead, because its callback
+/// stopped arriving, is delivering again. CoreAudio's check is only a timeout
+/// on a callback the HAL may resume: across system sleep, another app's brief
+/// hog-mode grab, or an interface re-locking its clock the IOProc stops and
+/// then runs again on the same device. Mid-take nothing reopens a stream, so
+/// without this the mic's track stayed silent for the rest of the take while
+/// its audio was arriving.
+///
+/// `deadReportedAt` is when the dead report was made (0: never, or already
+/// taken back), `lastCallback` when the stream last delivered, on the same
+/// clock. A device the OS itself says is unavailable is not revived by this.
+constexpr bool inputStreamHasResumed (double deadReportedAt, double lastCallback,
+                                      bool deviceUnavailable) noexcept
+{
+    return deadReportedAt > 0.0 && lastCallback > deadReportedAt && ! deviceUnavailable;
 }
 
 /// A stream that died or became unsafe after it had been opened. See

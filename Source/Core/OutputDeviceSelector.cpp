@@ -63,7 +63,8 @@ bool OutputDeviceSelector::supportsRecordingRate (
 }
 
 OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCandidate>& candidates,
-                                              const std::string& rememberedId)
+                                              const std::string& rememberedId,
+                                              const std::string& currentId)
 {
     OutputSelection result;
 
@@ -112,9 +113,26 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
         }
     }
 
+    // Everything below is automatic. A listed-but-unrecorded microphone's own
+    // output is never chosen here (§5.2), and a wireless output is only taken
+    // when nothing wired is left: AirPods reconnecting or a Bluetooth speaker
+    // powering on is not the user plugging in monitoring headphones.
+    std::vector<const OutputDeviceCandidate*> wired, wireless;
+    for (auto* c : eligible)
+        if (! c->belongsToUnrecordedMicrophone)
+            (c->isWireless ? wireless : wired).push_back (c);
+
+    if (wired.empty() && wireless.empty())
+    {
+        result.explanation = "The only sound outputs belong to microphones that aren't being recorded. Plug headphones into the computer or a headphone amp, or choose one in Settings.";
+        return result;
+    }
+
+    const auto& automatic = wired.empty() ? wireless : wired;
+
     // 2. Something plugged in after launch, most recent first.
     const OutputDeviceCandidate* newest = nullptr;
-    for (auto* c : eligible)
+    for (auto* c : automatic)
         if (c->appearedAfterLaunch && (newest == nullptr || c->connectionOrder > newest->connectionOrder))
             newest = c;
 
@@ -125,20 +143,38 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     }
 
     // 3. Anything with a real headphone jack.
-    auto jack = std::find_if (eligible.begin(), eligible.end(),
+    auto jack = std::find_if (automatic.begin(), automatic.end(),
                               [] (const OutputDeviceCandidate* c) { return c->hasPhysicalHeadphoneJack; });
 
-    if (jack != eligible.end())
+    if (jack != automatic.end())
     {
         pick (*jack, OutputSelectionReason::PhysicalHeadphoneJack);
         return result;
     }
 
+    // Nothing new and no headphone jack: keep the output already in use while
+    // it is still an automatic candidate. Priorities 4 and 5 are only a
+    // starting point. macOS moves its default output on its own -- onto a USB
+    // mic that was just plugged in, or off a device this app holds in hog mode
+    // -- and following it on the next device-list pass would move the monitor
+    // mix from the performers' amp to the room speakers mid-show.
+    if (! currentId.empty())
+    {
+        auto current = std::find_if (automatic.begin(), automatic.end(),
+                                     [&] (const OutputDeviceCandidate* c) { return c->id == currentId; });
+
+        if (current != automatic.end())
+        {
+            pick (*current, OutputSelectionReason::CurrentOutput);
+            return result;
+        }
+    }
+
     // 4. Whatever the OS considers default.
-    auto def = std::find_if (eligible.begin(), eligible.end(),
+    auto def = std::find_if (automatic.begin(), automatic.end(),
                              [] (const OutputDeviceCandidate* c) { return c->isSystemDefault; });
 
-    if (def != eligible.end())
+    if (def != automatic.end())
     {
         pick (*def, OutputSelectionReason::SystemDefault);
         return result;
@@ -149,10 +185,10 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     // enumeration-first USB endpoint selected HDMI capture-card audio on a rig
     // pinned to 44.1 kHz; that unused 48 kHz output then prevented every input
     // stream from opening and left a sample-rate warning on screen forever.
-    auto builtIn = std::find_if (eligible.begin(), eligible.end(),
+    auto builtIn = std::find_if (automatic.begin(), automatic.end(),
                                  [] (const OutputDeviceCandidate* c) { return c->isBuiltIn; });
 
-    if (builtIn != eligible.end())
+    if (builtIn != automatic.end())
     {
         pick (*builtIn, OutputSelectionReason::BuiltInOutput);
         return result;
@@ -161,8 +197,47 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     // Eligible devices exist but none matched a stated or safe fallback
     // priority. Take the first rather than leaving the room without a monitor
     // mix (§5.1: live from launch).
-    pick (eligible.front(), OutputSelectionReason::SystemDefault);
+    pick (automatic.front(), OutputSelectionReason::SystemDefault);
     return result;
+}
+
+OutputDeviceCandidate OutputDeviceSelector::candidateFromDescriptor (
+    const AudioDeviceDescriptor& d,
+    uint32_t recordingRate,
+    const std::vector<KnownMicrophone>& microphones)
+{
+    OutputDeviceCandidate c;
+    c.id = d.usbLocationId.empty() ? d.name : d.usbLocationId;
+    c.displayName = d.name;
+    c.hasPhysicalHeadphoneJack = d.hasPhysicalHeadphoneJack;
+    c.isBuiltIn = d.isBuiltIn;
+    c.isSystemDefault = d.isSystemDefault;
+    c.isWireless = d.isWireless;
+
+    // The monitor output shares the recording clock. A fixed-48 kHz HDMI
+    // capture-card endpoint cannot serve a 44.1 kHz T12S take and must not
+    // displace a compatible Mac output merely because it hot-plugged most
+    // recently. An empty capability list means the backend cannot say, so
+    // keep it eligible and let the open path report any real refusal.
+    c.supportsRecordingSampleRate = supportsRecordingRate (
+        d.currentSampleRate, d.supportedSampleRates, recordingRate);
+
+    // §5.2: a microphone's own playback endpoint is never a monitor output.
+    c.isMicrophonePlaybackEndpoint = d.isMicrophone;
+
+    // §5.5: refuse to route output to a device that is also a capture device.
+    // A duplex mic that is listed but not recorded (switched off, or past the
+    // cap) shares the same id on CoreAudio; keep it out of automatic choice.
+    for (const auto& mic : microphones)
+        if (! d.usbLocationId.empty() && mic.locationId == d.usbLocationId)
+        {
+            if (mic.included)
+                c.isAlsoSelectedInput = true;
+            else
+                c.belongsToUnrecordedMicrophone = true;
+        }
+
+    return c;
 }
 
 } // namespace mma
