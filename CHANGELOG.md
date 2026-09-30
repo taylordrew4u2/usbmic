@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.13.6 -- 2026-09-30 (release candidate)
+
+Seven more Mac fixes from the Mac-only bug hunt, each proven by a test that
+failed first: where the headphone mix goes, camera previews over cards,
+mics that drop out or are replugged mid-take, the camera crash-loop guard,
+and cameras that fail to start recording.
+
+### Fixed
+
+- **Mac: the live mix now goes to your headphones, not the MacBook speakers.**
+  If you have never picked an output in Settings, SobStage now picks
+  headphones in the Mac's headphone jack, or whatever output macOS is playing
+  through, instead of the built-in speakers. AirPods or a Bluetooth speaker
+  that connects on its own, or the headphone jack of a mic you switched off,
+  no longer takes over the monitor, though you can still choose any of them by
+  hand. The output SobStage picks by itself also stays put when macOS moves
+  its default output, for example when a USB mic is plugged in mid-show.
+- **Mac: Camera previews no longer cover the recording cards.** The live
+  camera picture used to sit on top of the save prompt, the Saved card, the
+  red recording alert and the RECORDING banner, hiding their text and buttons.
+  The previews now go blank while any of these is on screen and come back when
+  it closes; the cameras keep running and recording throughout.
+- **Mac: A mic unplugged and plugged back in during a take is no longer
+  reported as recording while its track is silent.** The app now tells you it
+  can't rejoin the take in progress and that pressing Stop, then Record brings
+  it back. A mic plugged in for the first time mid-take is no longer described
+  as being in the headphones.
+- **Mac: A mic that stops sending audio for a few seconds mid-take and then
+  starts again is recorded again.** Before, if a mic's audio paused for 5
+  seconds or more (for example when the MacBook slept and woke), its track
+  stayed silent for the rest of the take and the app wrongly warned that the
+  computer was dropping sound. Now its track goes live again as soon as its
+  audio comes back, and the activity log says so.
+- **Mac: A camera that took the app down while starting is no longer restarted
+  by opening the Cameras panel.** SobStage now leaves that camera off on every
+  launch, not just the next one, until you switch it off and back on in the
+  Cameras panel. Opening the panel, starting a take or switching on a
+  different camera no longer starts it.
+- **Mac: Record comes back on its own after you fix a mic that wouldn't
+  open.** If no microphone could be opened (the interface was at the wrong
+  rate, or another app was holding it), SobStage now tries again by itself
+  after you fix the problem. Before, you had to replug the interface or
+  restart the app.
+- **Mac: A camera that can't start recording now says so straight away.** If a
+  camera lost its connection just as you pressed Record (for example a
+  Continuity iPhone being picked up), the app now reports "Couldn't start
+  recording video from" that camera. Before, its tile showed STARTING for the
+  whole take, no video was written, and Record stayed blocked for 15 seconds
+  after Stop.
+
 ## v1.13.5 -- 2026-09-30 (release candidate)
 
 Four Mac fixes on v1.13.4 that matter during a show, found by an exhaustive
