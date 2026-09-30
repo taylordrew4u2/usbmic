@@ -554,6 +554,20 @@ private:
             settle (1500);
             add ("it is still sounding a second and a half later", [] {},
                  [this] { return application.isFaultAlarmOn() && application.getAlarmSamplesRendered() > sirenSamplesAt + 48000; });
+            // The record button stays enabled for the whole take, and the
+            // keyboard can be left on it behind the card: the Mac hands focus
+            // back to the last focused control on Cmd+Tab back, or a Tab
+            // reaches it. Return there used to click it and stop the take --
+            // the one thing the card says no key does.
+            add ("Return on the record button behind the card does not stop the take", [this]
+            {
+                if (auto* b = button<MainScreen> ("Recording. Tap to stop."))
+                    b->grabKeyboardFocus();
+                pressKeyThroughWindow (juce::KeyPress::returnKey);
+            }, [] { return true; });
+            settle (1000);
+            check ("the take is still running and the card still up",
+                   [this] { return recording() && isUp<TakeAlertCard>(); });
             add ("Keep recording closes the card and the take carries on", [this] { click<TakeAlertCard> ("Keep recording"); },
                  [this] { return ! isUp<TakeAlertCard>() && recording(); });
             add ("and the siren stops", [this] { sirenSamplesAt = application.getAlarmSamplesRendered(); },
@@ -597,7 +611,33 @@ private:
             // still listed, so no replug ever came, and the next take recorded
             // silence for that microphone -- with its strip lit as live and no
             // card or dropout to say so. Stop owes the reopen.
-            add ("a second take starts", [this] { startRecording(); }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+            // Clicked with the mouse, the way a person starts one. A click
+            // hands the keyboard to what it lands on; left on the record
+            // button, a stray Return would stop the take with no question.
+            add ("a second take starts, clicked with the mouse", [this]
+            {
+                backToMain();
+                if (auto* b = button<MainScreen> ("Start recording"))
+                    clickWithMouse (*b);
+            }, [this] { return recordingOrAnswerPrompt(); }, 90000);
+            check ("and the click has not left the keyboard on the button that stops it", [this]
+            {
+                auto* b = button<MainScreen> ("Recording. Tap to stop.");
+                return b != nullptr && ! b->hasKeyboardFocus (false);
+            });
+            add ("nor does switching away and back put it there", [this]
+            {
+                if (auto* mc = mainComponent())
+                    if (auto* peer = mc->getPeer())
+                    {
+                        peer->handleFocusLoss();
+                        peer->handleFocusGain();
+                    }
+            }, [this]
+            {
+                auto* b = button<MainScreen> ("Recording. Tap to stop.");
+                return b != nullptr && ! b->hasKeyboardFocus (false) && recording();
+            });
             add ({}, [this]
             {
                 takeFolder = application.getCurrentSessionFolder();
@@ -686,8 +726,14 @@ private:
             // picture is of what a person is left looking at once it has gone.
             add ({}, [] {}, [this] { return ! isUp<TakeBanner>(); }, 5000, false);
             add ({}, [this] { snapshot ("proof-stop-card"); }, [] { return true; });
-            add ("OK closes the red card and the siren stops", [this] { click<TakeAlertCard> ("OK"); },
+            // Keep recording is hidden on this card, so the keyboard has to
+            // land on OK -- not stay behind the card on the record button,
+            // where Return would start a new take under it.
+            check ("the keyboard is on the red card's OK",
+                   [this] { auto* ok = button<TakeAlertCard> ("OK"); return ok != nullptr && ok->hasKeyboardFocus (false); });
+            add ("Return answers OK: the red card closes and the siren stops", [this] { pressKeyThroughWindow (juce::KeyPress::returnKey); },
                  [this] { return ! isUp<TakeAlertCard>() && ! application.isFaultAlarmOn(); });
+            check ("and no new take started behind it", [this] { return ! recording(); });
             check ("then the saved-take card comes up, on top",
                    [this] { return isUp<SavedTakePanel>() && onTop<SavedTakePanel>(); }, 5000);
             add ("the saved-take card's Done goes back to a quiet main screen",

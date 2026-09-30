@@ -400,6 +400,19 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
 
 void MainComponent::beginRecording()
 {
+    // Every card is full-window and swallows the mouse, so a record press
+    // while one is up can only be a key (Return) on the button hidden behind
+    // it -- e.g. focus handed back to it by ComponentPeer::handleFocusGain on
+    // Cmd+Tab back. The card owns the decision; only its own Stop ends a take.
+    if (saveLocationPrompt.isVisible() || savedTakePanel.isVisible()
+        || recoveredTakesPanel.isVisible() || takeAlertCard.isVisible())
+        return;
+
+    // A click hands the keyboard to the record button. Never leave it on the
+    // one control that ends a take (a stray Return would press it), nor in
+    // the name box (Space would type instead of muting the room).
+    grabKeyboardFocus();
+
     // §6.2: whatever is in the name box when record is pressed names the take.
     application.setSessionName (mainScreen.getSessionName());
 
