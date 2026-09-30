@@ -78,6 +78,18 @@ void CameraPanel::setPreviewQuality (PreviewQuality quality)
     resized();
 }
 
+void CameraPanel::setCameraPreviewsHidden (bool hidden)
+{
+    if (hidden == previewsHidden)
+        return;
+
+    previewsHidden = hidden;
+
+    for (auto& row : rows)
+        if (row.viewer != nullptr)
+            row.viewer->setVisible (! hidden);
+}
+
 void CameraPanel::setRecording (bool isRecording)
 {
     if (recording == isRecording)
@@ -277,7 +289,10 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
 
         if (row.viewer != nullptr)
         {
-            addAndMakeVisible (*row.viewer);
+            // Born hidden when a card is up (setCameraPreviewsHidden): a
+            // rebuild must not put the live picture back over the card.
+            addChildComponent (*row.viewer);
+            row.viewer->setVisible (! previewsHidden);
         }
         else
         {
