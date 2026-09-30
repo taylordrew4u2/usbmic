@@ -201,8 +201,8 @@ Run on volume selection and again on arming; cache per volume ID with a 30-day e
 | Event | Behavior |
 |---|---|
 | Microphone unplugged | Continue writing silence to that channel. Never change channel count or file layout mid-file. Log the dropout. Meter goes hollow. |
-| Microphone reconnected mid-take | Resume writing its live signal to its existing channel. Restore name and trim per §2.4. Log the reconnection. |
-| New microphone plugged in mid-take | Add to the monitor mix immediately. Do **not** add to the in-progress recording. State in one line: "Mic added to monitoring. It'll be recorded starting with your next take." |
+| Microphone reconnected mid-take | Streams are not reopened mid-take, so a mic that left the device list keeps writing silence to its existing channel until the take ends; never report it as recording again. Log the return and state in one line that it rejoins when the user presses Stop, then Record. Restore name and trim per §2.4. |
+| New microphone plugged in mid-take | Do **not** add to the in-progress recording, and nothing is opened mid-take, so it is not in the monitor mix yet either. State in one line: "Mic plugged in. It isn't in this take or the headphones yet. It'll be recorded starting with your next take." |
 | Clock master unplugged | Failover per §3.3. Recording continues. |
 | **Target card removed** | Stop immediately, finalize every open file, alert loudly. If the mirror is running, state that a complete copy survives locally and give its path. |
 | Card full | Stop at the last complete buffer block, finalize, report that available time was exhausted. Warn at 10 minutes and 2 minutes remaining. |

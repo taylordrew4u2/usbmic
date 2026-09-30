@@ -99,6 +99,22 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
     if (samples == nullptr || numSamples <= 0)
         return;
 
+    // A channel written as silence is not consumed -- pull() returns before
+    // reading -- so its ring filling up is not the consumer falling behind.
+    // Counting it was: a macOS input whose IOProc paused long enough to be
+    // called dead and then resumed ran up "sound is still being dropped" and
+    // stepped the buffer ladder for the rest of the take, every figure blaming
+    // the computer. Nothing is written either: setLive (true) restarts the
+    // channel from an empty ring. Still counted as delivered and stamped, so
+    // the device's own clock and its liveness stay visible.
+    if (! channelLive.load (std::memory_order_relaxed))
+    {
+        pushedSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+        lastPushSamples.store (numSamples, std::memory_order_relaxed);
+        lastPushNs.store (nowNs(), std::memory_order_release);
+        return;
+    }
+
     // A full ring means the consumer is not keeping up. Dropping the newest
     // samples is the only lock-free option; the loop reacts by speeding this
     // device's playout back up. What is dropped is COUNTED: this used to

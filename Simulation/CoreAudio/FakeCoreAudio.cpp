@@ -57,6 +57,7 @@ struct State
     std::vector<AudioObjectID> order;
     std::vector<Listener> listeners;
     AudioObjectID nextId = 100;
+    AudioObjectID defaultOutput = kAudioObjectUnknown;
     bool allowPropertyListeners = true;
     bool allowSystemPropertyListenerRemoval = true;
 };
@@ -291,6 +292,13 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
                         ioSize, outData);
     }
 
+    if (object == kAudioObjectSystemObject
+        && address->mSelector == kAudioHardwarePropertyDefaultOutputDevice)
+    {
+        const AudioObjectID output = state().defaultOutput;
+        return deliver (&output, sizeof (output), ioSize, outData);
+    }
+
     if (object == kAudioObjectSystemObject && address->mSelector == kAudioHardwarePropertyDevices)
         return deliver (state().order.data(),
                         static_cast<UInt32> (state().order.size() * sizeof (AudioObjectID)),
@@ -306,6 +314,18 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
         {
             const UInt32 transport = device->spec.transportType;
             return deliver (&transport, sizeof (transport), ioSize, outData);
+        }
+
+        case kAudioDevicePropertyDataSource:
+        {
+            // Only the output scope has one, and only on devices that report
+            // it; everything else answers the way a real HAL does.
+            if (address->mScope != kAudioObjectPropertyScopeOutput
+                || device->spec.outputDataSource == 0)
+                return kAudioHardwareUnknownPropertyError;
+
+            const UInt32 source = device->spec.outputDataSource;
+            return deliver (&source, sizeof (source), ioSize, outData);
         }
 
         case kAudioObjectPropertyName:
@@ -652,6 +672,7 @@ void reset()
     state().order.clear();
     state().listeners.clear();
     state().nextId = 100;
+    state().defaultOutput = kAudioObjectUnknown;
     state().allowPropertyListeners = true;
     state().allowSystemPropertyListenerRemoval = true;
 }
@@ -689,6 +710,11 @@ AudioObjectID addDevice (const DeviceSpec& spec)
     state().order.push_back (id);
     fireDeviceListListeners();
     return id;
+}
+
+void setDefaultOutputDevice (AudioObjectID device)
+{
+    state().defaultOutput = device;
 }
 
 void removeDevice (AudioObjectID device)

@@ -283,6 +283,23 @@ MainComponent::MainComponent (Application& app)
     takeAlertCard.setReducedMotion (application.prefersReducedMotion());
     addChildComponent (takeBanner);
 
+    // Every overlay above is a JUCE child of this window, but on macOS a live
+    // camera preview is a native NSView composited above all JUCE painting:
+    // it drew over the save prompt, the saved-take card, the red take alert
+    // and the take banner, hiding their text and buttons. Hide the previews
+    // -- only hide, never rebuild them or touch the capture session -- for
+    // exactly as long as any of these is visible.
+    cameraPreviewCover.onCoverChanged = [this] (bool covered)
+    {
+        mainScreen.setCameraPreviewsHidden (covered);
+        cameraPanel.setCameraPreviewsHidden (covered);
+    };
+    cameraPreviewCover.watch (saveLocationPrompt);
+    cameraPreviewCover.watch (savedTakePanel);
+    cameraPreviewCover.watch (recoveredTakesPanel);
+    cameraPreviewCover.watch (takeAlertCard);
+    cameraPreviewCover.watch (takeBanner);
+
     // Tall enough that the whole main screen -- monitor volume, mute and the
     // Settings button included -- is on screen at launch. At 480 the bottom
     // row sat below the fold, so the one door into Settings was reachable

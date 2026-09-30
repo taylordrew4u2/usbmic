@@ -1091,3 +1091,59 @@ TEST_CASE (DeviceInputStream_AudioTheDriverLostDoesNotReadAsASlowClock)
     REQUIRE (s.hasDriftMeasurement());
     REQUIRE_NEAR (s.getMeasuredDriftPpm(), 150.0, 3.0);
 }
+
+TEST_CASE (DeviceInputStream_MutedChannelDoesNotCountOverruns)
+{
+    // A channel written as silence is deliberately not consumed, so its ring
+    // filling up is not audio lost to a slow computer. A macOS input whose
+    // IOProc paused for five seconds and then came back used to be counted as
+    // overrunning every block for the rest of the take: "Sound is still being
+    // dropped", a buffer ladder stepping to the top, and session.json saying
+    // audio arrived faster than it could be taken away.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> stale (64, -0.75f), fresh (64, 0.25f), out (64, 0.0f);
+
+    for (int i = 0; i < 40; ++i)
+    {
+        s.pushBlock (stale.data(), 64);
+        s.pull (out.data(), 64);
+    }
+
+    const auto pushedBefore = s.getPushedSamples();
+    REQUIRE (s.getOverrunSamples() == 0);
+    REQUIRE (s.getLossEvents() == 0);
+
+    s.setLive (false);
+
+    for (int i = 0; i < 2000; ++i)
+        s.pushBlock (stale.data(), 64);
+
+    REQUIRE (s.getOverrunSamples() == 0);
+    REQUIRE (s.getLossEvents() == 0);
+    // Still delivered as far as the device's clock is concerned.
+    REQUIRE (s.getPushedSamples() == pushedBefore + 2000u * 64u);
+
+    s.setLive (true);
+
+    bool sawStale = false;
+    bool sawFresh = false;
+
+    for (int block = 0; block < 40; ++block)
+    {
+        s.pushBlock (fresh.data(), 64);
+        s.pull (out.data(), 64);
+
+        for (int i = 0; i < 64; ++i)
+        {
+            sawStale = sawStale || out[static_cast<size_t> (i)] < -1.0e-6f;
+            sawFresh = sawFresh || out[static_cast<size_t> (i)] > 1.0e-6f;
+        }
+    }
+
+    REQUIRE_FALSE (sawStale);
+    REQUIRE (sawFresh);
+    REQUIRE (s.getOverrunSamples() == 0);
+    REQUIRE (s.getLossEvents() == 0);
+}

@@ -65,6 +65,10 @@ public:
     /// that camera is not open.
     std::function<std::unique_ptr<juce::Component> (const std::string&)> makeViewer;
 
+    /// As MainScreen::setCameraPreviewsHidden: the native previews are drawn
+    /// above any card, so they are hidden, not rebuilt, while one is up.
+    void setCameraPreviewsHidden (bool hidden);
+
     std::function<void (const std::string&, bool)> onCameraEnabledChanged;
     std::function<void (const std::string&, const juce::String&)> onCameraRenamed;
     std::function<void (PreviewQuality)> onPreviewQualityChanged;
@@ -91,6 +95,7 @@ private:
     juce::TextButton closeButton { "< Done" };
 
     std::vector<Row> rows;
+    bool previewsHidden = false;
     std::vector<std::string> lastCameraIds;
     std::vector<char> lastEnabled;
     std::vector<char> lastAvailable;

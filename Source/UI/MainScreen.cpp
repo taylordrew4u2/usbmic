@@ -527,7 +527,10 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
 
         if (view.viewer != nullptr)
         {
-            addAndMakeVisible (*view.viewer);
+            // Born hidden when a card is up (setCameraPreviewsHidden): a
+            // rebuild must not put the live picture back over the card.
+            addChildComponent (*view.viewer);
+            view.viewer->setVisible (! previewsHidden);
         }
         else
         {
@@ -715,6 +718,20 @@ void MainScreen::setRecording (bool isRecording)
 
         resized();
     }
+}
+
+void MainScreen::setCameraPreviewsHidden (bool hidden)
+{
+    if (hidden == previewsHidden)
+        return;
+
+    previewsHidden = hidden;
+
+    // Visibility only. Destroying or reparenting the native preview is what
+    // can leave AVFoundation's layer black; hiding it is [NSView setHidden:].
+    for (auto& view : cameraViews)
+        if (view.viewer != nullptr)
+            view.viewer->setVisible (! hidden);
 }
 
 void MainScreen::setHighlightedMic (int index)

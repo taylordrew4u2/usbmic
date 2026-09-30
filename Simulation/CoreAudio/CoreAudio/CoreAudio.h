@@ -68,6 +68,12 @@ constexpr AudioObjectPropertySelector kAudioObjectPropertyName = mmaFourCC ('l',
 constexpr AudioObjectPropertySelector kAudioHardwarePropertyDevices = mmaFourCC ('d', 'e', 'v', '#');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyDeviceUID = mmaFourCC ('u', 'i', 'd', ' ');
 
+// §5.3 priorities 3 and 4 on a Mac: the output macOS currently plays through,
+// and which physical destination (speaker or headphone jack) a built-in output
+// is routed to. Apple's own selector values.
+constexpr AudioObjectPropertySelector kAudioHardwarePropertyDefaultOutputDevice = mmaFourCC ('d', 'O', 'u', 't');
+constexpr AudioObjectPropertySelector kAudioDevicePropertyDataSource = mmaFourCC ('s', 's', 'r', 'c');
+
 // Transport types used by the backend's external-input allow-list. Values
 // match Apple's four-character codes so the shipping source is exercised
 // unchanged by the simulation.

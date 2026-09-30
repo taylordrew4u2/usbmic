@@ -5,6 +5,7 @@
 #include "UI/ModalCard.h"
 #include "UI/AdvancedPanel.h"
 #include "UI/SaveLocationPrompt.h"
+#include "UI/CameraPreviewCover.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -575,6 +576,131 @@ int main()
                              slider != nullptr ? slider->getWidth() : 0);
                 failures += ok ? 0 : 1;
             }
+        }
+    }
+
+
+    // macOS camera previews are native NSViews stacked above everything JUCE
+    // paints in the window, so a card or the take banner cannot be drawn over
+    // them. They are hidden instead, for exactly as long as something covers
+    // them -- and a viewer rebuilt while a card is up has to stay hidden too.
+    std::printf ("\n-- camera previews hide under cards and the take banner --\n");
+    {
+        const auto allViewers = [] (std::vector<juce::Component*>& viewers, bool visible)
+        {
+            bool ok = ! viewers.empty();
+            for (auto* viewer : viewers)
+                ok = ok && viewer->isVisible() == visible;
+            return ok;
+        };
+
+        std::vector<juce::Component*> screenViewers;
+        mma::MainScreen screen;
+        screen.makeViewer = [&screenViewers] (const std::string&)
+        {
+            auto viewer = std::make_unique<juce::Component>();
+            screenViewers.push_back (viewer.get());
+            return viewer;
+        };
+        screen.setCameraTiles ({ { "a", "Cam A", 1, {}, false }, { "b", "Cam B", 1, {}, false } });
+        const bool screenShownByDefault = allViewers (screenViewers, true);
+        screen.setCameraPreviewsHidden (true);
+        const bool screenHides = allViewers (screenViewers, false);
+        screenViewers.clear();
+        screen.setCameraTiles ({ { "a", "Cam A", 2, {}, false }, { "b", "Cam B", 2, {}, false } });
+        const bool screenRebuildStaysHidden = allViewers (screenViewers, false);
+        screen.setCameraPreviewsHidden (false);
+        const bool screenShowsAgain = allViewers (screenViewers, true);
+
+        std::vector<juce::Component*> panelViewers;
+        mma::CameraPanel panel;
+        panel.makeViewer = [&panelViewers] (const std::string&)
+        {
+            auto viewer = std::make_unique<juce::Component>();
+            panelViewers.push_back (viewer.get());
+            return viewer;
+        };
+        panel.setCameras ({ { "a", "Cam A", true, true, false, false, false, "A.mov", 1 } });
+        const bool panelShownByDefault = allViewers (panelViewers, true);
+        panel.setCameraPreviewsHidden (true);
+        const bool panelHides = allViewers (panelViewers, false);
+        panelViewers.clear();
+        panel.setCameras ({ { "a", "Cam A", true, true, false, false, false, "A.mov", 2 } });
+        const bool panelRebuildStaysHidden = allViewers (panelViewers, false);
+        panel.setCameraPreviewsHidden (false);
+        const bool panelShowsAgain = allViewers (panelViewers, true);
+
+        // The window-level watcher: any watched overlay going visible covers
+        // the previews at once, and they come back only when all are gone.
+        juce::Component coverWindow;
+        FocusProbeCard coverCard;
+        juce::Component coverBanner;
+        coverWindow.addChildComponent (coverCard);
+        coverWindow.addChildComponent (coverBanner);
+        std::vector<bool> reported;
+        mma::CameraPreviewCover cover;
+        cover.onCoverChanged = [&reported] (bool covered) { reported.push_back (covered); };
+        cover.watch (coverCard);
+        cover.watch (coverBanner);
+        const bool startsUncovered = ! cover.isCovered() && reported.empty();
+        coverCard.setVisible (true);
+        const bool cardCovers = cover.isCovered() && reported == std::vector<bool> { true };
+        coverBanner.setVisible (true);
+        coverCard.setVisible (false);
+        const bool bannerKeepsCovered = cover.isCovered() && reported.size() == 1;
+        coverBanner.setVisible (false);
+        const bool allGoneUncovers = ! cover.isCovered()
+                                  && reported == std::vector<bool> { true, false };
+
+        // What the native attachment relies on: hiding the host reaches a
+        // movement watcher registered on the inner native component, the way
+        // NSViewAttachment turns it into [view setHidden: ! isShowing()].
+        // Headless there is no peer, so nothing is ever "showing"; what is
+        // checked is that the host's own visibility change is delivered.
+        struct VisibilityWatcher final : juce::ComponentMovementWatcher
+        {
+            using juce::ComponentMovementWatcher::ComponentMovementWatcher;
+            void componentMovedOrResized (bool, bool) override {}
+            void componentPeerChanged() override {}
+            using juce::ComponentMovementWatcher::componentVisibilityChanged;
+            void componentVisibilityChanged() override {}
+            void componentVisibilityChanged (juce::Component& changed) override
+            {
+                if (&changed == watchedHost)
+                    ++hostChanges;
+                juce::ComponentMovementWatcher::componentVisibilityChanged (changed);
+            }
+            juce::Component* watchedHost = nullptr;
+            int hostChanges = 0;
+        };
+        juce::Component nativeHostParent, nativeHost, nativeView;
+        nativeHostParent.addAndMakeVisible (nativeHost);
+        nativeHost.addAndMakeVisible (nativeView);
+        VisibilityWatcher watcher (&nativeView);
+        watcher.watchedHost = &nativeHost;
+        nativeHost.setVisible (false);
+        const bool hostHideReachesNativeView = watcher.hostChanges == 1 && nativeView.isVisible();
+
+        const std::pair<const char*, bool> checks[] = {
+            { "main-screen previews shown by default", screenShownByDefault },
+            { "main-screen previews hide under a card", screenHides },
+            { "main-screen rebuild under a card stays hidden", screenRebuildStaysHidden },
+            { "main-screen previews come back after the card", screenShowsAgain },
+            { "cameras-panel previews shown by default", panelShownByDefault },
+            { "cameras-panel previews hide under a card", panelHides },
+            { "cameras-panel rebuild under a card stays hidden", panelRebuildStaysHidden },
+            { "cameras-panel previews come back after the card", panelShowsAgain },
+            { "cover starts uncovered", startsUncovered },
+            { "a card going up covers at once", cardCovers },
+            { "banner keeps previews covered after the card", bannerKeepsCovered },
+            { "previews uncovered once every overlay is gone", allGoneUncovers },
+            { "hiding the host reaches the native view's watcher", hostHideReachesNativeView },
+        };
+
+        for (const auto& [name, ok] : checks)
+        {
+            std::printf ("%s: %s\n", name, ok ? "PASS" : "FAIL");
+            failures += ok ? 0 : 1;
         }
     }
 

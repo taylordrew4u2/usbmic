@@ -50,4 +50,24 @@ if (layer_at EQUAL -1 OR start_at EQUAL -1 OR start_at LESS layer_at)
     message(FATAL_ERROR "MAC-CAM-2 preview layer is not attached before the capture session starts")
 endif()
 
+# B5: a movie start that raises must be reported through onRecordingFinished,
+# exactly like a start AVFoundation rejects through the delegate. A catch that
+# only cleared isRecording left the camera STARTING for the whole take and made
+# Stop wait out the 15 s finalization timeout for a file that never existed.
+string(FIND "${patch_text}" "Movie recording start raised" raised_at)
+string(FIND "${patch_text}" "+    void stopRecording()" stop_at)
+if (stop_at EQUAL -1)
+    string(FIND "${patch_text}" " void stopRecording()" stop_at)
+endif()
+if (raised_at EQUAL -1 OR stop_at EQUAL -1)
+    message(FATAL_ERROR "B5 movie start catch is missing from the JUCE patch")
+endif()
+string(SUBSTRING "${patch_text}" ${raised_at} -1 after_raised)
+string(FIND "${after_raised}" "void stopRecording()" catch_len)
+string(SUBSTRING "${after_raised}" 0 ${catch_len} catch_body)
+string(FIND "${catch_body}" "+            recordingFinished (file, \"Recording could not start: \"" reported_at)
+if (reported_at EQUAL -1)
+    message(FATAL_ERROR "B5 a raised movie start is swallowed instead of reported through recordingFinished")
+endif()
+
 message(STATUS "JUCE camera patch keeps the guarded, self-rescheduling heartbeat")

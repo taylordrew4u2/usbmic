@@ -39,6 +39,12 @@ struct DeviceSpec
     /// aggregate, and other non-hardware inputs.
     UInt32 transportType = kAudioDeviceTransportTypeUSB;
 
+    /// kAudioDevicePropertyDataSource on the output scope, or 0 when the
+    /// device does not have the property (most USB devices). An Intel Mac's
+    /// "Built-in Output" reports 'ispk' for its speakers and 'hdpn' while
+    /// headphones are in the jack.
+    UInt32 outputDataSource = 0;
+
     /// Rates the device reports. A discrete rate is a range whose ends are
     /// equal; a continuous range has them different, which is what a device
     /// with a sample-rate converter advertises.
@@ -118,6 +124,10 @@ void fireDeviceListChange();
 int systemPropertyListenerCount();
 
 AudioObjectID addDevice (const DeviceSpec& spec);
+
+/// kAudioHardwarePropertyDefaultOutputDevice: the output macOS plays through.
+/// kAudioObjectUnknown (the reset state) models a Mac that reports none.
+void setDefaultOutputDevice (AudioObjectID device);
 
 /// Removes a device and fires the system device-list listener, which is what an
 /// unplug looks like to the backend (§2: the OS tells us, we never poll).
