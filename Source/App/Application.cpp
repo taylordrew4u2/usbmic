@@ -6,6 +6,7 @@
 #include "../Core/CombinedTakePlan.h"
 #include "../Core/LoudnessMeter.h"
 #include "../Core/SampleRateNegotiator.h"
+#include "../Core/WriteSafetyActions.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
 #include <cstdio>
@@ -16,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <thread>
+#include <utility>
 
 #if JUCE_MAC || defined (__linux__)
 #include <dirent.h>
@@ -112,6 +114,10 @@ std::optional<Result> runWithDeadline (Work work, std::chrono::milliseconds limi
 // Matches the production input-open deadline: long enough for a slow card to
 // wake, short enough that nobody reaches for Force Quit.
 constexpr std::chrono::milliseconds kRemovableVolumeDeadline { 5000 };
+
+// §6.3: said when the backup copy is stopped because its disk is nearly full.
+constexpr const char* kMirrorLowSpaceLine =
+    "The local backup copy stopped -- this drive is low on space. The recording itself is unaffected.";
 
 // The version CMake stamped in. JUCE_APP_VERSION is only defined for builds
 // that go through JuceHeader.h, so stringifying it here wrote the literal
@@ -1154,7 +1160,13 @@ bool Application::refreshMicrophonePermission()
     journalledPermissionProblems = false;
 
     if (refresh.restartCapture)
-        noteActivity (ActivityLevel::Recovered, "Microphones", "Microphone access is allowed now.");
+    {
+        // Mid-take the reopen this grant needs is deferred to Stop, so the take
+        // in progress stays silent. "Allowed now" would read as an all-clear.
+        const bool takeRunning = recordingEngine.getState() == RecordingState::Recording;
+        noteActivity (takeRunning ? ActivityLevel::Failed : ActivityLevel::Recovered, "Microphones",
+                      juce::String (PermissionGuidance::grantArrivedMessage (takeRunning)));
+    }
 
     return refresh.restartCapture;
 }
@@ -2109,6 +2121,13 @@ void Application::toggleRecording()
         // button. A keyboard/action callback must not be able to create a take
         // while a recovery worker could still enumerate and repair that same
         // destination or mirror.
+        //
+        // The permission is re-sampled first rather than trusted from the last
+        // 2 s poll: a grant that has just landed reopens the streams here, so
+        // the take starts on live inputs, and a fresh revoke blocks the gate.
+        if (refreshMicrophonePermission())
+            onDeviceListChanged();
+
         if (const auto blocked = getRecordDisabledReason(); blocked.isNotEmpty())
         {
             recordStartProblem = blocked;
@@ -2207,6 +2226,7 @@ void Application::toggleRecording()
                 takeCardUnresponsive = false;
                 mirrorMissingReported = false;
                 mirrorFinalizeFailureReported = false;
+                mirrorLowSpaceNoticePending = false;
                 backendDropsAtTakeStart = audioBackend != nullptr
                                               ? audioBackend->getFramesDroppedByBackend() : 0;
                 takeStopSnapshot.clear();
@@ -3030,6 +3050,17 @@ juce::String Application::getRecordDisabledReason() const
         return problem.empty() ? juce::String ("The microphones aren't open yet.")
                                : "The microphones aren't open: " + juce::String (problem);
     }
+
+    // macOS raises the microphone prompt when the streams above open, and
+    // feeds them silence until it is answered. Only now is the prompt really
+    // on screen, so this sits after the open check: earlier, a Mac with nothing
+    // plugged in would be told to answer a question that was never asked. The
+    // 2 s permission poll reopens the streams on Allow and Record turns on.
+#if JUCE_MAC
+    if (const auto promptReason = PermissionGuidance::pendingPromptReason (microphonePermission, true);
+        ! promptReason.empty())
+        return juce::String (promptReason);
+#endif
 
     // Recovery can repair WAV headers. Do not let a new writer create files
     // under either active write root until the corresponding one-shot scan has
@@ -4457,6 +4488,48 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         }
     }
 
+    // §6.5 / §6.3: the two write protections that must ACT on every poll --
+    // the 90% mix-only fallback and the backup's 1 GB low-space stop. Their
+    // lines keep their place further down; only the actions are hoisted.
+    //
+    // They used to run only where their lines are returned, beneath the stream
+    // failure, backend drop, layout miss and output glitch branches -- each of
+    // which returns whenever its counter rose since the last poll. A loaded
+    // Mac raises a processor overload in nearly every poll, and a layout miss
+    // rises on every callback once it starts, so neither action was reached:
+    // the ring filled past 90% and overflowed into whole-block drops from
+    // every stem AND the mix, and the backup kept eating the computer's disk
+    // past the 1 GB stop. The same shape as the full-drive stop above.
+    if (capture != nullptr)
+    {
+        WriteSafetyInputs safetyIn;
+        safetyIn.recording = recordingEngine.getState() == RecordingState::Recording;
+        safetyIn.alreadyMixOnly = capture->isMixOnly();
+        safetyIn.ringFillFraction = capture->getRingFillFraction();
+        safetyIn.mirroring = capture->isMirroring();
+        safetyIn.mirrorFreeBytes = safetyIn.mirroring ? getMirrorFreeBytes() : -1;
+
+        const auto safety = decideWriteSafetyActions (safetyIn, capacityMonitor, mirrorPolicy);
+
+        if (safety.fallBackToMixOnly)
+        {
+            capture->fallBackToMixOnly();
+            // §6.5: "log the exact sample position of degradation."
+            capacityMonitor.noteDegradationAt (static_cast<long long> (capture->getFramesAccepted()));
+            noteActivity (ActivityLevel::Failed, "Drive",
+                          juce::String (CapacityMonitor::fillStatusLine (
+                              WritePipelineState::DegradedToMixOnly, true)));
+        }
+
+        // §6.3: once the mirror stops it never restarts within the same take.
+        if (safety.stopMirroring)
+        {
+            capture->stopMirroring();
+            noteActivity (ActivityLevel::Warning, "Local backup", kMirrorLowSpaceLine);
+            mirrorLowSpaceNoticePending = true;
+        }
+    }
+
     // §0.1: a stream that opened and has since stopped. Taken here, on the
     // message thread, from wherever the backend's worker thread left it.
     //
@@ -4834,8 +4907,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
     // §6.3: a backup that stopped for space and then could not close its files.
     //
-    // The low-space stop below calls stopMirroring(), which makes the writer
-    // thread finalize the mirror -- and if one of those closes fails, the
+    // The low-space stop (the write safety step near the top) calls
+    // stopMirroring(), which makes the writer thread finalize the mirror --
+    // and if one of those closes fails, the
     // pipeline latches mirrorWriteFailed a poll or two later. By then the
     // policy is StoppedLowSpace, so noteWriteFailure() returns false and the
     // branch above says nothing. The user was told the backup stopped early,
@@ -4860,23 +4934,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     }
 
     // §6.3: the mirror is re-judged during the take, and once it stops it never
-    // restarts within the same recording.
-    if (capture != nullptr && capture->isMirroring())
-    {
-        const auto freeBytes = getMirrorFreeBytes();
-
-        if (freeBytes >= 0 && mirrorPolicy.evaluateDuringRecording (freeBytes)
-            == MirrorState::StoppedLowSpace)
-        {
-            capture->stopMirroring();
-
-            const auto line = juce::String ("The local backup copy stopped -- this drive is low on "
-                                            "space. The recording itself is unaffected.");
-
-            noteActivity (ActivityLevel::Warning, "Local backup", line);
-            return line;
-        }
-    }
+    // restarts within the same recording. The stop itself is made near the top
+    // of this function so no warning can starve it; its line is said here, once,
+    // when nothing above is holding the advice line.
+    if (std::exchange (mirrorLowSpaceNoticePending, false))
+        return kMirrorLowSpaceLine;
 
 
     // The notice's clock runs from here, not from the branch that shows it:
@@ -4901,13 +4963,8 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         switch (capacityMonitor.evaluateFill (capture->getRingFillFraction()))
         {
             case WritePipelineState::DegradedToMixOnly:
-                if (! capture->isMixOnly())
-                {
-                    capture->fallBackToMixOnly();
-                    // §6.5: "log the exact sample position of degradation."
-                    capacityMonitor.noteDegradationAt (static_cast<long long> (capture->getFramesAccepted()));
-                }
-
+                // The fallback itself was made near the top of this function,
+                // where no warning can return ahead of it; this is only its line.
                 {
                     const auto line = juce::String (CapacityMonitor::fillStatusLine (
                         WritePipelineState::DegradedToMixOnly, true));
