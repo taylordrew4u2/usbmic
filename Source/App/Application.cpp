@@ -1129,10 +1129,40 @@ juce::String Application::getMonitorProblem() const
     return juce::String (capture->getMonitorProblem());
 }
 
+void Application::syncSleepInhibitor()
+{
+    sleepInhibitor.setHeld (recordingEngine.getState() == RecordingState::Recording);
+}
+
+bool Application::refreshMicrophonePermission()
+{
+    secondsSinceMicrophonePermissionCheck = 0.0;
+
+    const auto current = queryMicrophonePermission();
+    const auto refresh = PermissionRefresh::decide (microphonePermission, current);
+
+    if (! refresh.changed)
+        return false;
+
+    microphonePermission = current;
+    // Re-armed so a denial found now is journalled (and a stale one is not
+    // repeated); getRecordDisabledReason() reads microphonePermission directly.
+    journalledPermissionProblems = false;
+
+    if (refresh.restartCapture)
+        noteActivity (ActivityLevel::Recovered, "Microphones", "Microphone access is allowed now.");
+
+    return refresh.restartCapture;
+}
+
 void Application::onDeviceListChanged()
 {
     if (audioBackend == nullptr)
         return;
+
+    // A device-list change is also when a TCC answer tends to land. The
+    // restart a new grant needs is the one this function ends with anyway.
+    (void) refreshMicrophonePermission();
 
     auto inputDevices = audioBackend->enumerateInputDevices();
 
@@ -2305,6 +2335,7 @@ void Application::toggleRecording()
 
             // §5.4: buffer size is fixed for the duration of a take.
             bufferLadder.setRecording (true);
+            syncSleepInhibitor();
         }
     }
     else
@@ -2516,6 +2547,7 @@ void Application::toggleRecording()
         recordingEngine.stop();
         recordingStartMs = 0.0;
         bufferLadder.setRecording (false);
+        syncSleepInhibitor();
 
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
@@ -2572,6 +2604,7 @@ void Application::toggleRecording()
             // paths and t=0 until the movie completion closes its metadata.
             recordingEngine.stop();
             bufferLadder.setRecording (false);
+            syncSleepInhibitor();
             return;
         }
 
@@ -4152,6 +4185,24 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // persistence and stream rebuilding off the audio thread; the helper also
     // refuses to do either while a take is running.
     applyChannelLayoutDecisions();
+
+    // §6.6: backstop for every way a take starts or ends (the record button,
+    // a full disk, a pulled card): mirror the take state into the sleep
+    // assertion. Idempotent, so this costs nothing on an unchanged tick.
+    syncSleepInhibitor();
+
+    // The microphone answer read at launch goes stale the moment the user
+    // answers the first-run prompt or revokes access in System Settings. Kept
+    // at launch-only, "Don't Allow" left Record enabled over microphones the
+    // OS feeds silence. Re-read every couple of seconds; it never prompts.
+    secondsSinceMicrophonePermissionCheck += sinceLastCallSeconds;
+    if (secondsSinceMicrophonePermissionCheck >= 2.0 && refreshMicrophonePermission())
+    {
+        // Access just arrived: re-enumerate (a Mac lists no microphones while
+        // access is missing) and reopen the streams once. Mid-take the reopen
+        // is deferred to the stop, as for any other device change.
+        onDeviceListChanged();
+    }
 
     // Cleared first, not inside the tap block: a capacity or performance
     // warning returns early below, and a stale index would leave one meter
@@ -6140,6 +6191,7 @@ void Application::shutdown()
 
     if (recordingEngine.getState() == RecordingState::Recording)
         recordingEngine.stop();
+    sleepInhibitor.setHeld (false);
     if (audioBackend != nullptr)
         audioBackend->closeAllStreams();
 

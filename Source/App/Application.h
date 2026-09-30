@@ -40,6 +40,7 @@
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
 #include "../Core/PermissionGuidance.h"
+#include "../Platform/SleepInhibitor.h"
 #include "CameraController.h"
 #include "TakeCombiner.h"
 #include "AlarmSpeaker.h"
@@ -776,6 +777,11 @@ private:
 
     DeviceManager deviceManager;
     RecordingEngine recordingEngine;
+
+    /// §6.6: keeps the Mac from idling to sleep (display or system) while a
+    /// take records. Released on stop, in shutdown(), and by its destructor.
+    SleepInhibitor sleepInhibitor;
+    void syncSleepInhibitor();
     PortIdentityStore portIdentityStore;
 
     std::string selectedOutputDeviceId;
@@ -817,13 +823,23 @@ private:
     std::string destinationFolder;
 
     // §10.1/§10.4. What the OS says about our privacy permissions, sampled off
-    // the audio path: the microphone answer at launch (a denial there survives
-    // until the user acts on it and the app restarts), the destination answer
-    // whenever the save location changes.
+    // the audio path: the microphone answer at launch and again every couple
+    // of seconds from the status poll and on every device-list change (the
+    // first-run prompt is usually answered AFTER launch, and access can be
+    // revoked while running), the destination answer whenever the save
+    // location changes.
     PermissionState microphonePermission = PermissionState::NotApplicable;
     PermissionState destinationWritePermission = PermissionState::NotApplicable;
     /// Latched so the journal entry is written once, not on every poll.
     bool journalledPermissionProblems = false;
+    double secondsSinceMicrophonePermissionCheck = 0.0;
+
+    /// Re-reads the microphone permission (cheap; never prompts). On a change
+    /// it stores the answer and re-arms the permission journal entry, and the
+    /// record gate reads the new answer on its next evaluation. Returns true
+    /// when access has just been granted, so the streams opened without it
+    /// must be reopened once.
+    bool refreshMicrophonePermission();
     MirrorPolicy mirrorPolicy;
     SetupAdvisor setupAdvisor;
     mutable ActivityJournal activity;

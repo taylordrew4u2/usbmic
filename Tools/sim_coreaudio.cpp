@@ -43,7 +43,7 @@ int checks = 0;
 /// How long a simulated HAL call hangs for.
 constexpr int kStuckHalMilliseconds = 2000;
 
-/// What a correctly bounded call may take. kHalTransactionTimeout is 75 ms in
+/// What a correctly bounded call may take. kHalTransactionTimeout is 250 ms in
 /// simulation, so this is roughly five times the worst latency yet seen on a
 /// loaded runner, and still well under half the stall above.
 constexpr auto kBoundedReturn = std::chrono::milliseconds (800);
@@ -306,12 +306,12 @@ void aDelayedRateChangeSettlesBeforeTheStreamOpens()
     //
     // The poll is 10 ms inside a 50 ms settle window, so five polls are
     // available -- and that window sits inside the 75 ms HAL transaction
-    // deadline for the whole open, so the real budget is smaller still.
+    // deadline this was written against (now 250 ms), so the real budget was smaller still.
     // Needing four of those five left nothing for a sleep that overshoots,
     // which is what sleep_until does on the macOS runners: the open was
     // refused at 51 ms with the correct rate one read away. Widening the
     // settle window is not the fix -- it has to stay inside the transaction
-    // that contains it, the way production's 500 ms sits inside 750 ms.
+    // that contains it, the way production's 500 ms sits inside 1000 ms.
     spec.rateChangeDelayReads = 1;
     const auto id = fakeca::addDevice (spec);
 
@@ -1075,7 +1075,7 @@ void aStuckInputStartIsBoundedAndCleanedUp()
 
     // 200 ms, matching every sibling bound in this file rather than the 100 ms
     // this check alone carried. closeAllStreams() is DESIGNED to wait out
-    // kHalTransactionTimeout (75 ms in simulation) whenever the HAL is stuck,
+    // kHalTransactionTimeout (250 ms in simulation) whenever the HAL is stuck,
     // so 100 ms left 25 ms for scheduling jitter -- and this check has been
     // passing and failing run to run on the macOS runners because of it.
     // What the check is really for is unchanged: 200 ms is still far below the
@@ -1225,6 +1225,120 @@ void aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup()
            "successful cleanup of another stream cannot reopen the unsafe device gate");
     check (std::chrono::steady_clock::now() - retryBegan < kNoHalRoundTrip,
            "the sticky quarantine rejects the retry without another HAL transaction");
+}
+
+/// CA-1. The output worker may spend the whole rate-settle window inside
+/// setNominalSampleRate before hog mode, IOProc creation and Start. Its caller
+/// used to give up after 150 ms (75 ms in simulation) while that same worker was
+/// allowed 500 ms (50 ms) to settle the rate, so an ordinary 44.1 <-> 48 kHz
+/// switch on the headphone output was reported as "took too long ... unplug
+/// it". The open deadline must contain the settle window plus the HAL calls
+/// that follow it.
+void aSlowButHealthyOutputRateSwitchOpens()
+{
+    std::printf ("\nHeadphones that take a while to switch 44.1 -> 48 kHz and start\n");
+    fakeca::reset();
+
+    auto spec = headphones ("Slow Switch Phones", "uid-slow-switch-phones", 2,
+                            fakeca::BufferShape::oneChannelPerBuffer);
+    spec.currentRate = 44100.0;
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    // One stale read (a real rate switch, well inside the simulated 50 ms
+    // settle window even on a slow macOS runner, where three 10 ms polls
+    // overran it) and then a Start that takes 110 ms: past the old 75 ms
+    // simulated output deadline and well inside the new one.
+    spec.rateChangeDelayReads = 1;
+    spec.startDelayMilliseconds = 110;
+    const auto id = fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    const auto began = std::chrono::steady_clock::now();
+    const bool opened = backend.openExclusiveOutputStream (
+        spec.uid, 48000.0, 256,
+        [] (const float* const*, int, float* const*, int, int) {});
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - began);
+    std::printf ("  [measured] the output open took %lld ms\n", (long long) took.count());
+
+    if (! opened)
+        std::printf ("  [measured] refused with: %s\n", backend.getLastOpenError().c_str());
+
+    check (opened, "a slow but healthy output rate switch opens instead of timing out");
+    check (fakeca::nominalRate (id) == 48000.0, "the output runs at the requested rate");
+    check (fakeca::isRunning (id), "the output IOProc is running");
+    backend.closeAllStreams();
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
+           "the slow output's worker settles before the next test");
+}
+
+/// CA-2. One microphone that is slow past its deadline (its worker is still
+/// finishing) used to make every later microphone in the same rebuild fail
+/// instantly with "still finishing an earlier audio-rig operation". A healthy
+/// second microphone must wait (bounded) for the first to finish, then open.
+void aSlowMicDoesNotRefuseTheNextHealthyMic()
+{
+    std::printf ("\nA mic slow past its deadline, then a healthy mic in the same rebuild\n");
+    fakeca::reset();
+
+    auto slowSpec = microphone ("Slow Mic A", "uid-slow-mic-a", 1,
+                                fakeca::BufferShape::oneChannelPerBuffer);
+    // Past the simulated input deadline, but it does finish: its worker
+    // releases the transaction about 150 ms after the caller gives up.
+    slowSpec.startDelayMilliseconds = 400;
+    const auto slowId = fakeca::addDevice (slowSpec);
+    const auto healthyId = fakeca::addDevice (microphone (
+        "Healthy Mic B", "uid-healthy-mic-b", 1, fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+    Capture slowCapture, healthyCapture;
+    check (! backend.openInputStream (slowSpec.uid, 48000.0, 256, slowCapture.callback()),
+           "the slow mic still observes its bounded open deadline");
+
+    const auto began = std::chrono::steady_clock::now();
+    const bool healthyOpened = backend.openInputStream ("uid-healthy-mic-b", 48000.0, 256,
+                                                        healthyCapture.callback());
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds> (
+        std::chrono::steady_clock::now() - began);
+    std::printf ("  [measured] the healthy mic open took %lld ms\n", (long long) took.count());
+
+    if (! healthyOpened)
+        std::printf ("  [measured] refused with: %s\n", backend.getLastOpenError().c_str());
+
+    check (healthyOpened, "the healthy mic opens once the slow mic's worker finishes");
+    check (fakeca::isRunning (healthyId), "the healthy mic's IOProc is running");
+    check (took < kBoundedReturn, "waiting for the earlier attempt stays bounded");
+
+    backend.closeAllStreams();
+    check (backend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
+           "the slow mic's abandoned worker settles");
+    check (! fakeca::isRunning (slowId), "the abandoned slow mic's late IOProc is stopped");
+
+    // Control: an attempt that never finishes still refuses the next mic, but
+    // only after a bounded wait -- never by hanging behind the wedged HAL.
+    std::printf ("\nA wedged mic, then a healthy mic in the same rebuild\n");
+    fakeca::reset();
+
+    auto wedgedSpec = microphone ("Wedged Mic A", "uid-wedged-mic-a", 1,
+                                  fakeca::BufferShape::oneChannelPerBuffer);
+    wedgedSpec.startDelayMilliseconds = kStuckHalMilliseconds;
+    fakeca::addDevice (wedgedSpec);
+    fakeca::addDevice (microphone ("Healthy Mic C", "uid-healthy-mic-c", 1,
+                                   fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend wedgedBackend;
+    check (! wedgedBackend.openInputStream (wedgedSpec.uid, 48000.0, 256, slowCapture.callback()),
+           "the wedged mic times out");
+
+    const auto wedgedBegan = std::chrono::steady_clock::now();
+    const bool nextOpened = wedgedBackend.openInputStream ("uid-healthy-mic-c", 48000.0, 256,
+                                                           healthyCapture.callback());
+    check (! nextOpened, "a mic queued behind a wedged HAL is refused");
+    check (std::chrono::steady_clock::now() - wedgedBegan < kBoundedReturn,
+           "the refusal behind a wedged HAL is bounded");
+    check (wedgedBackend.getLastOpenError().find ("still finishing") != std::string::npos,
+           "the refusal says an earlier operation is still finishing");
+    check (wedgedBackend.waitForPendingInputAttemptsForTesting (kWorkerSettleMilliseconds),
+           "the wedged worker eventually settles");
 }
 
 void anInputPropertyCallCannotFreezeLaunch()
@@ -1764,6 +1878,8 @@ int main()
     aDriverThatRetainsListenerClientDataIsQuarantined();
     anUnpluggedInterfaceDoesNotQuarantineTheSurvivor();
     aTimedOutUnsafeInputCannotBeUnquarantinedByOtherCleanup();
+    aSlowButHealthyOutputRateSwitchOpens();
+    aSlowMicDoesNotRefuseTheNextHealthyMic();
     anInputPropertyCallCannotFreezeLaunch();
     stuckOutputCreateAndStartCallsAreBounded();
     stuckStopAndDestroyCannotFreezeClose();

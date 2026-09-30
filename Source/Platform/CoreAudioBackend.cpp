@@ -136,18 +136,32 @@ namespace {
 constexpr uint64_t kCallbackGateClosed = uint64_t { 1 } << 63;
 constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
 
-#if defined (MMA_SIMULATE_MAC)
-constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (75);
-constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (75);
-constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
-#else
 // HAL calls are isolated on owned workers, so the caller must remain bounded
 // even when a broken driver never returns.  A short deadline keeps startup and
 // reconfiguration responsive while the worker continues its own cleanup.
-constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (750);
-constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (150);
+//
+// The same worker that the open deadline bounds may first spend the whole
+// rate-settle window inside setNominalSampleRate, and only then take hog mode,
+// create the IOProc and Start. Each open deadline must therefore contain the
+// settle window with room to spare, or an ordinary 44.1 <-> 48 kHz switch is
+// reported as a device that "took too long" (the output deadline was once
+// 150 ms against a 500 ms settle window).
+#if defined (MMA_SIMULATE_MAC)
+constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (250);
+constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (250);
+constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
+#else
+constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (1000);
+constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (1000);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (500);
 #endif
+
+static_assert (kHalTransactionTimeout > kRateSettleTimeout + std::chrono::milliseconds (100),
+               "an input open must be allowed to finish settling its sample rate and start");
+static_assert (kOutputHalTransactionTimeout > kRateSettleTimeout + std::chrono::milliseconds (100),
+               "an output open must be allowed to finish settling its sample rate and start");
+static_assert (kOutputHalTransactionTimeout >= kHalTransactionTimeout,
+               "the output open does at least as much HAL work as an input open");
 
 bool tryAcquireCallbackLease (CoreAudioStream& stream) noexcept
 {
@@ -276,7 +290,24 @@ std::shared_ptr<PendingInputToken> beginInputAttempt (
     const std::shared_ptr<CoreAudioPendingInputAttempts>& registry,
     const std::string& deviceId)
 {
-    const std::lock_guard<std::mutex> guard (registry->mutex);
+    std::unique_lock<std::mutex> lock (registry->mutex);
+
+    // Refused at once: an unsafe driver never becomes safe by waiting, and a
+    // second attempt on a device whose own attempt is still in flight would
+    // only queue another call behind the same stuck HAL.
+    if (registry->cleanupUnsafe || registry->deviceIds.count (deviceId) != 0)
+        return {};
+
+    // Another device's attempt, or a teardown, is still finishing. HAL work is
+    // serialized, so wait for it -- bounded, so a wedged driver still cannot
+    // freeze the caller -- rather than failing every later device in the same
+    // rebuild because one earlier device was slow. Every path that releases a
+    // token, ends a teardown or sets cleanupUnsafe notifies `changed`.
+    (void) registry->changed.wait_for (lock, kHalTransactionTimeout, [&registry]
+    {
+        return registry->cleanupUnsafe
+            || (! registry->teardownInProgress && registry->deviceIds.empty());
+    });
 
     if (registry->teardownInProgress || registry->cleanupUnsafe
         || ! registry->deviceIds.empty())
@@ -294,8 +325,14 @@ std::shared_ptr<PendingInputToken> beginInputAttempt (
 void holdAudioTeardownQuarantine (
     const std::shared_ptr<CoreAudioPendingInputAttempts>& registry)
 {
-    const std::lock_guard<std::mutex> guard (registry->mutex);
-    registry->cleanupUnsafe = true;
+    {
+        const std::lock_guard<std::mutex> guard (registry->mutex);
+        registry->cleanupUnsafe = true;
+    }
+
+    // Wakes any attempt waiting in beginInputAttempt so it refuses now rather
+    // than at the end of its bounded wait.
+    registry->changed.notify_all();
 }
 
 // Reads a CoreAudio string property (device name, manufacturer, etc.) into a

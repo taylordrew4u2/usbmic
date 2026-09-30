@@ -96,3 +96,65 @@ TEST_CASE (PermissionGuidance_MessagesSayWhatToDo)
         REQUIRE (p.message.find ("0x") == std::string::npos);
     }
 }
+
+// --- PermissionRefresh: re-sampling the microphone answer while running ---
+
+TEST_CASE (PermissionRefresh_UnchangedAnswerDoesNothing)
+{
+    for (auto s : { PermissionState::Granted, PermissionState::Denied,
+                    PermissionState::NotYetRequested, PermissionState::NotApplicable })
+    {
+        const auto r = PermissionRefresh::decide (s, s);
+        REQUIRE_FALSE (r.changed);
+        REQUIRE_FALSE (r.restartCapture);
+    }
+}
+
+TEST_CASE (PermissionRefresh_DontAllowOnFirstPromptIsNoticed)
+{
+    // The launch-time sample was NotYetRequested; the user then clicked
+    // "Don't Allow". Record must stop being offered.
+    const auto r = PermissionRefresh::decide (PermissionState::NotYetRequested,
+                                              PermissionState::Denied);
+    REQUIRE (r.changed);
+    REQUIRE_FALSE (r.restartCapture);
+    REQUIRE (PermissionGuidance::blocksRecording (PermissionState::Denied));
+}
+
+TEST_CASE (PermissionRefresh_RevokedWhileRunningIsNoticed)
+{
+    const auto r = PermissionRefresh::decide (PermissionState::Granted, PermissionState::Denied);
+    REQUIRE (r.changed);
+    REQUIRE_FALSE (r.restartCapture);
+}
+
+TEST_CASE (PermissionRefresh_AllowOnFirstPromptReopensTheStreamsOnce)
+{
+    // Streams opened while the prompt was up deliver silence; they must be
+    // reopened now that access exists.
+    const auto r = PermissionRefresh::decide (PermissionState::NotYetRequested,
+                                              PermissionState::Granted);
+    REQUIRE (r.changed);
+    REQUIRE (r.restartCapture);
+}
+
+TEST_CASE (PermissionRefresh_GrantAfterDenialReopensTheStreams)
+{
+    const auto r = PermissionRefresh::decide (PermissionState::Denied, PermissionState::Granted);
+    REQUIRE (r.changed);
+    REQUIRE (r.restartCapture);
+}
+
+TEST_CASE (PermissionRefresh_PlatformWithoutConsentNeverRestarts)
+{
+    // NotApplicable is "no evidence either way" (Linux, or a Mac where the
+    // query class is missing); moving to or from it is recorded but is not a
+    // grant and must not tear down working streams.
+    auto r = PermissionRefresh::decide (PermissionState::NotApplicable, PermissionState::Granted);
+    REQUIRE (r.changed);
+    REQUIRE_FALSE (r.restartCapture);
+
+    r = PermissionRefresh::decide (PermissionState::Granted, PermissionState::NotApplicable);
+    REQUIRE (r.changed);
+    REQUIRE_FALSE (r.restartCapture);
+}
