@@ -14,7 +14,9 @@
 namespace mma {
 
 /// §6.6: a laptop sleeping mid-take is a total failure, so the recording
-/// lifetime holds a sleep/screensaver inhibitor for its whole duration.
+/// lifetime holds a sleep/screensaver inhibitor for its whole duration. That
+/// is Application::sleepInhibitor (Platform/SleepInhibitor): IOKit power
+/// assertions on macOS, held from record to stop; a no-op elsewhere.
 class MainWindow : public juce::DocumentWindow
 {
 public:

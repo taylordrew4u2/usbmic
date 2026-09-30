@@ -21,7 +21,7 @@ index 21bd4f6367..bb7b16df20 100644
      /**
          Receives callbacks with individual frames from a CameraDevice. It is mainly
 diff --git a/modules/juce_video/native/juce_CameraDevice_mac.h b/modules/juce_video/native/juce_CameraDevice_mac.h
-index ddcba1f320..135721961d 100644
+index ddcba1f320..193433169f 100644
 --- a/modules/juce_video/native/juce_CameraDevice_mac.h
 +++ b/modules/juce_video/native/juce_CameraDevice_mac.h
 @@ -29,13 +29,17 @@
@@ -323,7 +323,17 @@ index ddcba1f320..135721961d 100644
  
              [imageOutput capturePhotoWithSettings: [AVCapturePhotoSettings photoSettings]
                                           delegate: delegate.get()];
-@@ -316,15 +461,42 @@ private:
+@@ -308,23 +453,51 @@ private:
+                         [[maybe_unused]] String errorString = error != nil ? nsStringToJuce (error.localizedDescription) : String();
+ 
+                         JUCE_CAMERA_LOG ("Still picture capture failed, error: " + errorString);
+-                        jassertfalse;
+ 
++                        // A failed proof frame must not end the heartbeat.
++                        withOwner (self, [] (Pimpl& owner) { owner.scheduleImageCaptureRetry(); });
+                         return;
+                     }
+ 
                      auto* imageData = [photo fileDataRepresentation];
                      auto image = ImageFileFormat::loadFrom (imageData.bytes, (size_t) imageData.length);
  
@@ -370,7 +380,7 @@ index ddcba1f320..135721961d 100644
          };
  
          AVCapturePhotoOutput* imageOutput = nil;
-@@ -336,6 +508,11 @@ private:
+@@ -336,6 +509,11 @@ private:
      class PreCatalinaStillImageOutput  : public ImageOutputBase
      {
      public:
@@ -382,7 +392,7 @@ index ddcba1f320..135721961d 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -378,6 +555,7 @@ private:
+@@ -378,19 +556,27 @@ private:
          {
              if (auto* videoConnection = p.getVideoConnection())
              {
@@ -390,7 +400,17 @@ index ddcba1f320..135721961d 100644
                  [imageOutput captureStillImageAsynchronouslyFromConnection: videoConnection
                                                           completionHandler: ^(CMSampleBufferRef sampleBuffer, NSError* error)
                  {
-@@ -390,7 +568,10 @@ private:
+                     if (error != nil)
+                     {
+                         JUCE_CAMERA_LOG ("Still picture capture failed, error: " + nsStringToJuce (error.localizedDescription));
+-                        jassertfalse;
++
++                        // A failed proof frame must not end the heartbeat.
++                        const ScopedLock sl (ownerLink->lock);
++                        if (ownerLink->owner != nullptr)
++                            ownerLink->owner->scheduleImageCaptureRetry();
+                         return;
+                     }
  
                      auto* imageData = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation: sampleBuffer];
                      auto image = ImageFileFormat::loadFrom (imageData.bytes, (size_t) imageData.length);
@@ -402,7 +422,7 @@ index ddcba1f320..135721961d 100644
                  }];
              }
          }
-@@ -446,31 +627,43 @@ private:
+@@ -446,31 +632,43 @@ private:
      {
          if (currentInput == nil)
          {
@@ -418,22 +438,18 @@ index ddcba1f320..135721961d 100644
 +                    break;
 +                }
 +            }
-+
+ 
+-                    NSError* err = nil;
+-                    AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: device
+-                                                                                               error: &err];
 +            if (selectedDevice == nil)
 +            {
 +                openingError = "The selected camera is no longer available";
 +                return;
 +            }
  
--                    NSError* err = nil;
--                    AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: device
--                                                                                               error: &err];
-+            removeCurrentSessionVideoInputs();
- 
 -                    jassert (err == nil);
-+            NSError* err = nil;
-+            AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: selectedDevice
-+                                                                                       error: &err];
++            removeCurrentSessionVideoInputs();
  
 -                    if ([session canAddInput: inputDevice])
 -                    {
@@ -445,11 +461,15 @@ index ddcba1f320..135721961d 100644
 -                        jassertfalse;
 -                        [inputDevice release];
 -                    }
-+            if (err != nil)
-+                openingError = nsStringToJuce (err.localizedDescription);
++            NSError* err = nil;
++            AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: selectedDevice
++                                                                                       error: &err];
  
 -                    return;
 -                }
++            if (err != nil)
++                openingError = nsStringToJuce (err.localizedDescription);
++
 +            if (inputDevice != nil && [session canAddInput: inputDevice])
 +            {
 +                [session addInput: inputDevice];
@@ -464,7 +484,7 @@ index ddcba1f320..135721961d 100644
              }
          }
      }
-@@ -509,7 +702,7 @@ private:
+@@ -509,7 +707,7 @@ private:
  
          if (connections != nil)
              for (AVCaptureConnection* connection in connections)
@@ -473,7 +493,7 @@ index ddcba1f320..135721961d 100644
                      for (AVCaptureInputPort* port in [connection inputPorts])
                          if ([[port mediaType] isEqual: AVMediaTypeVideo])
                              return connection;
-@@ -534,7 +727,22 @@ private:
+@@ -534,17 +732,82 @@ private:
          listeners.call ([=] (Listener& l) { l.imageReceived (image); });
  
          if (! listeners.isEmpty())
@@ -483,9 +503,20 @@ index ddcba1f320..135721961d 100644
 +                if (weakRef != nullptr)
 +                    weakRef->triggerImageCaptureIfListening();
 +            });
+     }
+ 
+-    void triggerImageCapture()
++    void scheduleImageCaptureRetry()
+     {
+-        refreshIfNeeded();
++        Timer::callAfterDelay (500, [weakRef = WeakReference<Pimpl> { this }]
++        {
++            if (weakRef != nullptr)
++                weakRef->triggerImageCaptureIfListening (false);
++        });
 +    }
 +
-+    void triggerImageCaptureIfListening()
++    void triggerImageCaptureIfListening (bool allowReconfiguration = true)
 +    {
 +        {
 +            const ScopedLock sl (listenerLock);
@@ -493,21 +524,49 @@ index ddcba1f320..135721961d 100644
 +                return;
 +        }
 +
-+        triggerImageCapture();
-     }
- 
-     void triggerImageCapture()
-@@ -543,10 +751,25 @@ private:
++        triggerImageCapture (allowReconfiguration);
++    }
++
++    void triggerImageCapture (bool allowReconfiguration = true)
++    {
++        // A retry beat never rebuilds the session: that would remove and
++        // re-add the movie output underneath a recording in progress.
++        if (allowReconfiguration)
++            refreshIfNeeded();
  
          startSession();
  
+-        if (auto* videoConnection = getVideoConnection())
 +        if (! [session isRunning])
 +            return;
 +
-         if (auto* videoConnection = getVideoConnection())
++        auto* videoConnection = getVideoConnection();
++
++        // An unplugged camera, or a Continuity iPhone picked up mid-take,
++        // leaves an inactive connection behind. AVFoundation raises an
++        // NSException for a capture on it, and that must never unwind into
++        // JUCE's noexcept timer/message frames (std::terminate). Skip this
++        // beat but keep the heartbeat alive, so frames resume if the
++        // connection recovers and the app's no-frames watchdog still reports
++        // a camera which stays lost.
++        if (videoConnection == nil || ! [videoConnection isActive] || ! [videoConnection isEnabled])
++        {
++            scheduleImageCaptureRetry();
++            return;
++        }
++
++        @try
++        {
              imageOutput->triggerImageCapture (*this);
-     }
- 
++        }
++        @catch (NSException* exception)
++        {
++            JUCE_CAMERA_LOG ("Still picture capture raised: " + nsStringToJuce ([exception reason]));
++            ignoreUnused (exception);
++            scheduleImageCaptureRetry();
++        }
++    }
++
 +    void recordingStarted (const File& file)
 +    {
 +        NullCheckedInvocation::invoke (owner.onRecordingStarted, file);
@@ -518,12 +577,10 @@ index ddcba1f320..135721961d 100644
 +        isRecording.store (false);
 +        recordingStopRequested.store (false);
 +        NullCheckedInvocation::invoke (owner.onRecordingFinished, file, error);
-+    }
-+
+     }
+ 
      void cameraSessionRuntimeError (const String& error)
-     {
-         JUCE_CAMERA_LOG ("cameraSessionRuntimeError(), error = " + error);
-@@ -557,6 +780,8 @@ private:
+@@ -557,6 +820,8 @@ private:
      //==============================================================================
      CameraDevice& owner;
      String deviceName;
@@ -532,7 +589,7 @@ index ddcba1f320..135721961d 100644
  
      AVCaptureSession* session = nil;
      AVCaptureMovieFileOutput* fileOutput = nil;
-@@ -566,7 +791,13 @@ private:
+@@ -566,7 +831,13 @@ private:
      id<AVCaptureFileOutputRecordingDelegate> callbackDelegate = nil;
      String openingError;
      Time firstPresentationTime;

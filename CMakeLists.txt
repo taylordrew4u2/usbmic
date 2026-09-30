@@ -94,6 +94,7 @@ add_library(mma_core STATIC
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
     Source/Platform/SystemPermissions.cpp
+    Source/Platform/SleepInhibitor.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
@@ -116,6 +117,10 @@ target_link_libraries(mma_core PRIVATE mma_warnings)
 # here, PUBLIC, rather than on the app target alone.
 if (APPLE)
     target_link_libraries(mma_core PUBLIC objc)
+    # SleepInhibitor.cpp holds IOKit power assertions while a take records
+    # (IOPMAssertionCreateWithName). Plain C API, so no Objective-C++; PUBLIC
+    # for the same reason as objc above.
+    target_link_libraries(mma_core PUBLIC "-framework IOKit" "-framework CoreFoundation")
 endif()
 
 if (UNIX AND NOT APPLE)
@@ -202,6 +207,12 @@ if (MMA_BUILD_APP)
         HARDENED_RUNTIME_OPTIONS
             com.apple.security.device.audio-input
             com.apple.security.device.camera
+        # Declare the supported macOS floor in Info.plist so Finder refuses an
+        # older Mac with a clear message instead of a crash at launch. JUCE
+        # parses this plist first and then only adds the keys it does not
+        # already hold, so the privacy strings above are kept (checked by the
+        # juce_info_plist_minimum_macos test and Tools/verify_macos_release.sh).
+        PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>"
         ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon.png"
     )
 
@@ -374,6 +385,25 @@ if (MMA_BUILD_APP)
         target_link_libraries(sim_camera_sync_lifecycle PRIVATE mma_core juce::juce_gui_basics)
         add_test(NAME sim_camera_sync_lifecycle COMMAND sim_camera_sync_lifecycle)
     endif()
+
+    # Static text guard for the macOS camera heartbeat fix in the JUCE patch
+    # (MAC-CAM-1). The Objective-C++ backend itself only compiles on a Mac.
+    add_test(NAME juce_camera_patch_invariants
+        COMMAND ${CMAKE_COMMAND}
+            -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckJucePatchInvariants.cmake)
+
+    # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
+    # still keep JUCE's microphone/camera usage strings. juceaide writes the
+    # plist only on Apple builds, so run it here on SobStage's Info.txt.
+    get_target_property(sobstage_juce_info_file SobStage JUCE_INFO_FILE)
+    add_test(NAME juce_info_plist_minimum_macos
+        COMMAND ${CMAKE_COMMAND}
+            -DJUCEAIDE=$<TARGET_FILE:juce::juceaide>
+            -DINFO_FILE=${sobstage_juce_info_file}
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/juce_info_plist_check/Info.plist
+            -DEXPECTED_MINIMUM_MACOS=${CMAKE_OSX_DEPLOYMENT_TARGET}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckInfoPlist.cmake)
 
     # A real ffmpeg process can remain alive forever on a damaged removable
     # take. This executable invokes itself as that wedged child and proves that

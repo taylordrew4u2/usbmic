@@ -34,4 +34,20 @@ std::vector<PermissionProblem> PermissionGuidance::evaluate (PermissionState mic
     return problems;
 }
 
+PermissionRefresh PermissionRefresh::decide (PermissionState previous,
+                                             PermissionState current) noexcept
+{
+    PermissionRefresh refresh;
+    refresh.changed = (previous != current);
+
+    // Only a real grant arriving from a real non-grant reopens the streams.
+    // NotApplicable carries no evidence either way, so leaving it is not a
+    // grant and must not tear down streams that are already working.
+    refresh.restartCapture = refresh.changed
+                          && current == PermissionState::Granted
+                          && (previous == PermissionState::NotYetRequested
+                              || previous == PermissionState::Denied);
+    return refresh;
+}
+
 } // namespace mma

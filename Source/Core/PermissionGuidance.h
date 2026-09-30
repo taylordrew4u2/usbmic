@@ -50,4 +50,25 @@ public:
     static bool blocksRecording (PermissionState microphone);
 };
 
+/// What a fresh sample of the microphone permission means for a running app.
+///
+/// The answer used to be read once at launch. A user who clicked "Don't
+/// Allow" on the first-run prompt (or revoked access later) was left with a
+/// live Record button over microphones the OS was feeding zeros: a silent
+/// show. Re-sampling is cheap and never prompts; this decides what to do with
+/// the new answer, so the decision is unit-tested off the Mac.
+struct PermissionRefresh
+{
+    /// The stored answer is stale: store the new one, re-journal the
+    /// permission problems and let the record gate re-read it.
+    bool changed = false;
+
+    /// Access has just been granted where it was not before, so the streams
+    /// opened while it was pending (or denied) carry silence and must be
+    /// reopened once.
+    bool restartCapture = false;
+
+    static PermissionRefresh decide (PermissionState previous, PermissionState current) noexcept;
+};
+
 } // namespace mma

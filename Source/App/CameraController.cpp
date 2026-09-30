@@ -996,7 +996,20 @@ void CameraController::closeCamera (const std::string& id)
     entry->second.viewerTarget->store (nullptr);
     ++viewerRevisions[id];
 
-    if (takeActive && wasRecordingThisTake && kCameraBackendReportsFinalization
+    // After Stop the take is over but this device may still owe didFinish for
+    // its movie. Destroying it (e.g. unplugged right after Stop) would drop
+    // that callback and turn a good movie into a 15 s finalization timeout.
+    const bool finalizationStillOwed =
+        recordingFinalizationState == RecordingFinalizationState::Waiting
+        && std::any_of (takeRecordings.begin(), takeRecordings.end(),
+                        [&] (const TakeRecording& recording)
+                        {
+                            return recording.deviceId == id
+                                && ! recording.finalizationComplete;
+                        });
+
+    if (((takeActive && wasRecordingThisTake) || finalizationStillOwed)
+        && kCameraBackendReportsFinalization
         && entry->second.device != nullptr)
         finalizingDevices.push_back ({ id, entry->second.viewerRevision, takeGeneration,
                                        std::move (entry->second.device) });

@@ -71,6 +71,13 @@ CAMERA_PERMISSION="$(plist_value NSCameraUsageDescription)" \
 [[ -n "$CAMERA_PERMISSION" ]] \
   || fail "NSCameraUsageDescription is empty"
 
+# Without this key an older Mac is not told the app is unsupported; it just
+# fails to launch. It must match the floor the binary was linked for.
+PLIST_MINIMUM_MACOS="$(plist_value LSMinimumSystemVersion)" \
+  || fail "LSMinimumSystemVersion missing from Info.plist"
+[[ "$PLIST_MINIMUM_MACOS" == "$EXPECTED_MINIMUM_MACOS" ]] \
+  || fail "LSMinimumSystemVersion is $PLIST_MINIMUM_MACOS, expected $EXPECTED_MINIMUM_MACOS"
+
 ICON_FILE="$(plist_value CFBundleIconFile)" \
   || fail "CFBundleIconFile missing from Info.plist"
 [[ -f "$APP_PATH/Contents/Resources/$ICON_FILE" ]] \
