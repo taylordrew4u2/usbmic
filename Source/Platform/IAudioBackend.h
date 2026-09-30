@@ -52,7 +52,12 @@ enum class StreamFailureKind
     sampleRateChanged,
     deviceUnavailable,
     processorOverload,
-    safetyMonitoringUnavailable
+    safetyMonitoringUnavailable,
+
+    /// Not a failure: an input stream reported dead has started delivering
+    /// again on the same stream. The owner takes back what the dead report
+    /// did -- its channel goes live again -- and says so.
+    resumed
 };
 
 /// Application policy for typed backend events. A live sample-rate change
@@ -92,6 +97,23 @@ constexpr DeadInputStreamAction deadInputStreamAction (bool recording, bool reop
         return DeadInputStreamAction::leaveDead;
 
     return recording ? DeadInputStreamAction::reopenAtStop : DeadInputStreamAction::reopenNow;
+}
+
+/// §0.1: whether an input stream that was called dead, because its callback
+/// stopped arriving, is delivering again. CoreAudio's check is only a timeout
+/// on a callback the HAL may resume: across system sleep, another app's brief
+/// hog-mode grab, or an interface re-locking its clock the IOProc stops and
+/// then runs again on the same device. Mid-take nothing reopens a stream, so
+/// without this the mic's track stayed silent for the rest of the take while
+/// its audio was arriving.
+///
+/// `deadReportedAt` is when the dead report was made (0: never, or already
+/// taken back), `lastCallback` when the stream last delivered, on the same
+/// clock. A device the OS itself says is unavailable is not revived by this.
+constexpr bool inputStreamHasResumed (double deadReportedAt, double lastCallback,
+                                      bool deviceUnavailable) noexcept
+{
+    return deadReportedAt > 0.0 && lastCallback > deadReportedAt && ! deviceUnavailable;
 }
 
 /// A stream that died or became unsafe after it had been opened. See

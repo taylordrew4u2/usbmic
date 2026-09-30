@@ -81,6 +81,12 @@ struct CoreAudioStream
     bool sampleRateMismatchReported = false;
     bool deviceUnavailableReported = false;
     uint64_t reportedProcessorOverloads = 0;
+
+    // When the callback watchdog called this input dead (0: not dead, or the
+    // resume already reported), on the same clock as lastCallbackSeconds. A
+    // callback after it means the HAL resumed the IOProc, and the app has to
+    // hear that or the mic's track stays silent for the rest of the take.
+    double deadReportedAt = 0.0;
     bool listenerProblemReported = false;
 
     // AudioObjectRemovePropertyListener must use the exact registrations that
@@ -1875,6 +1881,21 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                                   {}, StreamFailureKind::processorOverload });
         }
 
+        // A stream the watchdog called dead whose IOProc has run since. The
+        // HAL resumes a paused IOProc on the same device -- after system
+        // sleep, another app's brief hog-mode grab, a clock re-lock -- and the
+        // callback already let go of reportedDead; the app, which silenced the
+        // channel, was never told. Said once per death.
+        if (! stream->isOutput
+            && inputStreamHasResumed (stream->deadReportedAt,
+                                      stream->lastCallbackSeconds.load (std::memory_order_relaxed),
+                                      stream->deviceUnavailableReported))
+        {
+            stream->deadReportedAt = 0.0;
+            failures.push_back ({ stream->uid, "is sending audio again.", {},
+                                  StreamFailureKind::resumed });
+        }
+
         // DeviceIsAlive already supplied the immediate, typed report. The
         // five-second callback watchdog is a fallback for devices/drivers that
         // stop silently; emitting it as well would describe one unplug twice.
@@ -1893,6 +1914,9 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
         // is dead, and repeating it every poll would bury everything else.
         if (stream->reportedDead.exchange (true, std::memory_order_relaxed))
             continue;
+
+        if (! stream->isOutput)
+            stream->deadReportedAt = now;
 
         failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
                               stream->isOutput

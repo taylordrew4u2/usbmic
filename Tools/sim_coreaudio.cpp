@@ -968,9 +968,30 @@ void aMicrophoneThatGoesQuietAfterOpeningIsReported()
     // Audio arriving again clears the latch, so a device that recovers and
     // dies a second time is reported a second time.
     fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+
+    // And the recovery itself is reported. The HAL resumes a paused IOProc on
+    // the same device -- after sleep, a hog-mode grab, a clock re-lock -- and
+    // the app had silenced that mic's track on the dead report. Told nothing,
+    // it wrote silence for the rest of the take while the audio arrived.
+    const auto resumed = backend.takeStreamFailures();
+    check (resumed.size() == 1, "the stream delivering again is reported once");
+
+    if (! resumed.empty())
+    {
+        check (resumed.front().deviceId == "uid-quiet", "and names the microphone that came back");
+        check (resumed.front().kind == mma::StreamFailureKind::resumed,
+               "and is typed as a resume, not another failure");
+    }
+
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    check (backend.takeStreamFailures().empty(), "a resume is not repeated while audio keeps arriving");
+
     std::this_thread::sleep_for (std::chrono::milliseconds (5400));
 
-    check (backend.takeStreamFailures().size() == 1, "a second death is reported again");
+    const auto secondDeath = backend.takeStreamFailures();
+    check (secondDeath.size() == 1, "a second death is reported again");
+    check (! secondDeath.empty() && secondDeath.front().kind != mma::StreamFailureKind::resumed,
+           "and as a death, not a resume");
 }
 
 /// AudioDeviceStart can return success without the driver ever invoking its

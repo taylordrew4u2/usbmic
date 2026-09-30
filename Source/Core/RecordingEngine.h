@@ -76,6 +76,13 @@ public:
     /// fresh at every start().
     MidTakeMicChange onDeviceListSeen (const std::string& deviceUsbId, bool listed, bool streamDead);
 
+    /// §6.5 a still-listed mic whose stream was reported dead is delivering
+    /// again on that same stream -- the one case a lost stream does come back
+    /// (a macOS IOProc the HAL paused and resumed). Its channel is live again
+    /// and no longer counted as lost. Returns true if it had been writing
+    /// silence mid-take, so the owner can log and announce the return.
+    bool onStreamResumed (const std::string& deviceUsbId);
+
     /// True if the given device's channel is currently substituting silence.
     bool isWritingSilence (const std::string& deviceUsbId) const;
 

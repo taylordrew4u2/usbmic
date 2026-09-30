@@ -4573,6 +4573,34 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
                         subject = juce::String (d.displayName);
             }
 
+            // §6.5: a still-listed mic called dead below whose stream is
+            // delivering again. It is the same stream -- a macOS IOProc the HAL
+            // paused and resumed, across system sleep or another app's hog-mode
+            // grab -- so its audio is arriving, and nothing else would ever let
+            // its channel go: mid-take deadInputStreams is only cleared by the
+            // device leaving the list. The mic's track stayed silent for the
+            // rest of the take. The reopen at Stop, if owed, stays owed; it is
+            // harmless. Only a mic this owner silenced is taken back.
+            if (failure.kind == StreamFailureKind::resumed)
+            {
+                if (capture != nullptr && ! failure.deviceId.empty()
+                    && deadInputStreams.erase (failure.deviceId) > 0)
+                {
+                    // setChannelLive (true) restarts the channel from an empty
+                    // ring, so no audio from before the gap is replayed.
+                    capture->setChannelLive (failure.deviceId, true);
+
+                    if (recordingEngine.onStreamResumed (failure.deviceId))
+                        midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), failure.deviceId,
+                                                     "Microphone started sending audio again: its "
+                                                     "channel is live again." });
+
+                    noteActivity (ActivityLevel::Recovered, subject,
+                                  "Sending audio again. Its track is live again.");
+                }
+                continue;
+            }
+
             // §5.4's buffer ladder lives or dies here. noteCallbackOverrun()
             // existed, was correct, and was called from NOWHERE -- so the
             // ladder never counted an overrun, never stepped, and the user

@@ -95,6 +95,27 @@ MidTakeMicChange RecordingEngine::onDeviceListSeen (const std::string& deviceUsb
     return MidTakeMicChange::None;
 }
 
+bool RecordingEngine::onStreamResumed (const std::string& deviceUsbId)
+{
+    if (state != RecordingState::Recording)
+        return false;
+
+    auto* c = findChannel (deviceUsbId);
+    if (c == nullptr)
+        return false;
+
+    // The stream is not lost after all: it is the same IOProc, running again.
+    // Left set, the next device-list pass would silence the channel again.
+    c->streamLost = false;
+    c->backAnnounced = false;
+
+    if (c->live)
+        return false;
+
+    c->live = true;
+    return true;
+}
+
 std::string RecordingEngine::onNewMicPluggedMidTake (const std::string& /*deviceUsbId*/, bool isCurrentlyRecording) const
 {
     if (isCurrentlyRecording)

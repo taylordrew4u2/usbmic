@@ -144,3 +144,40 @@ TEST_CASE (RecordingEngine_DeviceListOutsideATakeChangesNothing)
     RecordingEngine engine;
     REQUIRE (engine.onDeviceListSeen ("usb-1", false, false) == MidTakeMicChange::None);
 }
+
+// A still-listed mic whose stream went quiet long enough to be called dead,
+// and then started delivering again on the same stream (macOS: the HAL paused
+// its IOProc across sleep, a hog-mode grab or a clock re-lock). Its audio is
+// arriving, so its track must go back to recording it -- even after a device
+// list pass in between marked the stream lost.
+TEST_CASE (RecordingEngine_DeadStreamThatResumesIsLiveAgain)
+{
+    RecordingEngine engine;
+    engine.start (twoChannels());
+
+    REQUIRE (engine.onMicUnplugged ("usb-1"));
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, true) == MidTakeMicChange::None);
+    REQUIRE (engine.isWritingSilence ("usb-1"));
+
+    REQUIRE (engine.onStreamResumed ("usb-1"));
+    REQUIRE_FALSE (engine.isWritingSilence ("usb-1"));
+
+    // The next device-list pass sees it listed with a running stream and must
+    // not silence it again or call it "back next take".
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, false) == MidTakeMicChange::None);
+    REQUIRE_FALSE (engine.isWritingSilence ("usb-1"));
+
+    // Already live: nothing to announce.
+    REQUIRE_FALSE (engine.onStreamResumed ("usb-1"));
+    REQUIRE_FALSE (engine.onStreamResumed ("usb-2"));
+    REQUIRE_FALSE (engine.onStreamResumed ("unknown"));
+
+    // And a genuine second death is reported like the first.
+    REQUIRE (engine.onDeviceListSeen ("usb-1", true, true) == MidTakeMicChange::Unplugged);
+}
+
+TEST_CASE (RecordingEngine_StreamResumedOutsideATakeChangesNothing)
+{
+    RecordingEngine engine;
+    REQUIRE_FALSE (engine.onStreamResumed ("usb-1"));
+}
