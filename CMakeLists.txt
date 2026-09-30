@@ -78,6 +78,7 @@ add_library(mma_core STATIC
     Source/Core/BufferLadder.cpp
     Source/Core/CpuPressureMonitor.cpp
     Source/Core/MirrorPolicy.cpp
+    Source/Core/WriteSafetyActions.cpp
     Source/Core/SetupAdvisor.cpp
     Source/Core/WritePipeline.cpp
     Source/Core/TapToNameDetector.cpp
@@ -404,6 +405,13 @@ if (MMA_BUILD_APP)
         COMMAND ${CMAKE_COMMAND}
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMicPromptGate.cmake)
+
+    # The 90% mix-only fallback and the backup's 1 GB stop must run before
+    # any warning branch that can return on every status poll.
+    add_test(NAME write_safety_poll_order
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWriteSafetyOrder.cmake)
 
     # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
     # still keep JUCE's microphone/camera usage strings. juceaide writes the
