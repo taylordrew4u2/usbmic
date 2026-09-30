@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.13.4 -- 2026-09-30 (release candidate)
+
+An urgent Mac fix on v1.13.3: on macOS 27 the app quit about a second after
+launch whenever a camera was connected.
+
+### Fixed
+
+- **Mac: the app no longer quits on launch on macOS 27 with a camera
+  connected.** The camera was started a moment before its on-screen preview
+  was attached. Attaching the preview changes the camera's setup, and on
+  macOS 27 that change landing while the camera was still starting made
+  macOS raise an error that closed the whole app. The preview is now attached
+  first, nothing changes the camera's setup while it is starting, and a
+  camera that fails to start this way is retried instead of closing the app.
+  Pressing Record at the same moment can no longer close the app either.
+
 ## v1.13.3 -- 2026-09-30 (release candidate)
 
 A Mac fix release on v1.13.2: seven bugs found by a hunt aimed only at the
