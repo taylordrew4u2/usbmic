@@ -15,6 +15,10 @@ launch whenever a camera was connected.
   first, nothing changes the camera's setup while it is starting, and a
   camera that fails to start this way is retried instead of closing the app.
   Pressing Record at the same moment can no longer close the app either.
+- **Mac: a camera can never make the app quit on every launch.** If the app
+  ever goes down while starting a camera, the next launch leaves that camera
+  off, keeps the sound working and says so; turning the camera off and back
+  on tries it again.
 
 ## v1.13.3 -- 2026-09-30 (release candidate)
 

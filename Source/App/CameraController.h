@@ -102,6 +102,15 @@ public:
     /// still being checked rather than falsely declared unplugged.
     bool isInitialDiscoveryPending() const noexcept;
 
+    /// Crash-loop guard. While a camera is being started, its id is kept in
+    /// this file; it leaves once the camera delivers a frame, has been open for
+    /// a while, is closed, or the app quits normally. If the file still names a
+    /// camera at the next launch, the app went down while starting it, so that
+    /// camera is not started automatically again: the show goes on with sound,
+    /// and turning the camera off and on tries it again. Call once, at launch,
+    /// before the first applySelection().
+    void setStartupGuardFile (const juce::File& file);
+
     CameraSelection& getSelection() { return selection; }
     const CameraSelection& getSelection() const { return selection; }
 
@@ -259,6 +268,12 @@ private:
     // A movie writer missed didFinish. Discovery churn must never spend a new
     // open attempt for that same id until an explicit retry/switch cycle.
     std::set<std::string> finalizationRetryRequiredIds;
+    // Crash-loop guard (setStartupGuardFile): cameras named by the file a
+    // crashed launch left behind, and the ones this launch is still starting.
+    juce::File startupGuardFile;
+    std::set<std::string> crashedWhileStartingIds;
+    std::set<std::string> startingGuardIds;
+    void setStartingGuard (const std::string& id, bool starting);
     std::map<std::string, uint64_t> viewerRevisions;
 
     struct RuntimeCameraError
