@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v1.13.3 -- 2026-09-30 (release candidate)
+
+A Mac fix release on v1.13.2: seven bugs found by a hunt aimed only at the
+Mac. The most serious could leave nothing recording when the headphones had
+to change sample rate. Physical-hardware validation and code signing remain
+open in `RELEASE_CHECKLIST.md`.
 
 ### Fixed
 
