@@ -67,6 +67,7 @@ add_library(mma_core STATIC
     Source/Core/ActivityJournal.cpp
     Source/Core/CardRemovalNotice.cpp
     Source/Core/QuitGate.cpp
+    Source/Core/FailedOpenRetry.cpp
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp
@@ -412,6 +413,13 @@ if (MMA_BUILD_APP)
         COMMAND ${CMAKE_COMMAND}
             -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWriteSafetyOrder.cmake)
+
+    # A rig with no microphone open is retried from the status poll; the
+    # policy is unit-tested, this pins that the poll runs it.
+    add_test(NAME failed_open_retry_poll
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckFailedOpenRetry.cmake)
 
     # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
     # still keep JUCE's microphone/camera usage strings. juceaide writes the

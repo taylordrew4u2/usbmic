@@ -4251,6 +4251,29 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         onDeviceListChanged();
     }
 
+    // Record says "The microphones aren't open: ..." and tells the user what
+    // to fix -- the interface's rate, another app holding it, macOS still
+    // finishing. Nothing reports that fix: a rate or hog-mode change is not a
+    // device-list change, and a device that never opened has no stream to
+    // listen on. So while NOTHING is open, try again, backing off. Never while
+    // anything is open: the reopen closes every stream first, and on a rig
+    // that is partly up that would cut the headphones on every attempt.
+    {
+        FailedOpenRetry::Situation situation;
+        situation.idle = recordingEngine.getState() == RecordingState::Idle
+                      && pendingStoppedTakeCompletion == nullptr
+                      && ! cameraController.isFinalizingRecording();
+        situation.includedMicCount = getIncludedMicCount();
+        situation.monitoring = capture != nullptr && capture->isMonitoring();
+        situation.permissionDenied = microphonePermission == PermissionState::Denied;
+
+        // The full device-list pass rather than restartCapture(): it re-reads
+        // each device's current rate and re-takes the vote, which is exactly
+        // what a rate changed in Audio MIDI Setup needs.
+        if (capture != nullptr && failedOpenRetry.tick (sinceLastCallSeconds, situation))
+            onDeviceListChanged();
+    }
+
     // Cleared first, not inside the tap block: a capacity or performance
     // warning returns early below, and a stale index would leave one meter
     // lit indefinitely.
