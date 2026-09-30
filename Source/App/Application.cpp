@@ -1387,17 +1387,21 @@ void Application::onDeviceListChanged()
 
         for (const auto& ch : capture->getChannels())
         {
-            const bool live = present.count (ch.deviceId) > 0
-                           && deadInputStreams.count (ch.deviceId) == 0;
+            // The decision is RecordingEngine's: a device that left the list
+            // this take stays silent until Stop even once it is back, because
+            // its stream went with it (§6.5 below).
+            const bool listed = present.count (ch.deviceId) > 0;
+            const bool streamDead = deadInputStreams.count (ch.deviceId) > 0;
+            const auto change = recordingEngine.onDeviceListSeen (ch.deviceId, listed, streamDead);
+            const bool live = listed && ! streamDead && ! recordingEngine.isWritingSilence (ch.deviceId);
             capture->setChannelLive (ch.deviceId, live);
 
             // §6.5: "Log the dropout" on an unplug, and log the reconnection
             // too. RecordingEngine has always tracked both and nothing had ever
             // told it anything, so a mic could fall out of a four-hour take and
             // leave no trace anywhere.
-            if (! live && ! recordingEngine.isWritingSilence (ch.deviceId))
+            if (change == MidTakeMicChange::Unplugged)
             {
-                recordingEngine.onMicUnplugged (ch.deviceId);
                 midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                              "Microphone unplugged: writing silence to its channel." });
 
@@ -1406,19 +1410,39 @@ void Application::onDeviceListChanged()
                               "as silence.");
 
                 // The other half of §14.2's heuristic: a "device drop". Already
-                // edge-triggered by the isWritingSilence guard above, so one
-                // unplug counts once however many times the device list is
-                // re-read while it is gone.
+                // edge-triggered by RecordingEngine, so one unplug counts once
+                // however many times the device list is re-read while it is
+                // gone.
                 noteDeviceDropout();
             }
-            else if (live && recordingEngine.isWritingSilence (ch.deviceId))
+            else if (change == MidTakeMicChange::Reconnected)
             {
-                recordingEngine.onMicReconnected (ch.deviceId);
                 midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
                                              "Microphone reconnected: its channel is live again." });
 
                 noteActivity (ActivityLevel::Recovered, juce::String (ch.displayName),
                               "Plugged back in. Its track is live again.");
+            }
+            else if (change == MidTakeMicChange::BackNextTake)
+            {
+                // Plugged back in, but its stream is still bound to the device
+                // that left: on macOS the one that came back is a new
+                // AudioObjectID, and streams are only reopened at Stop. This
+                // used to mark the channel live and log "live again" while its
+                // track stayed silence for the rest of the take -- so nobody
+                // knew to press Stop and Record, the one thing that brings it
+                // back.
+                midTakeDropouts.push_back ({ getElapsedRecordingSeconds(), ch.deviceId,
+                                             "Microphone plugged back in: it can't rejoin a take in "
+                                             "progress, so its channel stays silent until the next take." });
+
+                noteActivity (ActivityLevel::Warning, juce::String (ch.displayName),
+                              "Plugged back in, but it can't rejoin this take. Its track stays "
+                              "silent until you press Stop, then Record.");
+
+                midTakeNotice = juce::String (ch.displayName)
+                              + " is back but can't rejoin this take. Press Stop, then Record to include it.";
+                midTakeNoticeSeconds = 12.0;
             }
         }
 
@@ -1438,7 +1462,8 @@ void Application::onDeviceListChanged()
             // fifteen used to have no way of learning that the mic they just
             // plugged in is not in the take.
             noteActivity (ActivityLevel::Warning, juce::String (d.displayName),
-                          "Added to monitoring only. It'll be recorded starting with your next take.");
+                          "Plugged in. It isn't in this take or the headphones yet. It'll be "
+                          "recorded starting with your next take.");
             break;
         }
 
