@@ -1243,11 +1243,11 @@ void aSlowButHealthyOutputRateSwitchOpens()
                             fakeca::BufferShape::oneChannelPerBuffer);
     spec.currentRate = 44100.0;
     spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
-    // A few stale reads (about 30 ms of the 50 ms settle window) and then a
-    // Start that takes 110 ms: together well past the old 75 ms simulated
-    // output deadline and well inside the new one, with room on either side
-    // for runner scheduling noise.
-    spec.rateChangeDelayReads = 3;
+    // One stale read (a real rate switch, well inside the simulated 50 ms
+    // settle window even on a slow macOS runner, where three 10 ms polls
+    // overran it) and then a Start that takes 110 ms: past the old 75 ms
+    // simulated output deadline and well inside the new one.
+    spec.rateChangeDelayReads = 1;
     spec.startDelayMilliseconds = 110;
     const auto id = fakeca::addDevice (spec);
 
