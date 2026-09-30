@@ -1558,6 +1558,79 @@ void shutdownDuringFinalizationIsBoundedAndLifetimeSafe()
 
 } // namespace
 
+/// macOS 27 took the app down about a second after launch while it started a
+/// remembered camera, and since the camera was remembered, every launch did it
+/// again. A launch that went down while starting a camera must leave that one
+/// switched off-in-effect next time, with the sound still working.
+void aCrashWhileStartingACameraDoesNotRepeatEveryLaunch()
+{
+    std::printf ("\nThe app went down while starting a camera\n");
+
+    fakecamera::setDevices ({ "Crashy Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (false);
+    fakecamera::resetOpenCallCount();
+
+    const auto guard = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                           .getNonexistentChildFile ("sobstage-camera-guard", ".txt", false);
+    juce::String leftBehind;
+
+    {
+        mma::CameraController controller;
+        controller.setStartupGuardFile (guard);
+        refreshNow (controller);
+        controller.getSelection().setEnabled ("Crashy Camera", true);
+        controller.applySelection();
+        check (fakecamera::getOpenCallCount() == 1, "the remembered camera is started at launch");
+        check (guard.existsAsFile() && guard.loadFileAsString().contains ("Crashy Camera"),
+               "while it is starting, the guard file names it");
+
+        // What a crash leaves on disk; a clean quit (below) deletes it.
+        leftBehind = guard.loadFileAsString();
+    }
+
+    check (! guard.existsAsFile(), "a clean quit clears the guard");
+    guard.replaceWithText (leftBehind);
+
+    {
+        mma::CameraController controller;
+        controller.setStartupGuardFile (guard);
+        refreshNow (controller);
+        controller.getSelection().setEnabled ("Crashy Camera", true);
+        controller.applySelection();
+        controller.applySelection();
+        check (fakecamera::getOpenCallCount() == 1,
+               "the next launch does not start the camera it went down on");
+        check (controller.getProblem().containsIgnoreCase ("closed unexpectedly while starting Crashy Camera")
+                   && controller.getProblem().containsIgnoreCase ("off and back on"),
+               "and says so, with the way back");
+
+        controller.applySelection (true);
+        check (fakecamera::getOpenCallCount() == 2, "turning it off and on starts it again");
+        check (! controller.getProblem().containsIgnoreCase ("closed unexpectedly"),
+               "and the explanation goes");
+
+        fakecamera::emitFrame ("Crashy Camera");
+        controller.applyPendingCameraList();
+        check (! guard.existsAsFile(), "a first frame proves the start and clears the guard");
+    }
+
+    {
+        mma::CameraController controller;
+        controller.setStartupGuardFile (guard);
+        refreshNow (controller);
+        controller.getSelection().setEnabled ("Crashy Camera", true);
+        controller.applySelection();
+        check (fakecamera::getOpenCallCount() == 3, "after a clean launch it starts automatically again");
+        check (guard.existsAsFile(), "an HDMI card with no signal is guarded while it starts");
+        controller.advanceSignalClockForTesting (10001.0);
+        check (! guard.existsAsFile(), "and cleared once it has stayed up ten seconds without a frame");
+    }
+
+    guard.deleteFile();
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -1599,6 +1672,7 @@ int main()
     anImmediateFinalizationErrorIsReadyBeforeTheStopReturns();
     aNeverFinishingWriterFailsClosedAndDoesNotAutoReopen();
     shutdownDuringFinalizationIsBoundedAndLifetimeSafe();
+    aCrashWhileStartingACameraDoesNotRepeatEveryLaunch();
 
     std::printf ("\n%s (%d checks, %d failing)\n",
                  failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", checks, failures);

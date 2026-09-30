@@ -393,6 +393,10 @@ void Application::initialise()
     // and cannot show one from a closed device. That is not a new prompt:
     // switching a camera on happens behind the camera door, and the first grant
     // is spent there with the reason on screen.
+    // Before anything can open a camera: a launch that went down while
+    // starting one must not start it unattended again.
+    cameraController.setStartupGuardFile (getSupportFolder().getChildFile ("camera-starting.txt"));
+
     cameraController.refreshCameras();
 
     // A camera the user turned off last time stays off, and one they named

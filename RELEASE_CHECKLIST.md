@@ -1,4 +1,4 @@
-# SobStage v1.13.3 release checklist
+# SobStage v1.13.4 release checklist
 
 **Classification:** release candidate. Do not present it as a general consumer
 release until every **GA blocker** below is closed with evidence.
@@ -8,8 +8,8 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The release commit is on `main`, the worktree is clean, and all intended
   changes have been reviewed.
 - [ ] `CMakeLists.txt`, the app About/version strings, package metadata, the tag
-  (`v1.13.3`) and this changelog all agree.
-- [ ] `CHANGELOG.md` covers every user-visible change since v1.13.2.
+  (`v1.13.4`) and this changelog all agree.
+- [ ] `CHANGELOG.md` covers every user-visible change since v1.13.3.
 - [ ] Dependency revisions and third-party GitHub Actions are immutable pins;
   the GPLv3 source offer and release archive are present.
 - [ ] Fresh release screenshots have been captured, or the README continues to
@@ -84,7 +84,7 @@ release until every **GA blocker** below is closed with evidence.
   Close this only after the same moments have been run with a real card
   pulled on macOS and Windows.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
-  reports 1.13.3 in its bundle, and passes `Tools/verify_macos_release.sh` both
+  reports 1.13.4 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.
 - [ ] The DMG opens with current SobStage artwork, a working Applications link
   and no historical “Multi-Mic Aggregator” name or command.
@@ -201,20 +201,20 @@ passed the physical camera matrix.
   notices have owner/legal sign-off.
 - [ ] JUCE licensing is checked against the current official JUCE licensing page
   for the selected distribution model; no undated price table is relied on.
-- [ ] Release notes (`docs/release-notes/v1.13.3.md`, which the release
+- [ ] Release notes (`docs/release-notes/v1.13.4.md`, which the release
   workflow requires and publishes as the release body) state the supported
   targets and known limitations without describing simulator results as
   hardware certification.
 
 ## 6. Release and rollback
 
-- [ ] Keep the v1.13.2 and v1.13.1 tags and assets immutable and available until v1.13.3 is
+- [ ] Keep the v1.13.3 and v1.13.2 tags and assets immutable and available until v1.13.4 is
   proven in production.
-- [ ] Publish v1.13.3 from the exact tested commit; never move or reuse the tag.
+- [ ] Publish v1.13.4 from the exact tested commit; never move or reuse the tag.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
-- [ ] If a serious regression appears, mark v1.13.3 as pre-release/not latest,
-  point users to v1.13.2 when safe, preserve reports and publish a fixed v1.13.4
+- [ ] If a serious regression appears, mark v1.13.4 as pre-release/not latest,
+  point users to v1.13.3 when safe, preserve reports and publish a fixed v1.13.5
   from a new commit/tag. Do not silently replace assets or retag.
 - [ ] Before advising a downgrade, back up `settings.json` and confirm the older
   version can read it; otherwise remove or restore settings explicitly. Never
