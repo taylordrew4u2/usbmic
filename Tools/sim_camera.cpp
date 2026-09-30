@@ -1278,6 +1278,57 @@ void delayedFinalizationBlocksClaimsAndTheNextTake()
     takeFolder.deleteRecursively();
 }
 
+/// MAC-CAM-2: a camera unplugged right AFTER Stop, while AVFoundation still
+/// owes its didFinish for the movie, must not be destroyed. Destroying it drops
+/// the completion callback, so the take waited 15 s and then reported a movie
+/// that was actually fine as failed. The device is parked like a mid-take unplug.
+void anUnplugAfterStopStillReceivesItsFinalization()
+{
+    std::printf ("\nA camera unplugged right after Stop, before its movie finished\n");
+
+    fakecamera::setDevices ({ "Unplugged Finisher" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetRecordingCallCounts();
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::DelayedSuccess);
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Unplugged Finisher", true);
+    controller.applySelection (true);
+
+    const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("sobstage-camera-unplug-after-stop", {}, false);
+    check (takeFolder.createDirectory().wasOk(), "an unplug-after-stop folder is available");
+    check (controller.startRecording (takeFolder), "the writer starts");
+
+    controller.stopRecording();
+    check (controller.getRecordingFinalizationState()
+               == mma::CameraController::RecordingFinalizationState::Waiting,
+           "Stop leaves the movie finalization owed");
+
+    fakecamera::setDevices ({});
+    refreshNow (controller);
+    controller.applyPendingCameraList();
+
+    check (fakecamera::getPendingFinalizationCount() == 1,
+           "the unplugged device is parked, so its owed didFinish is not dropped");
+
+    fakecamera::completePendingFinalizations();
+    controller.pollRecordingFinalization();
+    check (controller.getRecordingFinalizationState()
+               == mma::CameraController::RecordingFinalizationState::Succeeded,
+           "the parked device's didFinish completes the take without a timeout");
+    check (controller.getTakeVideoRecords().size() == 1,
+           "the finished movie is kept");
+    check (fakecamera::getLiveDeviceCount() == 0,
+           "the parked device is released once its movie is finished");
+
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
+    takeFolder.deleteRecursively();
+}
+
 /// A backend can report didFinish without ever reporting didStart. Even an
 /// empty platform error cannot turn that into a successful zero-frame movie.
 void finishWithoutStartIsAStartFailure()
@@ -1542,6 +1593,7 @@ int main()
     aSameNameTwinLeavingMidTakeDoesNotStopTheOneRecording();
     recordingTruthWaitsForTheStartCallback();
     delayedFinalizationBlocksClaimsAndTheNextTake();
+    anUnplugAfterStopStillReceivesItsFinalization();
     finishWithoutStartIsAStartFailure();
     aSynchronousWriterStartFailureNeverClaimsAFile();
     anImmediateFinalizationErrorIsReadyBeforeTheStopReturns();

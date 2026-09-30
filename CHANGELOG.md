@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Mac: headphones that switch between 44.1 and 48 kHz open again.** The
+  Mac gave the headphone output less time to open than it allowed the
+  output to change its sample rate, so an ordinary rate switch was reported
+  as "macOS took too long to connect this interface ... unplug it"; outputs
+  and microphones now get up to a second, which covers the switch.
+- **Mac: one slow microphone no longer fails every other microphone.** When
+  one microphone was slow to open, every microphone set up after it failed
+  at once with "macOS is still finishing an earlier audio-rig operation";
+  the others now wait briefly for it to finish and then open.
+- **Mac: Record turns off when microphone access is refused.** The app
+  checked microphone permission only when it opened, so clicking "Don't
+  Allow" on the first-run prompt (or turning access off later in System
+  Settings) left Record enabled over microphones macOS was feeding silence.
+  It now re-checks every couple of seconds and on every plug or unplug: a
+  refusal disables Record and says why, and allowing access reopens the
+  microphones without restarting the app.
+- **Mac: the computer no longer sleeps during a take.** The app said it kept
+  the Mac awake while recording, but nothing did; a laptop left alone could
+  dim and sleep mid-show. The display and the system are now kept awake from
+  Record until Stop (or quit), and allowed to sleep again afterwards.
+- **Mac: unplugging a camera mid-take no longer crashes the app.** A camera
+  that was unplugged, or a Continuity iPhone that was picked up, while
+  recording could make macOS raise an error on the camera's twice-a-second
+  picture check, and the app quit on the spot, losing the take. The check now
+  skips a camera that has stopped sending video and keeps watching it, so the
+  recording carries on and the camera is reported as lost (or comes back by
+  itself when its picture returns).
+- **Mac: a camera unplugged right after Stop keeps its video file.** If a
+  camera was unplugged in the moment after Stop, while macOS was still
+  finishing its movie, the app waited 15 seconds and then said the movie had
+  failed. It now lets that camera finish writing its file first.
+- **Mac: an unsupported Mac is told so instead of failing to open.** The app
+  did not declare its minimum macOS version (13 Ventura), so on an older Mac
+  it simply failed to launch. It now declares it, and Finder explains that
+  the Mac needs macOS 13 or later. The release check also confirms this and
+  that the microphone and camera permission messages are still present.
+
 ## v1.13.2 -- 2026-09-29 (release candidate)
 
 A bug-fix release on v1.13.1: 46 fixes found by eight rounds of bug hunting,
