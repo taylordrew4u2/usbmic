@@ -154,7 +154,10 @@ constexpr uint64_t kCallbackLeaseCountMask = kCallbackGateClosed - 1;
 // 150 ms against a 500 ms settle window).
 #if defined (MMA_SIMULATE_MAC)
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (250);
-constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (250);
+// The output open does the most HAL work (rate switch, hog mode, IOProc,
+// Start); a loaded macOS CI runner has needed more than 250 ms for a healthy
+// one, so its simulated deadline keeps the same headroom ratio as on a Mac.
+constexpr auto kOutputHalTransactionTimeout = std::chrono::milliseconds (400);
 constexpr auto kRateSettleTimeout = std::chrono::milliseconds (50);
 #else
 constexpr auto kHalTransactionTimeout = std::chrono::milliseconds (1000);
