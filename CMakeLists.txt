@@ -398,6 +398,13 @@ if (MMA_BUILD_APP)
             -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckJucePatchInvariants.cmake)
 
+    # macOS holds Record while the microphone prompt is unanswered (the
+    # streams carry silence until then). The gate is JUCE_MAC-only code.
+    add_test(NAME mac_microphone_prompt_gate
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMicPromptGate.cmake)
+
     # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
     # still keep JUCE's microphone/camera usage strings. juceaide writes the
     # plist only on Apple builds, so run it here on SobStage's Info.txt.

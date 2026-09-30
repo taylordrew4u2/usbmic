@@ -1154,7 +1154,13 @@ bool Application::refreshMicrophonePermission()
     journalledPermissionProblems = false;
 
     if (refresh.restartCapture)
-        noteActivity (ActivityLevel::Recovered, "Microphones", "Microphone access is allowed now.");
+    {
+        // Mid-take the reopen this grant needs is deferred to Stop, so the take
+        // in progress stays silent. "Allowed now" would read as an all-clear.
+        const bool takeRunning = recordingEngine.getState() == RecordingState::Recording;
+        noteActivity (takeRunning ? ActivityLevel::Failed : ActivityLevel::Recovered, "Microphones",
+                      juce::String (PermissionGuidance::grantArrivedMessage (takeRunning)));
+    }
 
     return refresh.restartCapture;
 }
@@ -2109,6 +2115,13 @@ void Application::toggleRecording()
         // button. A keyboard/action callback must not be able to create a take
         // while a recovery worker could still enumerate and repair that same
         // destination or mirror.
+        //
+        // The permission is re-sampled first rather than trusted from the last
+        // 2 s poll: a grant that has just landed reopens the streams here, so
+        // the take starts on live inputs, and a fresh revoke blocks the gate.
+        if (refreshMicrophonePermission())
+            onDeviceListChanged();
+
         if (const auto blocked = getRecordDisabledReason(); blocked.isNotEmpty())
         {
             recordStartProblem = blocked;
@@ -3030,6 +3043,17 @@ juce::String Application::getRecordDisabledReason() const
         return problem.empty() ? juce::String ("The microphones aren't open yet.")
                                : "The microphones aren't open: " + juce::String (problem);
     }
+
+    // macOS raises the microphone prompt when the streams above open, and
+    // feeds them silence until it is answered. Only now is the prompt really
+    // on screen, so this sits after the open check: earlier, a Mac with nothing
+    // plugged in would be told to answer a question that was never asked. The
+    // 2 s permission poll reopens the streams on Allow and Record turns on.
+#if JUCE_MAC
+    if (const auto promptReason = PermissionGuidance::pendingPromptReason (microphonePermission, true);
+        ! promptReason.empty())
+        return juce::String (promptReason);
+#endif
 
     // Recovery can repair WAV headers. Do not let a new writer create files
     // under either active write root until the corresponding one-shot scan has
