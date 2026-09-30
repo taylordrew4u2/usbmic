@@ -48,6 +48,23 @@ public:
     /// True when the app cannot capture at all, which §10.4 shows next to the
     /// disabled record button.
     static bool blocksRecording (PermissionState microphone);
+
+    /// Why Record must wait while the OS is still asking about the microphones,
+    /// or empty when it need not.
+    ///
+    /// On macOS the prompt is raised by opening the input streams, and until it
+    /// is answered those streams deliver silence. blocksRecording() stays quiet
+    /// about NotYetRequested because warning BEFORE the streams open would be
+    /// noise; once they are open the prompt is on screen and a take started
+    /// then records nothing. Callers only ask after the streams are open, and
+    /// only macOS passes osPromptsWhenStreamOpens (Windows has no such prompt).
+    static std::string pendingPromptReason (PermissionState microphone,
+                                            bool osPromptsWhenStreamOpens);
+
+    /// What to journal when microphone access arrives. Mid-take the reopen the
+    /// grant needs is deferred to Stop, so the take in progress stays silent:
+    /// saying "allowed now" then would read as an all-clear.
+    static std::string grantArrivedMessage (bool takeRunning);
 };
 
 /// What a fresh sample of the microphone permission means for a running app.

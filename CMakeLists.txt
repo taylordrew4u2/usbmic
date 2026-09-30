@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.4 LANGUAGES CXX)
+project(SobStage VERSION 1.13.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -78,6 +78,7 @@ add_library(mma_core STATIC
     Source/Core/BufferLadder.cpp
     Source/Core/CpuPressureMonitor.cpp
     Source/Core/MirrorPolicy.cpp
+    Source/Core/WriteSafetyActions.cpp
     Source/Core/SetupAdvisor.cpp
     Source/Core/WritePipeline.cpp
     Source/Core/TapToNameDetector.cpp
@@ -212,7 +213,12 @@ if (MMA_BUILD_APP)
         # parses this plist first and then only adds the keys it does not
         # already hold, so the privacy strings above are kept (checked by the
         # juce_info_plist_minimum_macos test and Tools/verify_macos_release.sh).
-        PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string></dict></plist>"
+        # macOS also turns gesture Reactions (fireworks, balloons, confetti) on
+        # for every app and draws them into the camera frames, so a performer's
+        # thumbs-up would be burned into the take. Since macOS 14.4 this key
+        # makes them default off for SobStage; a choice the user already made
+        # in the menu-bar Video menu still wins.
+        PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string><key>NSCameraReactionEffectGesturesEnabledDefault</key><false/></dict></plist>"
         ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon.png"
     )
 
@@ -392,6 +398,20 @@ if (MMA_BUILD_APP)
         COMMAND ${CMAKE_COMMAND}
             -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Patches/juce-7.0.12-camera-lifecycle.patch
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckJucePatchInvariants.cmake)
+
+    # macOS holds Record while the microphone prompt is unanswered (the
+    # streams carry silence until then). The gate is JUCE_MAC-only code.
+    add_test(NAME mac_microphone_prompt_gate
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckMicPromptGate.cmake)
+
+    # The 90% mix-only fallback and the backup's 1 GB stop must run before
+    # any warning branch that can return on every status poll.
+    add_test(NAME write_safety_poll_order
+        COMMAND ${CMAKE_COMMAND}
+            -DAPPLICATION_CPP=${CMAKE_CURRENT_SOURCE_DIR}/Source/App/Application.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckWriteSafetyOrder.cmake)
 
     # MAC-PKG-2: the macOS Info.plist must carry LSMinimumSystemVersion and
     # still keep JUCE's microphone/camera usage strings. juceaide writes the

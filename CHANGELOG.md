@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.13.5 -- 2026-09-30 (release candidate)
+
+Four Mac fixes on v1.13.4 that matter during a show, found by an exhaustive
+Mac-only bug hunt. Each is proven by a test that failed first.
+
+### Fixed
+
+- **Mac: pressing Return can no longer stop a take by accident.** After you
+  clicked Start recording, the record button kept the keyboard, so a stray
+  Return stopped the take -- including behind the mid-take alert card, where
+  Return means "keep recording". Return now only answers the card on screen.
+- **Mac: camera gesture Reactions no longer end up in your recordings.** macOS
+  draws fireworks, balloons and confetti into the camera picture when someone
+  gives a thumbs-up or peace sign; SobStage now turns those effects off by
+  default. If you switched them on for SobStage in the menu-bar Video menu,
+  turn them off there.
+- **Mac: Record waits until you answer the microphone permission message.**
+  While macOS is still asking whether SobStage may use your microphones,
+  Record stays off and tells you to click Allow; it turns on a moment after
+  you do. Before, a take started then recorded silence.
+- **Mac: the recorder protects the separate tracks and the backup even when
+  other warnings keep appearing.** When the drive falls behind, the app
+  switches to the mixed file in time, and it stops the backup copy before it
+  fills your disk. A steady stream of glitch or overload warnings used to
+  hold both back.
+
 ## v1.13.4 -- 2026-09-30 (release candidate)
 
 An urgent Mac fix on v1.13.3: on macOS 27 the app quit about a second after

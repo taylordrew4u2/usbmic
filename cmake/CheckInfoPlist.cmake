@@ -53,6 +53,16 @@ require_single(LSMinimumSystemVersion)
 # PLIST_TO_MERGE must merge with, not replace, the keys JUCE generates.
 require_non_empty_string(NSMicrophoneUsageDescription)
 require_non_empty_string(NSCameraUsageDescription)
+# macOS turns gesture Reactions (balloons, confetti, fireworks) on for every
+# app and draws them into the camera frames, so a performer's thumbs-up would
+# be burned into the recorded take. Since macOS 14.4 this key sets the app's
+# default to off (a user's own Video menu choice still wins).
+string(FIND "${plist_text}" "<key>NSCameraReactionEffectGesturesEnabledDefault</key><false/>" position)
+if (position EQUAL -1)
+    message(SEND_ERROR "Info.plist must set NSCameraReactionEffectGesturesEnabledDefault to false")
+    set(failed TRUE)
+endif()
+require_single(NSCameraReactionEffectGesturesEnabledDefault)
 require_key_value(CFBundleIdentifier "com.taylordrew.sobstage")
 require_key_value(CFBundlePackageType "APPL")
 require_non_empty_string(CFBundleExecutable)
@@ -60,4 +70,4 @@ require_non_empty_string(CFBundleExecutable)
 if (failed)
     message(FATAL_ERROR "Info.plist check failed: ${OUTPUT}")
 endif()
-message(STATUS "Info.plist OK: LSMinimumSystemVersion ${EXPECTED_MINIMUM_MACOS}, privacy strings present")
+message(STATUS "Info.plist OK: LSMinimumSystemVersion ${EXPECTED_MINIMUM_MACOS}, privacy strings present, gesture Reactions off")

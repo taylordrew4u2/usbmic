@@ -9,6 +9,26 @@ bool PermissionGuidance::blocksRecording (PermissionState microphone)
     return microphone == PermissionState::Denied;
 }
 
+std::string PermissionGuidance::pendingPromptReason (PermissionState microphone,
+                                                    bool osPromptsWhenStreamOpens)
+{
+    if (! osPromptsWhenStreamOpens || microphone != PermissionState::NotYetRequested)
+        return {};
+
+    return "macOS is asking whether SobStage may use your microphones. Click Allow in that message; "
+           "Record turns on a moment later. If no message is showing, turn SobStage on in "
+           "System Settings > Privacy & Security > Microphone.";
+}
+
+std::string PermissionGuidance::grantArrivedMessage (bool takeRunning)
+{
+    if (takeRunning)
+        return "Microphone access was allowed during this take, so this take is silent. "
+               "Stop and press Record again.";
+
+    return "Microphone access is allowed now.";
+}
+
 std::vector<PermissionProblem> PermissionGuidance::evaluate (PermissionState microphone,
                                                              PermissionState removableVolume,
                                                              bool destinationIsRemovable)

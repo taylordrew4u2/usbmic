@@ -45,7 +45,15 @@ public:
 
     void paint (juce::Graphics& g) override;
     bool keyPressed (const juce::KeyPress& key) override;
-    void prepareToShow() { keepButton.grabKeyboardFocus(); }
+    /// The keyboard goes to Keep recording, or to OK when a stopped take has
+    /// hidden it -- never left behind the card on the record button.
+    void prepareToShow()
+    {
+        if (keepButton.isVisible())
+            keepButton.grabKeyboardFocus();
+        else
+            stopButton.grabKeyboardFocus();
+    }
 
     /// The alarm: the backdrop flashes red, a banner across the card says
     /// SOMETHING IS WRONG in letters the whole room can read, and the owner

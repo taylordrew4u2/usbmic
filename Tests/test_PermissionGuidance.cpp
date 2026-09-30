@@ -44,6 +44,30 @@ TEST_CASE (PermissionGuidance_NotYetRequestedDoesNotWarn)
     REQUIRE_FALSE (PermissionGuidance::blocksRecording (PermissionState::NotYetRequested));
 }
 
+TEST_CASE (PermissionGuidance_UnansweredMacPromptHoldsRecord)
+{
+    // macOS raises the prompt when the input streams open and feeds them
+    // silence until it is answered: a take started then records nothing.
+    REQUIRE_FALSE (PermissionGuidance::pendingPromptReason (PermissionState::NotYetRequested, true).empty());
+
+    // Every other state is someone else's business: Denied is evaluate()'s.
+    REQUIRE (PermissionGuidance::pendingPromptReason (PermissionState::Granted, true).empty());
+    REQUIRE (PermissionGuidance::pendingPromptReason (PermissionState::Denied, true).empty());
+    REQUIRE (PermissionGuidance::pendingPromptReason (PermissionState::NotApplicable, true).empty());
+
+    // Windows (an empty consent value) has no prompt-on-open silence.
+    REQUIRE (PermissionGuidance::pendingPromptReason (PermissionState::NotYetRequested, false).empty());
+}
+
+TEST_CASE (PermissionGuidance_GrantMidTakeIsNotAnAllClear)
+{
+    // The reopen a grant needs waits for Stop, so the running take stays
+    // silent; the journal must say to restart it rather than "allowed now".
+    const auto midTake = PermissionGuidance::grantArrivedMessage (true);
+    REQUIRE (midTake.find ("Stop and press Record again") != std::string::npos);
+    REQUIRE (PermissionGuidance::grantArrivedMessage (false) == "Microphone access is allowed now.");
+}
+
 TEST_CASE (PermissionGuidance_NotApplicableIsSilent)
 {
     // Windows does not gate removable volumes the way macOS does.

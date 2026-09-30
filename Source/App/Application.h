@@ -929,6 +929,9 @@ private:
     /// Said once per take: a backup that stopped for space and then failed to
     /// close its files, which the low-space notice alone does not convey.
     bool mirrorFinalizeFailureReported = false;
+    /// The backup was stopped for space by this poll's safety step; its line is
+    /// said once, at its old priority, when nothing more urgent holds the line.
+    bool mirrorLowSpaceNoticePending = false;
 
     /// The journal entry currently being shown on the advice line, and how much
     /// longer it stays there. This is what makes "nothing is silent" true on
