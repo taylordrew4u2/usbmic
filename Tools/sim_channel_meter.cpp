@@ -84,7 +84,9 @@ void run (int ms)
 /// target. The meter's ballistics count timer ticks, not wall time, and a busy
 /// CI machine ticks slower than 60 Hz -- so waiting a fixed time checked the
 /// face mid-decay on macOS. Waiting on the level checks it where it lands.
-void settleAt (ChannelMeterComponent& meter, float targetDb, int timeoutMs = 15000)
+/// A 30 dB fall is about 275 ticks (1.5 s decay constant at 1/60 s a tick);
+/// a starved macOS runner was seen ticking near 18 Hz, so allow a minute.
+void settleAt (ChannelMeterComponent& meter, float targetDb, int timeoutMs = 60000)
 {
     const auto start = juce::Time::getMillisecondCounter();
     while (std::abs (meter.getDisplayedLevelDb() - targetDb) > 1.5f
@@ -194,7 +196,7 @@ int main (int argc, char** argv)
 
         std::printf ("\n-- the -18 dBFS line --\n");
         mic.setPeakDb (-19.5f);
-        settleAt (meter, -19.5f, 15000);
+        settleAt (meter, -19.5f);
         expectFace (meter, Face::Frown, "just under the line, at -19.5 dBFS");
 
         mic.setPeakDb (-16.5f);
