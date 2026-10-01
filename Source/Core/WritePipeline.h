@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -106,6 +107,15 @@ public:
     /// write for the same frames, so status/tests can observe a real completed
     /// writer boundary rather than a dequeue that is still being processed.
     uint64_t getFramesWritten() const noexcept { return framesWritten.load (std::memory_order_acquire); }
+
+    /// Ticks whenever the writer gets something onto the disk -- a chunk
+    /// drained, a file closed. Stop watches it: a slow card still working
+    /// through its backlog is not a card that has stopped answering.
+    uint64_t getProgress() const noexcept { return progress.load (std::memory_order_acquire); }
+
+    /// Runs on the writer after every chunk it gets onto the disk. Tests use
+    /// it to make a card slow but alive; nothing else sets it.
+    void setChunkHookForTesting (std::function<void()> hook) { chunkHookForTesting = std::move (hook); }
 
     /// Frames the ring buffer could not accept. Any value above zero means
     /// audio was lost, which §0.1 treats as the one unacceptable failure.
@@ -220,6 +230,8 @@ private:
     std::atomic<bool> running { false };
     std::atomic<uint64_t> framesAccepted { 0 };
     std::atomic<uint64_t> framesWritten { 0 };
+    std::atomic<uint64_t> progress { 0 };
+    std::function<void()> chunkHookForTesting;
     std::atomic<uint64_t> framesDropped { 0 };
 
     /// Loudest sample written this take; reset by start().

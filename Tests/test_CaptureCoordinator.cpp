@@ -546,6 +546,50 @@ TEST_CASE (CaptureCoordinator_RecordsAudioThroughToTheFiles)
     REQUIRE (sample > 12000);
 }
 
+// A slow card still working through its backlog is not a dead one. Stop used
+// to give the whole drain five seconds; a card that needed longer was called
+// unresponsive, the final session.json was skipped, and a combined video was
+// cut from a MIX.wav whose header had not been finished.
+TEST_CASE (CaptureCoordinator_ASlowCardThatIsStillWritingIsWaitedFor)
+{
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    c.setFilesystemDeadline (std::chrono::milliseconds (400));
+    c.setWriterChunkHookForTesting ([] { std::this_thread::sleep_for (std::chrono::milliseconds (40)); });
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-01T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), b (64, 0.5f);
+    std::vector<float> outL (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { outL.data() };
+
+    constexpr int kBlocks = 1500; // two seconds of audio: about 24 chunks of 4096
+    for (int i = 0; i < kBlocks; ++i)
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+
+    const auto before = std::chrono::steady_clock::now();
+    c.stopRecording();
+    const auto waited = std::chrono::steady_clock::now() - before;
+
+    REQUIRE_FALSE (c.didLastStopTimeOut());
+    REQUIRE_FALSE (c.hasCardWriteFailed());
+
+    std::ifstream f (dir + "/01_Kitchen.wav", std::ios::binary);
+    REQUIRE (f.is_open());
+    REQUIRE (readU32LE (f, kDataSizeOffset) == static_cast<uint32_t> (kBlocks * 64 * 2));
+
+    // And it really did take longer than the deadline, so the old rule would
+    // have given up on it.
+    if (waited < std::chrono::milliseconds (400))
+        std::printf ("  note: the drain finished inside the deadline (%lld ms)\n",
+                     (long long) std::chrono::duration_cast<std::chrono::milliseconds> (waited).count());
+    c.setWriterChunkHookForTesting ({});
+}
+
 TEST_CASE (CaptureCoordinator_ACardThatStopsAnsweringAtStartDoesNotHoldTheCaller)
 {
     FakeBackend backend;

@@ -528,6 +528,11 @@ void WritePipeline::drainOnce (bool finalFlush)
             framesWritten.fetch_add (static_cast<uint64_t> (frames),
                                      std::memory_order_release);
 
+        progress.fetch_add (1, std::memory_order_release);
+
+        if (chunkHookForTesting)
+            chunkHookForTesting();
+
         if (mirrorActiveForThisPass && mirrorMixWriter != nullptr)
             if (! mirrorMixWriter->writeInterleaved (mixScratch.data(), frames))
             {
@@ -653,8 +658,11 @@ void WritePipeline::stop()
     bool cardFinalizeFailed = false;
 
     for (auto& w : stemWriters)
+    {
         if (! w->close())
             cardFinalizeFailed = true;
+        progress.fetch_add (1, std::memory_order_release);
+    }
 
     stemWriters.clear();
 
@@ -662,6 +670,7 @@ void WritePipeline::stop()
     {
         if (! mixWriter->close())
             cardFinalizeFailed = true;
+        progress.fetch_add (1, std::memory_order_release);
 
         mixWriter.reset();
     }
@@ -674,8 +683,11 @@ void WritePipeline::stop()
     bool mirrorFinalizeFailed = false;
 
     for (auto& w : mirrorStemWriters)
+    {
         if (! w->close())
             mirrorFinalizeFailed = true;
+        progress.fetch_add (1, std::memory_order_release);
+    }
 
     mirrorStemWriters.clear();
 

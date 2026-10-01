@@ -756,6 +756,8 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     };
 
     auto state = std::make_shared<StartState>();
+    if (writerChunkHookForTesting)
+        state->pipeline->setChunkHookForTesting (writerChunkHookForTesting);
     const double rate = sampleRate;
     auto stall = filesystemStallForTesting;
 
@@ -931,9 +933,49 @@ void CaptureCoordinator::stopRecording()
         state->done.notify_all();
     }).detach();
 
+    // The deadline runs from the writer's last sign of life, not from Stop.
+    // A card with a backlog -- the "drive is falling behind" case -- can need
+    // well over five seconds to drain and close everything, and calling that
+    // dead skipped the final session.json and cut the combined video short.
+    // A card that has really stopped answering makes no progress and still
+    // times out after the same deadline.
     std::unique_lock<std::mutex> lock (state->mutex);
-    lastStopTimedOut = ! state->done.wait_for (lock, filesystemDeadline,
-                                               [&state] { return state->finished; });
+    {
+        auto lastProgress = p->getProgress();
+        const auto stopStarted = std::chrono::steady_clock::now();
+        auto lastMove = stopStarted;
+
+        // Still bounded: Stop runs on the message thread, and a card crawling
+        // along a few bytes at a time must not hold the app up indefinitely.
+        constexpr auto kMostAStopMayTake = std::chrono::seconds (60);
+        const auto poll = std::min<std::chrono::milliseconds> (
+            std::chrono::milliseconds (250),
+            std::chrono::duration_cast<std::chrono::milliseconds> (filesystemDeadline));
+
+        while (! state->finished)
+        {
+            state->done.wait_for (lock, std::max (poll, std::chrono::milliseconds (1)),
+                                  [&state] { return state->finished; });
+
+            if (state->finished)
+                break;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (const auto seen = p->getProgress(); seen != lastProgress)
+            {
+                lastProgress = seen;
+                lastMove = now;
+            }
+            else if (now - lastMove >= filesystemDeadline)
+            {
+                break;
+            }
+
+            if (now - stopStarted >= kMostAStopMayTake)
+                break;
+        }
+    }
+    lastStopTimedOut = ! state->finished;
 
     if (lastStopTimedOut)
     {
