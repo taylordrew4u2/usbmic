@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.13.8 -- 2026-10-01 (release candidate)
+
+Everyone hears everyone, through their own microphone, plus two Mac fixes
+for the combined "SobStage" device.
+
+### Changed
+
+- **Mac: the headphone mix now goes to SobStage -- every microphone's own
+  headphone jack at once.** Plug headphones into each mic and everyone hears
+  the whole room. This is the new default; your previous output choice is
+  replaced by it. Picking another output in **Settings -> Monitoring and
+  Output** switches it off and is remembered.
+- **Mac: switch each person's headphones on or off.** Settings has a new list,
+  "Who hears the mix in their headphones", with one tick box per microphone
+  that has a jack. Off means that jack gets silence. It applies at once, even
+  mid-take, and never changes the recording.
+
+### Fixed
+
+- **Mac: "Couldn't make the combined device other apps record from" at
+  launch.** A SobStage device left behind by a crash or force-quit blocked the
+  new one. It is now removed first, and other apps stop seeing last session's
+  microphones.
+- **Mac: no more reopening every microphone right after launch.** Creating the
+  SobStage device made the app close and reopen every stream a moment after
+  they first opened, which some USB mics stall on. An unchanged, healthy rig
+  is now left alone.
+- **Mac: other apps can still record from SobStage while it carries the
+  headphone mix**, and plugging or unplugging a mic mid-take no longer cuts
+  everyone's headphones -- the device is rebuilt at Stop.
+
 ## v1.13.7 -- 2026-10-01 (release candidate)
 
 Urgent Mac fixes on v1.13.6: the microphone-permission lock and where the
