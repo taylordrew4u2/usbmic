@@ -312,6 +312,12 @@ void Application::initialise()
     // a problem they did not have, about the one thing they had already done.
     microphonePermission = queryMicrophonePermission();
 
+    // Still "not yet asked": ask through AVFoundation now, so the prompt (if
+    // one is due) appears at launch and the status the Record gate reads gets
+    // settled, rather than waiting on whatever the stream open raises.
+    if (microphonePermission == PermissionState::NotYetRequested)
+        requestMicrophoneAccess();
+
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
     systemAggregate = createSystemAggregateDevice();

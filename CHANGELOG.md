@@ -2,7 +2,8 @@
 
 ## v1.13.7 -- 2026-10-01 (release candidate)
 
-An urgent Mac fix on v1.13.6.
+Urgent Mac fixes on v1.13.6: the microphone-permission lock and where the
+headphone mix goes.
 
 ### Fixed
 
@@ -12,6 +13,16 @@ An urgent Mac fix on v1.13.6.
   to a new build). v1.13.6 then kept Record off with "macOS is asking whether
   SobStage may use your microphones" and no way past it. Live sound from any
   microphone now proves access is working, and Record turns on.
+- **Mac: SobStage asks macOS for microphone access itself.** If macOS has
+  not been asked yet, SobStage now asks at launch through the same system
+  call it later checks, so the Allow prompt appears straight away and Record
+  turns on as soon as you answer. If macOS already allows SobStage, Record
+  is ready with no prompt at all.
+- **Mac: headphones on a USB interface you picked in macOS get the monitor
+  mix.** If the interface's inputs are switched off in SobStage and you chose
+  it as the Mac's sound output, SobStage now uses it instead of the MacBook
+  speakers, where live microphones could feed back. Headphones in the Mac's
+  own jack still take priority, and a mic plugged in later can't take over.
 
 ## v1.13.6 -- 2026-09-30 (release candidate)
 

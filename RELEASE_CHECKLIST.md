@@ -20,7 +20,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **684 unit tests**; if tests change, record the final discovered count here.
+  is **685 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_channel_meter` passes on all three operating systems: every
   crying-face state is checked against the pixels drawn.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
