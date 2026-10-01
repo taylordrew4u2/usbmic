@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
+#include "../Core/PreflightScratchFile.h"
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/SystemThermalState.h"
 #include "../Core/CombinedTakePlan.h"
@@ -1614,7 +1615,7 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
         for (const auto& d : deviceManager.getDevices())
             if (d.identity.locationId == sub.deviceId)
             {
-                out.push_back ({ juce::String (d.displayName),
+                out.push_back ({ juce::String (d.identity.key()), juce::String (d.displayName),
                                  headphonesOffKeys.count (d.identity.key()) == 0 });
                 break;
             }
@@ -1623,11 +1624,11 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
     return out;
 }
 
-void Application::setHeadphonesOn (const juce::String& displayName, bool on)
+void Application::setHeadphonesOn (const juce::String& deviceKey, bool on)
 {
     for (const auto& d : deviceManager.getDevices())
     {
-        if (juce::String (d.displayName) != displayName)
+        if (d.identity.key() != deviceKey.toStdString())
             continue;
 
         const auto key = d.identity.key();
@@ -3473,7 +3474,18 @@ Application::PreflightBackgroundResult Application::runPreflight (
     if (cancelled.load (std::memory_order_acquire))
         return completed;
 
-    const auto testFile = folder.getNonexistentChildFile ("preflight", ".tmp");
+    // Whatever an interrupted earlier check left here goes first. This worker
+    // holds the destination's lease, so no other check can be writing one.
+    for (const auto& f : folder.findChildFiles (juce::File::findFiles,
+                                                false, "*.tmp"))
+        if (PreflightScratchFile::isLeftover (f.getFileName().toStdString()))
+            f.deleteFile();
+
+    const auto testFile = folder.getChildFile (PreflightScratchFile::kName);
+
+    // JUCE opens an existing file to append; a leftover that would not delete
+    // must not make this run's file start 200 MB in.
+    testFile.deleteFile();
 
     std::vector<double> rollingWindows;
 
@@ -3779,6 +3791,7 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
                                        && persisted->channelLayoutIsMono;
 
         MicSelection m;
+        m.deviceKey = juce::String (d.identity.key());
         m.displayName = juce::String (d.displayName);
         m.enabled = d.userEnabled;
         m.isBuiltIn = d.isBuiltIn;
@@ -3808,11 +3821,11 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
     return out;
 }
 
-void Application::setInputEnabled (const juce::String& displayName, int input, bool enabled)
+void Application::setInputEnabled (const juce::String& deviceKey, int input, bool enabled)
 {
     for (const auto& d : deviceManager.getDevices())
     {
-        if (juce::String (d.displayName) != displayName)
+        if (d.identity.key() != deviceKey.toStdString())
             continue;
 
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
@@ -3837,14 +3850,15 @@ void Application::setInputEnabled (const juce::String& displayName, int input, b
     }
 }
 
-void Application::setMicEnabledByName (const juce::String& displayName, bool enabled)
+void Application::setMicEnabledByKey (const juce::String& deviceKey, bool enabled)
 {
     for (const auto& d : deviceManager.getDevices())
     {
-        // Matched on display name because that is what the panel shows. Not on
-        // `included`: a deselected microphone is excluded, and looking only at
+        // Matched on identity, never on the name: four identical mics share
+        // one, and every row switched the first of them. Not on `included`
+        // either: a deselected microphone is excluded, and looking only at
         // included ones would make it impossible to tick back on.
-        if (juce::String (d.displayName) != displayName)
+        if (d.identity.key() != deviceKey.toStdString())
             continue;
 
         if (deviceManager.setUserEnabled (d.identity.key(), enabled))
@@ -6488,6 +6502,11 @@ void Application::shutdown()
     // chance to stall; this request never joins the worker.
     takeCombiner.cancel();
 
+    // The drive check, early: its worker deletes its 200 MB scratch file on
+    // the way out, and the sooner it is told the more of teardown it has to
+    // get there. The next run sweeps up anything it still leaves.
+    preflightTask.cancel();
+
     // Finalize user media before auxiliary teardown. The detached storage
     // workers never join here; their cancellation flags only suppress late
     // publication, and worker-owned state survives any OS call that does not
@@ -6518,7 +6537,6 @@ void Application::shutdown()
     if (systemAggregate != nullptr)
         systemAggregate->remove();
 
-    preflightTask.cancel();
     destinationRecoveryTask.cancel();
     mirrorRecoveryTask.cancel();
     recoveryAcknowledgementTask.cancel();

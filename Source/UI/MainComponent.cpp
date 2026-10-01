@@ -190,7 +190,7 @@ MainComponent::MainComponent (Application& app)
     advancedPanel.onHelpClicked = [this] { toggleHelp(); };
 
     advancedPanel.onMicEnabledChanged = [this] (const juce::String& name, bool enabled) {
-        application.setMicEnabledByName (name, enabled);
+        application.setMicEnabledByKey (name, enabled);
     };
 
     advancedPanel.onDiagnosticsExportClicked = [this] { exportDiagnostics(); };
@@ -1107,7 +1107,7 @@ void MainComponent::refreshAdvanced()
 
     std::vector<AdvancedPanel::HeadphoneChoice> headphones;
     for (const auto& h : application.getHeadphoneChoices())
-        headphones.push_back ({ h.displayName, h.on });
+        headphones.push_back ({ h.key, h.displayName, h.on });
     advancedPanel.setHeadphoneChoices (headphones);
 
     const int micCount = application.getIncludedMicCount();
@@ -1129,7 +1129,7 @@ void MainComponent::refreshAdvanced()
 
         AdvancedPanel::MicChoice choice;
         choice.label = label;
-        choice.deviceName = m.displayName;
+        choice.deviceKey = m.deviceKey; // what the app matches back on: identity, not the label
         choice.enabled = m.enabled;
 
         for (const auto& in : m.inputs)
@@ -1336,6 +1336,29 @@ void MainComponent::growWindowToFitMainScreen()
     growWindowToFit (mainScreen.getPreferredHeight());
 }
 
+// The part of the screen the window's CONTENT may occupy: the display the
+// window is on now, not the primary one -- fitting against the laptop's screen
+// threw a window on an external display back onto the laptop every time
+// Settings or Help opened -- and below the native title bar, which on the Mac
+// sits outside the component's bounds. Growing to the full height put the
+// title bar, and with it the close button and the drag area, under the menu
+// bar where it could not be reached.
+juce::Rectangle<int> MainComponent::usableAreaForWindow (juce::Component& window)
+{
+    const auto& displays = juce::Desktop::getInstance().getDisplays();
+    const auto* display = displays.getDisplayForRect (window.getScreenBounds());
+    if (display == nullptr)
+        display = displays.getPrimaryDisplay();
+
+    auto usable = display != nullptr ? display->userArea : juce::Rectangle<int> (0, 0, 1180, 900);
+
+    if (auto* peer = window.getPeer())
+        if (const auto frame = peer->getFrameSizeIfPresent())
+            usable = frame->subtractedFrom (usable);
+
+    return usable;
+}
+
 void MainComponent::growWindowToFit (int contentHeight)
 {
     // The window, not this component: setSize() on a DocumentWindow's content
@@ -1349,9 +1372,7 @@ void MainComponent::growWindowToFit (int contentHeight)
     if (window == nullptr || window == this)
         return;
 
-    const auto usable = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
-                        ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
-                        : juce::Rectangle<int> (0, 0, 1180, 900);
+    const auto usable = usableAreaForWindow (*window);
 
     // What the window would have to be for the picture to come out at the size
     // the user picked. The frame is taller than its content by the title bar,
@@ -1483,9 +1504,7 @@ void MainComponent::growWindowToFitWidth (int contentWidth)
     if (window == nullptr || window == this)
         return;
 
-    const auto usable = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
-                        ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
-                        : juce::Rectangle<int> (0, 0, 1180, 900);
+    const auto usable = usableAreaForWindow (*window);
 
     const int chrome = juce::jmax (0, window->getWidth() - getWidth());
     const int wanted = contentWidth + chrome;

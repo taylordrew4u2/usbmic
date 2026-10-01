@@ -143,6 +143,10 @@ MainScreen::MainScreen()
     volumeSlider.setTitle ("Monitor volume");
     volumeSlider.setDescription ("Adjust headphone volume; recorded levels stay unchanged.");
     volumeSlider.setRange (0.0, 100.0, 1.0);
+
+    // A two-finger scroll over the main screen is someone scrolling it, not
+    // turning everyone's headphones up. Drag, click and typing still work.
+    volumeSlider.setScrollWheelEnabled (false);
     volumeSlider.setValue (70.0); // §5.1 default
     volumeSlider.onValueChange = [this] { if (onVolumeChanged) onVolumeChanged (volumeSlider.getValue()); };
     addAndMakeVisible (volumeSlider);
