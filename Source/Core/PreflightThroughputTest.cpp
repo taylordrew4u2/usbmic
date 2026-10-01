@@ -1,5 +1,7 @@
 #include "PreflightThroughputTest.h"
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <sstream>
 
 namespace mma {
@@ -79,8 +81,55 @@ PreflightResult PreflightThroughputTest::evaluateCached (const PreflightResult& 
         return refused;
     }
 
-    return evaluateMeasured (cached.sustainedMinBytesPerSec, numChannels, sampleRate,
-                             bytesPerSample, videoBytesPerSecond);
+    auto verdict = evaluateMeasured (cached.sustainedMinBytesPerSec, numChannels, sampleRate,
+                                     bytesPerSample, videoBytesPerSecond);
+    verdict.limitedTo4GiBFiles = cached.limitedTo4GiBFiles;
+    return verdict;
+}
+
+PreflightThroughputTest::FilesystemKind
+PreflightThroughputTest::filesystemKindFromTypeName (const std::string& typeName) noexcept
+{
+    std::string t;
+    for (char c : typeName)
+        t += static_cast<char> (std::tolower (static_cast<unsigned char> (c)));
+
+    if (t.empty())                                           return FilesystemKind::Unknown;
+    if (t == "msdos" || t == "vfat" || t == "fat32" || t == "fat") return FilesystemKind::FAT32;
+    if (t == "exfat")                                        return FilesystemKind::ExFAT;
+    if (t == "apfs")                                         return FilesystemKind::APFS;
+    if (t == "hfs")                                          return FilesystemKind::HFSPlus;
+    if (t == "ntfs" || t == "ufsd_ntfs")                     return FilesystemKind::NTFS;
+    return FilesystemKind::Other;
+}
+
+std::string PreflightThroughputTest::writeFailureReason (int errnoValue)
+{
+    if (errnoValue == EPERM || errnoValue == EACCES)
+        return "SobStage isn't allowed to save here. If macOS asked about files on a removable volume "
+               "or in this folder, allow it in System Settings > Privacy & Security > Files and Folders "
+               "> SobStage, or choose a different place to save.";
+
+    if (errnoValue == EROFS)
+        return "This card is read-only, so takes can't be saved here. Slide its lock switch off, or "
+               "choose a different place to save.";
+
+    if (errnoValue == ENOSPC)
+        return "This card is full, so takes can't be saved here. Free some space or choose a "
+               "different place to save.";
+
+    return "Couldn't write to this card, so takes can't be saved here. Check it is plugged in, has "
+           "room, and isn't locked.";
+}
+
+std::string PreflightThroughputTest::fileSizeRefusal (bool limitedTo4GiBFiles, int enabledCameras)
+{
+    if (! limitedTo4GiBFiles || enabledCameras <= 0)
+        return {};
+
+    return "This drive is formatted MS-DOS (FAT32), which can't hold a video file over 4 GB, so the "
+           "camera would stop about 18 minutes in. Reformat it as ExFAT in Disk Utility (this erases "
+           "it), choose another drive, or turn the cameras off.";
 }
 
 bool PreflightThroughputTest::shouldRetryCached (const PreflightResult& cached, double secondsSinceVerdict,

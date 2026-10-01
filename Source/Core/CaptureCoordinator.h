@@ -159,6 +159,8 @@ public:
     /// Runs on the worker just before the pipeline's start() or stop(). Tests
     /// only: it stands in for a card that stops answering.
     void setFilesystemStallForTesting (std::function<void()> stall) { filesystemStallForTesting = std::move (stall); }
+    /// Handed to each take's writer: runs after every chunk it writes.
+    void setWriterChunkHookForTesting (std::function<void()> hook) { writerChunkHookForTesting = std::move (hook); }
 
     /// §6.5: an unplugged mic keeps its channel and writes silence. Applies
     /// to EVERY channel the device contributes: an interface with four
@@ -591,6 +593,7 @@ private:
     // take begins. See the note on hasCardWriteFailed().
     std::chrono::milliseconds filesystemDeadline { 5000 };
     std::function<void()> filesystemStallForTesting;
+    std::function<void()> writerChunkHookForTesting;
     bool lastStopTimedOut = false;
 
     std::string lastTakeCardWriteProblem;

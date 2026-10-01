@@ -342,6 +342,7 @@ public:
     /// whether its wearer hears the mix. Empty unless the mix is going there.
     struct HeadphoneChoice
     {
+        juce::String key; // §2.4 identity: two identical mics share a name
         juce::String displayName;
         bool on = true;
     };
@@ -349,13 +350,17 @@ public:
 
     /// Switch one person's headphones on or off. Applies at once, mid-take
     /// too: it changes only what reaches that jack, never the recording.
-    void setHeadphonesOn (const juce::String& displayName, bool on);
+    void setHeadphonesOn (const juce::String& deviceKey, bool on);
 
     /// Every microphone the OS reports, in enumeration order, with whether the
     /// user currently has it selected. Includes deselected ones -- the point of
     /// the list is to let them be turned back on.
     struct MicSelection
     {
+        /// §2.4 identity, which is what the switches act on. Two identical
+        /// microphones share a display name, and matching on it switched the
+        /// first one whichever row was clicked.
+        juce::String deviceKey;
         juce::String displayName;
         bool enabled = true;
         bool isBuiltIn = false;
@@ -401,11 +406,11 @@ public:
 
     /// Ticking or clearing a microphone in Settings. Rebuilds the audio streams
     /// only when the flag actually changed.
-    void setMicEnabledByName (const juce::String& displayName, bool enabled);
+    void setMicEnabledByKey (const juce::String& deviceKey, bool enabled);
 
     /// Switch one socket of an interface on or off. Port memory, so it follows
     /// the box across a replug; reopens the streams outside a take.
-    void setInputEnabled (const juce::String& displayName, int input, bool enabled);
+    void setInputEnabled (const juce::String& deviceKey, int input, bool enabled);
     void setDestinationFolder (const juce::File& folder);
 
     /// §5.3 output selection result for the Advanced panel, and the plain-language
@@ -775,6 +780,8 @@ private:
     /// When each verdict above landed, so a "couldn't write" one can be re-run
     /// after PreflightThroughputTest::kWriteFailureRetrySeconds.
     mutable std::map<std::string, double> preflightVerdictAtMs;
+    static std::string filesystemTypeName (const juce::File& folder);
+    static int probeWriteErrno (const juce::File& folder);
     static PreflightBackgroundResult runPreflight (
         std::string destination, int channelCount, double sampleRate,
         int bytesPerSample, const std::atomic<bool>& cancelled);

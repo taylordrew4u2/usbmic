@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.13.9 -- 2026-10-01 (release candidate)
+
+Eleven more Mac fixes from the Mac-only bug hunt.
+
+### Fixed
+
+- **Mac: the window stays on its display.** Opening Settings, Help or a
+  camera no longer moves a window on an external monitor back onto the
+  laptop, and no longer slides the title bar under the menu bar.
+- **Mac: arrow keys and trackpad scrolling no longer change settings.**
+  Up/Down after clicking a Settings picker used to switch the headphone
+  output, drive, rate or bit depth; a two-finger scroll over the volume or a
+  trim slider changed the level.
+- **Mac: two identical microphones switch correctly.** The on/off, input and
+  headphone switches act on the one you clicked, not the first of the pair.
+- **Mac: a card that stops answering can't freeze the window.** Choosing a
+  new save location, or the check right after Stop, no longer hangs on a
+  wedged card, and the folder chooser no longer opens on it.
+- **Mac: a slow card still writing at Stop is waited for.** It used to be
+  reported as having stopped answering: the final session.json was skipped,
+  the take came back as "interrupted", and the combined video was cut short.
+- **Mac: FAT32 (MS-DOS) cards are refused when a camera is on**, with how to
+  fix it. The movie is one file and stopped at 4 GB, about 18 minutes in.
+  Audio-only recording to FAT32 still works.
+- **Mac: "SobStage isn't allowed to save here"** when macOS privacy settings
+  block the folder, instead of telling you to re-seat a card that is fine.
+  A locked or full card is named as such.
+- **Mac: the drive check no longer leaves 200 MB files behind** after a quit
+  or crash during it, and clears any left by earlier versions.
+- **Mac: monitor latency shows the real figure**, including what the output
+  device adds. Bluetooth headphones showed about 3 ms; they now show their
+  real 150 ms or more.
+- **Mac: a mixer that is also the headphone output keeps recording** when a
+  second, separate mic fails to open, instead of closing the whole rig.
+- **Mac: the combine ("Also save video with the sound") yields the card** to the
+  next take recording on it, and an ffmpeg that can't run on this Mac (an
+  Intel build without Rosetta) is skipped instead of failing every take.
+
 ## v1.13.8 -- 2026-10-01 (release candidate)
 
 Everyone hears everyone, through their own microphone, plus two Mac fixes

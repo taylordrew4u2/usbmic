@@ -38,4 +38,23 @@ std::vector<std::string> ffmpegSearchPaths (HostPlatform platform)
     }
 }
 
+std::vector<std::string> withLowDiskPriority (std::vector<std::string> args, HostPlatform platform)
+{
+    if (platform != HostPlatform::MacOS || args.empty())
+        return args;
+
+    std::vector<std::string> wrapped { "/usr/sbin/taskpolicy", "-d", "throttle" };
+    wrapped.insert (wrapped.end(), args.begin(), args.end());
+    return wrapped;
+}
+
+bool looksLikeFfmpegVersionOutput (const std::string& output)
+{
+    const std::string expected = "ffmpeg version";
+    size_t start = 0;
+    while (start < output.size() && (output[start] == ' ' || output[start] == '\n' || output[start] == '\r'))
+        ++start;
+    return output.compare (start, expected.size(), expected) == 0;
+}
+
 } // namespace mma
