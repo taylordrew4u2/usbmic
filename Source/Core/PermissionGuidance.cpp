@@ -10,9 +10,11 @@ bool PermissionGuidance::blocksRecording (PermissionState microphone)
 }
 
 std::string PermissionGuidance::pendingPromptReason (PermissionState microphone,
-                                                    bool osPromptsWhenStreamOpens)
+                                                    bool osPromptsWhenStreamOpens,
+                                                    bool soundArriving)
 {
-    if (! osPromptsWhenStreamOpens || microphone != PermissionState::NotYetRequested)
+    if (! osPromptsWhenStreamOpens || soundArriving
+        || microphone != PermissionState::NotYetRequested)
         return {};
 
     return "macOS is asking whether SobStage may use your microphones. Click Allow in that message; "

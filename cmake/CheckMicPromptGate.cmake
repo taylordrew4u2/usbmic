@@ -23,7 +23,7 @@ set(failed FALSE)
 # After the streams are known open (the prompt is only on screen then), and
 # before anything that lets the take start.
 string(FIND "${gate}" "! capture->isMonitoring()" monitoring)
-string(FIND "${gate}" "#if JUCE_MAC\n    if (const auto promptReason = PermissionGuidance::pendingPromptReason (microphonePermission, true)" prompt)
+string(FIND "${gate}" "    if (const auto promptReason = PermissionGuidance::pendingPromptReason (\n            microphonePermission, true, capture->getPeakArrived() > kRealSoundThreshold)" prompt)
 string(FIND "${gate}" "recoveryBlockingReason()" recovery)
 if (monitoring EQUAL -1 OR prompt EQUAL -1 OR recovery EQUAL -1)
     message(SEND_ERROR "getRecordDisabledReason() lacks the JUCE_MAC pendingPromptReason gate")

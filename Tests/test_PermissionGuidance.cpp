@@ -59,6 +59,15 @@ TEST_CASE (PermissionGuidance_UnansweredMacPromptHoldsRecord)
     REQUIRE (PermissionGuidance::pendingPromptReason (PermissionState::NotYetRequested, false).empty());
 }
 
+TEST_CASE (PermissionGuidance_LiveSoundReleasesTheMacPromptGate)
+{
+    // Seen on macOS 27: the status call said "not yet asked" while both mics
+    // were metering live sound, and Record stayed locked with no way past it.
+    // A pending prompt feeds exact zeros, so real sound means access works.
+    REQUIRE (PermissionGuidance::pendingPromptReason (PermissionState::NotYetRequested, true, true).empty());
+    REQUIRE_FALSE (PermissionGuidance::pendingPromptReason (PermissionState::NotYetRequested, true, false).empty());
+}
+
 TEST_CASE (PermissionGuidance_GrantMidTakeIsNotAnAllClear)
 {
     // The reopen a grant needs waits for Stop, so the running take stays

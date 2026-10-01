@@ -312,6 +312,12 @@ void Application::initialise()
     // a problem they did not have, about the one thing they had already done.
     microphonePermission = queryMicrophonePermission();
 
+    // Still "not yet asked": ask through AVFoundation now, so the prompt (if
+    // one is due) appears at launch and the status the Record gate reads gets
+    // settled, rather than waiting on whatever the stream open raises.
+    if (microphonePermission == PermissionState::NotYetRequested)
+        requestMicrophoneAccess();
+
     audioBackend = createPlatformBackend();
     virtualDeviceBackend = createDefaultVirtualDeviceBackend();
     systemAggregate = createSystemAggregateDevice();
@@ -3069,7 +3075,12 @@ juce::String Application::getRecordDisabledReason() const
     // plugged in would be told to answer a question that was never asked. The
     // 2 s permission poll reopens the streams on Allow and Record turns on.
 #if JUCE_MAC
-    if (const auto promptReason = PermissionGuidance::pendingPromptReason (microphonePermission, true);
+    // About -120 dBFS: above the exact zeros an unanswered or refused macOS
+    // microphone prompt delivers, below any real microphone's noise floor.
+    constexpr float kRealSoundThreshold = 1.0e-6f;
+
+    if (const auto promptReason = PermissionGuidance::pendingPromptReason (
+            microphonePermission, true, capture->getPeakArrived() > kRealSoundThreshold);
         ! promptReason.empty())
         return juce::String (promptReason);
 #endif

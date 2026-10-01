@@ -122,8 +122,26 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
         if (! c->belongsToUnrecordedMicrophone)
             (c->isWireless ? wireless : wired).push_back (c);
 
+    // The one automatic route to a listed-but-unrecorded microphone's output:
+    // the user made it the macOS default, which on a Mac is how headphones on
+    // an interface whose inputs are switched off in SobStage are chosen. It
+    // must have been there at launch -- macOS can make a just-plugged USB mic
+    // the default on its own -- and is only reached when nothing already in
+    // use, nothing just plugged in and no headphone jack applies.
+    const OutputDeviceCandidate* unrecordedDefault = nullptr;
+    for (auto* c : eligible)
+        if (c->belongsToUnrecordedMicrophone && c->isSystemDefault && ! c->isWireless
+            && ! c->appearedAfterLaunch)
+            unrecordedDefault = c;
+
     if (wired.empty() && wireless.empty())
     {
+        if (unrecordedDefault != nullptr)
+        {
+            pick (unrecordedDefault, OutputSelectionReason::SystemDefault);
+            return result;
+        }
+
         result.explanation = "The only sound outputs belong to microphones that aren't being recorded. Plug headphones into the computer or a headphone amp, or choose one in Settings.";
         return result;
     }
@@ -177,6 +195,12 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     if (def != automatic.end())
     {
         pick (*def, OutputSelectionReason::SystemDefault);
+        return result;
+    }
+
+    if (unrecordedDefault != nullptr && ! wired.empty())
+    {
+        pick (unrecordedDefault, OutputSelectionReason::SystemDefault);
         return result;
     }
 

@@ -397,6 +397,37 @@ TEST_CASE (OutputDeviceSelector_AnUnrecordedMicsOutputIsNeverChosenAutomatically
     REQUIRE_FALSE (onlyYeti.explanation.empty());
 }
 
+TEST_CASE (OutputDeviceSelector_HeadphonesOnAnInterfaceWithInputsOffFollowTheMacDefault)
+{
+    // The rig: headphones on a USB interface whose inputs are switched off in
+    // SobStage, chosen as the output in macOS, present at launch. v1.13.6 sent
+    // the monitor mix to the MacBook speakers instead -- live mics into the room.
+    auto builtIn = makeDevice ("built-in");
+    builtIn.isBuiltIn = true;
+
+    auto iface = makeDevice ("usb-interface");
+    iface.belongsToUnrecordedMicrophone = true;
+    iface.isSystemDefault = true;
+
+    const auto picked = OutputDeviceSelector::select ({ builtIn, iface }, "");
+    REQUIRE (picked.id == "usb-interface");
+    REQUIRE (picked.reason == OutputSelectionReason::SystemDefault);
+
+    const auto alone = OutputDeviceSelector::select ({ iface }, "");
+    REQUIRE (alone.found);
+    REQUIRE (alone.id == "usb-interface");
+
+    // Headphones in the Mac's own jack still win: that is a stronger signal.
+    auto jack = makeDevice ("external-headphones");
+    jack.isBuiltIn = true;
+    jack.hasPhysicalHeadphoneJack = true;
+    REQUIRE (OutputDeviceSelector::select ({ builtIn, iface, jack }, "").id == "external-headphones");
+
+    // Not the default: still never chosen automatically.
+    iface.isSystemDefault = false;
+    REQUIRE (OutputDeviceSelector::select ({ builtIn, iface }, "").id == "built-in");
+}
+
 TEST_CASE (OutputDeviceSelector_CandidateFromDescriptorCarriesEveryBackendFlag)
 {
     AudioDeviceDescriptor d;
