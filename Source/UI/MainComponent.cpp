@@ -791,8 +791,17 @@ void MainComponent::showSavedTake()
 
 void MainComponent::chooseDestinationFolder (std::function<void()> onChosen)
 {
-    folderChooser = std::make_unique<juce::FileChooser> ("Choose where recordings are saved",
-                                                         juce::File (application.getDestinationFolder()));
+    // The chooser stats its starting folder on this thread, and the moment
+    // someone is told to "choose another location" is exactly when the current
+    // one may be a card that has stopped answering -- the window froze there
+    // until Force Quit. A removable volume is never the starting point; the
+    // home folder always answers.
+    const juce::String current (application.getDestinationFolder());
+    const auto start = current.isEmpty() || current.startsWith ("/Volumes/")
+                         ? juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                         : juce::File (current);
+
+    folderChooser = std::make_unique<juce::FileChooser> ("Choose where recordings are saved", start);
 
     folderChooser->launchAsync (juce::FileBrowserComponent::openMode
                                     | juce::FileBrowserComponent::canSelectDirectories,

@@ -3999,7 +3999,21 @@ void Application::applyDestinationFolder (const juce::File& folder)
     // §10.4. There is no query API for this on macOS; the only truthful answer
     // comes from trying, so it is asked here -- once, when the location
     // changes -- rather than anywhere near arming or the audio path.
-    destinationWritePermission = queryVolumeWritePermission (destinationFolder);
+    //
+    // Bounded, and short: this runs on the message thread at every location
+    // click and right after Stop, and a card that has stopped answering held
+    // it inside fopen() indefinitely -- a frozen window and a quit that never
+    // finished. The answer is only guidance (the drive check keeps Record
+    // closed on its own worker), and a real privacy refusal returns in
+    // milliseconds. A probe that runs out of time owns only its copy of the
+    // path and finishes, or not, on its own.
+    {
+        const auto probeTarget = destinationFolder;
+        destinationWritePermission = runWithDeadline<PermissionState> (
+                [probeTarget] { return queryVolumeWritePermission (probeTarget); },
+                std::chrono::milliseconds (250))
+            .value_or (PermissionState::NotApplicable);
+    }
     journalledPermissionProblems = false;
 
     saveSettings();
