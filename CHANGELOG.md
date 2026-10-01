@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.7 -- 2026-10-01 (release candidate)
+
+An urgent Mac fix on v1.13.6.
+
+### Fixed
+
+- **Mac: Record no longer stays locked while your microphones are working.**
+  macOS can report that SobStage has not been asked about the microphone even
+  while it is already feeding the app live sound (for example after updating
+  to a new build). v1.13.6 then kept Record off with "macOS is asking whether
+  SobStage may use your microphones" and no way past it. Live sound from any
+  microphone now proves access is working, and Record turns on.
+
 ## v1.13.6 -- 2026-09-30 (release candidate)
 
 Seven more Mac fixes from the Mac-only bug hunt, each proven by a test that

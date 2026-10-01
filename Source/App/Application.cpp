@@ -3069,7 +3069,12 @@ juce::String Application::getRecordDisabledReason() const
     // plugged in would be told to answer a question that was never asked. The
     // 2 s permission poll reopens the streams on Allow and Record turns on.
 #if JUCE_MAC
-    if (const auto promptReason = PermissionGuidance::pendingPromptReason (microphonePermission, true);
+    // About -120 dBFS: above the exact zeros an unanswered or refused macOS
+    // microphone prompt delivers, below any real microphone's noise floor.
+    constexpr float kRealSoundThreshold = 1.0e-6f;
+
+    if (const auto promptReason = PermissionGuidance::pendingPromptReason (
+            microphonePermission, true, capture->getPeakArrived() > kRealSoundThreshold);
         ! promptReason.empty())
         return juce::String (promptReason);
 #endif

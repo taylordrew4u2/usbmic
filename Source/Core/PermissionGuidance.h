@@ -58,8 +58,15 @@ public:
     /// noise; once they are open the prompt is on screen and a take started
     /// then records nothing. Callers only ask after the streams are open, and
     /// only macOS passes osPromptsWhenStreamOpens (Windows has no such prompt).
+    ///
+    /// soundArriving: any non-zero input sample has reached the app. A pending
+    /// or denied prompt delivers exact zeros, so real sound proves access is
+    /// working whatever the status call says. macOS can report "not yet asked"
+    /// for an app it is already feeding (a rebuilt, re-signed app still listed
+    /// as allowed), and Record must never stay locked over live microphones.
     static std::string pendingPromptReason (PermissionState microphone,
-                                            bool osPromptsWhenStreamOpens);
+                                            bool osPromptsWhenStreamOpens,
+                                            bool soundArriving = false);
 
     /// What to journal when microphone access arrives. Mid-take the reopen the
     /// grant needs is deferred to Stop, so the take in progress stays silent:
