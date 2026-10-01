@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -177,6 +178,13 @@ public:
     /// nobody -- the software clock pulls with no buffer to fill -- so the
     /// app's own sounds must go another way until the output returns.
     bool hasOutputStream() const noexcept { return outputStreamOpen && ! isOutputClockLost(); }
+
+    /// Per output channel: 1 sends the mix there, 0 sends silence. Lets the
+    /// combined device feed every microphone's headphone jack while each
+    /// person can still be switched off. Channels past the list, and every
+    /// channel by default, get the mix. Safe to call while running.
+    static constexpr int kMaxOutputChannelGains = 64;
+    void setOutputChannelGains (const std::vector<float>& gains) noexcept;
 
     /// On by default. Off for harnesses that drive the output callback in
     /// simulated time, where a real-time thread deciding the output has
@@ -512,6 +520,7 @@ private:
     /// held: use pullOutputBlock() from anywhere that does not hold it.
     void processOutputBlock (float* const* outputs, int numOutputs, int numSamples) noexcept;
     std::atomic<bool> outputClockLost { false };
+    std::array<std::atomic<float>, kMaxOutputChannelGains> outputChannelGains;
     std::atomic<int64_t> lastOutputCallbackNs { 0 };
     bool outputStreamOpen = false;
     bool softwareClockEnabled = true;

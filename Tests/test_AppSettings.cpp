@@ -410,3 +410,22 @@ TEST_CASE (AppSettings_TheSecondSmallestCameraTileSurvivesARoundTrip)
     // smallest tile.
     REQUIRE (AppSettings::fromJson ("{}").cameraTileScale == AppSettings{}.cameraTileScale);
 }
+
+TEST_CASE (AppSettings_MonitoringGoesThroughTheCombinedDeviceUnlessToldOtherwise)
+{
+    // Absent from an older settings file: the new default applies, so an
+    // upgrade lands on everyone hearing everyone.
+    const auto fresh = AppSettings::fromJsonString ("{\"rememberedOutputDeviceId\":\"usb-pnp\"}");
+    REQUIRE (fresh.monitorThroughCombinedDevice);
+    REQUIRE (fresh.headphonesOffKeys.empty());
+
+    AppSettings settings;
+    settings.monitorThroughCombinedDevice = false;
+    settings.headphonesOffKeys = { "yeti-2", "yeti-4" };
+
+    const auto restored = AppSettings::fromJsonString (settings.toJsonString());
+    REQUIRE_FALSE (restored.monitorThroughCombinedDevice);
+    REQUIRE (restored.areHeadphonesOff ("yeti-2"));
+    REQUIRE (restored.areHeadphonesOff ("yeti-4"));
+    REQUIRE_FALSE (restored.areHeadphonesOff ("yeti-1"));
+}

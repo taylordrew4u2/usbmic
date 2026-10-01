@@ -776,6 +776,15 @@ void Application::restartCapture()
         return;
     }
 
+    // A combined device that changed during the take is replaced now, before
+    // the streams reopen onto it.
+    if (aggregateRepublishDeferred)
+    {
+        aggregateRepublishDeferred = false;
+        if (publishAggregateDevice())
+            reselectOutputDevice();
+    }
+
     // Every stream is reopened below, so none is dead any more. Stamped, so
     // one that dies again straight away is left dead instead of looping here.
     const auto reopenedAtMs = juce::Time::getMillisecondCounterHiRes();
@@ -852,7 +861,13 @@ void Application::restartCapture()
         ++speakerHandoversForMonitorOpen;
     }
 
+    applyHeadphoneGains();
     const bool started = capture->startMonitoring (channels, selectedOutputDeviceId);
+
+    // What a later device-list notification compares against: only a rig
+    // that came up whole is worth not reopening.
+    lastStartedRigSignature = started && capture->getDevicesThatFailedToOpen().empty()
+                            ? describeRig() : std::string();
 
     // The monitor did not come up, so nothing else will play a chirp or siren
     // that was sounding a moment ago: give the speaker straight back rather
@@ -955,10 +970,10 @@ void Application::restartCapture()
         onCaptureRebuilt();
 }
 
-void Application::publishAggregateDevice()
+bool Application::publishAggregateDevice()
 {
     if (systemAggregate == nullptr)
-        return;
+        return false;
 
     // A platform with no combined device is not a failure to report. publish()
     // answers false there by definition, and once its result started being
@@ -967,7 +982,7 @@ void Application::publishAggregateDevice()
     // What other apps see is already explained accurately, in the Advanced
     // panel, by getStatus().
     if (! systemAggregate->isSupported())
-        return;
+        return false;
 
     std::vector<std::string> uids;
     for (const auto& d : deviceManager.getDevices())
@@ -984,7 +999,17 @@ void Application::publishAggregateDevice()
     // Republishing destroys the device other apps may be recording from, so it
     // happens only when something real changed.
     if (uids == publishedUids && master == publishedMaster && name == publishedNameStd)
-        return;
+        return false;
+
+    // Mid-take, the headphone mix may be playing through this very device.
+    // Replacing it would cut everyone's headphones for the rest of the take;
+    // the change waits for Stop, like every other rig change during a take.
+    if (capture != nullptr && capture->isRecording() && isMonitoringThroughCombinedDevice())
+    {
+        aggregateRepublishDeferred = true;
+        captureRestartDeferred = true;
+        return false;
+    }
 
     // The result is read, and the cache is only updated on success.
     //
@@ -994,24 +1019,42 @@ void Application::publishAggregateDevice()
     // saying "no microphones connected, so other apps see nothing yet", which
     // is a wrong explanation for a device that failed to be created -- the
     // user hunts for a cable while the app has already given up.
+    // Close our own stream on it first. Destroying a device under a running
+    // IOProc leaves the stop and the teardown to fail against an object that
+    // no longer exists; the rebuild that follows reopens onto the new one.
+    if (capture != nullptr && capture->isMonitoring() && isMonitoringThroughCombinedDevice())
+    {
+        capture->stopMonitoring();
+        lastStartedRigSignature.clear();
+    }
+
     if (! systemAggregate->publish (name, uids, master))
     {
         noteActivity (ActivityLevel::Failed, "Combined device",
                       "Couldn't make the combined device other apps record from, so they won't see "
                       "your microphones. Everything is still being recorded here.");
-        return;
+        return false;
     }
 
     publishedUids = std::move (uids);
     publishedMaster = std::move (master);
     publishedNameStd = name;
+    return true;
 }
 
 void Application::setAggregateDeviceName (const juce::String& name)
 {
     const auto trimmed = name.trim();
     aggregateName = trimmed.isEmpty() ? juce::String ("SobStage") : trimmed;
-    publishAggregateDevice();
+
+    // A rename replaces the device, and the headphone mix with it when that
+    // is where it plays.
+    if (publishAggregateDevice() || aggregateRepublishDeferred)
+    {
+        reselectOutputDevice();
+        requestCaptureRestart();
+    }
+
     saveSettings();
 }
 
@@ -1326,6 +1369,11 @@ void Application::onDeviceListChanged()
     // cannot be met, say so -- the open path names the device and both rates.
     currentSampleRate = sampleRateOverride != 0 ? sampleRateOverride : rateResult.chosenRate;
 
+    // The combined device other apps see tracks the rig -- §2: on the OS
+    // notification, never a timer. Before the output is chosen, because the
+    // combined device IS the headphone output when everyone hears everyone.
+    publishAggregateDevice();
+
     // A device change can add or remove an output too, so §5.3 is re-run here
     // rather than only at launch (§6.5: output device disappears -> re-select).
     reselectOutputDevice();
@@ -1362,11 +1410,6 @@ void Application::onDeviceListChanged()
 
     setupAdvisor.setChannelNames (std::move (names));
     setupAdvisor.updateControllerTopology (topology);
-
-    // The combined device other apps see tracks the rig -- §2: on the OS
-    // notification, never a timer. Safe during a take: our own capture reads
-    // the per-device streams, not the aggregate.
-    publishAggregateDevice();
 
     if (capture != nullptr && capture->isRecording())
     {
@@ -1503,7 +1546,107 @@ void Application::onDeviceListChanged()
         return;
     }
 
+    // Nothing this rebuild would open has changed, and what is open is whole.
+    // The app's own combined device appearing fires this very notification,
+    // and reopening every stream for it -- a few hundred milliseconds after
+    // they first opened -- is the immediate identical reopen some USB drivers
+    // stall on. A dead stream, a lost output or a failed mic still reopens.
+    if (capture != nullptr && capture->isMonitoring()
+        && ! lastStartedRigSignature.empty()
+        && deadInputStreams.empty()
+        && capture->getDevicesThatFailedToOpen().empty()
+        && (selectedOutputDeviceId.empty() || capture->hasOutputStream())
+        && describeRig() == lastStartedRigSignature)
+        return;
+
     restartCapture();
+}
+
+std::string Application::describeRig() const
+{
+    std::string rig = std::to_string (currentSampleRate) + "|" + std::to_string (desiredBufferSize())
+                    + "|" + selectedOutputDeviceId
+                    + "|" + std::to_string (static_cast<int> (microphonePermission)) + "\n";
+
+    for (const auto& c : buildCaptureChannels())
+        rig += c.deviceId + "|" + std::to_string (c.deviceChannel) + "|"
+             + std::to_string (c.collapseStereoPair) + std::to_string (c.analyzeStereoPair) + "|"
+             + std::to_string (c.monoSourceChannel) + "|" + std::to_string (c.bitDepth) + "|"
+             + c.fileName + "|" + c.displayName + "\n";
+
+    return rig;
+}
+
+void Application::applyHeadphoneGains()
+{
+    if (capture == nullptr)
+        return;
+
+    if (! isMonitoringThroughCombinedDevice())
+    {
+        capture->setOutputChannelGains ({});
+        return;
+    }
+
+    capture->setOutputChannelGains (headphoneChannelGains (
+        combinedOutputLayout,
+        [this] (const std::string& uid)
+        {
+            for (const auto& d : deviceManager.getDevices())
+                if (d.identity.locationId == uid)
+                    return headphonesOffKeys.count (d.identity.key()) == 0;
+            return true;
+        }));
+}
+
+std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() const
+{
+    std::vector<HeadphoneChoice> out;
+
+    if (! isMonitoringThroughCombinedDevice())
+        return out;
+
+    for (const auto& sub : combinedOutputLayout)
+    {
+        if (sub.outputChannels <= 0)
+            continue;
+
+        for (const auto& d : deviceManager.getDevices())
+            if (d.identity.locationId == sub.deviceId)
+            {
+                out.push_back ({ juce::String (d.displayName),
+                                 headphonesOffKeys.count (d.identity.key()) == 0 });
+                break;
+            }
+    }
+
+    return out;
+}
+
+void Application::setHeadphonesOn (const juce::String& displayName, bool on)
+{
+    for (const auto& d : deviceManager.getDevices())
+    {
+        if (juce::String (d.displayName) != displayName)
+            continue;
+
+        const auto key = d.identity.key();
+        const bool currentlyOn = headphonesOffKeys.count (key) == 0;
+
+        if (currentlyOn == on)
+            return;
+
+        if (on) headphonesOffKeys.erase (key);
+        else    headphonesOffKeys.insert (key);
+
+        applyHeadphoneGains();
+        saveSettings();
+
+        noteActivity (ActivityLevel::Started, juce::String (d.displayName),
+                      on ? juce::String ("Headphones on: hearing everyone.")
+                         : juce::String ("Headphones off: this jack gets silence."));
+        return;
+    }
 }
 
 void Application::reselectOutputDevice()
@@ -1553,6 +1696,24 @@ void Application::reselectOutputDevice()
         outputDeviceIdByLabel[label] = c.id;
     }
 
+    // The combined device, first in the list: every microphone's own
+    // headphone jack, all fed the one mix, so everyone hears everyone. Offered
+    // only when it exists and at least one microphone has a jack to play into.
+    std::string combinedLabel;
+    combinedOutputLayout = systemAggregate != nullptr && systemAggregate->isPublished()
+                         ? systemAggregate->getOutputLayout()
+                         : std::vector<CombinedDeviceOutputs> {};
+
+    if (combinedDeviceHasHeadphones (combinedOutputLayout))
+    {
+        combinedLabel = aggregateName.toStdString();
+        while (outputDeviceIdByLabel.count (combinedLabel) > 0)
+            combinedLabel += " (every mic's headphones)";
+
+        outputDeviceNames.insert (outputDeviceNames.begin(), combinedLabel);
+        outputDeviceIdByLabel[combinedLabel] = kOurAggregateUid;
+    }
+
     // Headphones arriving or leaving is a change to the rig and was said only
     // when it left the user with nothing to listen on at all. A microphone's
     // own playback endpoint is skipped: it is the same physical thing the
@@ -1570,8 +1731,17 @@ void Application::reselectOutputDevice()
 
     // The previous pick is passed in so a moved system default alone does not
     // move the monitor; arrivals, the jack and an explicit choice still do.
-    const auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId,
-                                                         selectedOutputDeviceId);
+    auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId,
+                                                   selectedOutputDeviceId);
+
+    if (! combinedLabel.empty() && monitorThroughCombinedDevice)
+    {
+        selection = OutputSelection {};
+        selection.found = true;
+        selection.id = kOurAggregateUid;
+        selection.displayName = combinedLabel;
+    }
+
     selectedOutputDeviceId = selection.id;
     selectedOutputDeviceName.clear();
 
@@ -3582,7 +3752,16 @@ void Application::setOutputDeviceByName (const juce::String& displayName)
 
     // §5.3: an explicit choice is remembered and outranks the automatic
     // priority order from then on, including after the app is relaunched.
-    rememberedOutputDeviceId = found->second;
+    if (found->second == kOurAggregateUid)
+    {
+        monitorThroughCombinedDevice = true;
+    }
+    else
+    {
+        monitorThroughCombinedDevice = false;
+        rememberedOutputDeviceId = found->second;
+    }
+
     saveSettings();
     reselectOutputDevice();
     restartCapture();
@@ -5429,6 +5608,9 @@ void Application::loadSettings()
                         : juce::String (rememberedSettings.aggregateName);
     masterVolume = rememberedSettings.masterVolume;
     rememberedOutputDeviceId = rememberedSettings.rememberedOutputDeviceId;
+    monitorThroughCombinedDevice = rememberedSettings.monitorThroughCombinedDevice;
+    headphonesOffKeys = { rememberedSettings.headphonesOffKeys.begin(),
+                          rememberedSettings.headphonesOffKeys.end() };
     cameraController.setPreviewQuality (rememberedSettings.cameraPreviewFullQuality
                                             ? PreviewQuality::Full : PreviewQuality::Low);
 
@@ -5564,6 +5746,8 @@ void Application::saveSettings()
     settings.aggregateName = aggregateName.toStdString();
     settings.masterVolume = masterVolume;
     settings.rememberedOutputDeviceId = rememberedOutputDeviceId;
+    settings.monitorThroughCombinedDevice = monitorThroughCombinedDevice;
+    settings.headphonesOffKeys.assign (headphonesOffKeys.begin(), headphonesOffKeys.end());
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
     settings.cameraTileScale = cameraTileScale;
     settings.combineVideoAndAudio = combineVideoAndAudio;

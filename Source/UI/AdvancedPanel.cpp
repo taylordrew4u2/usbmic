@@ -77,6 +77,10 @@ AdvancedPanel::AdvancedPanel()
     clockMasterValue.setColour (juce::Label::textColourId, AppLookAndFeel::bone);
     addAndMakeVisible (clockMasterValue);
 
+    headphonesLabel.setText ("Who hears the mix in their headphones", juce::dontSendNotification);
+    headphonesLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+    addChildComponent (headphonesLabel);
+
     addAndMakeVisible (outputDeviceCombo);
     outputDeviceCombo.onChange = [this] {
         if (onOutputDeviceChanged)
@@ -457,6 +461,46 @@ void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
     }
 }
 
+void AdvancedPanel::setHeadphoneChoices (const std::vector<HeadphoneChoice>& choices)
+{
+    juce::StringArray incoming;
+    for (const auto& c : choices)
+        incoming.add (c.deviceName);
+
+    // Rebuilt only when the set of people changes, like the microphone list:
+    // recreating a tick box on every refresh would fight the user's click.
+    if (incoming != lastHeadphoneNames)
+    {
+        headphoneToggles.clear();
+        lastHeadphoneNames = incoming;
+
+        for (const auto& c : choices)
+        {
+            auto toggle = std::make_unique<juce::ToggleButton> (c.deviceName);
+            toggle->setTitle (c.deviceName + " headphones");
+            toggle->setDescription ("Whether this person hears everyone in the headphones plugged into their microphone.");
+            const auto name = c.deviceName;
+
+            toggle->onClick = [this, name, raw = toggle.get()] {
+                const bool state = raw->getToggleState();
+                juce::Component::SafePointer<AdvancedPanel> safe (this);
+                juce::MessageManager::callAsync ([safe, name, state] {
+                    if (safe != nullptr && safe->onHeadphonesToggled)
+                        safe->onHeadphonesToggled (name, state);
+                });
+            };
+            addAndMakeVisible (*toggle);
+            headphoneToggles.push_back (std::move (toggle));
+        }
+
+        headphonesLabel.setVisible (! headphoneToggles.empty());
+        resized();
+    }
+
+    for (size_t i = 0; i < choices.size() && i < headphoneToggles.size(); ++i)
+        headphoneToggles[i]->setToggleState (choices[i].on, juce::dontSendNotification);
+}
+
 void AdvancedPanel::setStorageVolumes (const std::vector<VolumeChoice>& volumes)
 {
     juce::StringArray labels;
@@ -604,7 +648,10 @@ int AdvancedPanel::getRequiredHeight() const
     // "Where it's going": the explanation and the line of advice under it.
     constexpr int kDelivery    = 84 + 4 + 36;
 
-    return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount)
+    const int headphoneRows = headphoneToggles.empty()
+        ? 0 : kMicListLabel + static_cast<int> (headphoneToggles.size()) * kMicToggle + 6;
+
+    return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount) + headphoneRows
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
          + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kActivity;
@@ -718,6 +765,18 @@ void AdvancedPanel::resized()
 
     section (outputSection);
     row (outputDeviceLabel, outputDeviceCombo);
+
+    if (! headphoneToggles.empty())
+    {
+        headphonesLabel.setBounds (area.removeFromTop (22));
+        for (auto& toggle : headphoneToggles)
+        {
+            toggle->setBounds (area.removeFromTop (28).reduced (8, 0));
+            area.removeFromTop (2);
+        }
+        area.removeFromTop (6);
+    }
+
     row (backendLabel, backendValue);
     row (aggregateNameLabel, aggregateNameEditor);
     aggregateStatusLabel.setBounds (area.removeFromTop (20));
