@@ -2,6 +2,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "../Core/HeadphoneRouting.h"
 
 namespace mma {
 
@@ -41,6 +42,14 @@ public:
 
     /// Plain language for the Advanced panel: what other apps currently see.
     virtual std::string getStatus() const = 0;
+
+    /// Whether the combined device exists right now.
+    virtual bool isPublished() const { return false; }
+
+    /// The combined device's output channels, sub-device by sub-device, in
+    /// the order the HAL lays them out -- each microphone's headphone jack.
+    /// Empty when nothing is published or the platform has no such device.
+    virtual std::vector<CombinedDeviceOutputs> getOutputLayout() const { return {}; }
 };
 
 /// The right implementation for this platform. Never null; on platforms with

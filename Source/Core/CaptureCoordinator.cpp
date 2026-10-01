@@ -18,6 +18,14 @@ CaptureCoordinator::CaptureCoordinator (IAudioBackend& b, double rate, int buffe
     : backend (b), sampleRate (rate), bufferSize (bufferSizeSamples),
       monitorBus (rate), mixMeter (rate)
 {
+    for (auto& gain : outputChannelGains)
+        gain.store (1.0f, std::memory_order_relaxed);
+}
+
+void CaptureCoordinator::setOutputChannelGains (const std::vector<float>& gains) noexcept
+{
+    for (size_t ch = 0; ch < outputChannelGains.size(); ++ch)
+        outputChannelGains[ch].store (ch < gains.size() ? gains[ch] : 1.0f, std::memory_order_relaxed);
 }
 
 CaptureCoordinator::~CaptureCoordinator()
@@ -1392,10 +1400,22 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         mixScratch[static_cast<size_t> (s)] = std::clamp (mixScratch[static_cast<size_t> (s)], -1.0f, 1.0f);
 
     // §5.2: the same mix to every output channel -- no per-listener variation.
+    // A channel can be switched off (a person who wants their headphones
+    // quiet), never given a different mix.
     for (int ch = 0; ch < numOutputs; ++ch)
-        if (outputs[ch] != nullptr)
+    {
+        if (outputs[ch] == nullptr)
+            continue;
+
+        const bool hears = ch >= kMaxOutputChannelGains
+                        || outputChannelGains[static_cast<size_t> (ch)].load (std::memory_order_relaxed) > 0.0f;
+
+        if (hears)
             std::copy (mixScratch.begin(), mixScratch.begin() + numSamples,
                        outputs[ch] + outputFrameOffset);
+        else
+            std::fill (outputs[ch] + outputFrameOffset, outputs[ch] + outputFrameOffset + numSamples, 0.0f);
+    }
 }
 
 void CaptureCoordinator::measurePolarPattern (const float* const* inputs, int channelCount,

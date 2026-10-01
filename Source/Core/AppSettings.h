@@ -50,6 +50,15 @@ struct AppSettings
     /// Stable id of the monitor output the user explicitly chose. §5.3 makes
     /// that choice priority one on the next launch.
     std::string rememberedOutputDeviceId;
+
+    /// The live mix goes to the combined device -- every microphone's own
+    /// headphone jack at once, so everyone hears everyone. On by default;
+    /// picking another output in Settings turns it off and remembers that.
+    bool monitorThroughCombinedDevice = true;
+
+    /// §2.4 keys of the microphones whose headphone jack gets no mix. Keyed by
+    /// port, like disabledMicKeys, so one of four identical mics can be quiet.
+    std::vector<std::string> headphonesOffKeys;
     bool cameraPreviewFullQuality = false;
 
     /// How large the camera tiles on the main screen are drawn, as a step into
@@ -126,6 +135,7 @@ struct AppSettings
     const PersistedPort* findPort (const std::string& key) const;
     const PersistedCamera* findCamera (const std::string& id) const;
     bool isMicDisabled (const std::string& key) const;
+    bool areHeadphonesOff (const std::string& key) const;
 };
 
 } // namespace mma
