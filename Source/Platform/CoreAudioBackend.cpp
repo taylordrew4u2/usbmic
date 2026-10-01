@@ -1278,7 +1278,11 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
     stream.deinterleaveScratch.assign (scratchSamples, 0.0f);
     stream.interleaveScratch.assign (scratchSamples, 0.0f);
 
-    if (isOutput)
+    // Not on the combined device. Other apps record from it, and hog mode
+    // would take it away from them -- the one thing it exists to give them.
+    // Its sub-devices are microphones already running, so there is nothing a
+    // second client could do to its timing that hog mode would prevent.
+    if (isOutput && deviceUid != kOurAggregateUid)
     {
         if (! takeHogMode (device))
         {

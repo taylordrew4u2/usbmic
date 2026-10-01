@@ -139,6 +139,10 @@ MainComponent::MainComponent (Application& app)
         application.setOutputDeviceByName (name);
     };
 
+    advancedPanel.onHeadphonesToggled = [this] (const juce::String& name, bool on) {
+        application.setHeadphonesOn (name, on);
+    };
+
     advancedPanel.onSampleRateChanged = [this] (uint32_t rate) {
         application.setSampleRateOverride (rate);
     };
@@ -1100,6 +1104,11 @@ void MainComponent::refreshAdvanced()
 
     advancedPanel.setOutputDevices (outputs,
                                     juce::String (application.getSelectedOutputDeviceName()));
+
+    std::vector<AdvancedPanel::HeadphoneChoice> headphones;
+    for (const auto& h : application.getHeadphoneChoices())
+        headphones.push_back ({ h.displayName, h.on });
+    advancedPanel.setHeadphoneChoices (headphones);
 
     const int micCount = application.getIncludedMicCount();
     juce::StringArray micNames;

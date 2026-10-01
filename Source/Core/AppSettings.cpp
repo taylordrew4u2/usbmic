@@ -13,6 +13,7 @@ JsonValue AppSettings::toJson() const
     root["aggregateName"] = JsonValue (aggregateName);
     root["masterVolume"] = JsonValue (masterVolume);
     root["rememberedOutputDeviceId"] = JsonValue (rememberedOutputDeviceId);
+    root["monitorThroughCombinedDevice"] = JsonValue (monitorThroughCombinedDevice);
     root["cameraPreviewFullQuality"] = JsonValue (cameraPreviewFullQuality);
     root["cameraTileScale"] = JsonValue (static_cast<double> (cameraTileScale));
     root["combineVideoAndAudio"] = JsonValue (combineVideoAndAudio);
@@ -67,6 +68,11 @@ JsonValue AppSettings::toJson() const
         disabledArr.push_back (JsonValue (key));
     root["disabledMicrophones"] = disabledArr;
 
+    JsonValue headphonesOffArr = JsonValue::makeArray();
+    for (const auto& key : headphonesOffKeys)
+        headphonesOffArr.push_back (JsonValue (key));
+    root["headphonesOff"] = headphonesOffArr;
+
     JsonValue cameraArr = JsonValue::makeArray();
     for (const auto& c : cameras)
     {
@@ -95,6 +101,7 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
     if (auto* p = v.find ("aggregateName")) s.aggregateName = p->asString (s.aggregateName);
     if (auto* p = v.find ("masterVolume")) s.masterVolume = p->asDouble (s.masterVolume);
     if (auto* p = v.find ("rememberedOutputDeviceId")) s.rememberedOutputDeviceId = p->asString();
+    if (auto* p = v.find ("monitorThroughCombinedDevice")) s.monitorThroughCombinedDevice = p->asBool (true);
     if (auto* p = v.find ("cameraPreviewFullQuality")) s.cameraPreviewFullQuality = p->asBool (false);
     // The fallback is the struct default, not 1. It only applies when the key
     // is present but unparsable; an absent key already leaves the default
@@ -171,6 +178,11 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
         for (const auto& dv : p->asArray())
             if (const auto key = dv.asString(); ! key.empty())
                 s.disabledMicKeys.push_back (key);
+
+    if (auto* p = v.find ("headphonesOff"))
+        for (const auto& dv : p->asArray())
+            if (const auto key = dv.asString(); ! key.empty())
+                s.headphonesOffKeys.push_back (key);
 
     if (auto* p = v.find ("cameras"))
         for (const auto& cv : p->asArray())
@@ -252,6 +264,11 @@ const PersistedCamera* AppSettings::findCamera (const std::string& id) const
 bool AppSettings::isMicDisabled (const std::string& key) const
 {
     return std::find (disabledMicKeys.begin(), disabledMicKeys.end(), key) != disabledMicKeys.end();
+}
+
+bool AppSettings::areHeadphonesOff (const std::string& key) const
+{
+    return std::find (headphonesOffKeys.begin(), headphonesOffKeys.end(), key) != headphonesOffKeys.end();
 }
 
 } // namespace mma

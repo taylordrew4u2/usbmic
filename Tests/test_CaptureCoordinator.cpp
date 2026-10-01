@@ -449,6 +449,35 @@ TEST_CASE (CaptureCoordinator_EveryOutputChannelGetsTheSameMix)
     REQUIRE_NEAR (outL[0], outR[0], 1e-9);
 }
 
+TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheMix)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // Two microphones' jacks on the combined device, two channels each; the
+    // second person has switched theirs off.
+    c.setOutputChannelGains ({ 1.0f, 1.0f, 0.0f, 0.0f });
+
+    std::vector<float> a (64, 0.15f), b (64, 0.15f);
+    std::vector<float> o0 (64, 0.5f), o1 (64, 0.5f), o2 (64, 0.5f), o3 (64, 0.5f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { o0.data(), o1.data(), o2.data(), o3.data() };
+
+    c.processAudioBlock (ins, 2, outs, 4, 64);
+
+    REQUIRE (std::abs (o0[10]) > 0.01f);
+    REQUIRE_NEAR (o0[10], o1[10], 1e-9);
+    REQUIRE (o2[10] == 0.0f);
+    REQUIRE (o3[10] == 0.0f);
+
+    // Switched back on while running.
+    c.setOutputChannelGains ({});
+    c.processAudioBlock (ins, 2, outs, 4, 64);
+    REQUIRE_NEAR (o3[10], o0[10], 1e-9);
+}
+
 TEST_CASE (CaptureCoordinator_MetersRunWithoutRecording)
 {
     FakeBackend backend;

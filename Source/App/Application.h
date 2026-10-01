@@ -334,6 +334,23 @@ public:
     juce::String getDriftReport() const;
     void setOutputDeviceByName (const juce::String& displayName);
 
+    /// The live mix goes to the combined device: every microphone's headphone
+    /// jack at once, so everyone hears everyone.
+    bool isMonitoringThroughCombinedDevice() const { return selectedOutputDeviceId == kOurAggregateUid; }
+
+    /// One row per microphone with a headphone jack on the combined device:
+    /// whether its wearer hears the mix. Empty unless the mix is going there.
+    struct HeadphoneChoice
+    {
+        juce::String displayName;
+        bool on = true;
+    };
+    std::vector<HeadphoneChoice> getHeadphoneChoices() const;
+
+    /// Switch one person's headphones on or off. Applies at once, mid-take
+    /// too: it changes only what reaches that jack, never the recording.
+    void setHeadphonesOn (const juce::String& displayName, bool on);
+
     /// Every microphone the OS reports, in enumeration order, with whether the
     /// user currently has it selected. Includes deselected ones -- the point of
     /// the list is to let them be turned back on.
@@ -774,7 +791,28 @@ private:
     // justified when hardware changed, never as a side effect of a no-op.
     std::vector<std::string> publishedUids;
     std::string publishedMaster, publishedNameStd;
-    void publishAggregateDevice();
+
+    /// Republishes when the rig changed. Returns true when the combined device
+    /// was replaced, which takes away any stream open on the old one.
+    bool publishAggregateDevice();
+
+    /// A republish held back because the take's headphone mix is playing
+    /// through the combined device; Stop pays it.
+    bool aggregateRepublishDeferred = false;
+
+    bool monitorThroughCombinedDevice = true;
+    std::set<std::string> headphonesOffKeys;
+
+    /// The combined device's jacks as of the last output selection, so the
+    /// Settings refresh does not ask the HAL twice a second.
+    std::vector<CombinedDeviceOutputs> combinedOutputLayout;
+    void applyHeadphoneGains();
+
+    /// Everything a rig rebuild opens, as text. A device-list notification
+    /// that leaves this unchanged on a healthy rig -- the app's own combined
+    /// device appearing is the usual one -- has nothing to reopen.
+    std::string describeRig() const;
+    std::string lastStartedRigSignature;
 
     DeviceManager deviceManager;
     RecordingEngine recordingEngine;

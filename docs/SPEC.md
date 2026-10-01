@@ -105,19 +105,20 @@ The master's own crystal is part of what this measures. A gate that gives the ma
 - Master monitor volume: 0–100, default 70, mapped logarithmically. Recorded files are unaffected by it.
 ### 5.2 Physical topology
 ```
-Computer output -> headphone amp or splitter -> all listeners
+Computer -> combined device (SobStage) -> every microphone's own headphone jack
 ```
-- **Microphone headphone jacks are NOT used.** The app opens exactly one audio output stream, ever, and never opens a microphone's playback endpoint.
-- Reason: on hardware with non-defeatable analog direct monitoring (§14.5), a listener plugged into a mic hears their own voice twice — once analog at 0 ms, once from the shared mix at ~8 ms. That comb-filters and sounds worse than plain latency. Since the shared mix already contains their voice, the mic jack adds nothing.
-- Detect headphones connected to a microphone jack where the hardware exposes it. Warn plainly: "Unplug headphones from the microphones. Use the headphone amp instead, or you'll hear yourself twice."
-- **A headphone amp or splitter is required hardware**, with at least as many outputs as listeners. State this in first-run guidance, not in an error.
+- **Default (macOS): everyone hears everything through their own microphone.** The monitor output is the combined device of §7 — the same "SobStage" other apps record from — so the one mix plays out of every microphone's headphone jack at once. Each person's jack can be switched off in Settings ("Who hears the mix in their headphones"); a switched-off jack gets silence, never a different mix.
+- The combined device is never hog-moded: other apps must still be able to record from it.
+- Picking any other output in Settings turns this off and remembers that choice; the priority order of §5.3 then applies as before. Where no combined device exists, or no microphone in it has a headphone jack, §5.3 applies.
+- Hardware with non-defeatable analog direct monitoring (§14.5) means a listener hears their own voice twice (0 ms analog + the mix). Accepted: the user asked for every mic's jack to carry the whole room.
+
 ### 5.3 Output device selection
 Automatic, in this priority order:
 1. A device the user explicitly chose in a previous session that is currently present.
 2. A newly connected output device (a device appearing after launch is assumed to be the one the user just plugged in).
 3. A device exposing a physical headphone jack.
 4. System default output.
-Never a microphone's playback endpoint, at any priority.
+Never a microphone's own playback endpoint on its own, at any priority (the combined device of §5.2 is the one way a mic jack is used).
 Never an output the backend positively reports cannot run at the recording
 sample rate; continue the priority order among compatible outputs. An output
 with unknown rate capability remains eligible so an actual open refusal is
@@ -152,7 +153,7 @@ Note: everyone is in the same room and already hears each other acoustically at 
 - **Runaway cut.** If the limiter is engaged continuously for more than 500 ms, mute the monitor bus, show the reason, and require a manual unmute.
 - **Feedback protection.** Detect narrowband energy growth: any 1/3-octave band rising more than 10 dB over 500 ms while remaining within 6 dB of the broadband peak. On detection, mute the monitor bus with a visible reason and a one-tap unmute.
 - **Global monitor mute** on the spacebar, instantly reversible, with a visible muted state.
-- At startup, refuse to route monitor output to a device that is also a selected input, and explain why.
+- At startup, refuse to route monitor output to a single device that is also a selected input, and explain why. The combined device (§5.2) is the exception.
 - Comb filtering from self-monitoring is inherent. Mitigate with low latency; never attempt to correct it with processing.
 ---
 ## 6. Recording

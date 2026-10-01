@@ -84,6 +84,12 @@ public:
     /// The microphones the OS reports and whether each is currently selected.
     void setMicSelections (const std::vector<MicChoice>& mics);
 
+    /// One tick box per person whose microphone has a headphone jack on the
+    /// combined device: whether they hear the mix. Empty hides the list.
+    struct HeadphoneChoice { juce::String deviceName; bool on = true; };
+    void setHeadphoneChoices (const std::vector<HeadphoneChoice>& choices);
+    std::function<void (const juce::String&, bool)> onHeadphonesToggled;
+
     /// Volumes to offer as save destinations: display name, path, and whether
     /// it is the one currently in use.
     struct VolumeChoice { juce::String label, path; bool current = false; };
@@ -170,6 +176,9 @@ private:
     void layOutTrimRows();
     juce::Label outputDeviceLabel;
     juce::ComboBox outputDeviceCombo;
+    juce::Label headphonesLabel;
+    std::vector<std::unique_ptr<juce::ToggleButton>> headphoneToggles;
+    juce::StringArray lastHeadphoneNames;
     juce::String lastOutputSignature;
     juce::ComboBox sampleRateCombo;
     juce::String lastSampleRateSignature;
