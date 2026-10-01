@@ -99,6 +99,9 @@ constexpr AudioObjectPropertySelector kAudioDevicePropertyAvailableNominalSample
 constexpr AudioObjectPropertySelector kAudioDeviceProcessorOverload = mmaFourCC ('o', 'v', 'e', 'r');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyBufferFrameSize = mmaFourCC ('f', 's', 'i', 'z');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyHogMode = mmaFourCC ('o', 'i', 'n', 'k');
+constexpr AudioObjectPropertySelector kAudioDevicePropertyLatency = mmaFourCC ('l', 't', 'n', 'c');
+constexpr AudioObjectPropertySelector kAudioDevicePropertySafetyOffset = mmaFourCC ('s', 'a', 'f', 't');
+constexpr AudioObjectPropertySelector kAudioStreamPropertyLatency = mmaFourCC ('l', 't', 'n', 'c');
 
 // §2.3: what a device can actually deliver. CoreAudio keeps this on the
 // STREAM, not the device, so finding it is two hops: ask the device for its

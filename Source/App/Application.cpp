@@ -1,6 +1,16 @@
 #include "Application.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
+#include "../Core/PreflightScratchFile.h"
+#if JUCE_MAC
+ #include <sys/mount.h>
+#endif
+#if JUCE_MAC || JUCE_LINUX
+ #include <cerrno>
+ #include <fcntl.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+#endif
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/SystemThermalState.h"
 #include "../Core/CombinedTakePlan.h"
@@ -1614,7 +1624,7 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
         for (const auto& d : deviceManager.getDevices())
             if (d.identity.locationId == sub.deviceId)
             {
-                out.push_back ({ juce::String (d.displayName),
+                out.push_back ({ juce::String (d.identity.key()), juce::String (d.displayName),
                                  headphonesOffKeys.count (d.identity.key()) == 0 });
                 break;
             }
@@ -1623,11 +1633,11 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
     return out;
 }
 
-void Application::setHeadphonesOn (const juce::String& displayName, bool on)
+void Application::setHeadphonesOn (const juce::String& deviceKey, bool on)
 {
     for (const auto& d : deviceManager.getDevices())
     {
-        if (juce::String (d.displayName) != displayName)
+        if (d.identity.key() != deviceKey.toStdString())
             continue;
 
         const auto key = d.identity.key();
@@ -3318,6 +3328,11 @@ juce::String Application::getRecordDisabledReason() const
 
         if (! verdict.passed)
             return juce::String (verdict.reason);
+
+        if (const auto refusal = PreflightThroughputTest::fileSizeRefusal (
+                verdict.limitedTo4GiBFiles, cameraController.getSelection().getEnabledCount());
+            ! refusal.empty())
+            return juce::String (refusal);
     }
 
     return {};
@@ -3459,6 +3474,46 @@ void Application::startPreflightIfNeeded() const
     }
 }
 
+// The error the OS gives for creating a file in this folder (or the folder
+// itself, when it could not be made), read straight from errno -- JUCE's
+// stream keeps only a message. 0 when the probe succeeded or can't tell.
+int Application::probeWriteErrno (const juce::File& folder)
+{
+   #if JUCE_MAC || JUCE_LINUX
+    if (! folder.isDirectory())
+    {
+        errno = 0;
+        if (::mkdir (folder.getFullPathName().toRawUTF8(), 0755) != 0)
+            return errno;
+    }
+
+    const auto probe = folder.getChildFile (".sobstage-write-probe");
+    errno = 0;
+    const int fd = ::open (probe.getFullPathName().toRawUTF8(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return errno;
+
+    ::close (fd);
+    ::unlink (probe.getFullPathName().toRawUTF8());
+   #else
+    juce::ignoreUnused (folder);
+   #endif
+    return 0;
+}
+
+// The OS's name for the format of the drive holding this folder, or empty.
+std::string Application::filesystemTypeName (const juce::File& folder)
+{
+   #if JUCE_MAC
+    struct statfs info {};
+    if (::statfs (folder.getFullPathName().toRawUTF8(), &info) == 0)
+        return info.f_fstypename;
+   #else
+    juce::ignoreUnused (folder);
+   #endif
+    return {};
+}
+
 Application::PreflightBackgroundResult Application::runPreflight (
     std::string destination, int channelCount, double sampleRate,
     int bytesPerSample, const std::atomic<bool>& cancelled)
@@ -3473,7 +3528,18 @@ Application::PreflightBackgroundResult Application::runPreflight (
     if (cancelled.load (std::memory_order_acquire))
         return completed;
 
-    const auto testFile = folder.getNonexistentChildFile ("preflight", ".tmp");
+    // Whatever an interrupted earlier check left here goes first. This worker
+    // holds the destination's lease, so no other check can be writing one.
+    for (const auto& f : folder.findChildFiles (juce::File::findFiles,
+                                                false, "*.tmp"))
+        if (PreflightScratchFile::isLeftover (f.getFileName().toStdString()))
+            f.deleteFile();
+
+    const auto testFile = folder.getChildFile (PreflightScratchFile::kName);
+
+    // JUCE opens an existing file to append; a leftover that would not delete
+    // must not make this run's file start 200 MB in.
+    testFile.deleteFile();
 
     std::vector<double> rollingWindows;
 
@@ -3482,6 +3548,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
     // reads 0 MB/s and says "this card is too slow", which sends someone
     // shopping for a faster card when the card is read-only, full, or gone.
     bool couldNotWrite = false;
+    int writeErrno = 0;
 
     {
         // §6.4: 200 MB, written the way a take writes -- steadily, measuring the
@@ -3491,6 +3558,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
         if (! out.openedOk())
         {
             couldNotWrite = true;
+            writeErrno = probeWriteErrno (folder);
         }
         else
         {
@@ -3588,9 +3656,13 @@ Application::PreflightBackgroundResult Application::runPreflight (
     {
         result.passed = false;
         result.couldNotWrite = true;
-        result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
-                         "is plugged in, has room, and isn't locked.";
+        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno);
     }
+
+    // The format, read here on the worker: a statfs on a card that has stopped
+    // answering must not stall the message thread.
+    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (
+        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder)));
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
@@ -3779,6 +3851,7 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
                                        && persisted->channelLayoutIsMono;
 
         MicSelection m;
+        m.deviceKey = juce::String (d.identity.key());
         m.displayName = juce::String (d.displayName);
         m.enabled = d.userEnabled;
         m.isBuiltIn = d.isBuiltIn;
@@ -3808,11 +3881,11 @@ std::vector<Application::MicSelection> Application::getMicSelections() const
     return out;
 }
 
-void Application::setInputEnabled (const juce::String& displayName, int input, bool enabled)
+void Application::setInputEnabled (const juce::String& deviceKey, int input, bool enabled)
 {
     for (const auto& d : deviceManager.getDevices())
     {
-        if (juce::String (d.displayName) != displayName)
+        if (d.identity.key() != deviceKey.toStdString())
             continue;
 
         auto settings = portIdentityStore.get (d.identity).value_or (PersistedDeviceSettings{});
@@ -3837,14 +3910,15 @@ void Application::setInputEnabled (const juce::String& displayName, int input, b
     }
 }
 
-void Application::setMicEnabledByName (const juce::String& displayName, bool enabled)
+void Application::setMicEnabledByKey (const juce::String& deviceKey, bool enabled)
 {
     for (const auto& d : deviceManager.getDevices())
     {
-        // Matched on display name because that is what the panel shows. Not on
-        // `included`: a deselected microphone is excluded, and looking only at
+        // Matched on identity, never on the name: four identical mics share
+        // one, and every row switched the first of them. Not on `included`
+        // either: a deselected microphone is excluded, and looking only at
         // included ones would make it impossible to tick back on.
-        if (juce::String (d.displayName) != displayName)
+        if (d.identity.key() != deviceKey.toStdString())
             continue;
 
         if (deviceManager.setUserEnabled (d.identity.key(), enabled))
@@ -3925,7 +3999,21 @@ void Application::applyDestinationFolder (const juce::File& folder)
     // §10.4. There is no query API for this on macOS; the only truthful answer
     // comes from trying, so it is asked here -- once, when the location
     // changes -- rather than anywhere near arming or the audio path.
-    destinationWritePermission = queryVolumeWritePermission (destinationFolder);
+    //
+    // Bounded, and short: this runs on the message thread at every location
+    // click and right after Stop, and a card that has stopped answering held
+    // it inside fopen() indefinitely -- a frozen window and a quit that never
+    // finished. The answer is only guidance (the drive check keeps Record
+    // closed on its own worker), and a real privacy refusal returns in
+    // milliseconds. A probe that runs out of time owns only its copy of the
+    // path and finishes, or not, on its own.
+    {
+        const auto probeTarget = destinationFolder;
+        destinationWritePermission = runWithDeadline<PermissionState> (
+                [probeTarget] { return queryVolumeWritePermission (probeTarget); },
+                std::chrono::milliseconds (250))
+            .value_or (PermissionState::NotApplicable);
+    }
     journalledPermissionProblems = false;
 
     saveSettings();
@@ -6488,6 +6576,11 @@ void Application::shutdown()
     // chance to stall; this request never joins the worker.
     takeCombiner.cancel();
 
+    // The drive check, early: its worker deletes its 200 MB scratch file on
+    // the way out, and the sooner it is told the more of teardown it has to
+    // get there. The next run sweeps up anything it still leaves.
+    preflightTask.cancel();
+
     // Finalize user media before auxiliary teardown. The detached storage
     // workers never join here; their cancellation flags only suppress late
     // publication, and worker-owned state survives any OS call that does not
@@ -6518,7 +6611,6 @@ void Application::shutdown()
     if (systemAggregate != nullptr)
         systemAggregate->remove();
 
-    preflightTask.cancel();
     destinationRecoveryTask.cancel();
     mirrorRecoveryTask.cancel();
     recoveryAcknowledgementTask.cancel();

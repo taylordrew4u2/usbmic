@@ -55,3 +55,27 @@ TEST_CASE (FfmpegLocator_KnowsWhichPlatformItWasBuiltFor)
     REQUIRE (thisHostPlatform() == HostPlatform::Linux);
 #endif
 }
+
+TEST_CASE (FfmpegLocator_TheMacCombineRunsAtTheLowestDiskPriority)
+{
+    const std::vector<std::string> args { "/opt/homebrew/bin/ffmpeg", "-i", "in.mov" };
+
+    const auto mac = withLowDiskPriority (args, HostPlatform::MacOS);
+    REQUIRE (mac.size() == args.size() + 3);
+    REQUIRE (mac[0] == std::string ("/usr/sbin/taskpolicy"));
+    REQUIRE (mac[1] == std::string ("-d"));
+    REQUIRE (mac[2] == std::string ("throttle"));
+    REQUIRE (mac[3] == args[0]);
+
+    REQUIRE (withLowDiskPriority (args, HostPlatform::Linux) == args);
+    REQUIRE (withLowDiskPriority (args, HostPlatform::Windows) == args);
+}
+
+TEST_CASE (FfmpegLocator_OnlyAnFfmpegThatRunsIsAccepted)
+{
+    REQUIRE (looksLikeFfmpegVersionOutput ("ffmpeg version 7.1 Copyright (c) 2000-2024\n"));
+    REQUIRE (looksLikeFfmpegVersionOutput ("\nffmpeg version n6.0"));
+    REQUIRE_FALSE (looksLikeFfmpegVersionOutput (""));
+    REQUIRE_FALSE (looksLikeFfmpegVersionOutput ("Bad CPU type in executable"));
+    REQUIRE_FALSE (looksLikeFfmpegVersionOutput ("ffprobe version 7.1"));
+}

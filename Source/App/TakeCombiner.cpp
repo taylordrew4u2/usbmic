@@ -46,27 +46,30 @@ juce::String TakeCombiner::probeFfmpeg()
         // A bare name is for PATH to answer, and the only honest way to ask is
         // to run it. Anything with a separator in it is a real location and can
         // be checked without spawning anything.
-        if (path.contains ("/") || path.contains ("\\"))
-        {
-            const juce::File file (path);
+        if ((path.contains ("/") || path.contains ("\\")) && ! juce::File (path).existsAsFile())
+            continue;
 
-            if (file.existsAsFile())
+        // Run it, every candidate: existing is not the same as working. An
+        // Intel ffmpeg migrated onto an Apple-silicon Mac without Rosetta
+        // exists, was accepted, and failed every take -- while the faster
+        // /opt/homebrew one installed later was never looked at. The output
+        // is checked rather than the exit code, which a signal can read as 0;
+        // -version prints a couple of KB, well inside the pipe.
+        juce::ChildProcess probe;
+
+        if (probe.start (juce::StringArray { path, "-version" }, juce::ChildProcess::wantStdOut))
+        {
+            if (! probe.waitForProcessToFinish (4000))
+            {
+                probe.kill();
+                continue;
+            }
+
+            if (looksLikeFfmpegVersionOutput (probe.readAllProcessOutput().toStdString()))
             {
                 resolvedFfmpeg = path;
                 return resolvedFfmpeg;
             }
-
-            continue;
-        }
-
-        juce::ChildProcess probe;
-
-        if (probe.start (juce::StringArray { path, "-version" })
-            && probe.waitForProcessToFinish (4000)
-            && probe.getExitCode() == 0)
-        {
-            resolvedFfmpeg = path;
-            return resolvedFfmpeg;
         }
     }
 
@@ -97,6 +100,16 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
             runState->status.total += static_cast<int> (plan.jobs.size());
             return true;
         }
+    }
+
+    // A binary that failed the last combine is looked for again: a newer one
+    // may have been installed at a better location since, and the broken one
+    // must not be kept for the rest of the session.
+    if (runState != nullptr)
+    {
+        const std::lock_guard<std::mutex> lock (runState->statusLock);
+        if (runState->status.problem.isNotEmpty())
+            resolvedFfmpeg.clear();
     }
 
     // Always a fresh look for a miss: this is the take the user was told
@@ -230,8 +243,13 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
                                                 job.audioLeadSeconds,
                                                 job.audioBitDepth);
 
+        // Lowest disk priority on the Mac, so the next take recording to the
+        // same card comes first. Only when the tool is where macOS keeps it.
+        const auto platform = juce::File ("/usr/sbin/taskpolicy").existsAsFile()
+                                ? thisHostPlatform() : HostPlatform::Linux;
+
         juce::StringArray argv;
-        for (const auto& arg : args)
+        for (const auto& arg : withLowDiskPriority (args, platform))
             argv.add (juce::String (arg));
 
         juce::ChildProcess process;

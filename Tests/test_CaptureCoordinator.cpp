@@ -69,6 +69,8 @@ public:
 
     std::string getBackendName() const override { return "Fake"; }
     int getGrantedOutputBufferFrames() const override { return grantedOutputBufferFrames; }
+    int outputPresentationLatencyFrames = 0;
+    int getOutputPresentationLatencyFrames() const override { return outputPresentationLatencyFrames; }
     std::vector<AudioDeviceDescriptor> enumerateInputDevices() override { return {}; }
     std::vector<AudioDeviceDescriptor> enumerateOutputDevices() override { return {}; }
     void setDeviceChangeCallback (DeviceChangeCallback) override {}
@@ -289,6 +291,29 @@ TEST_CASE (CaptureCoordinator_OpensAMixerThatIsAlsoTheOutputExactlyOnce)
     // The microphones ride on the output stream, so nothing opens the device
     // a second time.
     REQUIRE (backend.inputStreamsOpened == 0);
+}
+
+TEST_CASE (CaptureCoordinator_AFailingMicBesideAMixerOutputDoesNotCloseTheMixer)
+{
+    FakeBackend backend;
+    backend.failInputDevices.insert ("usb-mic");
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<CaptureChannel> channels {
+        { "mixer", "PUP 1", "01_PUP-1", 0.0f },
+        { "usb-mic", "Guest", "02_Guest", 0.0f },
+    };
+
+    // The mixer opened (it is the output) and carries PUP 1; only the guest's
+    // separate mic refused. That is a rig with a microphone, not none.
+    REQUIRE (c.startMonitoring (channels, "mixer"));
+    REQUIRE (c.isMonitoring());
+    REQUIRE (backend.closeAllCalls == 0);
+
+    const auto& failed = c.getDevicesThatFailedToOpen();
+    REQUIRE (failed.size() == 1u);
+    REQUIRE (failed[0] == std::string ("usb-mic"));
 }
 
 TEST_CASE (CaptureCoordinator_AMixerThatIsAlsoTheOutputStillRecordsBothMics)
@@ -542,6 +567,50 @@ TEST_CASE (CaptureCoordinator_RecordsAudioThroughToTheFiles)
     f.read (reinterpret_cast<char*> (&hi), 1);
     const int16_t sample = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
     REQUIRE (sample > 12000);
+}
+
+// A slow card still working through its backlog is not a dead one. Stop used
+// to give the whole drain five seconds; a card that needed longer was called
+// unresponsive, the final session.json was skipped, and a combined video was
+// cut from a MIX.wav whose header had not been finished.
+TEST_CASE (CaptureCoordinator_ASlowCardThatIsStillWritingIsWaitedFor)
+{
+    const auto dir = tempDir();
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    c.setFilesystemDeadline (std::chrono::milliseconds (400));
+    c.setWriterChunkHookForTesting ([] { std::this_thread::sleep_for (std::chrono::milliseconds (40)); });
+
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-01T00:00:00Z"));
+
+    std::vector<float> a (64, 0.5f), b (64, 0.5f);
+    std::vector<float> outL (64, 0.0f);
+    const float* ins[] = { a.data(), b.data() };
+    float* outs[] = { outL.data() };
+
+    constexpr int kBlocks = 1500; // two seconds of audio: about 24 chunks of 4096
+    for (int i = 0; i < kBlocks; ++i)
+        c.processAudioBlock (ins, 2, outs, 1, 64);
+
+    const auto before = std::chrono::steady_clock::now();
+    c.stopRecording();
+    const auto waited = std::chrono::steady_clock::now() - before;
+
+    REQUIRE_FALSE (c.didLastStopTimeOut());
+    REQUIRE_FALSE (c.hasCardWriteFailed());
+
+    std::ifstream f (dir + "/01_Kitchen.wav", std::ios::binary);
+    REQUIRE (f.is_open());
+    REQUIRE (readU32LE (f, kDataSizeOffset) == static_cast<uint32_t> (kBlocks * 64 * 2));
+
+    // And it really did take longer than the deadline, so the old rule would
+    // have given up on it.
+    if (waited < std::chrono::milliseconds (400))
+        std::printf ("  note: the drain finished inside the deadline (%lld ms)\n",
+                     (long long) std::chrono::duration_cast<std::chrono::milliseconds> (waited).count());
+    c.setWriterChunkHookForTesting ({});
 }
 
 TEST_CASE (CaptureCoordinator_ACardThatStopsAnsweringAtStartDoesNotHoldTheCaller)
@@ -2062,6 +2131,29 @@ TEST_CASE (CaptureCoordinator_TheLatencyDescribesTheBufferTheDeviceGranted)
 
     // And it is emphatically not the estimate any more.
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) > 1.0);
+}
+
+// Bluetooth headphones add well over 100 ms after the buffers. The figure
+// used to leave that out and print about 3 ms for AirPods.
+TEST_CASE (CaptureCoordinator_TheLatencyIncludesWhatTheOutputDeviceAdds)
+{
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.outputPresentationLatencyFrames = 7200; // 150 ms at 48 kHz
+
+    CaptureCoordinator coordinator (backend, 48000.0, 64);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+
+    const double expected = ((2.0 * 64.0 + 7200.0) / 48000.0) * 1000.0;
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
+    REQUIRE (coordinator.getMonitoringLatencyMs() > 150.0);
 }
 
 // A backend that cannot say keeps the estimate. Zero is not a small latency,

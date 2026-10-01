@@ -285,6 +285,12 @@ public:
     /// reporting a latency of nothing.
     virtual int getGrantedOutputBufferFrames() const { return 0; }
 
+    /// What the open monitor output adds beyond its buffers, in frames: the
+    /// device's own latency, its safety offset and its stream's latency.
+    /// Bluetooth headphones report well over 100 ms here; leaving it out
+    /// printed about 3 ms for them. Zero when unknown.
+    virtual int getOutputPresentationLatencyFrames() const { return 0; }
+
     /// Empty unless this backend cannot watch for microphones being plugged in
     /// or pulled out. Then it says so in the user's words: nothing about the
     /// rig will be noticed until the app is restarted, and §6.5's mid-take

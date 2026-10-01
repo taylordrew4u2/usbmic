@@ -74,6 +74,7 @@ private:
     /// Grows the window so the main screen's camera row gets the size the user
     /// asked for. Only ever grows: shrinking would undo a window the user sized
     /// themselves. Bounded by the display, so it cannot walk off the screen.
+    static juce::Rectangle<int> usableAreaForWindow (juce::Component& window);
     void growWindowToFitMainScreen();
 
     /// The same, for any content height -- the panels that open over the main

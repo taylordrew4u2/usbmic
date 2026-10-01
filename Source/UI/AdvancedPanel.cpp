@@ -118,6 +118,14 @@ AdvancedPanel::AdvancedPanel()
         onSampleRateChanged (id <= 1 ? 0u : static_cast<uint32_t> (id));
     };
 
+    // A click on a picker leaves the keyboard where it was. Otherwise the last
+    // picker clicked kept focus, and Up/Down -- pressed for anything at all --
+    // quietly switched the headphone output, save drive, rate or bit depth.
+    // Tab still reaches them.
+    for (auto* c : { &outputDeviceCombo, &storageCombo, &sampleRateCombo,
+                     &bitDepthCombo, &bufferSizeCombo, &deliveryCombo })
+        c->setMouseClickGrabsKeyboardFocus (false);
+
     trimViewport.setViewedComponent (&trimContainer, false);
     addAndMakeVisible (trimViewport);
 
@@ -406,7 +414,7 @@ void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
         for (const auto& m : mics)
         {
             auto toggle = std::make_unique<juce::ToggleButton> (m.label);
-            const auto name = m.deviceName; // the DEVICE name, which the app looks up by
+            const auto name = m.deviceKey; // the identity the app looks up by
 
             toggle->onClick = [this, name, raw = toggle.get()] {
                 const bool state = raw->getToggleState();
@@ -465,7 +473,7 @@ void AdvancedPanel::setHeadphoneChoices (const std::vector<HeadphoneChoice>& cho
 {
     juce::StringArray incoming;
     for (const auto& c : choices)
-        incoming.add (c.deviceName);
+        incoming.add (c.key + "\n" + c.label);
 
     // Rebuilt only when the set of people changes, like the microphone list:
     // recreating a tick box on every refresh would fight the user's click.
@@ -476,10 +484,10 @@ void AdvancedPanel::setHeadphoneChoices (const std::vector<HeadphoneChoice>& cho
 
         for (const auto& c : choices)
         {
-            auto toggle = std::make_unique<juce::ToggleButton> (c.deviceName);
-            toggle->setTitle (c.deviceName + " headphones");
+            auto toggle = std::make_unique<juce::ToggleButton> (c.label);
+            toggle->setTitle (c.label + " headphones");
             toggle->setDescription ("Whether this person hears everyone in the headphones plugged into their microphone.");
-            const auto name = c.deviceName;
+            const auto name = c.key;
 
             toggle->onClick = [this, name, raw = toggle.get()] {
                 const bool state = raw->getToggleState();
@@ -546,6 +554,10 @@ void AdvancedPanel::setTrimChannels (const juce::StringArray& micNames,
                                                       juce::Slider::TextBoxRight);
         // §4: -20..+20 dB in 0.5 dB steps, defaulting to 0.
         slider->setRange (-20.0, 20.0, 0.5);
+
+        // Inside a scrolling panel: a trackpad scroll passing over a row was
+        // changing that person's level instead of moving the panel.
+        slider->setScrollWheelEnabled (false);
         slider->setTextValueSuffix (" dB");
         slider->setTitle (micNames[i] + " monitor trim");
         slider->setDescription ("Adjust this microphone in the headphones only; the recorded track stays unchanged.");

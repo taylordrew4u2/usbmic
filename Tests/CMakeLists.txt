@@ -22,6 +22,7 @@ add_executable(mma_core_tests
     test_SessionWriter.cpp
     test_OutputDeviceSelector.cpp
     test_HeadphoneRouting.cpp
+    test_PreflightScratchFile.cpp
     test_CapacityMonitor.cpp
     test_BufferLadder.cpp
     test_CpuPressureMonitor.cpp

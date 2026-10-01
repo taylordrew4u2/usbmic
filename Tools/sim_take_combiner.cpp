@@ -148,6 +148,13 @@ int main (int argc, char** argv)
     // combiner immediately and its detached worker must kill this child.
     if (argc > 1)
     {
+        // Answers the lookup's "does it really run" check the way ffmpeg does.
+        if (argc == 2 && std::strcmp (argv[1], "-version") == 0)
+        {
+            std::puts ("ffmpeg version sim-stand-in");
+            return 0;
+        }
+
         for (int index = 1; index < argc; ++index)
         {
             if (std::strstr (argv[index], "success-input") != nullptr)
@@ -368,6 +375,22 @@ int main (int argc, char** argv)
         const auto installed = root.getChildFile ("later-installed").getChildFile ("ffmpeg.exe");
        #else
         const auto installed = root.getChildFile ("later-installed").getChildFile ("ffmpeg");
+       #endif
+
+       #if ! JUCE_WINDOWS
+        // A file that exists but does not run as ffmpeg -- an Intel build on
+        // an Apple-silicon Mac without Rosetta -- is not ffmpeg.
+        {
+            const auto broken = root.getChildFile ("broken-ffmpeg");
+            if (! broken.replaceWithText ("#!/bin/sh\nexit 1\n") || ! broken.setExecutePermission (true))
+                return fail ("could not make the broken stand-in");
+
+            mma::TakeCombiner brokenCombiner;
+            brokenCombiner.setFfmpegSearchPathsForTesting ({ broken.getFullPathName().toStdString() });
+
+            if (brokenCombiner.findFfmpeg().isNotEmpty())
+                return fail ("an ffmpeg that exists but does not run was accepted");
+        }
        #endif
 
         mma::TakeCombiner laterCombiner;

@@ -63,15 +63,14 @@ public:
     /// Fills a combo without firing onChange -- otherwise refreshing the list
     /// would read back as the user having picked something.
     void setOutputDevices (const juce::StringArray& names, const juce::String& selected);
-    /// One row in the microphone list: what it reads as, and the device name
-    /// the app matches it back to.
+    /// One row in the microphone list: what it reads as, and the device's
+    /// identity key the app matches it back to.
     ///
-    /// The two are not the same once the row says how many microphones the
-    /// device carries. Matching on the visible text would then fail to find the
-    /// device, and the tick box would silently do nothing.
+    /// Never the visible text: it gains a microphone count on an interface, and
+    /// identical mics share a name -- matching on it switched the wrong one.
     struct MicChoice
     {
-        juce::String label, deviceName;
+        juce::String label, deviceKey;
         bool enabled = false;
 
         /// One per socket on an interface. Each is its own tick box, indented
@@ -86,7 +85,7 @@ public:
 
     /// One tick box per person whose microphone has a headphone jack on the
     /// combined device: whether they hear the mix. Empty hides the list.
-    struct HeadphoneChoice { juce::String deviceName; bool on = true; };
+    struct HeadphoneChoice { juce::String key, label; bool on = true; };
     void setHeadphoneChoices (const std::vector<HeadphoneChoice>& choices);
     std::function<void (const juce::String&, bool)> onHeadphonesToggled;
 

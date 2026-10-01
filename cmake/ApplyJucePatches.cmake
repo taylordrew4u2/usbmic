@@ -6,6 +6,12 @@ function(sobstage_apply_juce_camera_patch juce_source_dir)
         message(FATAL_ERROR "The pinned JUCE camera lifecycle patch is missing: ${patch_file}")
     endif()
 
+    # Re-run configure, and so re-apply the patch, whenever the patch changes.
+    # Without it a change to the patch alone left an existing build tree
+    # compiling the previous camera backend. No explicit directory: that form
+    # fails under `cmake -P`, which the release uses to check the source bundle.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${patch_file}")
+
     find_package(Git REQUIRED)
 
     # JUCE 7.0.12 stores these headers with CRLF line endings. The maintained
