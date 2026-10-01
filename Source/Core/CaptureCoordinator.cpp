@@ -321,7 +321,13 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // Nothing opened at all. This is the case the record button's guard is
     // really for: a take now would write nothing but empty files with the clock
     // running.
-    if (! byDevice.empty() && failedDevices.size() == byDevice.size())
+    //
+    // A mixer that is also the headphone output is carrying microphones of its
+    // own through outputDeviceRouting, and it HAS opened. A second mic failing
+    // beside it used to count as "nothing opened" and closed the whole rig,
+    // mixer included -- Record refused while every mixer channel was live.
+    if (! byDevice.empty() && failedDevices.size() == byDevice.size()
+        && outputDeviceRouting.empty())
     {
         monitorProblem = firstFailure;
         backend.closeAllStreams();

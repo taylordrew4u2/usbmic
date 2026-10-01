@@ -293,6 +293,29 @@ TEST_CASE (CaptureCoordinator_OpensAMixerThatIsAlsoTheOutputExactlyOnce)
     REQUIRE (backend.inputStreamsOpened == 0);
 }
 
+TEST_CASE (CaptureCoordinator_AFailingMicBesideAMixerOutputDoesNotCloseTheMixer)
+{
+    FakeBackend backend;
+    backend.failInputDevices.insert ("usb-mic");
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+
+    std::vector<CaptureChannel> channels {
+        { "mixer", "PUP 1", "01_PUP-1", 0.0f },
+        { "usb-mic", "Guest", "02_Guest", 0.0f },
+    };
+
+    // The mixer opened (it is the output) and carries PUP 1; only the guest's
+    // separate mic refused. That is a rig with a microphone, not none.
+    REQUIRE (c.startMonitoring (channels, "mixer"));
+    REQUIRE (c.isMonitoring());
+    REQUIRE (backend.closeAllCalls == 0);
+
+    const auto& failed = c.getDevicesThatFailedToOpen();
+    REQUIRE (failed.size() == 1u);
+    REQUIRE (failed[0] == std::string ("usb-mic"));
+}
+
 TEST_CASE (CaptureCoordinator_AMixerThatIsAlsoTheOutputStillRecordsBothMics)
 {
     // Opening once must not cost the microphones: the one callback carries both

@@ -28,4 +28,20 @@ std::vector<std::string> ffmpegSearchPaths (HostPlatform platform);
 /// The platform this build is for.
 HostPlatform thisHostPlatform();
 
+/// The combine's command line, run at the lowest disk priority on macOS.
+///
+/// ffmpeg copies a multi-gigabyte movie on the same card the next take is
+/// recording to, and at normal priority it competed with that take's writer
+/// -- ring fill, a fall back to mix-only, dropped video frames. taskpolicy
+/// sets the policy and then execs ffmpeg in the same process, so killing it
+/// and reading its exit code still act on ffmpeg itself. When nothing else is
+/// writing it runs at full speed. Unchanged elsewhere.
+std::vector<std::string> withLowDiskPriority (std::vector<std::string> args, HostPlatform platform);
+
+/// True when `ffmpeg -version` printed this: it really is ffmpeg, and it
+/// really runs here. A file that merely exists -- an Intel build migrated
+/// onto an Apple-silicon Mac without Rosetta -- prints nothing and exits
+/// with an error, and was accepted on existence alone, failing every take.
+bool looksLikeFfmpegVersionOutput (const std::string& output);
+
 } // namespace mma
