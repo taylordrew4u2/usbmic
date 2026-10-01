@@ -59,6 +59,40 @@ PermissionState fromWriteProbeErrno (int probeErrno) noexcept
 
 } // namespace permissions
 
+void requestMicrophoneAccess() noexcept
+{
+#if defined(__APPLE__) && defined(__BLOCKS__)
+    // +[AVCaptureDevice requestAccessForMediaType: AVMediaTypeAudio
+    //                           completionHandler: ^(BOOL granted) {}]
+    // The CoreAudio streams raise their own prompt, but macOS 27 was seen
+    // reporting "not yet asked" through AVFoundation while those streams were
+    // already live, and the status never changed. Asking through the same API
+    // whose status the app reads settles it either way. The handler runs on an
+    // arbitrary queue, so it does nothing: the 2 s permission poll reads the
+    // result on the message thread.
+    const auto deviceClass = reinterpret_cast<id> (objc_getClass ("AVCaptureDevice"));
+    const auto stringClass = reinterpret_cast<id> (objc_getClass ("NSString"));
+    if (deviceClass == nullptr || stringClass == nullptr)
+        return;
+
+    const auto selector = sel_registerName ("requestAccessForMediaType:completionHandler:");
+    using SendBoolAndSelector = signed char (*) (id, SEL, SEL);
+    if (! reinterpret_cast<SendBoolAndSelector> (objc_msgSend) (
+            deviceClass, sel_registerName ("respondsToSelector:"), selector))
+        return;
+
+    using SendStringFromUtf8 = id (*) (id, SEL, const char*);
+    const auto mediaType = reinterpret_cast<SendStringFromUtf8> (objc_msgSend) (
+        stringClass, sel_registerName ("stringWithUTF8String:"), "soun");
+    if (mediaType == nullptr)
+        return;
+
+    void (^handler) (signed char) = ^(signed char) {};
+    using SendRequest = void (*) (id, SEL, id, void (^) (signed char));
+    reinterpret_cast<SendRequest> (objc_msgSend) (deviceClass, selector, mediaType, handler);
+#endif
+}
+
 PermissionState queryMicrophonePermission() noexcept
 {
 #if defined(__APPLE__)

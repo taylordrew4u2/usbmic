@@ -48,6 +48,13 @@ PermissionState fromWriteProbeErrno (int probeErrno) noexcept;
 /// PermissionGuidance treats as silence rather than as permission.
 PermissionState queryMicrophonePermission() noexcept;
 
+/// macOS only: asks AVFoundation for microphone access when the answer is
+/// still "not yet asked". Shows the system prompt if one is due; if the OS
+/// already allows this app, it settles the status to Granted without a prompt.
+/// Returns at once; the answer is read later by queryMicrophonePermission().
+/// A no-op on other platforms, or when AVFoundation is not loaded.
+void requestMicrophoneAccess() noexcept;
+
 /// Asks whether this app may write to `destinationPath`, by trying.
 ///
 /// An empty path, or one that is not where the recording is going, returns
