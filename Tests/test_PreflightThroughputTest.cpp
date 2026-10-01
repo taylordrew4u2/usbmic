@@ -193,3 +193,35 @@ TEST_CASE (PreflightThroughputTest_SpeedVerdictsAreNotRetried)
     REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (slow, 3600.0, true, false));
     REQUIRE_FALSE (PreflightThroughputTest::shouldRetryCached (fast, 3600.0, true, false));
 }
+
+TEST_CASE (PreflightThroughputTest_NamesTheDriveFormatFromWhatTheOsCallsIt)
+{
+    using K = PreflightThroughputTest::FilesystemKind;
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("msdos") == K::FAT32);
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("vfat") == K::FAT32);
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("exfat") == K::ExFAT);
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("apfs") == K::APFS);
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("hfs") == K::HFSPlus);
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("") == K::Unknown);
+    REQUIRE (PreflightThroughputTest::filesystemKindFromTypeName ("smbfs") == K::Other);
+}
+
+TEST_CASE (PreflightThroughputTest_AFat32CardRefusesOnlyWhenACameraWouldOutgrowIt)
+{
+    // The WAVs split at 3.9 GB; a camera movie is one file that dies at 4 GiB.
+    REQUIRE_FALSE (PreflightThroughputTest::fileSizeRefusal (true, 1).empty());
+    REQUIRE (PreflightThroughputTest::fileSizeRefusal (true, 0).empty());
+    REQUIRE (PreflightThroughputTest::fileSizeRefusal (false, 2).empty());
+}
+
+TEST_CASE (PreflightThroughputTest_TheDriveFormatSurvivesReapplyingTheGate)
+{
+    PreflightResult cached;
+    cached.passed = true;
+    cached.sustainedMinBytesPerSec = 200.0e6;
+    cached.limitedTo4GiBFiles = true;
+
+    const auto verdict = PreflightThroughputTest::evaluateCached (cached, 2, 48000.0, 3, 4.0e6);
+    REQUIRE (verdict.passed);
+    REQUIRE (verdict.limitedTo4GiBFiles);
+}

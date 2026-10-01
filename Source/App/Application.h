@@ -780,6 +780,7 @@ private:
     /// When each verdict above landed, so a "couldn't write" one can be re-run
     /// after PreflightThroughputTest::kWriteFailureRetrySeconds.
     mutable std::map<std::string, double> preflightVerdictAtMs;
+    static std::string filesystemTypeName (const juce::File& folder);
     static PreflightBackgroundResult runPreflight (
         std::string destination, int channelCount, double sampleRate,
         int bytesPerSample, const std::atomic<bool>& cancelled);

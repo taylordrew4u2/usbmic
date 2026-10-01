@@ -254,7 +254,10 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         if (const int granted = backend.getGrantedOutputBufferFrames();
             granted > 0 && sampleRate > 0.0)
         {
-            monitoringLatencyMs = (static_cast<double> (granted) / sampleRate) * 1000.0 * 2.0;
+            // Plus what the device adds after the buffers. Bluetooth reports
+            // well over 100 ms there, and leaving it out printed about 3 ms.
+            monitoringLatencyMs = ((2.0 * granted + backend.getOutputPresentationLatencyFrames())
+                                   / sampleRate) * 1000.0;
         }
     }
 

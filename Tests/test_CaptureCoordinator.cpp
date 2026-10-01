@@ -69,6 +69,8 @@ public:
 
     std::string getBackendName() const override { return "Fake"; }
     int getGrantedOutputBufferFrames() const override { return grantedOutputBufferFrames; }
+    int outputPresentationLatencyFrames = 0;
+    int getOutputPresentationLatencyFrames() const override { return outputPresentationLatencyFrames; }
     std::vector<AudioDeviceDescriptor> enumerateInputDevices() override { return {}; }
     std::vector<AudioDeviceDescriptor> enumerateOutputDevices() override { return {}; }
     void setDeviceChangeCallback (DeviceChangeCallback) override {}
@@ -2062,6 +2064,29 @@ TEST_CASE (CaptureCoordinator_TheLatencyDescribesTheBufferTheDeviceGranted)
 
     // And it is emphatically not the estimate any more.
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) > 1.0);
+}
+
+// Bluetooth headphones add well over 100 ms after the buffers. The figure
+// used to leave that out and print about 3 ms for AirPods.
+TEST_CASE (CaptureCoordinator_TheLatencyIncludesWhatTheOutputDeviceAdds)
+{
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.outputPresentationLatencyFrames = 7200; // 150 ms at 48 kHz
+
+    CaptureCoordinator coordinator (backend, 48000.0, 64);
+
+    CaptureChannel mic;
+    mic.deviceId = "mic-1";
+    mic.deviceChannel = 0;
+    mic.displayName = "Singer";
+    mic.fileName = "01_Singer";
+
+    REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
+
+    const double expected = ((2.0 * 64.0 + 7200.0) / 48000.0) * 1000.0;
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
+    REQUIRE (coordinator.getMonitoringLatencyMs() > 150.0);
 }
 
 // A backend that cannot say keeps the estimate. Zero is not a small latency,

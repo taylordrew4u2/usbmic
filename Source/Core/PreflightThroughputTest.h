@@ -15,6 +15,10 @@ struct PreflightResult
     /// The card would not take the test file at all (read-only, full, gone).
     /// Whatever windows were measured before that are not a speed verdict.
     bool couldNotWrite = false;
+
+    /// The drive's format can't hold one file over 4 GiB (FAT32 / MS-DOS).
+    /// A property of the drive, so it is kept with the measurement.
+    bool limitedTo4GiBFiles = false;
 };
 
 /// §6.4 pre-flight throughput test. This class contains only the pure
@@ -95,6 +99,16 @@ public:
     /// True if the filesystem is one the OS cannot write large/long files to
     /// reliably (FAT32's 4GB file-size ceiling is exactly the case in §6.1/§6.4).
     static bool needsReformat (FilesystemKind kind) noexcept { return kind == FilesystemKind::FAT32; }
+
+    /// The format from the name the OS gives it (statfs f_fstypename on the
+    /// Mac: "msdos", "exfat", "apfs", "hfs", "ntfs"; "vfat"/"fat32" elsewhere).
+    static FilesystemKind filesystemKindFromTypeName (const std::string& typeName) noexcept;
+
+    /// Why a take can't arm on this drive, or empty. The WAVs split at 3.9 GB
+    /// and survive FAT32; a camera movie is one file with no cap, and stops
+    /// with an error about 18 minutes in when it reaches 4 GiB -- leaving the
+    /// rest of the show with no video. So FAT32 refuses only with a camera on.
+    static std::string fileSizeRefusal (bool limitedTo4GiBFiles, int enabledCameras);
 };
 
 } // namespace mma

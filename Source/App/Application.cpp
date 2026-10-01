@@ -2,6 +2,9 @@
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
 #include "../Core/PreflightScratchFile.h"
+#if JUCE_MAC
+ #include <sys/mount.h>
+#endif
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/SystemThermalState.h"
 #include "../Core/CombinedTakePlan.h"
@@ -3319,6 +3322,11 @@ juce::String Application::getRecordDisabledReason() const
 
         if (! verdict.passed)
             return juce::String (verdict.reason);
+
+        if (const auto refusal = PreflightThroughputTest::fileSizeRefusal (
+                verdict.limitedTo4GiBFiles, cameraController.getSelection().getEnabledCount());
+            ! refusal.empty())
+            return juce::String (refusal);
     }
 
     return {};
@@ -3458,6 +3466,19 @@ void Application::startPreflightIfNeeded() const
         preflightResults[target] = failed;
         noteActivity (ActivityLevel::Failed, "Save location", juce::String (failed.reason));
     }
+}
+
+// The OS's name for the format of the drive holding this folder, or empty.
+std::string Application::filesystemTypeName (const juce::File& folder)
+{
+   #if JUCE_MAC
+    struct statfs info {};
+    if (::statfs (folder.getFullPathName().toRawUTF8(), &info) == 0)
+        return info.f_fstypename;
+   #else
+    juce::ignoreUnused (folder);
+   #endif
+    return {};
 }
 
 Application::PreflightBackgroundResult Application::runPreflight (
@@ -3603,6 +3624,11 @@ Application::PreflightBackgroundResult Application::runPreflight (
         result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
                          "is plugged in, has room, and isn't locked.";
     }
+
+    // The format, read here on the worker: a statfs on a card that has stopped
+    // answering must not stall the message thread.
+    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (
+        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder)));
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
