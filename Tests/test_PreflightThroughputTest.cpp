@@ -1,4 +1,5 @@
 #include "TestFramework.h"
+#include <cerrno>
 #include "Core/PreflightThroughputTest.h"
 
 using namespace mma;
@@ -224,4 +225,17 @@ TEST_CASE (PreflightThroughputTest_TheDriveFormatSurvivesReapplyingTheGate)
     const auto verdict = PreflightThroughputTest::evaluateCached (cached, 2, 48000.0, 3, 4.0e6);
     REQUIRE (verdict.passed);
     REQUIRE (verdict.limitedTo4GiBFiles);
+}
+
+TEST_CASE (PreflightThroughputTest_APrivacyRefusalIsNotReportedAsACardFault)
+{
+    // macOS "Don't Allow" on files on a removable volume arrives as EPERM.
+    const auto denied = PreflightThroughputTest::writeFailureReason (EPERM);
+    REQUIRE (denied.find ("Privacy & Security") != std::string::npos);
+    REQUIRE (denied.find ("plugged in") == std::string::npos);
+    REQUIRE (PreflightThroughputTest::writeFailureReason (EACCES) == denied);
+
+    REQUIRE (PreflightThroughputTest::writeFailureReason (EROFS).find ("read-only") != std::string::npos);
+    REQUIRE (PreflightThroughputTest::writeFailureReason (ENOSPC).find ("full") != std::string::npos);
+    REQUIRE (PreflightThroughputTest::writeFailureReason (0).find ("plugged in") != std::string::npos);
 }

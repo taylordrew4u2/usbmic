@@ -5,6 +5,12 @@
 #if JUCE_MAC
  #include <sys/mount.h>
 #endif
+#if JUCE_MAC || JUCE_LINUX
+ #include <cerrno>
+ #include <fcntl.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+#endif
 #include "../Core/TakeCompleteness.h"
 #include "../Platform/SystemThermalState.h"
 #include "../Core/CombinedTakePlan.h"
@@ -3468,6 +3474,33 @@ void Application::startPreflightIfNeeded() const
     }
 }
 
+// The error the OS gives for creating a file in this folder (or the folder
+// itself, when it could not be made), read straight from errno -- JUCE's
+// stream keeps only a message. 0 when the probe succeeded or can't tell.
+int Application::probeWriteErrno (const juce::File& folder)
+{
+   #if JUCE_MAC || JUCE_LINUX
+    if (! folder.isDirectory())
+    {
+        errno = 0;
+        if (::mkdir (folder.getFullPathName().toRawUTF8(), 0755) != 0)
+            return errno;
+    }
+
+    const auto probe = folder.getChildFile (".sobstage-write-probe");
+    errno = 0;
+    const int fd = ::open (probe.getFullPathName().toRawUTF8(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return errno;
+
+    ::close (fd);
+    ::unlink (probe.getFullPathName().toRawUTF8());
+   #else
+    juce::ignoreUnused (folder);
+   #endif
+    return 0;
+}
+
 // The OS's name for the format of the drive holding this folder, or empty.
 std::string Application::filesystemTypeName (const juce::File& folder)
 {
@@ -3515,6 +3548,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
     // reads 0 MB/s and says "this card is too slow", which sends someone
     // shopping for a faster card when the card is read-only, full, or gone.
     bool couldNotWrite = false;
+    int writeErrno = 0;
 
     {
         // §6.4: 200 MB, written the way a take writes -- steadily, measuring the
@@ -3524,6 +3558,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
         if (! out.openedOk())
         {
             couldNotWrite = true;
+            writeErrno = probeWriteErrno (folder);
         }
         else
         {
@@ -3621,8 +3656,7 @@ Application::PreflightBackgroundResult Application::runPreflight (
     {
         result.passed = false;
         result.couldNotWrite = true;
-        result.reason = "Couldn't write to this card, so takes can't be saved here. Check it "
-                         "is plugged in, has room, and isn't locked.";
+        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno);
     }
 
     // The format, read here on the worker: a statfs on a card that has stopped

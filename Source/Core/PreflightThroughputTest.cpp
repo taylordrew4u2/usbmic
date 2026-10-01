@@ -1,6 +1,7 @@
 #include "PreflightThroughputTest.h"
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <sstream>
 
 namespace mma {
@@ -100,6 +101,25 @@ PreflightThroughputTest::filesystemKindFromTypeName (const std::string& typeName
     if (t == "hfs")                                          return FilesystemKind::HFSPlus;
     if (t == "ntfs" || t == "ufsd_ntfs")                     return FilesystemKind::NTFS;
     return FilesystemKind::Other;
+}
+
+std::string PreflightThroughputTest::writeFailureReason (int errnoValue)
+{
+    if (errnoValue == EPERM || errnoValue == EACCES)
+        return "SobStage isn't allowed to save here. If macOS asked about files on a removable volume "
+               "or in this folder, allow it in System Settings > Privacy & Security > Files and Folders "
+               "> SobStage, or choose a different place to save.";
+
+    if (errnoValue == EROFS)
+        return "This card is read-only, so takes can't be saved here. Slide its lock switch off, or "
+               "choose a different place to save.";
+
+    if (errnoValue == ENOSPC)
+        return "This card is full, so takes can't be saved here. Free some space or choose a "
+               "different place to save.";
+
+    return "Couldn't write to this card, so takes can't be saved here. Check it is plugged in, has "
+           "room, and isn't locked.";
 }
 
 std::string PreflightThroughputTest::fileSizeRefusal (bool limitedTo4GiBFiles, int enabledCameras)

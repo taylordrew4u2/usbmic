@@ -109,6 +109,12 @@ public:
     /// with an error about 18 minutes in when it reaches 4 GiB -- leaving the
     /// rest of the show with no video. So FAT32 refuses only with a camera on.
     static std::string fileSizeRefusal (bool limitedTo4GiBFiles, int enabledCameras);
+
+    /// Why the drive check could not write, from the error the OS gave.
+    /// A macOS privacy refusal ("Don't Allow" on files on a removable volume,
+    /// Documents, Desktop) arrives as EPERM/EACCES and used to be reported as
+    /// a card fault -- someone re-seated a card that was fine.
+    static std::string writeFailureReason (int errnoValue);
 };
 
 } // namespace mma
