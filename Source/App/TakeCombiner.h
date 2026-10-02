@@ -65,6 +65,10 @@ public:
 
     static constexpr juce::uint32 kFfmpegRetryMs = 10000;
 
+    /// What findFfmpeg() answers in the Mac app: the combine is done by the
+    /// Mac's own AVFoundation, so there is nothing to install.
+    static constexpr const char* kBuiltInCombiner = "builtin:avfoundation";
+
     /// Test seam: run this instead of looking for ffmpeg on the machine.
     void setFfmpegOverride (const juce::String& path) { ffmpegOverride = path; }
 

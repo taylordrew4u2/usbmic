@@ -112,6 +112,7 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
         pushedSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
         lastPushSamples.store (numSamples, std::memory_order_relaxed);
         lastPushNs.store (nowNs(), std::memory_order_release);
+        lastDeliveryWallNs.store (steadyNowNs(), std::memory_order_release);
         return;
     }
 
@@ -136,6 +137,7 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
     // the block behind it in the ring's own release/acquire.
     lastPushSamples.store (numSamples, std::memory_order_relaxed);
     lastPushNs.store (nowNs(), std::memory_order_release);
+    lastDeliveryWallNs.store (steadyNowNs(), std::memory_order_release);
 }
 
 void DeviceInputStream::noteSamplesLostBeforeDelivery (int numSamples) noexcept
@@ -149,6 +151,7 @@ void DeviceInputStream::noteSamplesLostBeforeDelivery (int numSamples) noexcept
     // the device's block is unchanged.
     pushedSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
     lastPushNs.store (nowNs(), std::memory_order_release);
+    lastDeliveryWallNs.store (steadyNowNs(), std::memory_order_release);
 }
 
 bool DeviceInputStream::readOne (float& out) noexcept
@@ -609,6 +612,12 @@ void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double refere
         excessDriftSeconds = 0.0;
         excessDrift.store (false, std::memory_order_relaxed);
     }
+}
+
+bool DeviceInputStream::deliveredWithin (int64_t windowNs) const noexcept
+{
+    const auto stamped = lastDeliveryWallNs.load (std::memory_order_acquire);
+    return stamped != 0 && steadyNowNs() - stamped <= windowNs;
 }
 
 } // namespace mma

@@ -221,5 +221,5 @@ jobs:
       - name: App-integrated regression tests
         run: >-
           ctest --test-dir build-app --build-config Release
-          --tests-regex "^(layout_probe|sim_channel_meter|sim_camera|sim_camera_sync_lifecycle|sim_take_combiner)$" --no-tests=error
+          --tests-regex "^(layout_probe|sim_channel_meter|sim_camera|sim_camera_sync_lifecycle|sim_take_combiner|mac_movie_combiner_check)$" --no-tests=error
           --output-on-failure

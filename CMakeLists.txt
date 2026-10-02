@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.9 LANGUAGES CXX)
+project(SobStage VERSION 1.13.10 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -254,6 +254,28 @@ if (MMA_BUILD_APP)
         Source/App/TakeCombiner.cpp
         Source/App/AlarmSpeaker.cpp
     )
+
+    # The combined video on the Mac is made with AVFoundation, which every Mac
+    # has, rather than ffmpeg, which almost none do. Proven against the real
+    # framework by mac_movie_combiner_check below.
+    if (APPLE)
+        target_sources(SobStage PRIVATE Source/Platform/MacMovieCombiner.mm)
+        set_source_files_properties(Source/Platform/MacMovieCombiner.mm
+                                    Tools/mac_movie_combiner_check.mm
+                                    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_compile_definitions(SobStage PRIVATE MMA_NATIVE_MOVIE_COMBINER=1)
+        target_link_libraries(SobStage PRIVATE
+            "-framework AVFoundation" "-framework CoreMedia" "-framework Foundation")
+
+        add_executable(mac_movie_combiner_check
+            Tools/mac_movie_combiner_check.mm
+            Source/Platform/MacMovieCombiner.mm)
+        target_include_directories(mac_movie_combiner_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+        target_link_libraries(mac_movie_combiner_check PRIVATE
+            "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework Foundation")
+        add_test(NAME mac_movie_combiner_check COMMAND mac_movie_combiner_check)
+        set_tests_properties(mac_movie_combiner_check PROPERTIES TIMEOUT 120)
+    endif()
 
     target_compile_definitions(SobStage PRIVATE
         JUCE_WEB_BROWSER=0

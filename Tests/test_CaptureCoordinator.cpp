@@ -503,6 +503,30 @@ TEST_CASE (CaptureCoordinator_ASwitchedOffHeadphoneJackGetsSilenceAndTheRestTheM
     REQUIRE_NEAR (o3[10], o0[10], 1e-9);
 }
 
+// A mic still handing over audio is plainly plugged in. One device-list pass
+// that came back short used to latch it as unplugged for the rest of the take.
+TEST_CASE (CaptureCoordinator_KnowsWhichMicsAreStillDeliveringAudio)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (backend.inputCallbacks.size() == 2u);
+
+    std::vector<float> block (64, 0.1f);
+    const float* ins[] = { block.data() };
+
+    REQUIRE_FALSE (c.isDeviceDelivering (twoMics()[0].deviceId));
+
+    backend.inputCallbacks[0] (ins, 1, nullptr, 0, 64);
+    REQUIRE (c.isDeviceDelivering (twoMics()[0].deviceId));
+    REQUIRE_FALSE (c.isDeviceDelivering (twoMics()[1].deviceId));
+
+    // Gone quiet: no longer delivering once the window has passed.
+    std::this_thread::sleep_for (std::chrono::milliseconds (60));
+    REQUIRE_FALSE (c.isDeviceDelivering (twoMics()[0].deviceId, std::chrono::milliseconds (20)));
+}
+
 TEST_CASE (CaptureCoordinator_MetersRunWithoutRecording)
 {
     FakeBackend backend;
