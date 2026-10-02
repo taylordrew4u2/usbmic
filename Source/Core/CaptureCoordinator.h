@@ -166,6 +166,12 @@ public:
     /// to EVERY channel the device contributes: an interface with four
     /// people on it goes silent as four channels, not one.
     void setChannelLive (const std::string& deviceId, bool live);
+
+    /// This device's stream handed over audio within `within`. A mic whose
+    /// audio is still arriving is plainly still plugged in, whatever one
+    /// device-list pass said about it.
+    bool isDeviceDelivering (const std::string& deviceId,
+                             std::chrono::milliseconds within = std::chrono::milliseconds (150)) const;
     bool isChannelLive (int index) const noexcept;
 
     /// True while the output device that should be clocking the rig has
