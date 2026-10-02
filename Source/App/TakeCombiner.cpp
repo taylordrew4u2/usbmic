@@ -2,6 +2,10 @@
 #include "../Core/FfmpegCommand.h"
 #include "../Core/FfmpegLocator.h"
 
+#if defined (MMA_NATIVE_MOVIE_COMBINER)
+ #include "../Platform/MacMovieCombiner.h"
+#endif
+
 namespace mma {
 
 TakeCombiner::TakeCombiner()
@@ -19,6 +23,13 @@ juce::String TakeCombiner::findFfmpeg()
     if (ffmpegOverride.isNotEmpty())
         return ffmpegOverride;
 
+   #if defined (MMA_NATIVE_MOVIE_COMBINER)
+    // The Mac does this itself. Asking people to install Homebrew and ffmpeg
+    // before a show, for a feature the OS already has, was the one thing
+    // standing between the switch and a file they could send.
+    return kBuiltInCombiner;
+   #endif
+
     if (resolvedFfmpeg.isNotEmpty())
         return resolvedFfmpeg;
 
@@ -32,6 +43,10 @@ juce::String TakeCombiner::probeFfmpeg()
 {
     if (ffmpegOverride.isNotEmpty())
         return ffmpegOverride;
+
+   #if defined (MMA_NATIVE_MOVIE_COMBINER)
+    return kBuiltInCombiner;
+   #endif
 
     if (resolvedFfmpeg.isNotEmpty())
         return resolvedFfmpeg;
@@ -208,6 +223,42 @@ void TakeCombiner::combineTake (const std::shared_ptr<RunState>& state,
 
             continue;
         }
+
+       #if defined (MMA_NATIVE_MOVIE_COMBINER)
+        if (ffmpeg == kBuiltInCombiner)
+        {
+            const auto problem = combineMovieWithSound (video.getFullPathName().toStdString(),
+                                                        audioPaths,
+                                                        output.getFullPathName().toStdString(),
+                                                        job.audioLeadSeconds,
+                                                        state->cancelling);
+
+            if (state->cancelling.load (std::memory_order_acquire))
+            {
+                output.deleteFile();
+                break;
+            }
+
+            const bool ok = problem.empty();
+
+            if (! ok)
+            {
+                output.deleteFile();
+                ++failures;
+
+                if (firstFailureDetail.isEmpty())
+                    firstFailureDetail = juce::String::fromUTF8 (problem.c_str());
+            }
+
+            const std::lock_guard<std::mutex> lock (state->statusLock);
+            ++state->status.done;
+
+            if (ok)
+                state->status.written.add (output.getFileName());
+
+            continue;
+        }
+       #endif
 
         // More than one part is joined through a list file, kept in the temp
         // folder rather than the take's and removed whichever way this ends.

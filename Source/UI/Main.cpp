@@ -178,6 +178,19 @@ public:
 
     void systemRequestedQuit() override
     {
+        // Mid-take, quitting is asked about first. Cmd+Q sits next to Cmd+W
+        // and Tab, and the red button is where the eye goes to close a stray
+        // window -- either one, pressed by accident during a show, ended the
+        // recording on the spot. Keep Recording is the default and Escape.
+       #if ! defined (MMA_UI_WALK)
+        if (application != nullptr && application->isRecording() && ! quitConfirmed)
+        {
+            if (! confirmingQuit)
+                askBeforeStoppingTheTake();
+            return;
+        }
+       #endif
+
         const bool ready = application == nullptr || application->prepareToQuit();
 
         switch (quitGate.onQuitRequested (ready, juce::Time::getMillisecondCounterHiRes()))
@@ -212,6 +225,32 @@ public:
         }
     }
 
+    void askBeforeStoppingTheTake()
+    {
+        confirmingQuit = true;
+
+        auto* window = new juce::AlertWindow ("Stop recording and quit?",
+                                              "A take is recording. Quitting stops it now and saves "
+                                              "everything recorded so far.",
+                                              juce::MessageBoxIconType::WarningIcon,
+                                              mainWindow != nullptr ? mainWindow->getContentComponent() : nullptr);
+        window->addButton ("Keep Recording", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        window->addButton ("Stop and Quit", 1);
+
+        window->enterModalState (true,
+            juce::ModalCallbackFunction::create ([this] (int result)
+            {
+                confirmingQuit = false;
+
+                if (result != 1)
+                    return;
+
+                quitConfirmed = true;
+                systemRequestedQuit();
+            }),
+            true);
+    }
+
     void timerCallback() override
     {
         if (! quitGate.onPoll (application == nullptr || application->prepareToQuit()))
@@ -230,6 +269,8 @@ private:
     AppLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
     QuitGate quitGate;
+    bool confirmingQuit = false;
+    bool quitConfirmed = false;
 
    #if defined (MMA_STALL_METER)
     std::unique_ptr<MessageThreadStallMeter> stallMeter;

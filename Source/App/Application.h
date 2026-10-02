@@ -133,6 +133,9 @@ public:
     /// nonblocking quit poll; no device wait occurs on this thread.
     bool prepareToQuit();
 
+    /// A take is being written right now.
+    bool isRecording() const { return recordingEngine.getState() == RecordingState::Recording; }
+
     /// §10.2 status the main screen shows by default. All plain language --
     /// no sample rates, buffers or backends leak into these.
     juce::String getDestinationFolder() const { return juce::String (destinationFolder); }

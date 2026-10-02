@@ -1449,8 +1449,18 @@ void Application::onDeviceListChanged()
             // The decision is RecordingEngine's: a device that left the list
             // this take stays silent until Stop even once it is back, because
             // its stream went with it (§6.5 below).
-            const bool listed = present.count (ch.deviceId) > 0;
+            //
+            // A mic whose audio is still arriving is listed, whatever this
+            // pass of the device list said. macOS can answer one enumeration
+            // short -- a read that fails returns no devices at all, and a
+            // device's alive flag can dip while a USB hub re-settles -- and
+            // "left the list" is latched for the rest of the take, so one bad
+            // pass silenced a working microphone until Stop. A real unplug
+            // stops its stream, and the stream-failure notice that follows
+            // runs this again with the audio gone.
             const bool streamDead = deadInputStreams.count (ch.deviceId) > 0;
+            const bool listed = present.count (ch.deviceId) > 0
+                             || (! streamDead && capture->isDeviceDelivering (ch.deviceId));
             const auto change = recordingEngine.onDeviceListSeen (ch.deviceId, listed, streamDead);
             const bool live = listed && ! streamDead && ! recordingEngine.isWritingSilence (ch.deviceId);
             capture->setChannelLive (ch.deviceId, live);

@@ -1008,6 +1008,18 @@ void CaptureCoordinator::stopRecording()
     lastTakeFramesDropped = state->result.framesDropped;
 }
 
+bool CaptureCoordinator::isDeviceDelivering (const std::string& deviceId,
+                                             std::chrono::milliseconds within) const
+{
+    const auto windowNs = std::chrono::duration_cast<std::chrono::nanoseconds> (within).count();
+
+    for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
+        if (channels[i].deviceId == deviceId && deviceStreams[i]->deliveredWithin (windowNs))
+            return true;
+
+    return false;
+}
+
 void CaptureCoordinator::setChannelLive (const std::string& deviceId, bool live)
 {
     for (size_t i = 0; i < channels.size(); ++i)

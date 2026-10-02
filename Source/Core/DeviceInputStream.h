@@ -178,6 +178,11 @@ public:
     /// the consumer has pulled since playout started. The measurement above
     /// is built from these; harnesses read them directly.
     uint64_t getPushedSamples() const noexcept { return pushedSamples.load (std::memory_order_relaxed); }
+
+    /// The device handed over audio within the last `windowNs` nanoseconds.
+    /// Stamped whether or not the channel is live, so a stream still running
+    /// is visible even while its channel is being written as silence.
+    bool deliveredWithin (int64_t windowNs) const noexcept;
     uint64_t getPulledSamples() const noexcept { return pulledSamples.load (std::memory_order_relaxed); }
 
     /// The two clocks against the wall clock, from the same fit: how fast the
@@ -223,6 +228,10 @@ private:
     // is what turns the ring level from a staircase in whole blocks into a
     // line the loop can follow. Sample counts feed the measurement.
     std::atomic<int64_t> lastPushNs { 0 };
+
+    /// Real time of the last delivery, for liveness only. Separate from
+    /// lastPushNs, which runs on the measurement clock harnesses simulate.
+    std::atomic<int64_t> lastDeliveryWallNs { 0 };
     std::atomic<int> lastPushSamples { 0 };
     std::atomic<uint64_t> pushedSamples { 0 };
     std::atomic<int64_t> lastPullNs { 0 };

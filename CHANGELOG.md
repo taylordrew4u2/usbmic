@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.13.10 -- 2026-10-02 (release candidate)
+
+The combined video works on every Mac with nothing to install, plus three
+more Mac fixes.
+
+### Fixed
+
+- **Mac: "Also save video with the sound" no longer needs ffmpeg.** SobStage
+  now makes the combined file with the Mac's own video tools. The picture is
+  copied as recorded and the sound goes in at the depth it was recorded at,
+  lined up with the picture. Nothing to install.
+- **Mac: quitting during a take asks first.** Cmd+Q or the red close button
+  mid-take now asks "Stop recording and quit?" instead of ending the take on
+  the spot. Keep Recording is the default.
+- **Mac: a hidden window can't slow the take down.** SobStage now tells macOS
+  not to throttle it (App Nap) while a take records, so the watchdog, alarms
+  and disk writer keep full speed behind other windows.
+- **Mac: one glitch in the Mac's device list can't silence a working mic.**
+  A mic that briefly went missing from macOS's list mid-take was written as
+  silence until Stop, even though its sound was still arriving.
+
 ## v1.13.9 -- 2026-10-01 (release candidate)
 
 Eleven more Mac fixes from the Mac-only bug hunt.
