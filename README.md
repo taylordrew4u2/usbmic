@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-701%20passing-brightgreen" alt="701 tests passing">
+  <img src="https://img.shields.io/badge/tests-702%20passing-brightgreen" alt="702 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
 </p>
@@ -46,7 +46,7 @@ four-hour 44.1/48 kHz soaks, against a 1 ms ceiling — more than a 23× margin.
 | **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
 | **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
 
-701 unit tests, an end-to-end take and an end-to-end refusal through the real
+702 unit tests, an end-to-end take and an end-to-end refusal through the real
 app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
 checks run in CI.
 
@@ -216,7 +216,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.9 release candidate.
+> to show the implemented flows, not as proof of the v1.13.10 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
@@ -261,7 +261,7 @@ files really are empty and the card says so instead of calling it saved.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.9 release candidate**. It is not a
+The source currently describes the **v1.13.10 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](SUPPORT.md); data handling is documented in
@@ -352,8 +352,8 @@ sources before distributing a binary or considering a proprietary build.
 
 ## What to expect on your platform
 
-This is the **v1.13.9 release candidate**. The recording engine is covered by
-701 unit tests plus capture and platform harnesses. What differs by platform is
+This is the **v1.13.10 release candidate**. The recording engine is covered by
+702 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
@@ -791,7 +791,7 @@ to JUCE 8.
 ### Implemented and verified
 
 All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-701 unit tests passing in CI on Linux, macOS
+702 unit tests passing in CI on Linux, macOS
 and Windows. The table below lists the largest areas rather than every file:
 
 | Area | Spec | Tests |
