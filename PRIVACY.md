@@ -1,6 +1,6 @@
 # SobStage privacy notice
 
-Effective 12 September 2026. Applies to the SobStage v1.13.11 release candidate.
+Effective 12 September 2026. Applies to the SobStage v1.13.12 release candidate.
 
 SobStage is a local-first desktop recorder. It has no account system and this
 candidate does not automatically upload recordings, diagnostics, analytics or

@@ -135,7 +135,13 @@ std::string combineMovieWithSound (const std::string& videoPath,
             if (cancelled.load (std::memory_order_acquire))
             {
                 [exporter cancelExport];
-                dispatch_semaphore_wait (done, dispatch_time (DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+
+                // The file is removed only once the export has really
+                // stopped: deleting it under a still-running export let the
+                // export write it back, leaving a partial file that looked
+                // finished. This runs on a detached worker, so waiting here
+                // never holds up quitting.
+                dispatch_semaphore_wait (done, dispatch_time (DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC));
                 [[NSFileManager defaultManager] removeItemAtURL:outputUrl error:nil];
                 return "Stopped before the combined file was finished.";
             }
