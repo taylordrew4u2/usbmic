@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.14 -- 2026-10-03 (release candidate)
+
+One Mac camera fix for HDMI capture dongles.
+
+### Fixed
+
+- **Mac: HDMI capture dongles run at 30 fps instead of about 5.** Many
+  "USB2 Video" dongles offer 1080p at about 5 frames a second beside a 30 fps
+  mode, and the Mac could pick the slow one (or one that streams black).
+  When the chosen mode can't reach 30 fps, SobStage now switches to the
+  largest mode up to 1080p that can. Webcams that already run smoothly are
+  left alone.
+
 ## v1.13.13 -- 2026-10-03 (release candidate)
 
 Two Mac camera fixes, aimed at a capture card showing a black preview.
