@@ -47,6 +47,13 @@ private:
 
     /// How long each channel has been the only one above the tap threshold.
     std::vector<double> qualifyingSeconds;
+
+    /// Set once a sound was reported Ambiguous. Two mics in one room both hear
+    /// every word, so without this the same conversation (held for two
+    /// seconds by the meters' peak hold) was reported again on every tick --
+    /// 325 times in one sound check. One sound, one report: the room has to
+    /// go quiet before another Ambiguous can be raised.
+    bool ambiguousUntilQuiet = false;
 };
 
 } // namespace mma

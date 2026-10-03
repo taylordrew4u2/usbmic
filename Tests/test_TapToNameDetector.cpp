@@ -48,6 +48,37 @@ TEST_CASE (TapToName_TwoLoudChannelsAreAmbiguous)
     REQUIRE (d.getTappedChannel() == -1);
 }
 
+TEST_CASE (TapToName_OneSoundHeardByTwoMicsIsReportedOnce)
+{
+    TapToNameDetector d (2);
+
+    // Two mics in one room hear the same conversation for many ticks. That is
+    // one ambiguous sound, not one per tick (it was 325 in one sound check).
+    REQUIRE (d.processBlock ({ -10.0f, -12.0f }, kBlock) == TapResult::Ambiguous);
+    d.reset();
+
+    for (int i = 0; i < 20; ++i)
+        REQUIRE (d.processBlock ({ -10.0f, -12.0f }, kBlock) == TapResult::Listening);
+
+    // Once the room is quiet, the next shared sound may be reported again.
+    REQUIRE (d.processBlock ({ -80.0f, -80.0f }, kBlock) == TapResult::Listening);
+    REQUIRE (d.processBlock ({ -10.0f, -12.0f }, kBlock) == TapResult::Ambiguous);
+}
+
+TEST_CASE (TapToName_AClearTapStillNamesAfterAnAmbiguousSound)
+{
+    TapToNameDetector d (2);
+
+    REQUIRE (d.processBlock ({ -10.0f, -12.0f }, kBlock) == TapResult::Ambiguous);
+    d.reset();
+
+    for (int i = 0; i < 40 && d.getResult() == TapResult::Listening; ++i)
+        d.processBlock ({ -10.0f, -80.0f }, kBlock);
+
+    REQUIRE (d.getResult() == TapResult::ChannelIdentified);
+    REQUIRE (d.getTappedChannel() == 0);
+}
+
 TEST_CASE (TapToName_ANoisyNeighbourBlocksIdentification)
 {
     TapToNameDetector d (2);

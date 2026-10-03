@@ -5459,9 +5459,16 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             // onTheLine because the user just did something physical and is
             // waiting to see what it did. noteActivity collapses the repeat, so
             // tapping again while it is still up does not stack.
-            if (result == TapResult::Ambiguous)
+            // At most once a minute as well: a room where people keep talking
+            // goes quiet between sentences, and each sentence is not a tap.
+            const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+            if (result == TapResult::Ambiguous
+                && nowMs - lastAmbiguousTapNoticeMs >= kAmbiguousTapNoticeIntervalMs)
+            {
+                lastAmbiguousTapNoticeMs = nowMs;
                 noteActivity (ActivityLevel::Started, "Microphones",
                               "Two mics heard that -- try tapping closer to one.", true);
+            }
 
             // Latch consumed; listen for the next tap. The meter's 2-second
             // peak hold keeps re-identifying while the sound decays, which is
