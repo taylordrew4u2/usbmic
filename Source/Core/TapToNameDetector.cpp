@@ -21,6 +21,14 @@ TapResult TapToNameDetector::processBlock (const std::vector<float>& peaksDb, do
 
     int loudCount = 0;
     int loudest = -1;
+    bool allQuiet = true;
+
+    for (int ch = 0; ch < numChannels; ++ch)
+        if (peaksDb[static_cast<size_t> (ch)] >= kQuietThresholdDb)
+            allQuiet = false;
+
+    if (allQuiet)
+        ambiguousUntilQuiet = false;
 
     for (int ch = 0; ch < numChannels; ++ch)
     {
@@ -35,7 +43,11 @@ TapResult TapToNameDetector::processBlock (const std::vector<float>& peaksDb, do
     // would name the wrong meter. Say so and let them try again.
     if (loudCount > 1)
     {
-        result = TapResult::Ambiguous;
+        std::fill (qualifyingSeconds.begin(), qualifyingSeconds.end(), 0.0);
+
+        if (! ambiguousUntilQuiet)
+            result = TapResult::Ambiguous;
+
         return result;
     }
 
@@ -73,6 +85,9 @@ TapResult TapToNameDetector::processBlock (const std::vector<float>& peaksDb, do
 
 void TapToNameDetector::reset()
 {
+    if (result == TapResult::Ambiguous)
+        ambiguousUntilQuiet = true;
+
     result = TapResult::Listening;
     tappedChannel = -1;
     std::fill (qualifyingSeconds.begin(), qualifyingSeconds.end(), 0.0);
