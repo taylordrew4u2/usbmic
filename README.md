@@ -216,7 +216,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.12 release candidate.
+> to show the implemented flows, not as proof of the v1.13.13 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
@@ -261,7 +261,7 @@ files really are empty and the card says so instead of calling it saved.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.12 release candidate**. It is not a
+The source currently describes the **v1.13.13 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](SUPPORT.md); data handling is documented in
@@ -352,7 +352,7 @@ sources before distributing a binary or considering a proprietary build.
 
 ## What to expect on your platform
 
-This is the **v1.13.12 release candidate**. The recording engine is covered by
+This is the **v1.13.13 release candidate**. The recording engine is covered by
 702 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.

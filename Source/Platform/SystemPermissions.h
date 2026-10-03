@@ -55,6 +55,14 @@ PermissionState queryMicrophonePermission() noexcept;
 /// A no-op on other platforms, or when AVFoundation is not loaded.
 void requestMicrophoneAccess() noexcept;
 
+/// macOS only: the camera's AVFoundation status, as for the microphone.
+/// NotApplicable elsewhere.
+PermissionState queryCameraPermission() noexcept;
+
+/// macOS only: shows the camera prompt if one is due. Returns at once; read
+/// the answer later with queryCameraPermission().
+void requestCameraAccess() noexcept;
+
 /// Asks whether this app may write to `destinationPath`, by trying.
 ///
 /// An empty path, or one that is not where the recording is going, returns

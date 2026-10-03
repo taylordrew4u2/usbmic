@@ -296,9 +296,11 @@ void emitRuntimeError (const juce::String& deviceName, const juce::String& messa
             device->onErrorOccurred (message);
 }
 
-void emitFrame (const juce::String& deviceName)
+void emitFrame (const juce::String& deviceName, bool black)
 {
-    const juce::Image image (juce::Image::RGB, 4, 4, true);
+    juce::Image image (juce::Image::RGB, 4, 4, true);
+    if (! black)
+        image.clear (image.getBounds(), juce::Colours::grey);
 
     // Copy both collections because a controller may consume the resulting
     // mailbox and remove a listener immediately afterwards.
@@ -414,7 +416,11 @@ void CameraDevice::addListener (Listener* listenerToAdd)
         listeners.push_back (listenerToAdd);
 
     if (fakecamera::autoFrameOnListener())
-        listenerToAdd->imageReceived (Image (Image::RGB, 4, 4, true));
+    {
+        Image image (Image::RGB, 4, 4, true);
+        image.clear (image.getBounds(), Colours::grey);
+        listenerToAdd->imageReceived (image);
+    }
 }
 
 void CameraDevice::removeListener (Listener* listenerToRemove)

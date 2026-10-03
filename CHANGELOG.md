@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.13.13 -- 2026-10-03 (release candidate)
+
+Two Mac camera fixes, aimed at a capture card showing a black preview.
+
+### Fixed
+
+- **Mac: a camera or capture card sending an all-black picture now says so.**
+  A "USB2 Video" HDMI dongle with no signal, an unsupported input mode or an
+  HDCP-protected source (Apple TV, iPad, many laptops and consoles) keeps
+  sending black frames. SobStage used to show a silent black box; after about
+  1.5 s of black the tile now says the picture is black and what to check, and
+  the preview comes back as soon as there is a real picture.
+- **Mac: cameras wait for camera permission instead of opening into black.**
+  A camera opened while the macOS camera prompt was still up (or after a
+  denial) could stream black until it was switched off and on. SobStage now
+  asks for camera access first, says what to do while it waits, and starts
+  the cameras as soon as you click Allow.
+
 ## v1.13.12 -- 2026-10-03 (release candidate)
 
 Three more Mac fixes found reviewing the Mac audio and video code.

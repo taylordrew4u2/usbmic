@@ -759,6 +759,101 @@ void aLateFirstFrameRecoversAfterTheSignalTimeout()
     fakecamera::setAutoFrameOnListener (true);
 }
 
+/// A capture dongle with no HDMI signal or an HDCP-protected source streams
+/// valid but all-black frames. The tile must say so in words instead of
+/// showing a silent black rectangle, and come back on the first real picture.
+void anAllBlackPictureIsExplainedNotShown()
+{
+    std::printf ("\nA capture card streaming all-black frames\n");
+
+    fakecamera::setDevices ({ "USB2 Video" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (false);
+    fakecamera::resetOpenCallCount();
+    fakecamera::resetRecordingCallCounts();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("USB2 Video", true);
+    controller.applySelection (true);
+
+    fakecamera::emitFrame ("USB2 Video", true);
+    controller.applyPendingCameraList();
+    check (controller.createViewer ("USB2 Video") != nullptr
+               && controller.getSignalStatusText ("USB2 Video").isEmpty(),
+           "one dark proof (a camera still exposing) is not yet a warning");
+
+    const auto liveRevision = controller.getViewerRevision ("USB2 Video");
+    fakecamera::emitFrame ("USB2 Video", true);
+    fakecamera::emitFrame ("USB2 Video", true);
+    controller.applyPendingCameraList();
+    check (controller.getSignalState ("USB2 Video") == mma::CameraController::SignalState::Live,
+           "black frames still prove the device is streaming");
+    check (controller.createViewer ("USB2 Video") == nullptr,
+           "a run of black frames swaps the black preview for a placeholder");
+    check (controller.getSignalStatusText ("USB2 Video").containsIgnoreCase ("all black")
+               && controller.getSignalStatusText ("USB2 Video").containsIgnoreCase ("HDCP"),
+           "the placeholder says the picture is black and why");
+    check (controller.getViewerRevision ("USB2 Video") > liveRevision,
+           "the black warning invalidates the cached tile");
+
+    fakecamera::emitFrame ("USB2 Video");
+    controller.applyPendingCameraList();
+    check (controller.createViewer ("USB2 Video") != nullptr
+               && controller.getSignalStatusText ("USB2 Video").isEmpty(),
+           "the first real picture brings the preview straight back");
+    check (fakecamera::getOpenCallCount() == 1, "none of this reopens the device");
+
+    fakecamera::setAutoFrameOnListener (true);
+}
+
+/// macOS: opening a camera while the privacy prompt is still up gives a
+/// session that streams black and never recovers. Hold the open until the
+/// answer is in, ask once, and open on the first poll after Allow.
+void aCameraWaitsForPrivacyPermission()
+{
+    std::printf ("\nA camera switched on before camera access is granted\n");
+
+    fakecamera::setDevices ({ "FaceTime HD Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetOpenCallCount();
+
+    auto permission = std::make_shared<mma::PermissionState> (mma::PermissionState::NotYetRequested);
+    auto requests = std::make_shared<int> (0);
+
+    mma::CameraController controller;
+    controller.setCameraPermission ([permission] { return *permission; },
+                                    [requests] { ++*requests; });
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("FaceTime HD Camera", true);
+    controller.applySelection (true);
+    controller.applySelection (false);
+
+    check (fakecamera::getOpenCallCount() == 0, "no camera opens before the user answers");
+    check (*requests == 1, "the system prompt is asked for exactly once");
+    check (controller.getProblem().containsIgnoreCase ("allow camera access"),
+           "the problem line says what the user needs to do");
+    check (controller.getSignalStatusText ("FaceTime HD Camera").containsIgnoreCase ("camera access"),
+           "the tile says it is waiting for camera access, not to close other apps");
+
+    *permission = mma::PermissionState::Denied;
+    controller.applyPendingCameraList();
+    check (fakecamera::getOpenCallCount() == 0
+               && controller.getProblem().containsIgnoreCase ("Privacy & Security"),
+           "a denial keeps the camera closed and points at System Settings");
+
+    *permission = mma::PermissionState::Granted;
+    check (controller.applyPendingCameraList(), "the grant is noticed on the next poll");
+    check (fakecamera::getOpenCallCount() == 1
+               && controller.getSignalState ("FaceTime HD Camera")
+                      == mma::CameraController::SignalState::Live,
+           "the camera opens and goes live without the user toggling it");
+    check (controller.getProblem().isEmpty(), "the permission message clears");
+}
+
 /// A callback already queued when an identical capture card reconnects belongs
 /// to the old platform object. Product-name identity must not let that event
 /// certify the replacement generation.
@@ -1703,6 +1798,8 @@ int main()
     anOpenedCaptureCardWithoutAFrameIsNotRecordable();
     aCameraThatCannotStartIsNamedNotCounted();
     aLateFirstFrameRecoversAfterTheSignalTimeout();
+    anAllBlackPictureIsExplainedNotShown();
+    aCameraWaitsForPrivacyPermission();
     aStaleGenerationFrameCannotCertifyAReopenedCamera();
     aRuntimeCameraErrorInvalidatesThePreview();
     switchingOffARecordingCameraWaitsForTheTakeToEnd();
