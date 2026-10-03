@@ -791,8 +791,11 @@ void Application::restartCapture()
     if (aggregateRepublishDeferred)
     {
         aggregateRepublishDeferred = false;
-        if (publishAggregateDevice())
-            reselectOutputDevice();
+
+        // Chosen again whether or not the re-create worked: a refused one has
+        // already destroyed the device the headphones were on.
+        publishAggregateDevice();
+        reselectOutputDevice();
     }
 
     // Every stream is reopened below, so none is dead any more. Stamped, so
@@ -1055,15 +1058,23 @@ bool Application::publishAggregateDevice()
 void Application::setAggregateDeviceName (const juce::String& name)
 {
     const auto trimmed = name.trim();
-    aggregateName = trimmed.isEmpty() ? juce::String ("SobStage") : trimmed;
+    const auto newName = trimmed.isEmpty() ? juce::String ("SobStage") : trimmed;
+
+    // Applied on focus loss as well as Return, so an untouched field must not
+    // rebuild anything.
+    if (newName == aggregateName)
+        return;
+
+    aggregateName = newName;
 
     // A rename replaces the device, and the headphone mix with it when that
-    // is where it plays.
-    if (publishAggregateDevice() || aggregateRepublishDeferred)
-    {
-        reselectOutputDevice();
-        requestCaptureRestart();
-    }
+    // is where it plays. Whatever the outcome -- replaced, deferred to Stop,
+    // or refused -- the output is chosen again and the rig reopened: a
+    // refused re-create has already destroyed the old device and stopped the
+    // monitor on it, and leaving it there kept everyone's headphones silent.
+    publishAggregateDevice();
+    reselectOutputDevice();
+    requestCaptureRestart();
 
     saveSettings();
 }
@@ -1459,8 +1470,16 @@ void Application::onDeviceListChanged()
             // stops its stream, and the stream-failure notice that follows
             // runs this again with the audio gone.
             const bool streamDead = deadInputStreams.count (ch.deviceId) > 0;
-            const bool listed = present.count (ch.deviceId) > 0
+            const bool enumerated = present.count (ch.deviceId) > 0;
+            const bool listed = enumerated
                              || (! streamDead && capture->isDeviceDelivering (ch.deviceId));
+
+            // Given the benefit of the doubt: look again shortly. A real
+            // unplug's stream-failure notice is not handed to this function
+            // once the device has left the list, so without a second look a
+            // mic pulled within that window was never noticed at all.
+            if (! enumerated && listed)
+                recheckDeviceListSoon = true;
             const auto change = recordingEngine.onDeviceListSeen (ch.deviceId, listed, streamDead);
             const bool live = listed && ! streamDead && ! recordingEngine.isWritingSilence (ch.deviceId);
             capture->setChannelLive (ch.deviceId, live);
@@ -1563,6 +1582,7 @@ void Application::onDeviceListChanged()
         // this the change was shown in Settings and never applied: the next
         // take ran at the old rate and size, and left out the new microphone.
         captureRestartDeferred = true;
+        scheduleDeviceListRecheckIfDue();
         return;
     }
 
@@ -1580,6 +1600,21 @@ void Application::onDeviceListChanged()
         return;
 
     restartCapture();
+}
+
+void Application::scheduleDeviceListRecheckIfDue()
+{
+    if (! recheckDeviceListSoon)
+        return;
+
+    recheckDeviceListSoon = false;
+
+    const auto alive = getAliveToken();
+    juce::Timer::callAfterDelay (400, [this, alive]
+    {
+        if (alive.lock() != nullptr)
+            onDeviceListChanged();
+    });
 }
 
 std::string Application::describeRig() const
