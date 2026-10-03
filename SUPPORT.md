@@ -1,6 +1,6 @@
 # SobStage support
 
-SobStage v1.13.12 is a release candidate. Before reporting a problem, check the
+SobStage v1.13.13 is a release candidate. Before reporting a problem, check the
 in-app **Help** screen and the known release gates in
 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 

@@ -418,6 +418,10 @@ void Application::initialise()
     // Before anything can open a camera: a launch that went down while
     // starting one must not start it unattended again.
     cameraController.setStartupGuardFile (getSupportFolder().getChildFile ("camera-starting.txt"));
+#if JUCE_MAC
+    cameraController.setCameraPermission ([] { return queryCameraPermission(); },
+                                          [] { requestCameraAccess(); });
+#endif
 
     cameraController.refreshCameras();
 

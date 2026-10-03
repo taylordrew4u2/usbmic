@@ -11,6 +11,8 @@
 #include <thread>
 #include "../Core/CameraSelection.h"
 #include "../Core/CombinedTakePlan.h"
+#include "../Core/PermissionGuidance.h"
+#include <functional>
 #include <vector>
 
 #if JUCE_USE_CAMERA
@@ -111,6 +113,14 @@ public:
     /// (setCameraEnabledByUser) tries it again. Call once, at launch, before the
     /// first applySelection().
     void setStartupGuardFile (const juce::File& file);
+
+    /// macOS camera privacy. Opening a camera while the system prompt is still
+    /// up (or after a denial) gives a session that delivers black frames and
+    /// never recovers on its own. With a probe set, no camera opens until it
+    /// reads Granted or NotApplicable: "not yet asked" calls `request` once,
+    /// and the cameras open on the first poll after the user clicks Allow.
+    void setCameraPermission (std::function<PermissionState()> probe,
+                              std::function<void()> request);
 
     /// The user switched one camera on or off in the Cameras panel. Switching
     /// a camera on is the explicit retry the crash-loop guard waits for: it is
@@ -260,6 +270,8 @@ private:
         bool startingThisTake = false;
         bool firstFrameReceived = false;
         bool signalTimedOut = false;
+        int blackFramesInARow = 0;
+        bool pictureBlack = false;
         double openedAtMs = 0.0;
         double lastFrameAtMs = 0.0;
 
@@ -278,6 +290,10 @@ private:
     // Crash-loop guard (setStartupGuardFile): cameras named by the file a
     // crashed launch left behind, and the ones this launch is still starting.
     juce::File startupGuardFile;
+    std::function<PermissionState()> cameraPermissionProbe;
+    std::function<void()> requestCameraPermission;
+    bool cameraPermissionRequested = false;
+    bool waitingForCameraPermission = false;
     std::set<std::string> crashedWhileStartingIds;
     std::set<std::string> startingGuardIds;
     void setStartingGuard (const std::string& id, bool starting);
@@ -295,7 +311,11 @@ private:
     {
         std::string id;
         uint64_t viewerRevision = 0;
+        bool black = false;
     };
+
+    /// Proofs arrive twice a second, so about 1.5 s of black.
+    static constexpr int kBlackFramesBeforeWarning = 3;
 
     struct RecordingFinishedNotification
     {

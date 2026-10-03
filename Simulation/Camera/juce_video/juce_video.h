@@ -93,7 +93,9 @@ void setViewerSucceeds (bool shouldSucceed);
 void setAutoFrameOnListener (bool shouldDeliver);
 /// Delivers a valid image to the listeners on every current generation with
 /// this OS name.
-void emitFrame (const juce::String& deviceName);
+/// A grey picture, or (black = true) the all-black frames a capture dongle
+/// keeps sending with no HDMI signal or an HDCP-protected source.
+void emitFrame (const juce::String& deviceName, bool black = false);
 int getAddListenerCallCount();
 int getRemoveListenerCallCount();
 void resetListenerCallCounts();

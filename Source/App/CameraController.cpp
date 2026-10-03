@@ -33,7 +33,7 @@ constexpr bool kCameraBackendReportsFinalization = false;
 class FrameHeartbeatListener final : public juce::CameraDevice::Listener
 {
 public:
-    explicit FrameHeartbeatListener (std::function<void()> publishIn)
+    explicit FrameHeartbeatListener (std::function<void (bool black)> publishIn)
         : publish (std::move (publishIn))
     {
     }
@@ -41,11 +41,35 @@ public:
     void imageReceived (const juce::Image& image) override
     {
         if (image.isValid())
-            publish();
+            publish (isBlack (image));
     }
 
 private:
-    std::function<void()> publish;
+    std::function<void (bool black)> publish;
+
+    /// A "USB2 Video" HDMI dongle with no signal, an unsupported input mode or
+    /// an HDCP-protected source keeps streaming perfectly valid frames that
+    /// are entirely black. Sample a coarse grid: a dark stage still has some
+    /// pixel above near-black, a dead input has none.
+    static bool isBlack (const juce::Image& image)
+    {
+        constexpr int kGrid = 16;
+        constexpr juce::uint8 kNearBlack = 24; // above video-range black (16)
+        const juce::Image::BitmapData pixels (image, juce::Image::BitmapData::readOnly);
+
+        for (int gy = 0; gy < kGrid; ++gy)
+            for (int gx = 0; gx < kGrid; ++gx)
+            {
+                const int x = juce::jmin (pixels.width - 1, (2 * gx + 1) * pixels.width / (2 * kGrid));
+                const int y = juce::jmin (pixels.height - 1, (2 * gy + 1) * pixels.height / (2 * kGrid));
+                const auto colour = pixels.getPixelColour (x, y);
+
+                if (juce::jmax (colour.getRed(), colour.getGreen(), colour.getBlue()) > kNearBlack)
+                    return false;
+            }
+
+        return true;
+    }
 };
 #endif
 
@@ -135,6 +159,18 @@ void CameraController::setStartupGuardFile (const juce::File& file)
     }
 #else
     juce::ignoreUnused (file);
+#endif
+}
+
+void CameraController::setCameraPermission (std::function<PermissionState()> probe,
+                                            std::function<void()> request)
+{
+#if JUCE_USE_CAMERA
+    cameraPermissionProbe = std::move (probe);
+    requestCameraPermission = std::move (request);
+    cameraPermissionRequested = false;
+#else
+    juce::ignoreUnused (probe, request);
 #endif
 }
 
@@ -266,11 +302,17 @@ bool CameraController::applyPendingCameraList()
     // the outer UI deliberately does not call applySelection(). Leaving cleanup
     // to that caller kept an unplugged CameraDevice alive and allowed a same-name
     // reconnect to reuse the stale object indefinitely.
-    if (hasNewDeviceList || runtimeStateChanged || signalStateChanged)
+    // The user answered the camera prompt (or allowed SobStage in System
+    // Settings): open the cameras that were held back for it.
+    const bool permissionArrived = waitingForCameraPermission && cameraPermissionProbe != nullptr
+        && cameraPermissionProbe() != PermissionState::NotYetRequested
+        && cameraPermissionProbe() != PermissionState::Denied;
+
+    if (hasNewDeviceList || runtimeStateChanged || signalStateChanged || permissionArrived)
         applySelection (false);
 
     return hasNewDeviceList || runtimeStateChanged || signalStateChanged
-        || finalizationStateChanged;
+        || finalizationStateChanged || permissionArrived;
 #else
     return false;
 #endif
@@ -396,11 +438,20 @@ bool CameraController::applyPendingRuntimeEvents()
         entry->second.lastFrameAtMs = signalClockMs();
         openFailures.erase (frame.id);
 
+        // Black proofs keep the signal alive (the device IS streaming) but a
+        // black rectangle with no words is what the user saw. After a short
+        // run of them, swap the preview for a placeholder that says why; the
+        // first real picture brings the preview straight back.
+        entry->second.blackFramesInARow = frame.black ? entry->second.blackFramesInARow + 1 : 0;
+        const bool pictureBlack = entry->second.blackFramesInARow >= kBlackFramesBeforeWarning;
+        const bool blackChanged = pictureBlack != entry->second.pictureBlack;
+        entry->second.pictureBlack = pictureBlack;
+
         // Keep this generation's listener attached. SobStage's pinned-JUCE
         // patch throttles the proof capture to two frames per second, which is
         // cheap enough to detect HDMI loss/recovery without the old unbounded
         // still-photo loop contending with the movie writer.
-        if (becameLive)
+        if (becameLive || blackChanged)
         {
             // Device generation stays fixed for callback validation. The public
             // revision is only the UI cache token for placeholder/live changes.
@@ -892,10 +943,22 @@ void CameraController::applySelection (bool retryFailures)
             ++it;
     }
 
+    const auto cameraPermission = cameraPermissionProbe != nullptr ? cameraPermissionProbe()
+                                                                    : PermissionState::NotApplicable;
+    const bool cameraAccessBlocked = cameraPermission == PermissionState::NotYetRequested
+                                  || cameraPermission == PermissionState::Denied;
+    waitingForCameraPermission = false;
+
     for (const auto& camera : selection.getAvailableCameras())
     {
         if (! selection.isEnabled (camera.id) || open.count (camera.id) > 0)
             continue;
+
+        if (cameraAccessBlocked && ! takeActive)
+        {
+            waitingForCameraPermission = true;
+            continue;
+        }
 
         // Camera membership and files are fixed when the take starts. A device
         // that appears (or finishes a topology retry) during the take may be
@@ -933,6 +996,24 @@ void CameraController::applySelection (bool retryFailures)
     // snapshot. Look at its durable choices separately so a previously armed
     // capture card that vanishes remains a visible fault instead of silently
     // disappearing from the panel and from this problem line.
+    if (waitingForCameraPermission)
+    {
+        if (cameraPermission == PermissionState::NotYetRequested
+            && ! cameraPermissionRequested && requestCameraPermission != nullptr)
+        {
+            cameraPermissionRequested = true;
+            requestCameraPermission();
+        }
+
+        openProblem = cameraPermission == PermissionState::Denied
+            ? juce::String ("SobStage isn't allowed to use cameras. Turn SobStage on in System "
+                            "Settings > Privacy & Security > Camera; the cameras start as soon as "
+                            "you do. Sound recording is unaffected.")
+            : juce::String ("Waiting for you to allow camera access. Click Allow in the macOS "
+                            "prompt; if none appeared, turn SobStage on in System Settings > "
+                            "Privacy & Security > Camera.");
+    }
+
     if (hasAppliedDeviceList)
         for (const auto& camera : selection.getUnavailableEnabledCameras())
             missingCameras.add (juce::String (camera.displayName));
@@ -1062,10 +1143,10 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     const auto frameMailbox = runtimeErrorMailbox;
     auto& stored = open.at (id);
     stored.frameListener = std::make_unique<FrameHeartbeatListener> (
-        [frameMailbox, id, viewerRevision]
+        [frameMailbox, id, viewerRevision] (bool black)
         {
             const std::lock_guard<std::mutex> guard (frameMailbox->mutex);
-            frameMailbox->frames.push_back ({ id, viewerRevision });
+            frameMailbox->frames.push_back ({ id, viewerRevision, black });
         });
     stored.device->addListener (stored.frameListener.get());
 
@@ -1139,7 +1220,8 @@ std::unique_ptr<juce::Component> CameraController::createViewer (const std::stri
     const auto entry = open.find (deviceId);
 
     if (entry != open.end() && entry->second.nativeViewer != nullptr
-        && entry->second.firstFrameReceived && ! entry->second.signalTimedOut)
+        && entry->second.firstFrameReceived && ! entry->second.signalTimedOut
+        && ! entry->second.pictureBlack)
         return std::make_unique<CameraViewerHost> (entry->second.viewerTarget);
 #else
     juce::ignoreUnused (deviceId);
@@ -1182,12 +1264,27 @@ juce::String CameraController::getSignalStatusText (const std::string& deviceId)
                    "then turn this camera off and back on.";
 
         case SignalState::NotOpen:
+#if JUCE_USE_CAMERA
+            if (waitingForCameraPermission)
+                return "No picture from " + displayName
+                     + " yet: SobStage needs camera access. Allow it in the macOS prompt or in "
+                       "System Settings > Privacy & Security > Camera.";
+#endif
+
             return "No picture from " + displayName
                  + ". Close any other app using it, then turn this camera off and back on.";
 
         case SignalState::Live:
             break;
     }
+
+#if JUCE_USE_CAMERA
+    if (const auto entry = open.find (deviceId); entry != open.end() && entry->second.pictureBlack)
+        return "The picture from " + displayName
+             + " is all black. Check the source is switched on and set to 1080p or 720p; "
+               "a capture device shows black for HDCP-protected sources (Apple TV, iPad, many "
+               "laptops and consoles).";
+#endif
 
     return {};
 }
