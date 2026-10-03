@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.13.12 -- 2026-10-03 (release candidate)
+
+Three more Mac fixes found reviewing the Mac audio and video code.
+
+### Fixed
+
+- **Mac: quitting while a combined video is being made can't leave a
+  half-made file that looks finished.** SobStage now waits for the Mac to
+  really stop before it removes the unfinished file.
+- **Mac: monitor latency can't be under-reported** when an output device
+  reports a nonsense delay.
+- **Mac: a second copy of SobStage can't break the first one's combined
+  device.** With two users logged in (Fast User Switching), each copy used
+  to remove the other's SobStage device whenever it changed or quit.
+
 ## v1.13.11 -- 2026-10-03 (release candidate)
 
 Four Mac fixes found reviewing the last three releases.
