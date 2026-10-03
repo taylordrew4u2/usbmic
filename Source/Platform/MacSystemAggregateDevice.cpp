@@ -108,6 +108,17 @@ public:
     {
         remove();
 
+        // One left behind by an earlier run that crashed is cleared the first
+        // time this run publishes, and only then: after that, a device with
+        // our UID that is not ours belongs to another running copy (a second
+        // user via Fast User Switching), and destroying it on every republish
+        // and at quit would pull its input out from under the apps using it.
+        if (! clearedLeftoverFromEarlierRun)
+        {
+            destroyLeftoverAggregate();
+            clearedLeftoverFromEarlierRun = true;
+        }
+
         publishedName = name;
         publishedCount = static_cast<int> (deviceUids.size());
 
@@ -179,10 +190,6 @@ public:
             aggregateId = kAudioObjectUnknown;
         }
 
-        // Also one an earlier run left behind, so quitting with no
-        // microphones still leaves no stale "SobStage" in other apps.
-        destroyLeftoverAggregate();
-
         publishedCount = 0;
     }
 
@@ -226,6 +233,7 @@ public:
 
 private:
     AudioObjectID aggregateId = kAudioObjectUnknown;
+    bool clearedLeftoverFromEarlierRun = false;
     std::string publishedName;
     int publishedCount = 0;
 };

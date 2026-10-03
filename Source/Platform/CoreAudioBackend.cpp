@@ -884,8 +884,10 @@ UInt32 readOutputUInt32 (AudioObjectID object, AudioObjectPropertySelector selec
 // counts as nothing -- an under-estimate, never an invented figure.
 int readOutputPresentationLatencyFrames (AudioObjectID device)
 {
-    UInt32 frames = readOutputUInt32 (device, kAudioDevicePropertyLatency)
-                  + readOutputUInt32 (device, kAudioDevicePropertySafetyOffset);
+    // 64-bit: a nonsense figure near UInt32's limit must not wrap around to a
+    // small one and slip under the cap below.
+    uint64_t frames = static_cast<uint64_t> (readOutputUInt32 (device, kAudioDevicePropertyLatency))
+                    + readOutputUInt32 (device, kAudioDevicePropertySafetyOffset);
 
     AudioObjectPropertyAddress address { kAudioDevicePropertyStreams, kAudioObjectPropertyScopeOutput,
                                          kAudioObjectPropertyElementMain };
@@ -909,7 +911,7 @@ int readOutputPresentationLatencyFrames (AudioObjectID device)
 
     // A nonsense figure from a confused driver must not print a latency of
     // minutes; a second is already far past anything a person could monitor on.
-    return static_cast<int> (std::min<UInt32> (frames, 192000));
+    return static_cast<int> (std::min<uint64_t> (frames, 192000));
 }
 
 bool setBufferFrameSize (AudioObjectID device, int frames)
