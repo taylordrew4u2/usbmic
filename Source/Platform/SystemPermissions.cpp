@@ -59,7 +59,9 @@ PermissionState fromWriteProbeErrno (int probeErrno) noexcept
 
 } // namespace permissions
 
-void requestMicrophoneAccess() noexcept
+namespace
+{
+void requestAVAccess (const char* mediaTypeCode) noexcept
 {
 #if defined(__APPLE__) && defined(__BLOCKS__)
     // +[AVCaptureDevice requestAccessForMediaType: AVMediaTypeAudio
@@ -83,19 +85,21 @@ void requestMicrophoneAccess() noexcept
 
     using SendStringFromUtf8 = id (*) (id, SEL, const char*);
     const auto mediaType = reinterpret_cast<SendStringFromUtf8> (objc_msgSend) (
-        stringClass, sel_registerName ("stringWithUTF8String:"), "soun");
+        stringClass, sel_registerName ("stringWithUTF8String:"), mediaTypeCode);
     if (mediaType == nullptr)
         return;
 
     void (^handler) (signed char) = ^(signed char) {};
     using SendRequest = void (*) (id, SEL, id, void (^) (signed char));
     reinterpret_cast<SendRequest> (objc_msgSend) (deviceClass, selector, mediaType, handler);
+#else
+    (void) mediaTypeCode;
 #endif
 }
 
-PermissionState queryMicrophonePermission() noexcept
-{
 #if defined(__APPLE__)
+PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
+{
     // Application.cpp is C++, not Objective-C++, and SystemThermalState.cpp
     // already reaches a small public AppKit surface through the Objective-C
     // runtime rather than converting a translation unit for one enum. This
@@ -122,13 +126,42 @@ PermissionState queryMicrophonePermission() noexcept
 
     using SendStringFromUtf8 = id (*) (id, SEL, const char*);
     const auto mediaType = reinterpret_cast<SendStringFromUtf8> (objc_msgSend) (
-        stringClass, sel_registerName ("stringWithUTF8String:"), "soun");
+        stringClass, sel_registerName ("stringWithUTF8String:"), mediaTypeCode);
     if (mediaType == nullptr)
         return PermissionState::NotApplicable;
 
     using SendIntegerWithObject = long (*) (id, SEL, id);
     return permissions::fromAVAuthorizationStatus (
         reinterpret_cast<SendIntegerWithObject> (objc_msgSend) (deviceClass, selector, mediaType));
+}
+#endif
+} // namespace
+
+void requestMicrophoneAccess() noexcept
+{
+    requestAVAccess ("soun"); // AVMediaTypeAudio
+}
+
+void requestCameraAccess() noexcept
+{
+    requestAVAccess ("vide"); // AVMediaTypeVideo
+}
+
+PermissionState queryCameraPermission() noexcept
+{
+#if defined(__APPLE__)
+    return queryAVPermission ("vide");
+#else
+    // Windows asks when the camera opens and JUCE reports a refusal as a
+    // failed open; Linux has no camera backend. Nothing to gate here.
+    return PermissionState::NotApplicable;
+#endif
+}
+
+PermissionState queryMicrophonePermission() noexcept
+{
+#if defined(__APPLE__)
+    return queryAVPermission ("soun");
 
 #elif defined(_WIN32)
     // The CapabilityAccessManager consent store. WinRT's AppCapability API is
