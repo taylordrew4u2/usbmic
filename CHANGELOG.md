@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.13.15 -- 2026-10-03 (release candidate)
+
+One fix from a real sound check.
+
+### Fixed
+
+- **"Two mics heard that -- try tapping closer to one" no longer floods the
+  log.** With two microphones in one room, any loud sound (talking, music)
+  reached both and was reported on every screen update -- 325 times in one
+  sound check. It is now reported once per sound, at most once a minute, and
+  a clean tap on one microphone still names it.
+
 ## v1.13.14 -- 2026-10-03 (release candidate)
 
 One Mac camera fix for HDMI capture dongles.
