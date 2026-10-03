@@ -1304,11 +1304,12 @@ void aSlowMicDoesNotRefuseTheNextHealthyMic()
     auto slowSpec = microphone ("Slow Mic A", "uid-slow-mic-a", 1,
                                 fakeca::BufferShape::oneChannelPerBuffer);
     // Past the simulated 250 ms input deadline, but it does finish: its worker
-    // releases the transaction about 50 ms after the caller gives up, well
-    // inside the next mic's 250 ms wait. (400 ms left only ~100 ms of slack,
-    // which a loaded macOS release runner overran: the healthy mic waited
-    // 261 ms and was refused.)
-    slowSpec.startDelayMilliseconds = 300;
+    // releases the transaction about 125 ms after the caller gives up, inside
+    // the next mic's 250 ms wait. That leaves ~125 ms of slack on both sides:
+    // 400 ms left only ~100 ms for the healthy mic (a loaded runner waited
+    // 261 ms and was refused), and 300 ms left only 50 ms for the slow mic's
+    // own deadline (a loaded runner woke late and saw it open).
+    slowSpec.startDelayMilliseconds = 375;
     const auto slowId = fakeca::addDevice (slowSpec);
     const auto healthyId = fakeca::addDevice (microphone (
         "Healthy Mic B", "uid-healthy-mic-b", 1, fakeca::BufferShape::oneChannelPerBuffer));
