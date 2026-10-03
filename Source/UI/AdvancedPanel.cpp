@@ -386,10 +386,13 @@ void AdvancedPanel::setMicSelections (const std::vector<MicChoice>& mics)
 {
     // Rebuilt only when the set of rows changes. The panel repaints at 2 Hz,
     // and recreating the toggles every tick would fight the user's click.
+    // Keyed on identity as well as label: identical mics share a label, so
+    // two of them swapping places after a replug changed nothing visible and
+    // left each box switching the other one.
     juce::StringArray incoming;
     for (const auto& m : mics)
     {
-        incoming.add (m.label);
+        incoming.add (m.deviceKey + "\n" + m.label);
         for (const auto& in : m.inputs)
             incoming.add ("  " + in.label);
     }

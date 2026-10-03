@@ -824,6 +824,11 @@ private:
     std::string describeRig() const;
     std::string lastStartedRigSignature;
 
+    /// A mid-take pass kept a missing mic because its audio was still
+    /// arriving; one more pass shortly after settles whether it really left.
+    bool recheckDeviceListSoon = false;
+    void scheduleDeviceListRecheckIfDue();
+
     DeviceManager deviceManager;
     RecordingEngine recordingEngine;
 
