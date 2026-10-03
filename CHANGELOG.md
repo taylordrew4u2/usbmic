@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.13.11 -- 2026-10-03 (release candidate)
+
+Four Mac fixes found reviewing the last three releases.
+
+### Fixed
+
+- **Mac: a mic pulled out mid-take is always noticed.** If it was pulled in
+  the instant after its last sound, SobStage could miss the unplug entirely:
+  no entry in the log and no warning. It now checks again a moment later.
+- **Mac: headphones come back after Stop** if SobStage couldn't rebuild the
+  combined device with a mic change made during the take. They used to stay
+  silent until something else changed.
+- **Mac: renaming the combined device can't leave the headphones silent**
+  if macOS refuses the new name.
+- **Mac: two identical mics keep the right switches** in Settings after
+  they're unplugged and plugged back in a different order.
+
 ## v1.13.10 -- 2026-10-02 (release candidate)
 
 The combined video works on every Mac with nothing to install, plus three
