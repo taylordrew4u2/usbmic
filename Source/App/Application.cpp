@@ -407,22 +407,22 @@ void Application::initialise()
     // here immediately after startup made some USB drivers stall in their HAL
     // teardown/recreate path before the window could appear.
 
-    // Enumeration only. Nothing is opened here, so a rig with no camera
-    // switched on turns no camera light on and spends no privacy prompt.
-    //
-    // A camera the user has already switched on is opened shortly afterwards by
-    // the UI tick, because the main screen shows the picture beside the meters
-    // and cannot show one from a closed device. That is not a new prompt:
-    // switching a camera on happens behind the camera door, and the first grant
-    // is spent there with the reason on screen.
     // Before anything can open a camera: a launch that went down while
-    // starting one must not start it unattended again.
+    // starting one must not start it unattended again, and on macOS no camera
+    // opens until camera access is granted.
     cameraController.setStartupGuardFile (getSupportFolder().getChildFile ("camera-starting.txt"));
 #if JUCE_MAC
     cameraController.setCameraPermission ([] { return queryCameraPermission(); },
                                           [] { requestCameraAccess(); });
 #endif
 
+    // Enumeration only. Nothing is opened here, so a rig with no camera
+    // switched on turns no camera light on and spends no privacy prompt.
+    //
+    // A camera the user has already switched on is opened shortly afterwards by
+    // the UI tick, because the main screen shows the picture beside the meters
+    // and cannot show one from a closed device. On macOS the camera prompt is
+    // raised once, by CameraController, when that first open is held back for it.
     cameraController.refreshCameras();
 
     // A camera the user turned off last time stays off, and one they named
@@ -1028,14 +1028,6 @@ bool Application::publishAggregateDevice()
         return false;
     }
 
-    // The result is read, and the cache is only updated on success.
-    //
-    // publish() has always returned bool and the return was discarded, so a
-    // failed creation cached itself as published: the guard above then matched
-    // on every later call and no retry ever happened. getStatus() went on
-    // saying "no microphones connected, so other apps see nothing yet", which
-    // is a wrong explanation for a device that failed to be created -- the
-    // user hunts for a cable while the app has already given up.
     // Close our own stream on it first. Destroying a device under a running
     // IOProc leaves the stop and the teardown to fail against an object that
     // no longer exists; the rebuild that follows reopens onto the new one.
@@ -1045,6 +1037,14 @@ bool Application::publishAggregateDevice()
         lastStartedRigSignature.clear();
     }
 
+    // The result is read, and the cache is only updated on success.
+    //
+    // publish() has always returned bool and the return was discarded, so a
+    // failed creation cached itself as published: the guard above then matched
+    // on every later call and no retry ever happened. getStatus() went on
+    // saying "no microphones connected, so other apps see nothing yet", which
+    // is a wrong explanation for a device that failed to be created -- the
+    // user hunts for a cable while the app has already given up.
     if (! systemAggregate->publish (name, uids, master))
     {
         noteActivity (ActivityLevel::Failed, "Combined device",
@@ -1215,7 +1215,7 @@ juce::String Application::getMonitorProblem() const
 
 void Application::syncSleepInhibitor()
 {
-    sleepInhibitor.setHeld (recordingEngine.getState() == RecordingState::Recording);
+    sleepInhibitor.setHeld (isRecording());
 }
 
 bool Application::refreshMicrophonePermission()
@@ -1237,7 +1237,7 @@ bool Application::refreshMicrophonePermission()
     {
         // Mid-take the reopen this grant needs is deferred to Stop, so the take
         // in progress stays silent. "Allowed now" would read as an all-clear.
-        const bool takeRunning = recordingEngine.getState() == RecordingState::Recording;
+        const bool takeRunning = isRecording();
         noteActivity (takeRunning ? ActivityLevel::Failed : ActivityLevel::Recovered, "Microphones",
                       juce::String (PermissionGuidance::grantArrivedMessage (takeRunning)));
     }
@@ -1684,12 +1684,13 @@ std::vector<Application::HeadphoneChoice> Application::getHeadphoneChoices() con
 
 void Application::setHeadphonesOn (const juce::String& deviceKey, bool on)
 {
+    const auto key = deviceKey.toStdString();
+
     for (const auto& d : deviceManager.getDevices())
     {
-        if (d.identity.key() != deviceKey.toStdString())
+        if (d.identity.key() != key)
             continue;
 
-        const auto key = d.identity.key();
         const bool currentlyOn = headphonesOffKeys.count (key) == 0;
 
         if (currentlyOn == on)
@@ -2928,7 +2929,7 @@ bool Application::pollCameraFinalization()
 
 bool Application::prepareToQuit()
 {
-    if (recordingEngine.getState() == RecordingState::Recording)
+    if (isRecording())
     {
         if (stopReason.isEmpty())
             stopReason = "the app was asked to quit";
@@ -3267,7 +3268,7 @@ juce::String Application::getRecordDisabledReason() const
     // have ended the recording, leaving the clock running with no way out but
     // quitting the app. A user who cannot stop their own take has been failed
     // more completely than by any silence.
-    if (recordingEngine.getState() == RecordingState::Recording)
+    if (isRecording())
         return {};
 
     if (pendingStoppedTakeCompletion != nullptr
@@ -3828,7 +3829,7 @@ juce::String Application::getActiveBackendDescription() const
     if (! status.reachDescription.empty())
         return juce::String (status.reachDescription);
 
-    return "Recording and monitoring only. Other apps can't see these mics.";
+    return "No. Only SobStage hears these mics.";
 }
 
 const std::vector<std::string>& Application::getOutputDeviceNames() const
@@ -3993,7 +3994,7 @@ void Application::setDestinationFolder (const juce::File& folder)
     // Deferred rather than refused, the same way a mic change mid-take is
     // (requestCaptureRestart): the user asked for it, so it happens, at the
     // first moment it can happen without touching a take.
-    if (recordingEngine.getState() == RecordingState::Recording)
+    if (isRecording())
     {
         pendingDestinationFolder = folder.getFullPathName();
 
@@ -4439,7 +4440,19 @@ void Application::announceDeviceChanges (const std::vector<MicDeviceState>& seen
 
 void Application::announceOutputChanges (const std::map<std::string, std::string>& current) const
 {
-    announceArrivalsAndDepartures (current, knownOutputNames, haveAnnouncedOutputsOnce, {});
+    // A microphone with a headphone jack (a Yeti, a capture dongle's audio) is
+    // listed as an output too. Its arrival is already announced as a
+    // microphone; saying it again here showed as "is connected. (x2)".
+    std::set<std::string> micNames;
+    for (const auto& [key, name] : knownDeviceNames)
+        micNames.insert (name);
+
+    std::map<std::string, std::string> outputsOnly;
+    for (const auto& [key, name] : current)
+        if (micNames.count (name) == 0)
+            outputsOnly.emplace (key, name);
+
+    announceArrivalsAndDepartures (outputsOnly, knownOutputNames, haveAnnouncedOutputsOnce, {});
 }
 
 void Application::announceCameraChanges() const
@@ -4455,7 +4468,7 @@ void Application::announceCameraChanges() const
     // list at exactly the moment duplicate suppression matters.
     std::set<std::string> saidByTheWatchdog;
 
-    if (recordingEngine.getState() == RecordingState::Recording)
+    if (isRecording())
         for (const auto& cam : cameraController.getTakeCameraStates())
             saidByTheWatchdog.insert (cam.id);
 
@@ -4541,10 +4554,16 @@ juce::StringArray Application::getRecentActivityLines (int limit) const
         const int totalSeconds = static_cast<int> (e.atSeconds);
         auto stamp = juce::String::formatted ("%d:%02d", totalSeconds / 60, totalSeconds % 60);
 
-        auto line = stamp + "  " + juce::String (e.subject) + " -- " + juce::String (e.message);
+        // Most messages name their device so they read alone on the main
+        // screen; don't say the name twice here ("Yeti -- Yeti is connected").
+        const juce::String subject (e.subject), message (e.message);
+        auto line = stamp + "  "
+                  + (message.startsWith (subject + " ")
+                         ? message
+                         : subject + juce::String (juce::CharPointer_UTF8 (" \xe2\x80\x94 ")) + message);
 
         if (e.repeats > 1)
-            line += " (x" + juce::String (e.repeats) + ")";
+            line += " (" + juce::String (e.repeats) + " times)";
 
         lines.add (line);
     }
@@ -4754,7 +4773,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // into nothing. Checked before anything else because the take has to stop
     // now rather than at the end of this function.
     if (capture != nullptr && capture->hasCardWriteFailed()
-        && recordingEngine.getState() == RecordingState::Recording)
+        && isRecording())
     {
         // Built before the take is torn down, while the mirror's path and
         // whether it was still running are both still known.
@@ -4826,7 +4845,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // The stop does not need the latch: it needs to know whether the room ran
     // out, which getRemainingRecordingSeconds answers as often as it is asked.
     // The latching call stays at the bottom, where its answer is delivered.
-    if (recordingEngine.getState() == RecordingState::Recording)
+    if (isRecording())
     {
         const auto remaining = getRemainingRecordingSeconds();
 
@@ -4865,7 +4884,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     if (capture != nullptr)
     {
         WriteSafetyInputs safetyIn;
-        safetyIn.recording = recordingEngine.getState() == RecordingState::Recording;
+        safetyIn.recording = isRecording();
         safetyIn.alreadyMixOnly = capture->isMixOnly();
         safetyIn.ringFillFraction = capture->getRingFillFraction();
         safetyIn.mirroring = capture->isMirroring();
@@ -4968,7 +4987,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
 
             auto line = subject + " " + juce::String (failure.reason);
             const bool stopForSafety = streamFailureRequiresRecordingStop (failure.kind)
-                                    && recordingEngine.getState() == RecordingState::Recording;
+                                    && isRecording();
 
             if (stopForSafety)
                 line += " Recording stopped before its file format could become untrue.";
@@ -5459,15 +5478,16 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
             // onTheLine because the user just did something physical and is
             // waiting to see what it did. noteActivity collapses the repeat, so
             // tapping again while it is still up does not stack.
-            // At most once a minute as well: a room where people keep talking
-            // goes quiet between sentences, and each sentence is not a tap.
+            // At most once every ten minutes as well: a room where people keep
+            // talking goes quiet between sentences, and each sentence is not a
+            // tap -- once a minute still filled the log during a sound check.
             const auto nowMs = juce::Time::getMillisecondCounterHiRes();
             if (result == TapResult::Ambiguous
                 && nowMs - lastAmbiguousTapNoticeMs >= kAmbiguousTapNoticeIntervalMs)
             {
                 lastAmbiguousTapNoticeMs = nowMs;
                 noteActivity (ActivityLevel::Started, "Microphones",
-                              "Two mics heard that -- try tapping closer to one.", true);
+                              "Two mics heard that. Tap closer to the one you want to name.", true);
             }
 
             // Latch consumed; listen for the next tap. The meter's 2-second
@@ -6657,7 +6677,7 @@ void Application::shutdown()
     if (capture != nullptr)
         capture->stopMonitoring();
 
-    if (recordingEngine.getState() == RecordingState::Recording)
+    if (isRecording())
         recordingEngine.stop();
     sleepInhibitor.setHeld (false);
     if (audioBackend != nullptr)

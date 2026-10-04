@@ -6,7 +6,7 @@ one shared live monitor mix to headphones. On macOS it also publishes a
 transient combined input while the app runs; Windows v1 is standalone. Must be
 operable by someone who has never configured audio hardware.
 Reference hardware: Blue Yeti (standard model). Section 14 is written against its measured behavior and constrains decisions elsewhere in this document.
-**Every value in this document is a specified default, not a placeholder.** Where a number appears, use it. Where a rule appears, follow it. Section 17 lists decisions that are closed and the reasoning behind them, so they are not reopened mid-build.
+**Every value in this document is a specified default, not a placeholder.** Where a number appears, use it. Where a rule appears, follow it. Section 16 lists decisions that are closed and the reasoning behind them, so they are not reopened mid-build.
 ---
 ## 0. Non-negotiables
 1. Audio is never lost. A dropped meter frame is acceptable. A dropped sample is not.
@@ -336,7 +336,7 @@ Novices fail on hardware, not software. Detect and explain, with the fix stated:
 - Bus power exhausted → a hub **with its own wall adapter** is needed, and why.
 - Card filesystem wrong → offer reformat to exFAT, state what is erased.
 - Card too slow → state measured speed, required speed, and the two ways out.
-- Headphones plugged into a microphone → redirect to the headphone amp (§5.2).
+- Headphones plugged into a microphone with no combined device available (Windows, Linux) → redirect to the headphone amp (§5.3).
 - Only one headphone output for several listeners → a splitter or amp is required.
 - **Microphone muted at the hardware switch** → the single most common failure. Name it explicitly whenever a channel reads silence.
 - **Non-cardioid polar pattern** → see §14.4.
@@ -414,7 +414,7 @@ Most laptops route all USB ports to one controller. Sustained SD card writes on 
 - **Detection:** correlation above 0.6 between two channels sustained for 10 seconds, while a third channel is below −45 dBFS, indicates at least one non-cardioid mic. Name the mic, name the knob, state the setting. Do not say "bleed" — the word means nothing to the target user. Say: "Mic 2 is picking up the whole room. Turn its pattern knob to the single-heart setting."
 ### 14.5 Headphone jack
 - The standard Yeti's analog direct monitoring **cannot be disabled** — there is no blend control, and the direct signal is always present at the jack.
-- This is why §5.2 prohibits using the mic jacks. It is a hardware property, not a configuration choice.
+- §5.2 accepts this: on the default macOS topology a Yeti listener hears their own voice twice (0 ms analog plus the mix). Their jack can be switched off in Settings.
 ### 14.6 Identical device names — first-run blocker
 Four Yetis enumerate with the same product string. A novice cannot tell which strip is which person.
 - Disambiguate internally per §2.4.
@@ -443,7 +443,7 @@ These were resolved deliberately. They look like oversights and are not. Do not 
 |---|---|
 | Trim affects the mix file but not the stems | A novice's bad gain decision must not be permanent. The editor gets clean raw material regardless. |
 | No mix-minus, no per-listener feeds | Everyone hears the identical mix. This was chosen over zero-latency self-monitoring, knowingly. |
-| Microphone headphone jacks unused | Non-defeatable analog direct monitoring would double each person's voice ~8 ms apart against the shared mix. |
+| Microphone headphone jacks carry the shared mix (macOS default) | Chosen knowingly despite the doubled voice from non-defeatable direct monitoring (§14.5); each jack can be switched off, never given a different mix. |
 | Shared-mode WASAPI disqualified | 40–100 ms makes own-voice monitoring an audible echo. The product fails at that latency. |
 | Pre-flight blocks rather than degrading mid-take | A novice cannot act on a mid-take warning. A delayed start beats a corrupted three-hour recording. |
 | New mics join monitoring but not the in-progress take | Channel count cannot change inside a WAV file. |

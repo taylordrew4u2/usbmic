@@ -4,9 +4,6 @@
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
 
-#include <chrono>
-#include <thread>
-
 // Compiled with -fobjc-arc (see CMakeLists.txt).
 
 namespace mma {

@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <mutex>
 #include <set>
@@ -12,7 +13,6 @@
 #include "../Core/CameraSelection.h"
 #include "../Core/CombinedTakePlan.h"
 #include "../Core/PermissionGuidance.h"
-#include <functional>
 #include <vector>
 
 #if JUCE_USE_CAMERA
@@ -290,14 +290,16 @@ private:
     // Crash-loop guard (setStartupGuardFile): cameras named by the file a
     // crashed launch left behind, and the ones this launch is still starting.
     juce::File startupGuardFile;
-    std::function<PermissionState()> cameraPermissionProbe;
-    std::function<void()> requestCameraPermission;
-    bool cameraPermissionRequested = false;
-    bool waitingForCameraPermission = false;
     std::set<std::string> crashedWhileStartingIds;
     std::set<std::string> startingGuardIds;
     void setStartingGuard (const std::string& id, bool starting);
     void writeStartupGuard();
+
+    // macOS camera privacy (setCameraPermission).
+    std::function<PermissionState()> cameraPermissionProbe;
+    std::function<void()> requestCameraPermission;
+    bool cameraPermissionRequested = false;
+    bool waitingForCameraPermission = false;
     std::map<std::string, uint64_t> viewerRevisions;
 
     struct RuntimeCameraError

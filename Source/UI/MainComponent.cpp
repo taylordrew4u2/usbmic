@@ -925,9 +925,18 @@ void MainComponent::refreshStatus()
         // Idle: where the next take will go. Recording: the folder this one is
         // actually in, which is the specific thing a user needs and the parent
         // folder only implies.
+        // The home folder as "~": the label cuts the END off a long path,
+        // which is the part that names the take folder.
+        const auto shortPath = [] (const juce::String& path)
+        {
+            const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getFullPathName();
+            return home.isNotEmpty() && path.startsWith (home) ? "~" + path.substring (home.length())
+                                                               : path;
+        };
+
         mainScreen.setSaveLocationText (isRecording
-            ? "Saving into " + application.getCurrentSessionFolder()
-            : "Saves to " + application.getDestinationFolder());
+            ? "Saving into " + shortPath (application.getCurrentSessionFolder())
+            : "Saves to " + shortPath (application.getDestinationFolder()));
 
         // §6.2/§10.6: the files themselves, growing. These are the worker's
         // sampled file sizes rather than names inferred from channel count, so
@@ -943,7 +952,7 @@ void MainComponent::refreshStatus()
                 total += file.sizeBytes;
 
             if (! files.empty())
-                savingLine = "Writing " + juce::String ((int) files.size()) + " files -- "
+                savingLine = "Writing " + juce::String ((int) files.size()) + " files, "
                            + juce::File::descriptionOfSizeInBytes (total) + " so far";
         }
 
@@ -1097,7 +1106,7 @@ void MainComponent::refreshAdvanced()
         const auto advice = application.getLoudnessAdvice();
 
         advancedPanel.setLoudnessAdvice (reading.isNotEmpty() && advice.isNotEmpty()
-                                             ? reading + " -- " + advice
+                                             ? reading + ". " + advice
                                              : (reading.isNotEmpty() ? reading : advice));
     }
     advancedPanel.setActivityLines (application.getRecentActivityLines());
@@ -1582,12 +1591,15 @@ void MainComponent::resized()
     // Each screen is laid out at least as tall as its content needs, and at
     // least as tall as the window -- so a short window scrolls and a tall one
     // does not leave the content floating in a strip at the top. The width
-    // excludes the scrollbar when one is showing, or the content would sit
-    // underneath it.
+    // excludes the scrollbar when one is (or is about to be) showing, or the
+    // content would sit underneath it. Asking isVerticalScrollBarShown() alone
+    // missed the first layout: the bar only appears after setSize() makes the
+    // content taller, and then covered the right edge of every row.
     const auto fit = [] (juce::Viewport& viewport, juce::Component& content, int requiredHeight)
     {
-        const int width = viewport.getWidth()
-                        - (viewport.isVerticalScrollBarShown() ? viewport.getScrollBarThickness() : 0);
+        const bool needsBar = viewport.isVerticalScrollBarShown()
+                           || requiredHeight > viewport.getHeight();
+        const int width = viewport.getWidth() - (needsBar ? viewport.getScrollBarThickness() : 0);
 
         content.setSize (juce::jmax (1, width),
                          juce::jmax (viewport.getHeight(), requiredHeight));
