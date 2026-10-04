@@ -216,7 +216,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.15 release candidate.
+> to show the implemented flows, not as proof of the v1.13.16 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
@@ -261,7 +261,7 @@ files really are empty and the card says so instead of calling it saved.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.15 release candidate**. It is not a
+The source currently describes the **v1.13.16 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](SUPPORT.md); data handling is documented in
@@ -352,7 +352,7 @@ sources before distributing a binary or considering a proprietary build.
 
 ## What to expect on your platform
 
-This is the **v1.13.15 release candidate**. The recording engine is covered by
+This is the **v1.13.16 release candidate**. The recording engine is covered by
 704 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
@@ -360,7 +360,7 @@ physical hardware.
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.12.0 candidate. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.16 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other
@@ -406,8 +406,12 @@ unsigned on Windows; the workflow signs and notarizes once the credentials in
 4. macOS will ask for **microphone permission** — allow it, or every meter
    stays silent. If you declined by accident: System Settings → Privacy &
    Security → Microphone → enable SobStage.
-5. Plug in directly attached USB, FireWire or Thunderbolt microphone hardware
-   and your headphones or headphone amplifier. The Mac's microphone,
+5. Plug in your USB, FireWire or Thunderbolt microphones, and plug headphones
+   into each microphone's headphone jack. SobStage plays the same mix to all of
+   them through its combined **SobStage** device; switch a person's headphones
+   on or off in **Settings → Who hears the mix in their headphones**. If you use
+   cameras, macOS also asks for **camera permission**; SobStage waits for your
+   answer and starts the cameras when you click Allow. The Mac's microphone,
    iPhone/Continuity, Bluetooth/AirPlay and software inputs are intentionally
    left out. Monitoring is live from launch; there is nothing to arm.
 
@@ -478,6 +482,12 @@ staples the app and this step goes away.
   quits. On Windows this needs the §7 virtual-device driver — the Settings
   panel says so rather than pretending.
 
+- **Everyone hears the same mix (macOS)** — the headphone mix plays out of
+  every microphone's own jack at once through the SobStage device. Each
+  person's jack can be switched off in Settings; a switched-off jack gets
+  silence, never a different mix. Picking another output under **Monitoring
+  and output** in Settings turns this off, and that choice is remembered.
+
 - **Tell your mics apart** — tap (or speak into) a microphone and its strip
   lights up. Click a strip to name that mic; the name sticks to the physical
   port across replug and goes into that mic's recording filename.
@@ -543,16 +553,19 @@ this feature works out for you.
 
 ### Cameras
 
-- **Turn on any camera you want to use** from the **Cameras** button on the main
-  screen. Cameras are off by default; opening the panel lists what the OS
-  reports, and you explicitly switch each one on. USB webcams, built-in and
+- **Every camera the OS reports is on by default** and records for the whole
+  take; the **Cameras** button on the main screen is where you switch one off.
+  USB webcams, built-in and
   Continuity cameras, and capture cards may appear. Camera selection is separate
   from the macOS audio-input policy.
-- After you switch a camera on, SobStage opens it and is designed to show its
-  live preview. That choice is remembered, so the camera reopens on later
-  launches until you switch it off. Name each camera and the name goes on its
+- SobStage opens each camera and shows its live preview. Switching one off is
+  remembered across an unplug and a relaunch. Name each camera and the name goes on its
   file. For this release candidate, confirm a capture card's preview is visibly
   non-black and its test recording plays before relying on it for a take.
+- On a Mac, a camera or capture card that sends only black (no signal, wrong
+  input mode, or an HDCP-protected source) is named on its tile after about
+  1.5 s, and an HDMI capture dongle is switched to a 30 fps mode when the one
+  picked by default is slower.
 - SobStage asks JUCE and the operating system for high-quality camera capture;
   the exact format is selected by the platform and driver. The preview toggle
   changes only how large the picture is drawn on screen; it does not deliberately
@@ -573,9 +586,10 @@ this feature works out for you.
   trims and the mix-bus limiter already on it.
   The audio is trimmed to where each camera actually started, because the stems
   open before any camera does and a take laid together without accounting for
-  that runs a fraction of a second out of sync. **Needs
-  [ffmpeg](https://ffmpeg.org)** (`brew install ffmpeg` on a Mac) — if it is
-  missing the toggle says so, and says it before a take rather than after one.
+  that runs a fraction of a second out of sync. On a Mac nothing needs
+  installing: SobStage uses macOS's own video tools. **On Windows it needs
+  [ffmpeg](https://ffmpeg.org)**; if it is missing, the toggle says so before a
+  take rather than after one.
 - **A camera counts against the card's speed, not just its space.** §6.4 blocks
   arming when the card cannot sustain twice what the take needs; that figure now
   includes the video, because a card that keeps up with eight microphones can
@@ -797,22 +811,22 @@ and Windows. The table below lists the largest areas rather than every file:
 | Area | Spec | Tests |
 |---|---|---|
 | `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 20 |
-| `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 9 |
-| `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 13 |
-| `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 8 |
+| `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 15 |
+| `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 22 |
+| `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 11 |
 | `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 11 |
-| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 20 |
+| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 29 |
 | `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | `live_capture` |
-| `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 7 |
-| `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 28 |
+| `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 13 |
+| `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 18 |
 | `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 9 |
-| `Metering` — ballistics, peak hold, clip latch | §8.1 | 7 |
-| `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 10 |
+| `Metering` — ballistics, peak hold, clip latch | §8.1 | 9 |
+| `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 16 |
 | `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 14 |
 | `PolarPatternDetector` — non-cardioid detection | §14.4 | 5 |
 | `ChannelLayoutAnalyzer` — mono collapse rules, 60 s timeout | §2.1 | 12 |
-| `DeadChannelDetector` — silence against an active reference channel | §8.1 | 4 |
-| `SessionMetadata` + JSON | §6.2 | 6 |
+| `DeadChannelDetector` — silence against an active reference channel | §8.1 | 5 |
+| `SessionMetadata` + JSON | §6.2 | 9 |
 
 ### Executed, not just compiled
 
@@ -902,7 +916,7 @@ never what failed:
 | Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
 | Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
 
-The current baseline is 179 CoreAudio checks and 70 WASAPI checks, run by `ctest`
+The current baseline is 239 CoreAudio checks and 131 WASAPI checks, run by `ctest`
 on Linux, macOS and Windows alike. The WASAPI backend's worker thread is a real
 thread doing a real event handshake, so that path is exercised rather than
 reasoned about. Both simulators run under AddressSanitizer,
@@ -967,7 +981,7 @@ The full application builds and links in CI on Linux, macOS and Windows, so
 - `CameraController` compiles twice: once as it ships (camera path compiled out
   on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
   stand-in `juce_video`, via the `sim_camera` target. That simulator executes
-  247 checks covering enumeration, selection, arrival/removal, open
+  333 checks covering enumeration, selection, arrival/removal, open
   failure/retry, a list reorder during open, actual-frame gating and loss,
   native-viewer lifetime and reparenting, runtime-error recovery, an enabled
   capture card missing from the OS list, recording-start truth and asynchronous
@@ -996,7 +1010,7 @@ v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
 first-frame enqueue, but that run did not verify a visibly non-black SobStage
 preview or a completed recording. The simulator drives the
 `CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
-the final v1.12.0 AVFoundation/DirectShow viewer and `startRecordingToFile`
+the v1.13.16 AVFoundation/DirectShow viewer and `startRecordingToFile`
 paths still need the physical macOS and Windows matrix. See *Not yet validated
 against hardware*.
 
@@ -1064,7 +1078,7 @@ the matrix. In particular:
   with zero underruns. Simulated offsets are steady, though; real crystals
   wander with temperature and load, so the hardware run is still owed. What this does
   retire is the question of whether the *software* holds alignment — it does,
-  and it did not before the two bugs below were found.
+  and it did not before the two bugs above were found.
 - **§5.4 latency ceiling** — the 10 ms ceiling must be confirmed by loopback on
   macOS CoreAudio and Windows WASAPI exclusive. Add ASIO only if a real ASIO
   path later ships.
@@ -1085,7 +1099,7 @@ the matrix. In particular:
   during open, and the no-false-recovery policy for a mid-take unplug/replug.
   Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
   a first-frame enqueue; that did not verify a visible non-black preview or a
-  completed recording, and the final v1.12.0 artifacts remain untested with a
+  completed recording, and the v1.13.16 artifacts remain untested with a
   physical capture card.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file
@@ -1103,7 +1117,7 @@ the matrix. In particular:
 - **Hand-rolled test framework** (`Tests/TestFramework.h`) instead of Catch2,
   and a small hand-rolled JSON writer/parser (`Source/Core/Json.h`) instead of
   nlohmann. Both avoid a network fetch in the build. Either can be swapped for
-  the mainstream library later; the JSON one is only used for `session.json`.
+  the mainstream library later; the JSON one is used for `session.json`, `settings.json` and the activity journal.
 - **`MMA_BUILD_APP` defaults to `OFF`** so that `cmake -B build && cmake --build
   build` succeeds on any machine. Turn it on for real platform builds.
 - Backends B/C/D return an explicit unavailable status rather than pretending to

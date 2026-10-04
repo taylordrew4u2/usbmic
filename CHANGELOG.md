@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.13.16 -- 2026-10-04 (release candidate)
+
+Polish: clearer messages, layout fixes and up-to-date docs.
+
+### Changed
+
+- **Clearer activity log.** A device's name is no longer said twice on a row
+  ("Yeti -- Yeti is connected"), repeats read "(4 times)" instead of "(x4)",
+  a microphone with a headphone jack is announced once instead of twice, and
+  a long entry is shortened on screen instead of pushing older rows out of
+  sight. The full text is still in the take's activity log.
+- **Shorter messages.** The missing-camera message is one short sentence
+  pair, "Two mics heard that" is said at most every ten minutes, and the
+  camera panel and Settings use plain wording ("Seen by other apps", "Clock
+  drift per mic", "Loudness for streaming").
+- **Settings no longer hides its right edge under the scrollbar** on first
+  open, and the save location shows your home folder as "~" so the take
+  folder name isn't cut off.
+- Docs: README, privacy notice, checklist and spec now match how cameras,
+  headphones and the Mac combine actually work; test counts are current.
+
 ## v1.13.15 -- 2026-10-03 (release candidate)
 
 One fix from a real sound check.

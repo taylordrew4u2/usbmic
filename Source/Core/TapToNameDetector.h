@@ -10,7 +10,7 @@ enum class TapResult
     /// Exactly one channel was heard clearly; getTappedChannel() names it.
     ChannelIdentified,
     /// Two or more channels heard the same tap, so it cannot be attributed.
-    /// §14.6: "Two mics heard that -- try tapping closer to one."
+    /// §14.6: "Two mics heard that. Tap closer to the one you want to name."
     Ambiguous,
 };
 

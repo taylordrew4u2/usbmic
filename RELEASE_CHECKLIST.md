@@ -1,4 +1,4 @@
-# SobStage v1.13.15 release checklist
+# SobStage v1.13.16 release checklist
 
 **Classification:** release candidate. Do not present it as a general consumer
 release until every **GA blocker** below is closed with evidence.
@@ -8,7 +8,7 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] The release commit is on `main`, the worktree is clean, and all intended
   changes have been reviewed.
 - [ ] `CMakeLists.txt`, the app About/version strings, package metadata, the tag
-  (`v1.13.15`) and this changelog all agree.
+  (`v1.13.16`) and this changelog all agree.
 - [ ] `CHANGELOG.md` covers every user-visible change since v1.13.15.
 - [ ] Dependency revisions and third-party GitHub Actions are immutable pins;
   the GPLv3 source offer and release archive are present.
@@ -20,12 +20,12 @@ release until every **GA blocker** below is closed with evidence.
 - [ ] CI is green for Core + tests and the full app on Linux, macOS and Windows.
 - [ ] The release workflow is green at the exact candidate commit.
 - [ ] All unit tests pass on all three operating systems. The current baseline
-  is **702 unit tests**; if tests change, record the final discovered count here.
+  is **704 unit tests**; if tests change, record the final discovered count here.
 - [ ] `sim_channel_meter` passes on all three operating systems: every
   crying-face state is checked against the pixels drawn.
 - [ ] `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
-  `sim_camera_sync_lifecycle` pass. The candidate baseline is **201 CoreAudio
-  checks**, **108 WASAPI checks**, **262 camera checks** and **7 synchronous
+  `sim_camera_sync_lifecycle` pass. The candidate baseline is **239 CoreAudio
+  checks**, **131 WASAPI checks**, **333 camera checks** and **7 synchronous
   camera-lifecycle checks**; record final counts from the candidate run rather
   than copying these numbers blindly.
 - [ ] The CoreAudio simulator proves the five-second production input-open
@@ -84,7 +84,7 @@ release until every **GA blocker** below is closed with evidence.
   Close this only after the same moments have been run with a real card
   pulled on macOS and Windows.
 - [ ] The macOS app is universal (`arm64` and `x86_64`), has a macOS 13.0 minimum,
-  reports 1.13.15 in its bundle, and passes `Tools/verify_macos_release.sh` both
+  reports 1.13.16 in its bundle, and passes `Tools/verify_macos_release.sh` both
   before and after ZIP/DMG round trips.
 - [ ] The DMG opens with current SobStage artwork, a working Applications link
   and no historical “Multi-Mic Aggregator” name or command.
@@ -123,7 +123,7 @@ release record. Simulation is not a substitute.
 Known camera evidence as of 12 September is diagnostic only: the older v1.11.0
 app opened a USB HDMI capture device reported as `USB2 Video`, and AVFoundation
 logged a first-frame enqueue. No visible non-black preview or completed camera
-recording has been verified from that run, and the v1.12.0 candidate has not yet
+recording has been verified from that run, and the v1.13.16 candidate has not yet
 passed the physical camera matrix.
 
 - [ ] **GA blocker:** Complete a real macOS take with a directly attached
@@ -179,8 +179,9 @@ passed the physical camera matrix.
 - [ ] Run the novice acceptance test and verify every failure is visible and
   leaves an honest session/activity record.
 - [ ] On macOS and Windows with clean settings, verify newly discovered cameras
-  remain off and require an explicit enable; relaunch and verify that explicit
-  choice is remembered until the camera is switched off.
+  are on and recording by default, that the OS camera prompt is waited for (no
+  black preview while it is up), and that switching a camera off is remembered
+  across unplug and relaunch.
 - [ ] **GA blocker:** On the final macOS and Windows candidate artifacts, connect
   a UVC HDMI capture card to a known-good, non-HDCP video source. Verify a visibly
   non-black preview after enabling it, then move main screen → Cameras panel →
@@ -201,20 +202,20 @@ passed the physical camera matrix.
   notices have owner/legal sign-off.
 - [ ] JUCE licensing is checked against the current official JUCE licensing page
   for the selected distribution model; no undated price table is relied on.
-- [ ] Release notes (`docs/release-notes/v1.13.15.md`, which the release
+- [ ] Release notes (`docs/release-notes/v1.13.16.md`, which the release
   workflow requires and publishes as the release body) state the supported
   targets and known limitations without describing simulator results as
   hardware certification.
 
 ## 6. Release and rollback
 
-- [ ] Keep the v1.13.15 and v1.13.11 tags and assets immutable and available until v1.13.15 is
+- [ ] Keep the v1.13.15 and v1.13.14 tags and assets immutable and available until v1.13.16 is
   proven in production.
-- [ ] Publish v1.13.15 from the exact tested commit; never move or reuse the tag.
+- [ ] Publish v1.13.16 from the exact tested commit; never move or reuse the tag.
 - [ ] Smoke-test each URL, checksum, install, launch, short recording, playback,
   diagnostics export and uninstall from the public release page.
-- [ ] If a serious regression appears, mark v1.13.15 as pre-release/not latest,
-  point users to v1.13.15 when safe, preserve reports and publish a fixed v1.13.16
+- [ ] If a serious regression appears, mark v1.13.16 as pre-release/not latest,
+  point users to v1.13.15 when safe, preserve reports and publish a fixed v1.13.17
   from a new commit/tag. Do not silently replace assets or retag.
 - [ ] Before advising a downgrade, back up `settings.json` and confirm the older
   version can read it; otherwise remove or restore settings explicitly. Never

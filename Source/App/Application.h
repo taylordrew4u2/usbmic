@@ -767,7 +767,7 @@ private:
     int tapDetectorChannels = 0;
     // Negative so the first ambiguous tap after launch is always shown.
     double lastAmbiguousTapNoticeMs = -1.0e12;
-    static constexpr double kAmbiguousTapNoticeIntervalMs = 60000.0;
+    static constexpr double kAmbiguousTapNoticeIntervalMs = 600000.0;
     int tappedChannel = -1;
 
     struct PreflightBackgroundResult

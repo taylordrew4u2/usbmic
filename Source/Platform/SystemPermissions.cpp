@@ -64,14 +64,10 @@ namespace
 void requestAVAccess (const char* mediaTypeCode) noexcept
 {
 #if defined(__APPLE__) && defined(__BLOCKS__)
-    // +[AVCaptureDevice requestAccessForMediaType: AVMediaTypeAudio
+    // +[AVCaptureDevice requestAccessForMediaType: <media type>
     //                           completionHandler: ^(BOOL granted) {}]
-    // The CoreAudio streams raise their own prompt, but macOS 27 was seen
-    // reporting "not yet asked" through AVFoundation while those streams were
-    // already live, and the status never changed. Asking through the same API
-    // whose status the app reads settles it either way. The handler runs on an
-    // arbitrary queue, so it does nothing: the 2 s permission poll reads the
-    // result on the message thread.
+    // The handler runs on an arbitrary queue, so it does nothing: the caller
+    // polls the status on the message thread instead.
     const auto deviceClass = reinterpret_cast<id> (objc_getClass ("AVCaptureDevice"));
     const auto stringClass = reinterpret_cast<id> (objc_getClass ("NSString"));
     if (deviceClass == nullptr || stringClass == nullptr)
@@ -104,7 +100,7 @@ PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
     // already reaches a small public AppKit surface through the Objective-C
     // runtime rather than converting a translation unit for one enum. This
     // follows that, calling
-    //   +[AVCaptureDevice authorizationStatusForMediaType: AVMediaTypeAudio]
+    //   +[AVCaptureDevice authorizationStatusForMediaType: <media type>]
     // which is documented as safe to call at any time and never prompts.
     const auto deviceClass = reinterpret_cast<id> (objc_getClass ("AVCaptureDevice"));
     if (deviceClass == nullptr)
@@ -118,7 +114,7 @@ PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
             deviceClass, respondsSelector, selector))
         return PermissionState::NotApplicable;
 
-    // AVMediaTypeAudio is the NSString constant @"soun". Building it here
+    // AVMediaTypeAudio/Video are the NSString constants @"soun"/@"vide". Building it here
     // avoids linking AVFoundation just to read one exported symbol.
     const auto stringClass = reinterpret_cast<id> (objc_getClass ("NSString"));
     if (stringClass == nullptr)
@@ -139,11 +135,17 @@ PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
 
 void requestMicrophoneAccess() noexcept
 {
+    // The CoreAudio streams raise their own prompt, but macOS 27 was seen
+    // reporting "not yet asked" through AVFoundation while those streams were
+    // already live, and the status never changed. Asking through the same API
+    // whose status the app reads settles it either way; the 2 s permission
+    // poll reads the result.
     requestAVAccess ("soun"); // AVMediaTypeAudio
 }
 
 void requestCameraAccess() noexcept
 {
+    // CameraController::applyPendingCameraList() reads the answer.
     requestAVAccess ("vide"); // AVMediaTypeVideo
 }
 
