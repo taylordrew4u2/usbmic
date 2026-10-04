@@ -126,13 +126,12 @@ void CameraPanel::updateRecordingHeading()
     }
 
     if (recordingCameraCount > 0)
-        heading.setText ("Cameras -- " + juce::String (recordingCameraCount)
-                             + (recordingCameraCount == 1 ? " recording" : " recording"),
+        heading.setText ("Cameras: " + juce::String (recordingCameraCount) + " recording",
                          juce::dontSendNotification);
     else if (startingCameraCount > 0)
-        heading.setText ("Cameras -- starting video", juce::dontSendNotification);
+        heading.setText ("Cameras: starting video", juce::dontSendNotification);
     else
-        heading.setText ("Cameras -- no video recording", juce::dontSendNotification);
+        heading.setText ("Cameras: no video recording", juce::dontSendNotification);
 }
 
 void CameraPanel::setUnavailableReason (const juce::String& reason)
@@ -269,16 +268,16 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         // camera that had been pulled out of the machine.
         row.fileName->setText (recording && camera.recordingThisTake
                                   && (camera.signalStatusText.isNotEmpty() || ! camera.available)
-                                  ? "Video signal lost -- this file may be incomplete"
+                                  ? "Video signal lost. This file may be incomplete."
                               : recording && camera.recordingThisTake
                                   ? "Recording to " + camera.fileName
                               : recording && camera.startingThisTake
-                                  ? "Starting video -- waiting for the camera to confirm"
+                                  ? "Starting video. Waiting for the camera to confirm."
                               : recording ? "Not recording video in this take"
                               : camera.discoveryPending ? "Checking the system for this camera..."
-                              : ! camera.available ? "Unavailable -- not in the next recording"
+                              : ! camera.available ? "Unavailable. Not in the next recording."
                               : camera.enabled && camera.signalStatusText.isNotEmpty()
-                                  ? "Waiting for a live picture -- not ready to record"
+                                  ? "Waiting for a live picture. Not ready to record."
                               : camera.enabled ? "Writes " + camera.fileName
                                                : "Not in the recording",
                                juce::dontSendNotification);

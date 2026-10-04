@@ -14,6 +14,12 @@ namespace {
 #if JUCE_USE_CAMERA
 constexpr double kCameraSignalTimeoutMs = 5000.0;
 
+/// macOS camera privacy that must hold an open back: not yet answered, or no.
+bool cameraAccessBlocks (PermissionState state)
+{
+    return state == PermissionState::NotYetRequested || state == PermissionState::Denied;
+}
+
 // How long a camera must stay open before a crash is no longer blamed on
 // starting it (the macOS 27 start race took the app down within a second).
 constexpr double kStartupGuardMs = 10000.0;
@@ -297,17 +303,16 @@ bool CameraController::applyPendingCameraList()
         applyDeviceNames (names);
     }
 
+    // The user answered the camera prompt (or allowed SobStage in System
+    // Settings): open the cameras that were held back for it.
+    const bool permissionArrived = waitingForCameraPermission && cameraPermissionProbe != nullptr
+        && ! cameraAccessBlocks (cameraPermissionProbe());
+
     // Applying a topology snapshot and reconciling the devices it owns are one
     // operation. In particular, the Cameras panel may be visible, in which case
     // the outer UI deliberately does not call applySelection(). Leaving cleanup
     // to that caller kept an unplugged CameraDevice alive and allowed a same-name
     // reconnect to reuse the stale object indefinitely.
-    // The user answered the camera prompt (or allowed SobStage in System
-    // Settings): open the cameras that were held back for it.
-    const bool permissionArrived = waitingForCameraPermission && cameraPermissionProbe != nullptr
-        && cameraPermissionProbe() != PermissionState::NotYetRequested
-        && cameraPermissionProbe() != PermissionState::Denied;
-
     if (hasNewDeviceList || runtimeStateChanged || signalStateChanged || permissionArrived)
         applySelection (false);
 
@@ -945,8 +950,7 @@ void CameraController::applySelection (bool retryFailures)
 
     const auto cameraPermission = cameraPermissionProbe != nullptr ? cameraPermissionProbe()
                                                                     : PermissionState::NotApplicable;
-    const bool cameraAccessBlocked = cameraPermission == PermissionState::NotYetRequested
-                                  || cameraPermission == PermissionState::Denied;
+    const bool cameraAccessBlocked = cameraAccessBlocks (cameraPermission);
     waitingForCameraPermission = false;
 
     for (const auto& camera : selection.getAvailableCameras())
@@ -954,18 +958,18 @@ void CameraController::applySelection (bool retryFailures)
         if (! selection.isEnabled (camera.id) || open.count (camera.id) > 0)
             continue;
 
-        if (cameraAccessBlocked && ! takeActive)
-        {
-            waitingForCameraPermission = true;
-            continue;
-        }
-
         // Camera membership and files are fixed when the take starts. A device
         // that appears (or finishes a topology retry) during the take may be
         // used again afterwards, but opening only a preview now would falsely
         // imply that its picture is being added to the running recording.
         if (takeActive)
             continue;
+
+        if (cameraAccessBlocked)
+        {
+            waitingForCameraPermission = true;
+            continue;
+        }
 
         const auto index = osIndexById.find (camera.id);
 
@@ -992,10 +996,6 @@ void CameraController::applySelection (bool retryFailures)
             openCamera (camera.id, index->second, juce::String (camera.displayName));
     }
 
-    // Selection's available list necessarily contains only the latest OS
-    // snapshot. Look at its durable choices separately so a previously armed
-    // capture card that vanishes remains a visible fault instead of silently
-    // disappearing from the panel and from this problem line.
     if (waitingForCameraPermission)
     {
         if (cameraPermission == PermissionState::NotYetRequested
@@ -1014,6 +1014,10 @@ void CameraController::applySelection (bool retryFailures)
                             "Privacy & Security > Camera.");
     }
 
+    // Selection's available list necessarily contains only the latest OS
+    // snapshot. Look at its durable choices separately so a previously armed
+    // capture card that vanishes remains a visible fault instead of silently
+    // disappearing from the panel and from this problem line.
     if (hasAppliedDeviceList)
         for (const auto& camera : selection.getUnavailableEnabledCameras())
             missingCameras.add (juce::String (camera.displayName));
@@ -1033,13 +1037,12 @@ void CameraController::applySelection (bool retryFailures)
         if (openProblem.isNotEmpty())
             openProblem += " ";
 
-        openProblem += (missingCameras.size() == 1
+        openProblem += missingCameras.size() == 1
                        ? "The system isn't listing " + missingCameras[0]
-                             + ", so SobStage can't preview or record it."
+                             + ". Reconnect it and check its cable and HDMI signal. Sound isn't affected."
                        : "The system isn't listing " + juce::String (missingCameras.size())
-                             + " enabled cameras, so SobStage can't preview or record them.")
-                 + " Reconnect the camera or HDMI capture card, check its USB cable and HDMI "
-                   "signal; SobStage will rescan automatically. Sound recording is unaffected.";
+                             + " cameras. Reconnect them and check their cables and HDMI signal. "
+                               "Sound isn't affected.";
     }
 #endif
 }

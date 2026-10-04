@@ -21,7 +21,7 @@ index 21bd4f6367..bb7b16df20 100644
      /**
          Receives callbacks with individual frames from a CameraDevice. It is mainly
 diff --git a/modules/juce_video/native/juce_CameraDevice_mac.h b/modules/juce_video/native/juce_CameraDevice_mac.h
-index ddcba1f320..66ce2932b7 100644
+index ddcba1f320..409eba7256 100644
 --- a/modules/juce_video/native/juce_CameraDevice_mac.h
 +++ b/modules/juce_video/native/juce_CameraDevice_mac.h
 @@ -29,13 +29,17 @@
@@ -507,7 +507,7 @@ index ddcba1f320..66ce2932b7 100644
                  }];
              }
          }
-@@ -442,35 +702,114 @@ private:
+@@ -442,35 +702,124 @@ private:
          }
      }
  
@@ -517,7 +517,7 @@ index ddcba1f320..66ce2932b7 100644
 +    // format the session chose cannot reach ~30 fps, switch to the largest
 +    // format up to 1080p that can, and pin it to 30 fps. Cameras that already
 +    // run smoothly (FaceTime, most webcams) are left exactly as they were.
-+    static void chooseSmoothFormat (AVCaptureDevice* device)
++    static bool chooseSmoothFormat (AVCaptureDevice* device)
 +    {
 +        constexpr Float64 smoothRate = 29.0;
 +
@@ -530,7 +530,7 @@ index ddcba1f320..66ce2932b7 100644
 +        };
 +
 +        if (device == nil || device.activeFormat == nil || maxRateOf (device.activeFormat) >= smoothRate)
-+            return;
++            return false;
 +
 +        AVCaptureDeviceFormat* best = nil;
 +        AVFrameRateRange* bestRange = nil;
@@ -546,10 +546,10 @@ index ddcba1f320..66ce2932b7 100644
 +            if (dims.width > 1920 || dims.height > 1080)
 +                continue;
 +
++            const auto pixels = (int64) dims.width * (int64) dims.height;
++
 +            for (AVFrameRateRange* range in format.videoSupportedFrameRateRanges)
 +            {
-+                const auto pixels = (int64) dims.width * (int64) dims.height;
-+
 +                if (range.maxFrameRate >= smoothRate && pixels > bestPixels)
 +                {
 +                    best = format;
@@ -560,7 +560,7 @@ index ddcba1f320..66ce2932b7 100644
 +        }
 +
 +        if (best == nil || ! [device lockForConfiguration: nil])
-+            return;
++            return false;
 +
 +        const auto duration = (bestRange.minFrameRate <= 30.0 && bestRange.maxFrameRate >= 30.0)
 +                                ? CMTimeMake (1, 30)
@@ -572,9 +572,14 @@ index ddcba1f320..66ce2932b7 100644
 +            device.activeVideoMinFrameDuration = duration;
 +            device.activeVideoMaxFrameDuration = duration;
 +        }
-+        @catch (NSException*) {}
++        @catch (NSException*)
++        {
++            [device unlockForConfiguration];
++            return false;
++        }
 +
 +        [device unlockForConfiguration];
++        return true;
 +    }
 +
      void addInput()
@@ -629,7 +634,12 @@ index ddcba1f320..66ce2932b7 100644
 +            {
 +                [session addInput: inputDevice];
 +                currentInput = inputDevice;
-+                chooseSmoothFormat (selectedDevice);
++                // Pin the session to the format just chosen: left on the High
++                // preset it can re-apply that preset when the outputs are
++                // added or the configuration commits, undoing the choice.
++                if (chooseSmoothFormat (selectedDevice)
++                    && [session canSetSessionPreset: AVCaptureSessionPresetInputPriority])
++                    session.sessionPreset = AVCaptureSessionPresetInputPriority;
 +            }
 +            else
 +            {
@@ -640,7 +650,7 @@ index ddcba1f320..66ce2932b7 100644
              }
          }
      }
-@@ -499,6 +838,12 @@ private:
+@@ -499,6 +848,12 @@ private:
  
      void refreshIfNeeded()
      {
@@ -653,7 +663,7 @@ index ddcba1f320..66ce2932b7 100644
          if (getVideoConnection() == nullptr)
              refreshConnections();
      }
-@@ -509,7 +854,7 @@ private:
+@@ -509,7 +864,7 @@ private:
  
          if (connections != nil)
              for (AVCaptureConnection* connection in connections)
@@ -662,7 +672,7 @@ index ddcba1f320..66ce2932b7 100644
                      for (AVCaptureInputPort* port in [connection inputPorts])
                          if ([[port mediaType] isEqual: AVMediaTypeVideo])
                              return connection;
-@@ -534,17 +879,82 @@ private:
+@@ -534,17 +889,82 @@ private:
          listeners.call ([=] (Listener& l) { l.imageReceived (image); });
  
          if (! listeners.isEmpty())
@@ -749,7 +759,7 @@ index ddcba1f320..66ce2932b7 100644
      }
  
      void cameraSessionRuntimeError (const String& error)
-@@ -557,6 +967,8 @@ private:
+@@ -557,6 +977,8 @@ private:
      //==============================================================================
      CameraDevice& owner;
      String deviceName;
@@ -758,7 +768,7 @@ index ddcba1f320..66ce2932b7 100644
  
      AVCaptureSession* session = nil;
      AVCaptureMovieFileOutput* fileOutput = nil;
-@@ -566,7 +978,15 @@ private:
+@@ -566,7 +988,15 @@ private:
      id<AVCaptureFileOutputRecordingDelegate> callbackDelegate = nil;
      String openingError;
      Time firstPresentationTime;

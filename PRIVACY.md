@@ -1,6 +1,6 @@
 # SobStage privacy notice
 
-Effective 12 September 2026. Applies to the SobStage v1.13.15 release candidate.
+Effective 4 October 2026. Applies to the SobStage v1.13.16 release candidate.
 
 SobStage is a local-first desktop recorder. It has no account system and this
 candidate does not automatically upload recordings, diagnostics, analytics or
@@ -20,8 +20,10 @@ phone/Continuity transports, Bluetooth/AirPlay, network, aggregate, virtual,
 internal and unknown inputs are intentionally excluded. A phone or wireless
 receiver presenting as generic removable USB Audio Class hardware is
 indistinguishable from an interface and may be admitted; SobStage does not apply
-product-name or vendor-ID guesses. Camera access is optional: cameras are off by
-default and are opened only after you enable them. SobStage also accesses the
+product-name or vendor-ID guesses. Every connected camera is opened and
+recorded by default, so the first launch may show the operating system's camera
+prompt; switch a camera off in the Cameras panel and that choice is remembered.
+SobStage also accesses the
 recording destination and optional mirror location you choose.
 
 ## Information stored on your computer

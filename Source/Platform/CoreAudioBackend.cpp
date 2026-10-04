@@ -704,21 +704,18 @@ AudioObjectID readDefaultOutputDevice()
     return device;
 }
 
-/// kAudioDevicePropertyDataSource on the output scope, or 0 when the device
-/// has none. An Intel Mac's single "Built-in Output" reports 'hdpn' while
-/// headphones are in the jack and 'ispk' for its speakers.
-UInt32 readOutputDataSource (AudioObjectID device)
+/// One UInt32 output-scope property, or 0 when the device has none.
+UInt32 readOutputUInt32 (AudioObjectID object, AudioObjectPropertySelector selector)
 {
-    AudioObjectPropertyAddress address { kAudioDevicePropertyDataSource,
-                                         kAudioObjectPropertyScopeOutput,
+    AudioObjectPropertyAddress address { selector, kAudioObjectPropertyScopeOutput,
                                          kAudioObjectPropertyElementMain };
-    UInt32 source = 0;
-    UInt32 size = sizeof (source);
+    UInt32 value = 0;
+    UInt32 size = sizeof (value);
 
-    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &source) != noErr)
+    if (AudioObjectGetPropertyData (object, &address, 0, nullptr, &size, &value) != noErr)
         return 0;
 
-    return source;
+    return value;
 }
 
 /// §5.3 priority 3 on a Mac: only the Mac's own headphone jack. Apple Silicon
@@ -864,19 +861,6 @@ int getBufferFrameSize (AudioObjectID device)
         return 0;
 
     return static_cast<int> (value);
-}
-
-UInt32 readOutputUInt32 (AudioObjectID object, AudioObjectPropertySelector selector)
-{
-    AudioObjectPropertyAddress address { selector, kAudioObjectPropertyScopeOutput,
-                                         kAudioObjectPropertyElementMain };
-    UInt32 value = 0;
-    UInt32 size = sizeof (value);
-
-    if (AudioObjectGetPropertyData (object, &address, 0, nullptr, &size, &value) != noErr)
-        return 0;
-
-    return value;
 }
 
 // What the device adds after our buffers, in frames: its own latency, its
@@ -1427,7 +1411,7 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
         if (! wantInput)
         {
             d.hasPhysicalHeadphoneJack = isBuiltInHeadphoneOutput (
-                d.usbLocationId, d.isBuiltIn, readOutputDataSource (deviceId));
+                d.usbLocationId, d.isBuiltIn, readOutputUInt32 (deviceId, kAudioDevicePropertyDataSource));
             d.isSystemDefault = defaultOutput != kAudioObjectUnknown && deviceId == defaultOutput;
             d.isWireless = isWirelessTransport (transport);
         }

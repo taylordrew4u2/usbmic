@@ -24,10 +24,10 @@ AdvancedPanel::AdvancedPanel()
     bufferSizeLabel.setText ("Buffer size", juce::dontSendNotification);
     configureRow (latencyLabel, latencyValue, "Measured latency");
     clockMasterLabel.setText ("Clock master", juce::dontSendNotification);
-    driftLabel.setText ("Per-device drift (PPM)", juce::dontSendNotification);
+    driftLabel.setText ("Clock drift per mic (PPM)", juce::dontSendNotification);
     driftLabel.setJustificationType (juce::Justification::topLeft);
     outputDeviceLabel.setText ("Output device", juce::dontSendNotification);
-    backendLabel.setText ("Virtual device backend", juce::dontSendNotification);
+    backendLabel.setText ("Seen by other apps", juce::dontSendNotification);
     aggregateNameLabel.setText ("Combined device name", juce::dontSendNotification);
     destinationFolderLabel.setText ("Destination folder", juce::dontSendNotification);
 
@@ -200,7 +200,7 @@ AdvancedPanel::AdvancedPanel()
     const std::pair<juce::Label*, const char*> sections[] = {
         { &storageSection, "WHERE RECORDINGS GO" },
         { &formatSection,  "RECORDING FORMAT" },
-        { &deliverySection, "WHERE IT'S GOING" },
+        { &deliverySection, "LOUDNESS FOR STREAMING" },
         { &micSection,     "MICROPHONES" },
         { &outputSection,  "MONITORING AND OUTPUT" },
         { &activitySection, "WHAT HAPPENED" },
@@ -852,8 +852,20 @@ void AdvancedPanel::setActivityLines (const juce::StringArray& lines)
     // Said plainly when there is nothing, rather than left blank: an empty
     // space under a heading reads as broken, and "nothing has gone wrong" is
     // itself worth knowing.
-    activityLabel.setText (lines.isEmpty() ? juce::String ("Nothing to report yet.")
-                                           : lines.joinIntoString ("\n"),
+    // One row per entry. The label is a fixed height, so a long entry that
+    // wrapped onto four lines pushed the oldest rows off the bottom, cut off
+    // mid-line. Shorten the display only; the take's activity.log keeps it all.
+    constexpr int kMaxRowCharacters = 140;
+    juce::StringArray rows;
+
+    for (const auto& line : lines)
+        rows.add (line.length() <= kMaxRowCharacters
+                      ? line
+                      : line.substring (0, kMaxRowCharacters).trimEnd()
+                            + juce::String (juce::CharPointer_UTF8 ("\xe2\x80\xa6")));
+
+    activityLabel.setText (rows.isEmpty() ? juce::String ("Nothing to report yet.")
+                                          : rows.joinIntoString ("\n"),
                            juce::dontSendNotification);
 }
 
