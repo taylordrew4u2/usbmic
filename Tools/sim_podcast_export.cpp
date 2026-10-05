@@ -5,6 +5,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -219,33 +220,89 @@ int main()
 
     const auto& apple = *mma::findStreamingTarget ("Apple Podcasts");
 
-    // 2. A quiet take with a few full-scale clicks: turning it up to the target
-    //    would clip, so the copy stops at the ceiling and says it fell short.
+    // 2. Transient-heavy takes: a quiet tone with a full-scale click every
+    //    second, and something closer to a voice -- noise in syllables with a
+    //    1 ms plosive burst every 370 ms. Turning either up to the target
+    //    pushes the transients far past the ceiling; the limiter must take
+    //    them down so the copy still lands on the target, under the ceiling.
+    auto checkLimitedTake = [&] (const char* name, const std::function<float (int)>& sample)
     {
-        const auto take = root.getChildFile ("peaky-take");
+        const auto take = root.getChildFile (name);
+        take.createDirectory();
+        expect (writeMix (take, 12.0, sample), "a transient-heavy take's mix could not be written");
+
+        const auto source = measure (take.getChildFile ("MIX.wav"));
+        const auto result = mma::exportPodcastCopy (take, "MIX.wav", apple, notCancelled);
+        const auto copy = measure (result.output);
+        const double wanted = mma::monoTargetLufs (apple);
+
+        std::printf ("  %s: from %.2f LUFS / %.2f dBTP to %.2f LUFS / %.2f dBTP, limiting %.1f dB: %s\n",
+                     name, source.lufs, source.truePeak, copy.lufs, copy.truePeak,
+                     result.peakLimitingDb, result.message.toRawUTF8());
+
+        expect (result.written, "a transient-heavy take was not exported");
+        expect (! result.limitedByTruePeak, "a transient-heavy take fell back instead of being limited");
+        expect (result.peakLimitingDb > 1.0, "the limiter did not touch a transient-heavy take");
+        expect (std::abs (copy.lufs - wanted) <= 1.0, "a transient-heavy copy is not within 1 LU of the target");
+        expect (std::abs (result.resultingLufs - copy.lufs) < 0.05, "the reported loudness is not the file's");
+        expect (copy.truePeak <= apple.truePeakCeilingDbtp, "a transient-heavy copy's true peak is over the ceiling");
+        expect (copy.samples == source.samples, "a transient-heavy copy is not the whole take");
+        expect (result.message.contains ("(-19 LUFS), with the loudest peaks turned down by up to"),
+                "a transient-heavy copy's message does not say its peaks were limited");
+    };
+
+    checkLimitedTake ("clicky-take", [] (int i)
+    {
+        return (i % 48000) == 24000 ? 0.9f : quietTone (i);
+    });
+
+    checkLimitedTake ("voice-like-take", [] (int i)
+    {
+        // A fixed-seed generator per sample index, so the take is the same
+        // every run.
+        auto noise = [] (int n)
+        {
+            auto x = static_cast<uint32_t> (n) * 2654435761u + 0x9e3779b9u;
+            x ^= x >> 15; x *= 2246822519u; x ^= x >> 13;
+            return static_cast<float> (x & 0xffff) / 32768.0f - 1.0f;
+        };
+
+        const double t = i / kRate;
+        const double syllable = std::max (0.0, std::sin (2.0 * kPi * 4.0 * t));
+        const bool plosive = (i % 17760) < 48; // 1 ms every 370 ms
+        return plosive ? 0.5f * noise (i)
+                       : static_cast<float> (0.08 * syllable) * noise (i);
+    });
+
+    // 3. A take that is transients through and through -- a click every 50 ms
+    //    over a quiet tone. Reaching the target would mean limiting every
+    //    moment of it by tens of dB, so the copy falls back to the gain its
+    //    peaks allow unlimited, stays under the ceiling, and says it is short.
+    {
+        const auto take = root.getChildFile ("sustained-peaks-take");
         take.createDirectory();
         expect (writeMix (take, 12.0, [] (int i)
                 {
-                    return (i % 48000) == 24000 ? 0.9f : quietTone (i);
+                    return (i % 2400) == 1200 ? 0.9f : quietTone (i);
                 }),
-                "the peaky take's mix could not be written");
+                "the sustained-peaks take's mix could not be written");
 
         const auto result = mma::exportPodcastCopy (take, "MIX.wav", apple, notCancelled);
         const auto copy = measure (result.output);
 
-        std::printf ("  peaky take: %6.2f LUFS, %6.2f dBTP, limited %d: %s\n",
+        std::printf ("  sustained peaks: %6.2f LUFS, %6.2f dBTP, fallback %d: %s\n",
                      copy.lufs, copy.truePeak, result.limitedByTruePeak ? 1 : 0,
                      result.message.toRawUTF8());
 
-        expect (result.written, "the peaky take was not exported");
-        expect (result.limitedByTruePeak, "the peaky take's gain was not held back by its peaks");
-        expect (copy.truePeak <= apple.truePeakCeilingDbtp + 0.05, "the peaky copy's true peak is over the ceiling");
-        expect (copy.lufs < mma::monoTargetLufs (apple), "the peaky copy claims a loudness its peaks forbid");
+        expect (result.written, "the sustained-peaks take was not exported");
+        expect (result.limitedByTruePeak, "the sustained-peaks take was squashed instead of falling back");
+        expect (copy.truePeak <= apple.truePeakCeilingDbtp, "the sustained-peaks copy's true peak is over the ceiling");
+        expect (copy.lufs < mma::monoTargetLufs (apple) - 1.0, "the sustained-peaks copy claims a loudness its peaks forbid");
         expect (result.message.contains ("quieter than Apple Podcasts wants"),
-                "the peaky copy does not say it fell short of the target");
+                "the sustained-peaks copy does not say it fell short of the target");
     }
 
-    // 3. Silence: nothing to normalise, so nothing written, and the reason said.
+    // 4. Silence: nothing to normalise, so nothing written, and the reason said.
     {
         const auto take = root.getChildFile ("silent-take");
         take.createDirectory();
@@ -259,7 +316,7 @@ int main()
         expect (wavFilesIn (take) == 1 && ! anyWorkingFileIn (take), "a silent take left a copy behind");
     }
 
-    // 4. Too short to judge (one second): skipped, not given a meaningless gain.
+    // 5. Too short to judge (one second): skipped, not given a meaningless gain.
     {
         const auto take = root.getChildFile ("short-take");
         take.createDirectory();
@@ -273,7 +330,7 @@ int main()
         expect (wavFilesIn (take) == 1, "a short take left a copy behind");
     }
 
-    // 5. No mix at all.
+    // 6. No mix at all.
     {
         const auto take = root.getChildFile ("empty-take");
         take.createDirectory();
@@ -282,7 +339,7 @@ int main()
         expect (! result.written && result.message.contains ("MIX.wav"), "a missing mix was not named");
     }
 
-    // 6. A long take that split into MIX_001.wav onwards is exported whole.
+    // 7. A long take that split into MIX_001.wav onwards is exported whole.
     {
         const auto take = root.getChildFile ("split-take");
         take.createDirectory();
@@ -299,7 +356,7 @@ int main()
         expect (copy.samples == static_cast<juce::int64> (10.0 * kRate), "the split take's copy is not the whole take");
     }
 
-    // 7. Cancelled: nothing written, and no working file left behind.
+    // 8. Cancelled: nothing written, and no working file left behind.
     {
         const auto take = root.getChildFile ("cancelled-take");
         take.createDirectory();
@@ -312,7 +369,7 @@ int main()
         expect (wavFilesIn (take) == 1 && ! anyWorkingFileIn (take), "a cancelled export left a file behind");
     }
 
-    // 8. The app's worker: two takes queued back to back both finish and are
+    // 9. The app's worker: two takes queued back to back both finish and are
     //    reported once each; once cancelled it takes nothing more, and its
     //    destruction is bounded.
     {

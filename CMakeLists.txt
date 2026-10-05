@@ -474,6 +474,7 @@ if (MMA_BUILD_APP)
 
     # The podcast-ready copy written after a take: a quiet mono mix comes out
     # at each target's mono loudness with its true peak under the ceiling, a
+    # transient-heavy one is limited onto the target rather than left short, a
     # split mix is read whole, and a silent or too-short one writes nothing.
     add_executable(sim_podcast_export
         Tools/sim_podcast_export.cpp
