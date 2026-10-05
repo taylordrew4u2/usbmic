@@ -153,7 +153,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.18 release candidate.
+> to show the implemented flows, not as proof of the v1.13.19 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
@@ -248,7 +248,10 @@ files really are empty and the card says so instead of calling it saved.
 - **Pick where it's going in Settings** and the app measures the mix the way the
   platforms do — [ITU-R BS.1770](https://www.itu.int/rec/R-REC-BS.1770), K-weighted
   and gated, the same standard they all normalise against — then says which way
-  to move and by how much. **Nothing is changed for you**; the stems stay at unity.
+  to move and by how much. **After each take a ready-to-upload copy of the
+  mix is saved beside it** ("MIX - Apple-Podcasts.wav"), turned to that
+  loudness with its loudest peaks gently limited so they don't clip. The
+  stems and the original mix are never changed.
 - **Mono needs a different number, and this is the part that catches people.**
   Every file this app writes is mono, and a mono file played through both
   speakers is the same signal twice — which measures **3 LU louder** than the

@@ -41,7 +41,7 @@ sleep 2
 # (the real-time microphone clocks, for one) is not loaded into Xvfb, xdotool
 # and every other helper this script runs.
 env ${MMA_APP_LD_PRELOAD:+LD_PRELOAD="$MMA_APP_LD_PRELOAD"} \
-  DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-app.log 2>&1 &
+  DISPLAY="$DISPLAY_NUM" MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >/tmp/mma-e2e-app.log 2>&1 &
 APP_PID=$!
 
 # 1. The window is up.

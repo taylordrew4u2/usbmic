@@ -106,6 +106,26 @@ struct AppSettings
     /// ladder, which starts small and steps up only on overruns.
     int bufferSizeOverride = 0;
 
+    /// Whether the app may ask GitHub once a day if a newer version is out.
+    /// Off by default and only ever switched on by the user: PRIVACY.md
+    /// promises the app sends nothing anywhere, and this is the one exception,
+    /// so it is theirs to make.
+    bool checkForUpdates = false;
+
+    /// When the automatic check last ran, in wall-clock seconds since the
+    /// epoch; 0 for never. Kept so relaunching all afternoon is one request a
+    /// day rather than one per launch.
+    double lastUpdateCheckSeconds = 0.0;
+
+    /// Whether the first-run setup guide has been finished or skipped. False
+    /// only on a true first launch -- no settings file at all -- so the guide
+    /// opens once for someone new and never again on its own. A file written
+    /// before the guide existed reads as true: whoever wrote it has already
+    /// set the rig up, and a walkthrough arriving after an update would be the
+    /// app asking them something it already knows. Settings and Help both
+    /// reopen it.
+    bool setupGuideDone = false;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,

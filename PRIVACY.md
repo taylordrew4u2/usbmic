@@ -1,12 +1,17 @@
 # SobStage privacy notice
 
-Effective 4 October 2026. Applies to the SobStage v1.13.18 release candidate.
+Effective 4 October 2026. Applies to the SobStage v1.13.19 release candidate.
 
 SobStage is a local-first desktop recorder. It has no account system and this
 candidate does not automatically upload recordings, diagnostics, analytics or
 crash reports. It also has no automatic updater. Those are deliberate v1 scope
 decisions: diagnostics are created only when you ask, and updates are explicit
 downloads whose published checksum can be verified.
+If you switch on **Check for updates** in Settings (off by default), SobStage
+asks GitHub's public releases API for the latest version number at most once a
+day, and **Check now** does the same once per press; the request
+carries no identifier, settings, logs or recordings, though GitHub, like any
+website, sees your IP address.
 
 ## Information the app accesses
 

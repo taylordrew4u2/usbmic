@@ -17,6 +17,8 @@
 #include "../Core/LoudnessMeter.h"
 #include "../Core/SampleRateNegotiator.h"
 #include "../Core/WriteSafetyActions.h"
+#include "../Core/UpdateCheck.h"
+#include "../Core/ShowTemplate.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
 #include <cstdio>
@@ -482,6 +484,15 @@ void Application::setAskWhereToSaveEveryTime (bool ask)
     saveSettings();
 }
 
+void Application::markSetupGuideDone()
+{
+    if (setupGuideDone)
+        return;
+
+    setupGuideDone = true;
+    saveSettings();
+}
+
 void Application::setMirrorEnabled (bool enabled)
 {
     mirrorPolicy.setEnabledByUser (enabled);
@@ -537,6 +548,193 @@ juce::String Application::getCombineUnavailableReason()
     return "Combined video needs ffmpeg, which isn't installed. Your picture and "
            "sound will still both be recorded, as separate files. On a Mac: "
            "brew install ffmpeg.";
+}
+
+namespace {
+// Wall-clock seconds, for the once-a-day spacing. Not the app's own clock: the
+// interval has to hold across launches, and that clock starts again at each.
+double wallClockSeconds()
+{
+    return std::floor (static_cast<double> (juce::Time::currentTimeMillis()) / 1000.0);
+}
+
+// A whole release page is tens of kilobytes. Anything far past that is not the
+// answer being looked for, and is not worth holding in memory to find out.
+constexpr int kMaxReleaseResponseBytes = 1 << 20;
+} // namespace
+
+void Application::setCheckForUpdates (bool on)
+{
+    if (on == checkForUpdates)
+        return;
+
+    checkForUpdates = on;
+    saveSettings();
+
+    // Saying yes is consent for today's check too, not only tomorrow's launch.
+    // The tick picks it up, so a take that is running still comes first.
+    automaticUpdateCheckWanted = on;
+}
+
+void Application::checkForUpdatesNow()
+{
+    if (isRecording() || updateCheckRunning->load())
+        return;
+
+    startUpdateCheck();
+}
+
+void Application::pollUpdateCheck()
+{
+    // Nothing during a take: not the request, and not the news. Both wait.
+    if (isRecording())
+        return;
+
+    if (updateNoticePending)
+    {
+        updateNoticePending = false;
+        noteActivity (ActivityLevel::Started, "Updates",
+                      "SobStage " + availableUpdateVersion
+                          + " is available. Settings has the link to download it.");
+    }
+
+    if (automaticUpdateCheckWanted && ! updateCheckRunning->load())
+    {
+        automaticUpdateCheckWanted = false;
+
+        if (UpdateCheck::isCheckDue (checkForUpdates, wallClockSeconds(), lastUpdateCheckSeconds))
+            startUpdateCheck();
+    }
+}
+
+void Application::startUpdateCheck()
+{
+    updateCheckRunning->store (true);
+    updateCheckProblem.clear();
+
+    // Stamped when asked rather than when answered, so a check that fails --
+    // no network on the train -- is not retried on every launch that day.
+    lastUpdateCheckSeconds = wallClockSeconds();
+    saveSettings();
+
+    const auto running = updateCheckRunning;
+    const auto alive = getAliveToken();
+
+    // A detached worker, like the diagnostics export: a network that hangs
+    // must never be able to hold up the window, and the worker owns nothing of
+    // Application's, so it can be abandoned at quit.
+    std::thread ([this, alive, running]
+    {
+        bool reached = false;
+        juce::String text;
+        int status = 0;
+
+        // The request carries a generic User-Agent, which GitHub requires, and
+        // nothing else: no version, no identifier, no settings.
+        const auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                                 .withExtraHeaders ("User-Agent: SobStage\r\n"
+                                                    "Accept: application/vnd.github+json")
+                                 .withConnectionTimeoutMs (10000)
+                                 .withStatusCode (&status)
+                                 .withNumRedirectsToFollow (3);
+
+        if (auto stream = juce::URL (UpdateCheck::kLatestReleaseUrl).createInputStream (options))
+        {
+            juce::MemoryBlock body;
+            stream->readIntoMemoryBlock (body, kMaxReleaseResponseBytes);
+
+            reached = status == 200 && body.getSize() > 0;
+            text = body.toString();
+        }
+
+        juce::MessageManager::callAsync ([this, alive, running, reached, text]
+        {
+            running->store (false);
+
+            if (alive.lock() != nullptr)
+                finishUpdateCheck (reached, text);
+        });
+    }).detach();
+}
+
+void Application::finishUpdateCheck (bool reached, const juce::String& responseText)
+{
+    // Failures go on the Settings line and nowhere else. The user may not have
+    // pressed anything, and a launch that opens with "couldn't reach GitHub"
+    // in the activity list is noise about a convenience, not news about the rig.
+    if (! reached)
+    {
+        updateCheckSucceeded = false;
+        updateCheckProblem = "Couldn't reach GitHub just now. Try again later.";
+        return;
+    }
+
+    const auto release = UpdateCheck::parseLatestRelease (responseText.toStdString(),
+                                                          UpdateCheck::currentPlatform());
+
+    if (! release.has_value())
+    {
+        updateCheckSucceeded = false;
+        updateCheckProblem = "GitHub's answer couldn't be read. Try again later.";
+        return;
+    }
+
+    updateCheckSucceeded = true;
+
+    if (! UpdateCheck::isNewer (release->tag, appVersionString().toStdString()))
+    {
+        availableUpdateVersion.clear();
+        availableUpdatePage.clear();
+        return;
+    }
+
+    // Shown as people say it, without the tag's "v".
+    auto version = juce::String (release->tag).trim();
+    if (version.startsWithIgnoreCase ("v"))
+        version = version.substring (1);
+
+    // Once per version, not once per check: pressing Check now twice is not
+    // two pieces of news. Said through pollUpdateCheck(), which holds it
+    // back while a take is running.
+    if (version != availableUpdateVersion)
+        updateNoticePending = true;
+
+    availableUpdateVersion = version;
+    availableUpdatePage = juce::String (release->pageUrl);
+    pollUpdateCheck();
+}
+
+juce::String Application::getUpdateStatusText() const
+{
+    if (isRecording())
+        return {};
+
+    if (updateCheckRunning->load())
+        return "Checking...";
+
+    if (availableUpdateVersion.isNotEmpty())
+        return "Version " + availableUpdateVersion + " is available.";
+
+    if (updateCheckProblem.isNotEmpty())
+        return updateCheckProblem;
+
+    if (updateCheckSucceeded)
+        return "You have the latest version (" + appVersionString() + ").";
+
+    return {};
+}
+
+bool Application::isUpdateAvailable() const
+{
+    return ! isRecording() && availableUpdateVersion.isNotEmpty();
+}
+
+void Application::openUpdatePage() const
+{
+    // Only ever a github.com address: parseLatestRelease refuses to keep
+    // anything else and falls back to the releases page.
+    if (availableUpdatePage.isNotEmpty())
+        juce::URL (availableUpdatePage).launchInDefaultBrowser();
 }
 
 void Application::setDeliveryTarget (const juce::String& name)
@@ -2755,6 +2953,22 @@ void Application::toggleRecording()
                                || lastTakeVerdict == TakeAudioVerdict::DroppedByApp;
         }
 
+        // A copy of the mix set to the delivery target's loudness, when one is
+        // chosen: the advice in Settings, carried out. Read from the take's own
+        // finished MIX.wav (and any split parts) on a worker of its own, so the
+        // stop is never kept waiting for it; the take's files are only read.
+        // A card that stopped answering is not asked to be read again.
+        if (deliveryTarget.isNotEmpty() && currentSessionFolder.isNotEmpty())
+        {
+            if (takeCardUnresponsive)
+                noteActivity (ActivityLevel::Warning, "Podcast copy",
+                              "No podcast-ready copy was made: the card stopped answering.");
+            else if (! podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
+                                              deliveryTarget.toStdString()))
+                noteActivity (ActivityLevel::Warning, "Podcast copy",
+                              "No podcast-ready copy was made for " + deliveryTarget + ".");
+        }
+
         // §6.2: the take is on disk and the UI has not shown where yet. Only
         // raised when a folder was actually opened -- a start that failed
         // preflight never got one, and "saved" would be a lie.
@@ -4591,6 +4805,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
 
+    // Podcast-ready copies finished since the last tick. Reported here, on
+    // the message thread, because the worker that made them may not touch the
+    // journal -- and up here, above every early return, so a warning holding
+    // the line cannot hold back the news that the copy was saved.
+    for (const auto& exported : podcastExporter.collectFinished())
+        noteActivity (exported.written ? ActivityLevel::Stopped : ActivityLevel::Warning,
+                      "Podcast copy", exported.message, exported.written);
+
     // The microphone answer read at launch goes stale the moment the user
     // answers the first-run prompt or revokes access in System Settings. Kept
     // at launch-only, "Don't Allow" left Record enabled over microphones the
@@ -5766,6 +5988,7 @@ void Application::loadSettings()
     }
 
     askWhereToSaveEveryTime = rememberedSettings.askWhereToSaveEveryTime;
+    setupGuideDone = rememberedSettings.setupGuideDone;
     mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
     // §7: what other apps see. A settings file written under the app's previous
     // name carries that name here, and carrying it forward would leave the
@@ -5813,6 +6036,11 @@ void Application::loadSettings()
     // destroying a deliberate choice.
     cameraTileScale = rememberedSettings.cameraTileScale;
     combineVideoAndAudio = rememberedSettings.combineVideoAndAudio;
+    checkForUpdates = rememberedSettings.checkForUpdates;
+    lastUpdateCheckSeconds = rememberedSettings.lastUpdateCheckSeconds;
+    // At most once a day, at launch, and only once the user has said yes;
+    // pollUpdateCheck() makes the call once no take is running.
+    automaticUpdateCheckWanted = checkForUpdates;
     deliveryTarget = juce::String (rememberedSettings.deliveryTarget);
     sampleRateOverride = rememberedSettings.sampleRateOverride;
     bufferSizeOverride = rememberedSettings.bufferSizeOverride;
@@ -5914,6 +6142,7 @@ void Application::saveSettings()
     settings.destinationFolder = destinationFolder;
     settings.confirmedSaveLocation = confirmedSaveLocation;
     settings.askWhereToSaveEveryTime = askWhereToSaveEveryTime;
+    settings.setupGuideDone = setupGuideDone;
     settings.mirrorEnabled = mirrorPolicy.isEnabledByUser();
     settings.aggregateName = aggregateName.toStdString();
     settings.masterVolume = masterVolume;
@@ -5923,6 +6152,8 @@ void Application::saveSettings()
     settings.cameraPreviewFullQuality = cameraController.getPreviewQuality() == PreviewQuality::Full;
     settings.cameraTileScale = cameraTileScale;
     settings.combineVideoAndAudio = combineVideoAndAudio;
+    settings.checkForUpdates = checkForUpdates;
+    settings.lastUpdateCheckSeconds = lastUpdateCheckSeconds;
     settings.deliveryTarget = deliveryTarget.toStdString();
     settings.sampleRateOverride = sampleRateOverride;
     settings.bitDepthOverride = currentBitDepth == 24 ? 0 : currentBitDepth;
@@ -5969,6 +6200,213 @@ void Application::saveSettings()
                       "Couldn't save your settings, so they may not be remembered next time.");
 
     rememberedSettings = settings;
+}
+
+juce::File Application::getTemplatesFolder()
+{
+    return getSupportFolder().getChildFile ("Templates");
+}
+
+juce::File Application::getTemplateFile (const juce::String& name)
+{
+    // Sanitized by the same §6.2 rule as a session folder, so a typed name can
+    // never point outside Templates/ or carry a character the disk refuses.
+    const auto fileName = ShowTemplate::fileNameFor (name.toStdString());
+    return fileName.empty() ? juce::File() : getTemplatesFolder().getChildFile (juce::String (fileName));
+}
+
+juce::StringArray Application::listTemplates() const
+{
+    juce::StringArray names;
+
+    for (const auto& entry : juce::RangedDirectoryIterator (getTemplatesFolder(), false, "*.json",
+                                                            juce::File::findFiles))
+    {
+        const auto file = entry.getFile();
+        const auto loaded = ShowTemplate::fromJsonString (file.loadFileAsString().toStdString());
+
+        // A file that is not a template is not offered: loading it would only
+        // say it could not be read.
+        if (! loaded.has_value())
+            continue;
+
+        // The name as typed, unless it no longer leads back to this file -- one
+        // renamed by hand -- in which case the file's own name, which does.
+        const auto typed = juce::String (loaded->name);
+        names.addIfNotAlreadyThere (typed.isNotEmpty() && getTemplateFile (typed) == file
+                                        ? typed : file.getFileNameWithoutExtension());
+    }
+
+    names.sortNatural();
+    return names;
+}
+
+bool Application::saveTemplate (const juce::String& name)
+{
+    const auto clean = juce::String (ShowTemplate::cleanName (name.toStdString()));
+    const auto file = getTemplateFile (clean);
+
+    if (file == juce::File())
+    {
+        noteActivity (ActivityLevel::Warning, "Shows",
+                      "A show needs a name with at least one letter or number in it.");
+        return false;
+    }
+
+    // Brings rememberedSettings up to the rig as it stands, so what is saved
+    // is what the user is looking at rather than what was true at launch.
+    saveSettings();
+
+    std::vector<std::string> connected;
+    for (const auto& device : deviceManager.getDevices())
+        connected.push_back (device.identity.key());
+
+    const auto show = ShowTemplate::extract (clean.toStdString(), rememberedSettings, connected);
+
+    file.getParentDirectory().createDirectory();
+
+    if (! replaceWithTextChecked (file, juce::String (show.toJsonString())))
+    {
+        noteActivity (ActivityLevel::Failed, "Shows",
+                      "Couldn't save the show \"" + clean + "\", so it won't be in the list.");
+        return false;
+    }
+
+    noteActivity (ActivityLevel::Started, "Shows",
+                  "Saved this setup as \"" + clean + "\".");
+    return true;
+}
+
+bool Application::applyTemplate (const juce::String& name)
+{
+    // §6.5 fixes a take's microphones, names and destination until it stops,
+    // and half of a show applying now and half at Stop is not a show at all.
+    if (isRecording() || (capture != nullptr && capture->isRecording()))
+    {
+        noteActivity (ActivityLevel::Warning, "Shows",
+                      "Can't load \"" + name + "\" while a take is being recorded. Stop first, "
+                      "then load it.");
+        return false;
+    }
+
+    const auto file = getTemplateFile (name);
+    const auto loaded = file.existsAsFile()
+                            ? ShowTemplate::fromJsonString (file.loadFileAsString().toStdString())
+                            : std::nullopt;
+
+    if (! loaded.has_value())
+    {
+        noteActivity (ActivityLevel::Failed, "Shows",
+                      "Couldn't read the saved show \"" + name + "\", so nothing was changed.");
+        return false;
+    }
+
+    // Laid over the rig as it stands right now, not as it was at launch, so
+    // anything the show does not mention stays exactly as the user left it.
+    saveSettings();
+    rememberedSettings = loaded->applyTo (rememberedSettings);
+    const auto& s = rememberedSettings;
+
+    const bool rateChanged = s.sampleRateOverride != sampleRateOverride;
+    const bool destinationChanged = s.destinationFolder != destinationFolder;
+
+    // The same assignments loadSettings() makes at launch, guarded the same
+    // way so no intermediate state is written back over the file.
+    applyingRememberedSettings = true;
+
+    askWhereToSaveEveryTime = s.askWhereToSaveEveryTime;
+    mirrorPolicy.setEnabledByUser (s.mirrorEnabled);
+    masterVolume = s.masterVolume;
+    rememberedOutputDeviceId = s.rememberedOutputDeviceId;
+    monitorThroughCombinedDevice = s.monitorThroughCombinedDevice;
+    headphonesOffKeys = { s.headphonesOffKeys.begin(), s.headphonesOffKeys.end() };
+    combineVideoAndAudio = s.combineVideoAndAudio;
+    deliveryTarget = juce::String (s.deliveryTarget);
+    sampleRateOverride = s.sampleRateOverride;
+
+    // 0 is the default depth, which is 24 -- saveSettings() writes 24 as 0.
+    if (s.bitDepthOverride == 16 || s.bitDepthOverride == 24 || s.bitDepthOverride == 32)
+        currentBitDepth = s.bitDepthOverride;
+    else if (s.bitDepthOverride == 0)
+        currentBitDepth = 24;
+
+    if (auto* bus = getMonitorBus())
+        bus->setMasterVolume (masterVolume);
+
+    // §2.4: back into the store every path already reads names and trims from.
+    for (const auto& port : s.ports)
+    {
+        PortIdentity id;
+        id.locationId = port.key;
+        portIdentityStore.put (id, port.settings);
+    }
+
+    // Both ways, unlike applyRememberedDeviceSettings(): at launch nothing is
+    // switched off yet, but a show can have someone back on tonight.
+    for (const auto& device : deviceManager.getDevices())
+    {
+        const auto key = device.identity.key();
+        const bool wantEnabled = ! s.isMicDisabled (key);
+
+        if (device.userEnabled != wantEnabled)
+            deviceManager.setUserEnabled (key, wantEnabled);
+    }
+
+    // Only the cameras the show names, and only where the answer differs:
+    // switching one on through the user's path also clears a crash guard, and
+    // that is not something to do to a camera the show never mentioned.
+    for (const auto& camera : loaded->cameras)
+    {
+        if (cameraController.getSelection().isEnabled (camera.id) != camera.enabled)
+            cameraController.setCameraEnabledByUser (camera.id, camera.enabled);
+
+        cameraController.setCameraQuality (camera.id, cameraQualityFromKey (camera.quality));
+
+        if (! camera.assignedName.empty())
+            cameraController.getSelection().setAssignedName (camera.id, camera.assignedName);
+    }
+
+    applyingRememberedSettings = false;
+
+    // Then the live rig catches up, through the same paths the Settings
+    // controls take. The destination goes through its own checks rather than
+    // being assigned, so a card that has gone away is found before a take.
+    if (destinationChanged && ! s.destinationFolder.empty())
+        setDestinationFolder (juce::File (juce::String (s.destinationFolder)));
+
+    applyHeadphoneGains();
+    reselectOutputDevice();
+
+    // A new rate reopens the streams through the hot-plug path, as the rate
+    // picker does; otherwise a rebuild is enough to pick up names, trims and
+    // which microphones are on.
+    if (rateChanged)
+        onDeviceListChanged();
+    else
+        restartCapture();
+
+    saveSettings();
+
+    noteActivity (ActivityLevel::Started, "Shows", "Loaded \"" + name + "\".");
+    return true;
+}
+
+bool Application::deleteTemplate (const juce::String& name)
+{
+    const auto file = getTemplateFile (name);
+
+    if (! file.existsAsFile())
+        return false;
+
+    if (! file.deleteFile())
+    {
+        noteActivity (ActivityLevel::Failed, "Shows",
+                      "Couldn't delete the saved show \"" + name + "\".");
+        return false;
+    }
+
+    noteActivity (ActivityLevel::Stopped, "Shows", "Deleted the saved show \"" + name + "\".");
+    return true;
 }
 
 juce::File Application::getLogFile()
@@ -6661,6 +7099,10 @@ void Application::shutdown()
     // chance to stall; this request never joins the worker.
     takeCombiner.cancel();
 
+    // Likewise the podcast-ready copy: told now, waited for (briefly) below,
+    // by which time it has usually cleared away its unfinished file.
+    podcastExporter.cancel();
+
     // The drive check, early: its worker deletes its 200 MB scratch file on
     // the way out, and the sooner it is told the more of teardown it has to
     // get there. The next run sweeps up anything it still leaves.
@@ -6700,6 +7142,9 @@ void Application::shutdown()
     mirrorRecoveryTask.cancel();
     recoveryAcknowledgementTask.cancel();
     filesystemStatusProbe.stop();
+
+    // Bounded: a worker stuck on a card that went away is left to the OS.
+    podcastExporter.waitUntilIdle (PodcastExporter::kShutdownWaitMs);
 
     // The rig as the user is leaving it, so tomorrow starts where today ended.
     saveSettings();

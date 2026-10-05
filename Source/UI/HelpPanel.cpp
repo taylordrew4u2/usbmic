@@ -30,6 +30,11 @@ HelpPanel::HelpPanel()
 
     diagnosticsButton.onClick = [this] { if (onExportDiagnosticsClicked) onExportDiagnosticsClicked(); };
     addAndMakeVisible (diagnosticsButton);
+
+    // Beside Close: the walkthrough is where someone lands who opened Help
+    // because they do not know where to start.
+    setupGuideButton.onClick = [this] { if (onSetupGuideClicked) onSetupGuideClicked(); };
+    addAndMakeVisible (setupGuideButton);
 }
 
 HelpPanel::~HelpPanel() = default;
@@ -89,6 +94,7 @@ void HelpPanel::resized()
     int y = kMargin;
 
     closeButton.setBounds (x, y, 110, kCloseRow);
+    setupGuideButton.setBounds (x + 110 + 10, y, 170, kCloseRow);
     y += kCloseRow + kAfterClose;
 
     introHeight = measure (bodyText (HelpTopics::introduction(), introFont(), AppLookAndFeel::secondary), width);

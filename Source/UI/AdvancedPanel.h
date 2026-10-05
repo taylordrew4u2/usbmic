@@ -107,6 +107,16 @@ public:
     std::function<void (const juce::String&)> onAggregateNameChanged;
     std::function<void()> onDiagnosticsExportClicked;
 
+    /// The opt-in update check: the switch, Check now, and the line between
+    /// them that says what the last check found. `statusText` empty means
+    /// nothing to say; `updateAvailable` shows Download; `canCheckNow` is false
+    /// during a take or while a check is already out.
+    void setUpdateState (bool checkEnabled, const juce::String& statusText,
+                         bool updateAvailable, bool canCheckNow);
+    std::function<void (bool)> onCheckForUpdatesToggled;
+    std::function<void()> onCheckForUpdatesNowClicked;
+    std::function<void()> onDownloadUpdateClicked;
+
     /// §10.3 says one door. A door has to open both ways: showing this panel
     /// hides the main screen, and the button that opened it lives there, so
     /// without this the panel is a dead end with no way back.
@@ -115,6 +125,10 @@ public:
     /// Beside Done: the Help screen explains the controls on this one, so
     /// the way to it is here as well as on the main screen.
     std::function<void()> onHelpClicked;
+
+    /// Beside Help: the first-run walkthrough, for whoever skipped it or is
+    /// setting up a different rig.
+    std::function<void()> onSetupGuideClicked;
     std::function<void (bool)> onMirrorToggled;
 
     /// Whether a finished take also writes one video-with-sound file per
@@ -154,6 +168,16 @@ public:
     }
     bool isMirrorEnabled() const { return mirrorToggle.getToggleState(); }
     std::function<void()> onDestinationFolderClicked;
+
+    /// Saved shows: the rig's whole setup under a name. Fills the picker
+    /// without firing anything, keeping the current pick unless `select`
+    /// names another.
+    void setShows (const juce::StringArray& names, const juce::String& select = {});
+    juce::String getSelectedShow() const;
+    std::function<void (const juce::String&)> onLoadShowClicked;
+    std::function<void()> onSaveShowClicked;
+    std::function<void (const juce::String&)> onDeleteShowClicked;
+
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
     /// (device name, physical input, enabled)
     std::function<void (const juce::String&, int, bool)> onInputEnabledChanged;
@@ -200,8 +224,17 @@ private:
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
+
+    // Off unless switched on, and the note under it says in one line what
+    // switching it on means -- the only thing the app ever sends anywhere.
+    juce::ToggleButton checkForUpdatesToggle { "Check for updates" };
+    juce::Label checkForUpdatesNote;
+    juce::TextButton checkNowButton { "Check now" };
+    juce::Label updateStatusLabel;
+    juce::TextButton downloadUpdateButton { "Download" };
     juce::TextButton closeButton { "Close" };
     juce::TextButton helpButton { "Help" };
+    juce::TextButton setupGuideButton { "Run setup guide again" };
 
     // Where the take is going, and how loud that place wants it. In its own
     // section because it is a decision about delivery rather than about the
@@ -212,6 +245,16 @@ private:
     juce::Label deliveryNote;
     juce::Label loudnessAdviceLabel;
     juce::StringArray deliveryNames;
+
+    // First in the panel: picking tonight's show is the one choice that sets
+    // every other row below it.
+    juce::Label showsSection;
+    juce::ComboBox showsCombo;
+    juce::TextButton loadShowButton { "Load" };
+    juce::TextButton deleteShowButton { "Delete" };
+    juce::TextButton saveShowButton { "Save current as..." };
+    juce::StringArray showNames;
+    void updateShowButtons();
 
     juce::Label micSelectionLabel;
     juce::Label storageLabel;
@@ -225,7 +268,8 @@ private:
     // every unrelated row on the way past it. resized() records where the
     // rules go; paint() draws them, since a rule is a line rather than a
     // component.
-    juce::Label storageSection, formatSection, micSection, outputSection, activitySection;
+    juce::Label storageSection, formatSection, micSection, outputSection, updatesSection,
+                activitySection;
     juce::Label activityLabel; // multi-line, newest first, populated externally
     std::vector<int> ruleYs;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;

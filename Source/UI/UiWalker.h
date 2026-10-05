@@ -5,6 +5,7 @@
 #include "AdvancedPanel.h"
 #include "CameraPanel.h"
 #include "HelpPanel.h"
+#include "SetupGuidePanel.h"
 #include "SaveLocationPrompt.h"
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
@@ -128,6 +129,7 @@ private:
         juce::StringArray parts;
         if (isUp<AdvancedPanel>())       parts.add ("Settings");
         if (isUp<HelpPanel>())           parts.add ("Help");
+        if (isUp<SetupGuidePanel>())     parts.add ("setup guide");
         if (isUp<CameraPanel>())         parts.add ("Cameras");
         if (isUp<SaveLocationPrompt>())  parts.add ("save-location card");
         if (isUp<SavedTakePanel>())      parts.add ("saved-take card");
@@ -501,6 +503,92 @@ private:
             auto* ms = find<MainScreen>();
             return ms != nullptr && ms->getMicCount() > 0;
         }, 30000);
+
+        // The first-run setup guide. Every launch but the one after the crash
+        // is on a fresh profile, so it opens by itself; walked here, before
+        // anything else, so the rest of the walk starts from the plain screen.
+        if (expectRecovered)
+        {
+            settle (1500);
+            check ("the setup guide closed on the last launch stays closed",
+                   [this] { return ! isUp<SetupGuidePanel>() && application.isSetupGuideDone(); });
+        }
+        else
+        {
+            check ("a first launch opens the setup guide beside the main screen",
+                   [this] { return isUp<SetupGuidePanel>() && isUp<MainScreen>(); }, 15000);
+            check ("its first page counts the microphones", [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return guide != nullptr && guide->getPage().step == SetupGuideStep::Microphones
+                    && juce::String (guide->getPage().status).startsWith ("Found");
+            }, 5000);
+            check ("and the record button is not behind it", [this]
+            {
+                auto* record = button<MainScreen> ("Start recording");
+                if (record == nullptr)
+                    for (auto* c : showing())
+                        if (auto* b = dynamic_cast<juce::Button*> (c); b != nullptr && b->getButtonText() == "Start recording")
+                            record = b;
+
+                auto* mc = mainComponent();
+                if (record == nullptr || mc == nullptr)
+                    return false;
+
+                const auto centre = mc->getLocalPoint (record, record->getLocalBounds().getCentre());
+                return mc->getComponentAt (centre) == record;
+            });
+            add ("Next goes to naming the microphones", [this] { click<SetupGuidePanel> ("Next"); }, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return guide != nullptr && guide->getPage().step == SetupGuideStep::Names;
+            });
+            check ("with a Name button for every microphone", [this]
+            {
+                auto* ms = find<MainScreen>();
+                int names = 0;
+                for (auto* c : showing())
+                    if (auto* b = dynamic_cast<juce::Button*> (c); b != nullptr && b->getButtonText() == "Name"
+                                                                   && b->findParentComponentOfClass<SetupGuidePanel>() != nullptr)
+                        ++names;
+                return ms != nullptr && names == ms->getMicCount();
+            });
+            add ("Back goes back", [this] { click<SetupGuidePanel> ("Back"); }, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return guide != nullptr && guide->getPage().step == SetupGuideStep::Microphones;
+            });
+            add ("Next walks every page to the last", [] {}, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                if (guide == nullptr)
+                    return false;
+                if (guide->getPage().isLast)
+                    return guide->getPage().step == SetupGuideStep::TestTake;
+                click<SetupGuidePanel> ("Next");
+                return false;
+            }, 10000);
+            add ("Settings puts the guide aside", [this] { click<MainScreen> ("Settings"); },
+                 [this] { return isUp<AdvancedPanel>() && ! isUp<SetupGuidePanel>(); });
+            add ("and closing Settings brings it back on the same page",
+                 [this] { pressKey (juce::KeyPress::escapeKey); }, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return ! isUp<AdvancedPanel>() && guide != nullptr && guide->getPage().step == SetupGuideStep::TestTake;
+            });
+            add ("Done closes the guide", [this] { click<SetupGuidePanel> ("Done"); },
+                 [this] { return ! isUp<SetupGuidePanel>(); });
+            check ("and it is remembered as done", [this] { return application.isSetupGuideDone(); });
+            add ("Settings can run it again", [this] { click<MainScreen> ("Settings"); },
+                 [this] { return isUp<AdvancedPanel>(); });
+            add ("  (Run setup guide again)", [this] { click<AdvancedPanel> ("Run setup guide again"); }, [this]
+            {
+                auto* guide = find<SetupGuidePanel>();
+                return ! isUp<AdvancedPanel>() && guide != nullptr && guide->getPage().step == SetupGuideStep::Microphones;
+            });
+            add ("Escape closes the guide", [this] { pressKey (juce::KeyPress::escapeKey); },
+                 [this] { return ! isUp<SetupGuidePanel>(); });
+        }
 
         // The crying face, on the real screen with real audio behind it. The
         // virtual microphones play their tones at 0.4 of full scale (-8 dBFS),
@@ -993,6 +1081,11 @@ private:
             click<HelpPanel> ("Export diagnostics");
         }, [this] { return countDiagnosticsZips() > diagnosticsZipsBefore; }, 20000);
         add ("Help's Close closes it", [this] { click<HelpPanel> ("Close"); }, [this] { return ! isUp<HelpPanel>(); });
+        add ("Help can run the setup guide again", [this] { click<MainScreen> ("Help"); }, [this] { return isUp<HelpPanel>(); });
+        add ("  (Run setup guide again)", [this] { click<HelpPanel> ("Run setup guide again"); },
+             [this] { return isUp<SetupGuidePanel>() && ! isUp<HelpPanel>(); });
+        add ("and its Skip closes it", [this] { click<SetupGuidePanel> ("Skip"); },
+             [this] { return ! isUp<SetupGuidePanel>(); });
 
         // Cameras.
         add ("Cameras opens", [this] { click<MainScreen> ("Cameras"); }, [this] { return isUp<CameraPanel>(); });

@@ -43,6 +43,7 @@
 #include "../Core/PermissionGuidance.h"
 #include "../Platform/SleepInhibitor.h"
 #include "CameraController.h"
+#include "PodcastExport.h"
 #include "TakeCombiner.h"
 #include "AlarmSpeaker.h"
 #include "../Platform/IAudioBackend.h"
@@ -244,6 +245,13 @@ public:
     /// For a user who wants the question every time rather than once a run.
     void setAskWhereToSaveEveryTime (bool ask);
     bool getAskWhereToSaveEveryTime() const { return askWhereToSaveEveryTime; }
+
+    /// The first-run setup guide: false until it has been finished or skipped
+    /// once, which is what opens it by itself on a first launch. Finishing and
+    /// skipping both count -- someone who skipped it knows where to find it
+    /// again (Settings and Help), and asking twice is the §10.1 failure.
+    bool isSetupGuideDone() const noexcept { return setupGuideDone; }
+    void markSetupGuideDone();
 
     /// §6.2: the take in progress, and its §6.3 second copy. Empty when idle.
     juce::String getCurrentSessionFolder() const { return currentSessionFolder; }
@@ -576,6 +584,38 @@ public:
     /// thing this feature needs that the app cannot install for the user.
     juce::String getCombineUnavailableReason();
 
+    /// The opt-in update check. Off by default: PRIVACY.md promises the app
+    /// sends nothing anywhere, and this is the one request it can make, so it
+    /// is made only once the user has said yes. Switched on, it asks GitHub at
+    /// most once a day -- at launch, and when it is first switched on. Nothing
+    /// is installed: the user is pointed at the release page and downloads it
+    /// themselves.
+    void setCheckForUpdates (bool on);
+    bool getCheckForUpdates() const noexcept { return checkForUpdates; }
+
+    /// Settings' Check now: asks GitHub immediately, whether or not the
+    /// automatic check is on, because pressing the button is the user asking.
+    /// Does nothing during a take or while a check is already out.
+    void checkForUpdatesNow();
+
+    /// From the status tick. Starts the automatic check once it is due and no
+    /// take is running, and hands a result that arrived mid-take to the
+    /// activity list once the take is over.
+    void pollUpdateCheck();
+
+    /// The line beside Check now: "Checking...", "You have the latest version",
+    /// "Version X is available". Empty during a take, which is not the moment.
+    juce::String getUpdateStatusText() const;
+
+    /// True when a newer release is known and no take is running -- which is
+    /// when Settings offers Download.
+    bool isUpdateAvailable() const;
+    bool isUpdateCheckRunning() const { return updateCheckRunning->load(); }
+
+    /// Opens the newer release's page in the user's browser. Never downloads
+    /// or installs anything itself.
+    void openUpdatePage() const;
+
     /// Which platform the take is being aimed at, by name, or empty for none.
     ///
     /// Streaming services all normalise what they are given to one loudness
@@ -592,6 +632,24 @@ public:
     /// The measured figure on its own, for the line that shows it while a take
     /// runs. Empty when there is nothing measurable yet.
     juce::String getLoudnessReading() const;
+
+    /// Show templates: the whole rig's choices saved under a name and brought
+    /// back with one click, so a show that recurs is set up once. Each is one
+    /// .json file in the support folder's Templates/. See ShowTemplate.
+    ///
+    /// The names of every saved show, sorted, as the user typed them.
+    juce::StringArray listTemplates() const;
+
+    /// Saves the current setup as `name`, replacing a show of the same name.
+    /// False, with the reason in the activity list, when it could not be.
+    bool saveTemplate (const juce::String& name);
+
+    /// Lays the named show over the current setup and applies it to the live
+    /// rig. Refused while a take is running: §6.5 fixes a take's microphones,
+    /// names and destination for its duration.
+    bool applyTemplate (const juce::String& name);
+
+    bool deleteTemplate (const juce::String& name);
 
     /// §6.5 "target card removed": set when a take was stopped because the
     /// destination stopped accepting writes, and consumed once by the UI that
@@ -684,6 +742,20 @@ private:
     // One export at a time; the flag is shared with its detached worker.
     std::shared_ptr<std::atomic<bool>> diagnosticsExportRunning
         = std::make_shared<std::atomic<bool>> (false);
+    // The update check (see setCheckForUpdates). The running flag is shared
+    // with the detached request so a second press cannot start a second one.
+    bool checkForUpdates = false;
+    double lastUpdateCheckSeconds = 0.0;
+    bool automaticUpdateCheckWanted = false;
+    std::shared_ptr<std::atomic<bool>> updateCheckRunning
+        = std::make_shared<std::atomic<bool>> (false);
+    juce::String availableUpdateVersion, availableUpdatePage;
+    juce::String updateCheckProblem;
+    bool updateCheckSucceeded = false;
+    // A newer release learned about mid-take, still owed its activity line.
+    bool updateNoticePending = false;
+    void startUpdateCheck();
+    void finishUpdateCheck (bool reached, const juce::String& responseText);
     juce::String lastMirrorFolder;
     double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
 
@@ -756,10 +828,14 @@ private:
     std::string confirmedSaveLocation;
     bool askWhereToSaveEveryTime = false;
 
+    // Remembered with the rest of the settings; see isSetupGuideDone().
+    bool setupGuideDone = false;
+
     // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
     // fixed-width detectors in SetupAdvisor.
     CameraController cameraController;
     TakeCombiner takeCombiner;
+    PodcastExporter podcastExporter;
     std::function<void()> pendingStoppedTakeCompletion;
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;
@@ -1093,6 +1169,11 @@ private:
     /// being written to, so §14.3's contention worry does not apply to it.
     void loadSettings();
     void saveSettings();
+
+    /// Where show templates live, and the file a named one is (or would be)
+    /// in. An invalid File when the name has nothing usable in it.
+    static juce::File getTemplatesFolder();
+    static juce::File getTemplateFile (const juce::String& name);
 
     struct RecoveryActivity
     {
