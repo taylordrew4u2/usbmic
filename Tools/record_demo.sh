@@ -46,7 +46,7 @@ trap cleanup EXIT
 pkill Xvfb 2>/dev/null || true; sleep 1
 Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
 sleep 2
-HOME="$DEMO_HOME" DISPLAY="$DISPLAY_NUM" nohup "./$APP" >"$DEMO_HOME/app.log" 2>&1 &
+HOME="$DEMO_HOME" DISPLAY="$DISPLAY_NUM" MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >"$DEMO_HOME/app.log" 2>&1 &
 APP_PID=$!
 
 for _ in {1..60}; do

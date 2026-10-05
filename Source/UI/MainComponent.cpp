@@ -1773,6 +1773,15 @@ void MainComponent::openSetupGuideOnFirstLaunch()
     if (guideAutoOpenConsidered || application.isSetupGuideDone())
         return;
 
+    // The end-to-end scripts drive a fresh profile by clicking fixed points
+    // on the main screen; the drawer opening beside it moves them. Those
+    // scripts opt out here; the UI walker covers the guide itself.
+    if (juce::SystemStats::getEnvironmentVariable ("MMA_SKIP_SETUP_GUIDE", {}).isNotEmpty())
+    {
+        guideAutoOpenConsidered = true;
+        return;
+    }
+
     // Not while the window is still being built (there is no frame yet to
     // widen for the drawer), and never over something more pressing: a card,
     // a take, or a recovery scan whose card may be about to appear.

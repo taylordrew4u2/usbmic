@@ -79,7 +79,7 @@ LOG="$HOME/.config/SobStage/log.txt"
 LOG_LINES_BEFORE=0
 [ -f "$LOG" ] && LOG_LINES_BEFORE=$(wc -l < "$LOG")
 
-DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-e2e-stuck.log 2>&1 &
+DISPLAY="$DISPLAY_NUM" MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >/tmp/mma-e2e-stuck.log 2>&1 &
 APP_PID=$!
 
 WAIT_BEGAN=$(date +%s)
