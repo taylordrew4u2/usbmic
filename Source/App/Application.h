@@ -43,6 +43,7 @@
 #include "../Core/PermissionGuidance.h"
 #include "../Platform/SleepInhibitor.h"
 #include "CameraController.h"
+#include "PodcastExport.h"
 #include "TakeCombiner.h"
 #include "AlarmSpeaker.h"
 #include "../Platform/IAudioBackend.h"
@@ -824,6 +825,7 @@ private:
     // fixed-width detectors in SetupAdvisor.
     CameraController cameraController;
     TakeCombiner takeCombiner;
+    PodcastExporter podcastExporter;
     std::function<void()> pendingStoppedTakeCompletion;
     bool combineVideoAndAudio = false;
     juce::String deliveryTarget;

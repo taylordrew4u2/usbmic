@@ -254,6 +254,7 @@ if (MMA_BUILD_APP)
         Source/App/Application.cpp
         Source/App/CameraController.cpp
         Source/App/TakeCombiner.cpp
+        Source/App/PodcastExport.cpp
         Source/App/AlarmSpeaker.cpp
     )
 
@@ -472,6 +473,23 @@ if (MMA_BUILD_APP)
     target_link_libraries(sim_take_combiner PRIVATE mma_core juce::juce_core)
     add_test(NAME sim_take_combiner COMMAND sim_take_combiner)
     set_tests_properties(sim_take_combiner PROPERTIES TIMEOUT 10)
+
+    # The podcast-ready copy written after a take: a quiet mono mix comes out
+    # at each target's mono loudness with its true peak under the ceiling, a
+    # split mix is read whole, and a silent or too-short one writes nothing.
+    add_executable(sim_podcast_export
+        Tools/sim_podcast_export.cpp
+        Source/App/PodcastExport.cpp)
+    target_compile_definitions(sim_podcast_export PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1)
+    target_include_directories(sim_podcast_export PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(sim_podcast_export PRIVATE
+        mma_core juce::juce_core juce::juce_audio_formats)
+    add_test(NAME sim_podcast_export COMMAND sim_podcast_export)
+    set_tests_properties(sim_podcast_export PROPERTIES TIMEOUT 60)
 
     if (WIN32)
         # AvSetMmThreadCharacteristics: Pro Audio scheduling for the WASAPI
