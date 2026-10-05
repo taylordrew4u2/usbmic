@@ -27,7 +27,7 @@ AppSettings populated()
     s.ports.push_back (port);
 
     s.disabledMicKeys.push_back ("usb-9-9");
-    s.cameras.push_back ({ "Logitech C920", true, "Wide shot" });
+    s.cameras.push_back ({ "Logitech C920", true, "Wide shot", "1080p" });
 
     return s;
 }
@@ -120,7 +120,17 @@ TEST_CASE (AppSettings_camerasKeepTheirAnswers)
     REQUIRE (camera != nullptr);
     REQUIRE (camera->enabled);
     REQUIRE (camera->assignedName == std::string ("Wide shot"));
+    REQUIRE (camera->quality == std::string ("1080p"));
     REQUIRE (restored.findCamera ("no such camera") == nullptr);
+}
+
+TEST_CASE (AppSettings_aCameraWithoutAQualityIsBest)
+{
+    // Files written before cameras had a quality setting must open as Best,
+    // which is what those cameras were already doing.
+    const auto s = AppSettings::fromJsonString ("{\"cameras\":[{\"id\":\"cam\",\"enabled\":true}]}");
+    REQUIRE (s.cameras.size() == 1u);
+    REQUIRE (s.cameras[0].quality == std::string ("best"));
 }
 
 TEST_CASE (AppSettings_garbageLoadsAsDefaultsRatherThanThrowing)

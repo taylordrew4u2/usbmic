@@ -12,6 +12,8 @@ struct PersistedCamera
     std::string id;
     bool enabled = false;
     std::string assignedName;
+    /// cameraQualityKey(): "best", "1080p" or "720p".
+    std::string quality = "best";
 };
 
 /// One physical port's remembered settings (§2.4), keyed by PortIdentity::key().

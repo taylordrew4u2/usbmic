@@ -231,6 +231,9 @@ void resetOpenCallCount()
     openedDeviceIndices().clear();
 }
 int getOpenCallCount() { return openCallCount(); }
+
+int& lastOpenMaxHeight() { static int value = 0; return value; }
+int getLastOpenMaxHeight() { return lastOpenMaxHeight(); }
 void resetViewerCreateCallCount() { viewerCreateCallCount() = 0; }
 int getViewerCreateCallCount() { return viewerCreateCallCount(); }
 int getLiveDeviceCount() { return liveDeviceCount(); }
@@ -294,6 +297,13 @@ void emitRuntimeError (const juce::String& deviceName, const juce::String& messa
     for (auto* device : devices)
         if (device != nullptr && device->getName() == deviceName && device->onErrorOccurred)
             device->onErrorOccurred (message);
+}
+
+void emitFormat (const juce::String& deviceName, int width, int height, double fps)
+{
+    for (auto* device : liveDevices())
+        if (device != nullptr && device->getName() == deviceName && device->onFormatChanged)
+            device->onFormatChanged (width, height, fps);
 }
 
 void emitFrame (const juce::String& deviceName, bool black)
@@ -378,9 +388,10 @@ StringArray CameraDevice::getAvailableDevices()
     return devices;
 }
 
-CameraDevice* CameraDevice::openDevice (int index, int, int, int, int, bool)
+CameraDevice* CameraDevice::openDevice (int index, int, int, int, int maxHeight, bool)
 {
     ++fakecamera::openCallCount();
+    fakecamera::lastOpenMaxHeight() = maxHeight;
     fakecamera::openedDeviceIndices().push_back (index);
 
     juce::String selectedDevice;

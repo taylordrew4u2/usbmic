@@ -179,7 +179,67 @@ std::vector<CameraPlan> CameraSelection::buildIntendedPlans() const
 
 int64_t CameraSelection::getEstimatedBytesPerSecond() const
 {
-    return static_cast<int64_t> (getEnabledCount()) * kEstimatedVideoBytesPerSecond;
+    int64_t total = 0;
+
+    for (const auto& camera : available)
+        if (isEnabled (camera.id))
+            total += estimatedBytesPerSecondFor (getQuality (camera.id));
+
+    return total;
+}
+
+void CameraSelection::setQuality (const std::string& id, CameraQuality quality)
+{
+    choices[id].quality = quality;
+}
+
+CameraQuality CameraSelection::getQuality (const std::string& id) const
+{
+    const auto it = choices.find (id);
+    return it != choices.end() ? it->second.quality : CameraQuality::Best;
+}
+
+CameraFrameLimit CameraSelection::frameLimitFor (CameraQuality quality) noexcept
+{
+    switch (quality)
+    {
+        case CameraQuality::HD1080: return { 1920, 1080 };
+        case CameraQuality::HD720:  return { 1280, 720 };
+        case CameraQuality::Best:   break;
+    }
+
+    return { 4096, 2160 };
+}
+
+int64_t CameraSelection::estimatedBytesPerSecondFor (CameraQuality quality) noexcept
+{
+    switch (quality)
+    {
+        case CameraQuality::HD1080: return 4 * 1000 * 1000; // ~32 Mbit/s
+        case CameraQuality::HD720:  return 2 * 1000 * 1000; // ~16 Mbit/s
+        case CameraQuality::Best:   break;
+    }
+
+    return kEstimatedVideoBytesPerSecond;
+}
+
+const char* cameraQualityKey (CameraQuality quality) noexcept
+{
+    switch (quality)
+    {
+        case CameraQuality::HD1080: return "1080p";
+        case CameraQuality::HD720:  return "720p";
+        case CameraQuality::Best:   break;
+    }
+
+    return "best";
+}
+
+CameraQuality cameraQualityFromKey (const std::string& key) noexcept
+{
+    if (key == "1080p") return CameraQuality::HD1080;
+    if (key == "720p")  return CameraQuality::HD720;
+    return CameraQuality::Best;
 }
 
 PreviewSettings CameraSelection::previewSettingsFor (PreviewQuality quality)
