@@ -429,3 +429,28 @@ TEST_CASE (AppSettings_MonitoringGoesThroughTheCombinedDeviceUnlessToldOtherwise
     REQUIRE (restored.areHeadphonesOff ("yeti-4"));
     REQUIRE_FALSE (restored.areHeadphonesOff ("yeti-1"));
 }
+
+TEST_CASE (AppSettings_SetupGuideOpensOnlyOnATrueFirstLaunch)
+{
+    // No file at all: someone new. The guide opens by itself.
+    REQUIRE_FALSE (AppSettings{}.setupGuideDone);
+    REQUIRE_FALSE (AppSettings::fromJsonString ("").setupGuideDone);
+
+    // Finished or skipped, and remembered.
+    AppSettings done;
+    done.setupGuideDone = true;
+    REQUIRE (AppSettings::fromJsonString (done.toJsonString()).setupGuideDone);
+
+    // Quit before finishing it: it opens again next time.
+    REQUIRE_FALSE (AppSettings::fromJsonString (AppSettings{}.toJsonString()).setupGuideDone);
+
+    // A file written before the guide existed belongs to someone who set the
+    // rig up without it. An update must not greet them with a walkthrough.
+    REQUIRE (AppSettings::fromJsonString ("{\"aggregateName\":\"Kitchen\"}").setupGuideDone);
+
+    // Nor must a file that could not be read: they are already being told
+    // their settings were lost, and are not new.
+    const auto unreadable = AppSettings::fromJsonString ("not json at all");
+    REQUIRE (unreadable.wasUnreadable);
+    REQUIRE (unreadable.setupGuideDone);
+}

@@ -21,6 +21,7 @@ JsonValue AppSettings::toJson() const
     root["sampleRateOverride"] = JsonValue (static_cast<double> (sampleRateOverride));
     root["bitDepthOverride"] = JsonValue (static_cast<double> (bitDepthOverride));
     root["bufferSizeOverride"] = JsonValue (static_cast<double> (bufferSizeOverride));
+    root["setupGuideDone"] = JsonValue (setupGuideDone);
 
     JsonValue portArr = JsonValue::makeArray();
     for (const auto& p : ports)
@@ -117,6 +118,10 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
         s.bitDepthOverride = static_cast<int> (p->asDouble (0.0));
     if (auto* p = v.find ("bufferSizeOverride"))
         s.bufferSizeOverride = static_cast<int> (p->asDouble (0.0));
+    // Absent means the file predates the guide, which means the rig was set up
+    // without it: done, not new. Only a launch with no file at all is first.
+    s.setupGuideDone = true;
+    if (auto* p = v.find ("setupGuideDone")) s.setupGuideDone = p->asBool (true);
 
     if (auto* p = v.find ("ports"))
         for (const auto& pv : p->asArray())
@@ -234,6 +239,10 @@ AppSettings AppSettings::fromJsonString (const std::string& text)
         {
             AppSettings defaults;
             defaults.wasUnreadable = true;
+            // A file was there, so this is not a first launch. The user is
+            // already being told their settings were lost; a walkthrough on
+            // top of that would be a second interruption about the same thing.
+            defaults.setupGuideDone = true;
             return defaults;
         }
 
@@ -243,6 +252,7 @@ AppSettings AppSettings::fromJsonString (const std::string& text)
     {
         AppSettings defaults;
         defaults.wasUnreadable = true;
+        defaults.setupGuideDone = true;
         return defaults;
     }
 }

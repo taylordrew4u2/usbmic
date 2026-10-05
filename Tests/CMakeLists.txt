@@ -37,6 +37,7 @@ add_executable(mma_core_tests
     test_SystemPermissions.cpp
     test_SleepInhibitor.cpp
     test_HelpTopics.cpp
+    test_SetupGuide.cpp
     test_TakeWatchdog.cpp
     test_RecordingProof.cpp
     test_CaptureCoordinator.cpp

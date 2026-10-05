@@ -4,6 +4,7 @@
 #include "AdvancedPanel.h"
 #include "CameraPanel.h"
 #include "HelpPanel.h"
+#include "SetupGuidePanel.h"
 #include "SaveLocationPrompt.h"
 #include "SavedTakePanel.h"
 #include "RecoveredTakesPanel.h"
@@ -65,6 +66,35 @@ private:
     bool helpVisible = false;
     HelpPanel helpPanel;
     void toggleHelp();
+
+    // The first-run setup guide: a fourth drawer, beside the main screen like
+    // Settings and Help rather than a card over it, because two of its pages
+    // send the reader to the main screen -- to tap a microphone and watch its
+    // strip light, and to press Record. Opened by itself once, on a first
+    // launch, and from Settings or Help after that.
+    juce::Viewport guideViewport;
+    bool guideVisible = false;
+    /// Put aside while another drawer or the Cameras screen is up -- the guide
+    /// itself sends people to Settings -- and brought back when that closes,
+    /// on the page they were on.
+    bool guideSuspended = false;
+    bool guideAutoOpenConsidered = false;
+    /// A take has started, and then a take has finished, since the guide was
+    /// opened: what its last page reports back.
+    bool guideSawRecording = false;
+    bool guideTakeSaved = false;
+    int lastGuideHeight = 0;
+    SetupGuidePanel guidePanel;
+    SetupGuide setupGuide;
+    void openSetupGuide();
+    /// Finished, skipped or escaped: all three close it for good, until it is
+    /// asked for again.
+    void closeSetupGuide();
+    void suspendSetupGuide();
+    void resumeSetupGuideIfSuspended();
+    void refreshSetupGuide();
+    SetupGuideRig readSetupGuideRig() const;
+    void openSetupGuideOnFirstLaunch();
 
     /// §11: logs, recent session.json files and the device inventory to a
     /// zip on the desktop. Never audio. Reachable from Settings and Help.

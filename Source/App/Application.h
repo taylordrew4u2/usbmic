@@ -245,6 +245,13 @@ public:
     void setAskWhereToSaveEveryTime (bool ask);
     bool getAskWhereToSaveEveryTime() const { return askWhereToSaveEveryTime; }
 
+    /// The first-run setup guide: false until it has been finished or skipped
+    /// once, which is what opens it by itself on a first launch. Finishing and
+    /// skipping both count -- someone who skipped it knows where to find it
+    /// again (Settings and Help), and asking twice is the §10.1 failure.
+    bool isSetupGuideDone() const noexcept { return setupGuideDone; }
+    void markSetupGuideDone();
+
     /// §6.2: the take in progress, and its §6.3 second copy. Empty when idle.
     juce::String getCurrentSessionFolder() const { return currentSessionFolder; }
 
@@ -754,6 +761,9 @@ private:
     // old answer covered the new place.
     std::string confirmedSaveLocation;
     bool askWhereToSaveEveryTime = false;
+
+    // Remembered with the rest of the settings; see isSetupGuideDone().
+    bool setupGuideDone = false;
 
     // §14.6 tap-to-name. Rebuilt when the mic count changes, like the
     // fixed-width detectors in SetupAdvisor.
