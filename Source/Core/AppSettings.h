@@ -117,6 +117,15 @@ struct AppSettings
     /// day rather than one per launch.
     double lastUpdateCheckSeconds = 0.0;
 
+    /// Whether the first-run setup guide has been finished or skipped. False
+    /// only on a true first launch -- no settings file at all -- so the guide
+    /// opens once for someone new and never again on its own. A file written
+    /// before the guide existed reads as true: whoever wrote it has already
+    /// set the rig up, and a walkthrough arriving after an update would be the
+    /// app asking them something it already knows. Settings and Help both
+    /// reopen it.
+    bool setupGuideDone = false;
+
     std::vector<PersistedPort> ports;
     /// §2.4 keys of the microphones the user has switched off. Keyed by port
     /// rather than by display name: four identical mics share a product string,

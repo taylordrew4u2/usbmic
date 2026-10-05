@@ -86,6 +86,7 @@ add_library(mma_core STATIC
     Source/Core/TapToNameDetector.cpp
     Source/Core/PermissionGuidance.cpp
     Source/Core/HelpTopics.cpp
+    Source/Core/SetupGuide.cpp
     Source/Core/TakeWatchdog.cpp
     Source/Core/RecordingProof.cpp
     Source/Core/CaptureCoordinator.cpp
@@ -242,6 +243,7 @@ if (MMA_BUILD_APP)
         Source/UI/MainScreen.cpp
         Source/UI/AdvancedPanel.cpp
         Source/UI/HelpPanel.cpp
+        Source/UI/SetupGuidePanel.cpp
         Source/UI/CameraPanel.cpp
         Source/UI/ModalCard.cpp
         Source/UI/SaveLocationPrompt.cpp
@@ -346,7 +348,8 @@ if (MMA_BUILD_APP)
         Source/UI/MixBarComponent.cpp
         Source/UI/AppLookAndFeel.cpp
         Source/UI/ModalCard.cpp
-        Source/UI/SaveLocationPrompt.cpp)
+        Source/UI/SaveLocationPrompt.cpp
+        Source/UI/SetupGuidePanel.cpp)
     target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_STANDALONE_APPLICATION=1)
     target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)

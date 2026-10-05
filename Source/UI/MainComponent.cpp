@@ -40,6 +40,43 @@ MainComponent::MainComponent (Application& app)
     helpPanel.onCloseClicked = [this] { toggleHelp(); };
     helpPanel.onOpenSettingsClicked = [this] { toggleAdvanced(); };
     helpPanel.onExportDiagnosticsClicked = [this] { exportDiagnostics(); };
+    helpPanel.onSetupGuideClicked = [this] { openSetupGuide(); };
+
+    guideViewport.setViewedComponent (&guidePanel, false);
+    guideViewport.setScrollBarsShown (true, false);
+    guideViewport.setVisible (false);
+    addChildComponent (guideViewport);
+
+    guidePanel.onSkipClicked = [this] { closeSetupGuide(); };
+    guidePanel.onBackClicked = [this]
+    {
+        setupGuide.back (readSetupGuideRig());
+        guideViewport.setViewPosition (0, 0);
+        refreshSetupGuide();
+    };
+    guidePanel.onNextClicked = [this]
+    {
+        if (! setupGuide.next (readSetupGuideRig()))
+        {
+            closeSetupGuide();
+            return;
+        }
+
+        guideViewport.setViewPosition (0, 0);
+        refreshSetupGuide();
+    };
+    // The same rename the strips' own names open, so a name typed here is the
+    // one on the strip and on the file.
+    guidePanel.onNameMicClicked = [this] (int index) { promptRenameMic (index); };
+    guidePanel.onHeadphonesToggled = [this] (const juce::String& key, bool on)
+    {
+        application.setHeadphonesOn (key, on);
+        refreshSetupGuide();
+    };
+    guidePanel.onChangeFolderClicked = [this]
+    {
+        chooseDestinationFolder ([this] { refreshSetupGuide(); });
+    };
 
     mainScreen.onRecordButtonClicked = [this] { beginRecording(); };
 
@@ -193,6 +230,7 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onCloseClicked = [this] { toggleAdvanced(); };
     advancedPanel.onHelpClicked = [this] { toggleHelp(); };
+    advancedPanel.onSetupGuideClicked = [this] { openSetupGuide(); };
 
     advancedPanel.onMicEnabledChanged = [this] (const juce::String& name, bool enabled) {
         application.setMicEnabledByKey (name, enabled);
@@ -421,6 +459,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         if (advancedVisible)     toggleAdvanced();
         else if (cameraVisible)  toggleCameras();
         else if (helpVisible)    toggleHelp();
+        else if (guideVisible)   closeSetupGuide();
         else                     return false;
 
         return true;
@@ -983,6 +1022,9 @@ void MainComponent::refreshStatus()
     // §14.6: light the meter of whoever was just heard alone.
     mainScreen.setHighlightedMic (application.getTappedChannel());
 
+    if (guideVisible)
+        guidePanel.setHighlightedMic (application.getTappedChannel());
+
     // The mute button reflects the bus, including a §5 runaway cut it must
     // be able to undo.
     if (auto* bus = application.getMonitorBus())
@@ -1062,6 +1104,19 @@ void MainComponent::refreshStatus()
         // first attempt usually sees it in flight; this slow tick presents the
         // combined result once both roots have settled.
         showRecoveredTakes();
+
+        // After the recovery card has had its turn: an interrupted take is the
+        // more urgent thing to hear about, and two things at once is neither.
+        openSetupGuideOnFirstLaunch();
+
+        if (guideVisible || guideSuspended)
+        {
+            guideSawRecording = guideSawRecording || isRecording;
+            guideTakeSaved = guideTakeSaved || (guideSawRecording && ! isRecording);
+        }
+
+        if (guideVisible)
+            refreshSetupGuide();
 
         const auto reason = application.getRecordDisabledReason();
         mainScreen.setRecordButtonEnabled (reason.isEmpty(), reason);
@@ -1305,6 +1360,7 @@ void MainComponent::toggleCameras()
         // privacy prompt, with the reason on screen behind it.
         advancedVisible = false;
         helpVisible = false;
+        suspendSetupGuide();
 
         // Hand the viewers over before the panel makes its own. Whichever
         // screen is visible owns them, and a camera with two live viewers is a
@@ -1322,6 +1378,7 @@ void MainComponent::toggleCameras()
         // again without either screen having held a stale one.
         cameraPanel.setCameras ({});
         refreshCameras();
+        resumeSetupGuideIfSuspended();
     }
 
     applyPanelVisibility();
@@ -1528,6 +1585,7 @@ void MainComponent::toggleAdvanced()
         // Settings sits beside the MAIN screen, whose pictures come back as
         // the panel's go.
         helpVisible = false;
+        suspendSetupGuide();
 
         if (cameraVisible)
         {
@@ -1537,6 +1595,10 @@ void MainComponent::toggleAdvanced()
 
         refreshShows();
         refreshAdvanced();
+    }
+    else if (! helpVisible && ! cameraVisible)
+    {
+        resumeSetupGuideIfSuspended();
     }
 
     applyPanelVisibility();
@@ -1560,12 +1622,17 @@ void MainComponent::toggleHelp()
     if (helpVisible)
     {
         advancedVisible = false;
+        suspendSetupGuide();
 
         if (cameraVisible)
         {
             cameraVisible = false;
             cameraPanel.setCameras ({});
         }
+    }
+    else if (! advancedVisible && ! cameraVisible)
+    {
+        resumeSetupGuideIfSuspended();
     }
 
     applyPanelVisibility();
@@ -1583,6 +1650,144 @@ void MainComponent::toggleHelp()
     }
 
     resized();
+}
+
+SetupGuideRig MainComponent::readSetupGuideRig() const
+{
+    SetupGuideRig rig;
+    rig.micCount = application.getIncludedMicCount();
+
+    for (const auto& m : application.getMicSelections())
+        rig.switchedOffMicCount += m.enabled ? 0 : 1;
+
+    rig.headphoneJackCount = static_cast<int> (application.getHeadphoneChoices().size());
+    // With no microphone there is no combined device yet to be monitoring
+    // through, which is not the same as the user having picked something else.
+    rig.mixGoesToEveryMic = application.isMonitoringThroughCombinedDevice() || rig.micCount == 0;
+
+    const auto& selection = application.getCameraController().getSelection();
+    rig.cameraCount = static_cast<int> (selection.getAvailableCameras().size());
+    rig.camerasOn = selection.getEnabledCount();
+
+    rig.recording = application.getRecordingEngine().getState() == RecordingState::Recording;
+    rig.recordingSeconds = rig.recording ? application.getElapsedRecordingSeconds() : 0.0;
+    rig.testTakeSaved = guideTakeSaved;
+    rig.recordBlockedReason = application.getRecordDisabledReason().toStdString();
+    return rig;
+}
+
+void MainComponent::refreshSetupGuide()
+{
+    const auto rig = readSetupGuideRig();
+
+    std::vector<SetupGuidePanel::MicRow> mics;
+    for (int i = 0; i < rig.micCount; ++i)
+        mics.push_back ({ application.getMicDisplayName (i), application.getMicProductName (i) });
+    guidePanel.setMicrophones (mics);
+
+    std::vector<SetupGuidePanel::HeadphoneRow> headphones;
+    for (const auto& h : application.getHeadphoneChoices())
+        headphones.push_back ({ h.key, h.displayName, h.on });
+    guidePanel.setHeadphones (headphones);
+
+    guidePanel.setDestinationFolder (application.getDestinationFolder());
+    guidePanel.setHighlightedMic (application.getTappedChannel());
+    guidePanel.setPage (setupGuide.page (rig));
+
+    // A microphone plugged in on the first page adds a row; only this
+    // component can make the panel taller inside its viewport.
+    const int requiredHeight = guidePanel.getRequiredHeight();
+
+    if (requiredHeight != lastGuideHeight)
+    {
+        lastGuideHeight = requiredHeight;
+        resized();
+    }
+}
+
+void MainComponent::openSetupGuide()
+{
+    // One drawer at a time, as for Settings and Help, and the Cameras screen
+    // gives the main screen back: the guide is about what is on it.
+    advancedVisible = false;
+    helpVisible = false;
+
+    if (cameraVisible)
+    {
+        cameraVisible = false;
+        cameraPanel.setCameras ({});
+    }
+
+    guideVisible = true;
+    guideSuspended = false;
+    guideSawRecording = false;
+    guideTakeSaved = false;
+    setupGuide.restart();
+
+    applyPanelVisibility();
+    refreshCameras();
+    refreshSetupGuide();
+
+    guideViewport.setViewPosition (0, 0);
+    growWindowToFitWidth (kMainMinWidth + drawerWidth());
+    resized();
+}
+
+void MainComponent::closeSetupGuide()
+{
+    guideVisible = false;
+    guideSuspended = false;
+
+    // Skipped counts as done. Someone who skipped it has seen where it lives,
+    // and opening it again on every launch would be nagging.
+    application.markSetupGuideDone();
+
+    applyPanelVisibility();
+    refreshCameras();
+    resized();
+    grabKeyboardFocus();
+}
+
+void MainComponent::suspendSetupGuide()
+{
+    if (! guideVisible)
+        return;
+
+    guideVisible = false;
+    guideSuspended = true;
+}
+
+void MainComponent::resumeSetupGuideIfSuspended()
+{
+    if (! guideSuspended)
+        return;
+
+    guideSuspended = false;
+    guideVisible = true;
+    refreshSetupGuide();
+    growWindowToFitWidth (kMainMinWidth + drawerWidth());
+}
+
+void MainComponent::openSetupGuideOnFirstLaunch()
+{
+    if (guideAutoOpenConsidered || application.isSetupGuideDone())
+        return;
+
+    // Not while the window is still being built (there is no frame yet to
+    // widen for the drawer), and never over something more pressing: a card,
+    // a take, or a recovery scan whose card may be about to appear.
+    if (! isShowing()
+        || application.isRecoveryScanPending()
+        || application.getRecordingEngine().getState() == RecordingState::Recording
+        || saveLocationPrompt.isVisible() || savedTakePanel.isVisible()
+        || recoveredTakesPanel.isVisible() || takeAlertCard.isVisible()
+        || advancedVisible || helpVisible || cameraVisible)
+        return;
+
+    // Once a run, so closing it and carrying on is not undone half a second
+    // later if saving the answer failed.
+    guideAutoOpenConsidered = true;
+    openSetupGuide();
 }
 
 void MainComponent::exportDiagnostics()
@@ -1609,6 +1814,7 @@ void MainComponent::applyPanelVisibility()
     mainViewport.setVisible (! cameraVisible);
     advancedViewport.setVisible (advancedVisible && ! cameraVisible);
     helpViewport.setVisible (helpVisible && ! cameraVisible);
+    guideViewport.setVisible (guideVisible && ! cameraVisible);
 
     mainScreen.setDoorsOpen (advancedVisible && ! cameraVisible, helpVisible && ! cameraVisible);
 }
@@ -1648,7 +1854,7 @@ void MainComponent::paint (juce::Graphics& g)
     // The drawer's edge: one hairline where the main screen ends and Settings
     // begins, so the two read as a screen and a drawer rather than one wide
     // screen with a seam in it.
-    if ((advancedVisible || helpVisible) && ! cameraVisible)
+    if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
     {
         g.setColour (AppLookAndFeel::outline);
         g.fillRect (mainViewport.getRight(), 0, 1, getHeight());
@@ -1668,7 +1874,7 @@ void MainComponent::resized()
     // the main screen has the whole window, as before.
     auto drawer = juce::Rectangle<int>();
 
-    if ((advancedVisible || helpVisible) && ! cameraVisible)
+    if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
     {
         drawer = bounds.removeFromRight (drawerWidth());
         drawer.removeFromLeft (1); // the hairline paint() draws
@@ -1677,6 +1883,7 @@ void MainComponent::resized()
     mainViewport.setBounds (bounds);
     advancedViewport.setBounds (drawer);
     helpViewport.setBounds (drawer);
+    guideViewport.setBounds (drawer);
 
     // The modal cards cover whichever screen is underneath, so they follow the
     // window rather than the viewport they happen to be over.
@@ -1718,6 +1925,10 @@ void MainComponent::resized()
     helpPanel.setSize (juce::jmax (1, helpViewport.getWidth() - helpViewport.getScrollBarThickness()),
                        juce::jmax (1, helpPanel.getHeight()));
     fit (helpViewport, helpPanel, helpPanel.getRequiredHeight());
+
+    guidePanel.setSize (juce::jmax (1, guideViewport.getWidth() - guideViewport.getScrollBarThickness()),
+                        juce::jmax (1, guidePanel.getHeight()));
+    fit (guideViewport, guidePanel, guidePanel.getRequiredHeight());
 }
 
 } // namespace mma

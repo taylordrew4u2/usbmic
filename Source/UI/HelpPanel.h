@@ -31,11 +31,13 @@ public:
     std::function<void()> onCloseClicked;
     std::function<void()> onOpenSettingsClicked;
     std::function<void()> onExportDiagnosticsClicked;
+    std::function<void()> onSetupGuideClicked;
 
 private:
     juce::TextButton closeButton { "Close" };
     juce::TextButton settingsButton { "Open Settings" };
     juce::TextButton diagnosticsButton { "Export diagnostics" };
+    juce::TextButton setupGuideButton { "Run setup guide again" };
 
     std::vector<HelpTopic> topics;
 

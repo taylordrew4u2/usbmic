@@ -246,6 +246,9 @@ AdvancedPanel::AdvancedPanel()
     helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
     addAndMakeVisible (helpButton);
 
+    setupGuideButton.onClick = [this] { if (onSetupGuideClicked) onSetupGuideClicked(); };
+    addAndMakeVisible (setupGuideButton);
+
     // Four headings over what was a flat list. The reader can now find the
     // storage picker by scanning four words instead of reading fifteen rows.
     const std::pair<juce::Label*, const char*> sections[] = {
@@ -764,6 +767,10 @@ void AdvancedPanel::resized()
         closeButton.setBounds (top.removeFromLeft (110));
         top.removeFromLeft (8);
         helpButton.setBounds (top.removeFromLeft (64));
+        top.removeFromLeft (8);
+        // Whatever the row has left, up to what the words need: at the
+        // narrowest drawer that is still the whole label.
+        setupGuideButton.setBounds (top.removeFromLeft (juce::jmin (170, top.getWidth())));
     }
     area.removeFromTop (14);
 

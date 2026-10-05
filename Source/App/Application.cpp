@@ -484,6 +484,15 @@ void Application::setAskWhereToSaveEveryTime (bool ask)
     saveSettings();
 }
 
+void Application::markSetupGuideDone()
+{
+    if (setupGuideDone)
+        return;
+
+    setupGuideDone = true;
+    saveSettings();
+}
+
 void Application::setMirrorEnabled (bool enabled)
 {
     mirrorPolicy.setEnabledByUser (enabled);
@@ -5979,6 +5988,7 @@ void Application::loadSettings()
     }
 
     askWhereToSaveEveryTime = rememberedSettings.askWhereToSaveEveryTime;
+    setupGuideDone = rememberedSettings.setupGuideDone;
     mirrorPolicy.setEnabledByUser (rememberedSettings.mirrorEnabled);
     // §7: what other apps see. A settings file written under the app's previous
     // name carries that name here, and carrying it forward would leave the
@@ -6132,6 +6142,7 @@ void Application::saveSettings()
     settings.destinationFolder = destinationFolder;
     settings.confirmedSaveLocation = confirmedSaveLocation;
     settings.askWhereToSaveEveryTime = askWhereToSaveEveryTime;
+    settings.setupGuideDone = setupGuideDone;
     settings.mirrorEnabled = mirrorPolicy.isEnabledByUser();
     settings.aggregateName = aggregateName.toStdString();
     settings.masterVolume = masterVolume;
