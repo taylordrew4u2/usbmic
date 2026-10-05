@@ -216,7 +216,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.16 release candidate.
+> to show the implemented flows, not as proof of the v1.13.17 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
@@ -261,7 +261,7 @@ files really are empty and the card says so instead of calling it saved.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.16 release candidate**. It is not a
+The source currently describes the **v1.13.17 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](SUPPORT.md); data handling is documented in
@@ -352,7 +352,7 @@ sources before distributing a binary or considering a proprietary build.
 
 ## What to expect on your platform
 
-This is the **v1.13.16 release candidate**. The recording engine is covered by
+This is the **v1.13.17 release candidate**. The recording engine is covered by
 704 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
@@ -360,7 +360,7 @@ physical hardware.
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.16 candidate. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.17 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other
@@ -565,7 +565,9 @@ this feature works out for you.
 - On a Mac, a camera or capture card that sends only black (no signal, wrong
   input mode, or an HDCP-protected source) is named on its tile after about
   1.5 s, and an HDMI capture dongle is switched to a 30 fps mode when the one
-  picked by default is slower.
+  picked by default is slower. A camera with a 4K mode that runs at 30 fps
+  (Continuity Camera, a 4K webcam, a USB 3 capture card) records in 4K; a
+  USB 2 capture dongle tops out at 1080p whatever its HDMI input accepts.
 - SobStage asks JUCE and the operating system for high-quality camera capture;
   the exact format is selected by the platform and driver. The preview toggle
   changes only how large the picture is drawn on screen; it does not deliberately
@@ -1010,7 +1012,7 @@ v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
 first-frame enqueue, but that run did not verify a visibly non-black SobStage
 preview or a completed recording. The simulator drives the
 `CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
-the v1.13.16 AVFoundation/DirectShow viewer and `startRecordingToFile`
+the v1.13.17 AVFoundation/DirectShow viewer and `startRecordingToFile`
 paths still need the physical macOS and Windows matrix. See *Not yet validated
 against hardware*.
 
@@ -1099,13 +1101,13 @@ the matrix. In particular:
   during open, and the no-false-recovery policy for a mid-take unplug/replug.
   Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
   a first-frame enqueue; that did not verify a visible non-black preview or a
-  completed recording, and the v1.13.16 artifacts remain untested with a
+  completed recording, and the v1.13.17 artifacts remain untested with a
   physical capture card.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file
   costs per second against the estimate the remaining-time figure uses
   (`CameraSelection::kEstimatedVideoBytesPerSecond`, deliberately pessimistic
-  at ~32 Mbit/s), whether two cameras can be held open at once on a given
+  at ~64 Mbit/s, sized for 4K), whether two cameras can be held open at once on a given
   machine, and whether recording video alongside eight microphones stays
   within the §6.6 CPU budget.
 

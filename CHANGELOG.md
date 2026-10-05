@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.13.17 -- 2026-10-05 (release candidate)
+
+4K camera recording on the Mac.
+
+### Changed
+
+- **Mac: cameras record in 4K.** SobStage used macOS's "High" camera setting,
+  which tops out at 1080p, so a 4K camera had to be turned down or was
+  recorded at a quarter of its resolution. A camera with a 4K mode that runs
+  at 30 fps (Continuity Camera, a 4K webcam, a USB 3 capture card) now records
+  in 4K. A USB 2 capture dongle still tops out at 1080p, whatever its HDMI
+  input accepts.
+- The free-space and card-speed checks now budget about 64 Mbit/s per camera
+  (was 32), enough for a 4K stream.
+
 ## v1.13.16 -- 2026-10-04 (release candidate)
 
 Polish: clearer messages, layout fixes and up-to-date docs.
