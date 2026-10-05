@@ -89,7 +89,7 @@ launch() {
   HOME="$SCENARIO_HOME" DISPLAY="$DISPLAY_NUM" \
   MMA_STALL_PREFIX="$CARD" MMA_STALL_TRIGGER="$DEAD" MMA_STALL_METER_FILE="$METER" \
   LD_PRELOAD="$PWD/$SHIM" \
-    nohup "./$APP" >"$WORK/$name.stdout" 2>&1 &
+    MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >"$WORK/$name.stdout" 2>&1 &
   APP_PID=$!
 
   for _ in {1..60}; do
