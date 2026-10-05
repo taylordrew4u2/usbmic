@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.13.19 -- 2026-10-05 (release candidate)
+
+Four new features.
+
+### Added
+
+- **Podcast-ready copy after every take.** Pick where it's going (Spotify,
+  Apple Podcasts, YouTube...) in Settings and each take also saves
+  "MIX - <platform>.wav": the mix turned to that platform's loudness, with
+  the loudest peaks gently limited so nothing clips. Your recording is never
+  changed.
+- **Shows.** Save your whole setup as a named show and load it with one
+  click: mic names and trims, who hears the mix, cameras and their quality,
+  where recordings go, the loudness target.
+- **Setup guide.** New users get a short guide on first launch: mics, names,
+  headphones, where recordings go, cameras, and a test take. Reopen it from
+  Settings or Help.
+- **Update check (off by default).** Turn it on in Settings and SobStage asks
+  GitHub once a day whether a newer version is out, and offers the download
+  page. It sends nothing about you; "Check now" works with it off.
+
 ## v1.13.18 -- 2026-10-05 (release candidate)
 
 Better camera settings.
