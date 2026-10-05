@@ -154,6 +154,16 @@ public:
     }
     bool isMirrorEnabled() const { return mirrorToggle.getToggleState(); }
     std::function<void()> onDestinationFolderClicked;
+
+    /// Saved shows: the rig's whole setup under a name. Fills the picker
+    /// without firing anything, keeping the current pick unless `select`
+    /// names another.
+    void setShows (const juce::StringArray& names, const juce::String& select = {});
+    juce::String getSelectedShow() const;
+    std::function<void (const juce::String&)> onLoadShowClicked;
+    std::function<void()> onSaveShowClicked;
+    std::function<void (const juce::String&)> onDeleteShowClicked;
+
     std::function<void (const juce::String&, bool)> onMicEnabledChanged;
     /// (device name, physical input, enabled)
     std::function<void (const juce::String&, int, bool)> onInputEnabledChanged;
@@ -212,6 +222,16 @@ private:
     juce::Label deliveryNote;
     juce::Label loudnessAdviceLabel;
     juce::StringArray deliveryNames;
+
+    // First in the panel: picking tonight's show is the one choice that sets
+    // every other row below it.
+    juce::Label showsSection;
+    juce::ComboBox showsCombo;
+    juce::TextButton loadShowButton { "Load" };
+    juce::TextButton deleteShowButton { "Delete" };
+    juce::TextButton saveShowButton { "Save current as..." };
+    juce::StringArray showNames;
+    void updateShowButtons();
 
     juce::Label micSelectionLabel;
     juce::Label storageLabel;

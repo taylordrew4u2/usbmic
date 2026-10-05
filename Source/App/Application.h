@@ -592,6 +592,24 @@ public:
     /// runs. Empty when there is nothing measurable yet.
     juce::String getLoudnessReading() const;
 
+    /// Show templates: the whole rig's choices saved under a name and brought
+    /// back with one click, so a show that recurs is set up once. Each is one
+    /// .json file in the support folder's Templates/. See ShowTemplate.
+    ///
+    /// The names of every saved show, sorted, as the user typed them.
+    juce::StringArray listTemplates() const;
+
+    /// Saves the current setup as `name`, replacing a show of the same name.
+    /// False, with the reason in the activity list, when it could not be.
+    bool saveTemplate (const juce::String& name);
+
+    /// Lays the named show over the current setup and applies it to the live
+    /// rig. Refused while a take is running: §6.5 fixes a take's microphones,
+    /// names and destination for its duration.
+    bool applyTemplate (const juce::String& name);
+
+    bool deleteTemplate (const juce::String& name);
+
     /// §6.5 "target card removed": set when a take was stopped because the
     /// destination stopped accepting writes, and consumed once by the UI that
     /// alerts about it. Empty the rest of the time.
@@ -1092,6 +1110,11 @@ private:
     /// being written to, so §14.3's contention worry does not apply to it.
     void loadSettings();
     void saveSettings();
+
+    /// Where show templates live, and the file a named one is (or would be)
+    /// in. An invalid File when the name has nothing usable in it.
+    static juce::File getTemplatesFolder();
+    static juce::File getTemplateFile (const juce::String& name);
 
     struct RecoveryActivity
     {

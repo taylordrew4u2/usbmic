@@ -63,6 +63,7 @@ add_library(mma_core STATIC
     Source/Core/SessionFolderNaming.cpp
     Source/Core/CameraSelection.cpp
     Source/Core/AppSettings.cpp
+    Source/Core/ShowTemplate.cpp
     Source/Core/SessionRecovery.cpp
     Source/Core/ActivityJournal.cpp
     Source/Core/CardRemovalNotice.cpp

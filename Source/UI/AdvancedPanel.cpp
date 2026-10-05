@@ -123,8 +123,31 @@ AdvancedPanel::AdvancedPanel()
     // quietly switched the headphone output, save drive, rate or bit depth.
     // Tab still reaches them.
     for (auto* c : { &outputDeviceCombo, &storageCombo, &sampleRateCombo,
-                     &bitDepthCombo, &bufferSizeCombo, &deliveryCombo })
+                     &bitDepthCombo, &bufferSizeCombo, &deliveryCombo, &showsCombo })
         c->setMouseClickGrabsKeyboardFocus (false);
+
+    // Choosing a show in the list only selects it. Loading changes the whole
+    // rig, so it waits for the button rather than happening on a stray pick.
+    showsCombo.setTitle ("Saved shows");
+    showsCombo.setTextWhenNothingSelected ("Choose a saved show");
+    showsCombo.setTextWhenNoChoicesAvailable ("No saved shows yet");
+    showsCombo.onChange = [this] { updateShowButtons(); };
+    addAndMakeVisible (showsCombo);
+
+    loadShowButton.onClick = [this] {
+        if (onLoadShowClicked && getSelectedShow().isNotEmpty())
+            onLoadShowClicked (getSelectedShow());
+    };
+    deleteShowButton.onClick = [this] {
+        if (onDeleteShowClicked && getSelectedShow().isNotEmpty())
+            onDeleteShowClicked (getSelectedShow());
+    };
+    saveShowButton.onClick = [this] { if (onSaveShowClicked) onSaveShowClicked(); };
+
+    for (auto* b : { &loadShowButton, &deleteShowButton, &saveShowButton })
+        addAndMakeVisible (b);
+
+    updateShowButtons();
 
     trimViewport.setViewedComponent (&trimContainer, false);
     addAndMakeVisible (trimViewport);
@@ -198,6 +221,7 @@ AdvancedPanel::AdvancedPanel()
     // Four headings over what was a flat list. The reader can now find the
     // storage picker by scanning four words instead of reading fifteen rows.
     const std::pair<juce::Label*, const char*> sections[] = {
+        { &showsSection,   "SHOWS" },
         { &storageSection, "WHERE RECORDINGS GO" },
         { &formatSection,  "RECORDING FORMAT" },
         { &deliverySection, "LOUDNESS FOR STREAMING" },
@@ -297,6 +321,28 @@ void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce
 
     lastOutputSignature = signature;
     fillCombo (outputDeviceCombo, names, selected);
+}
+
+void AdvancedPanel::setShows (const juce::StringArray& names, const juce::String& select)
+{
+    const auto keep = select.isNotEmpty() ? select : getSelectedShow();
+
+    showNames = names;
+    fillCombo (showsCombo, names, keep);
+    updateShowButtons();
+}
+
+juce::String AdvancedPanel::getSelectedShow() const
+{
+    const int index = showsCombo.getSelectedId() - 1;
+    return index >= 0 && index < showNames.size() ? showNames[index] : juce::String();
+}
+
+void AdvancedPanel::updateShowButtons()
+{
+    const bool chosen = getSelectedShow().isNotEmpty();
+    loadShowButton.setEnabled (chosen);
+    deleteShowButton.setEnabled (chosen);
 }
 
 void AdvancedPanel::setSampleRates (const std::vector<uint32_t>& rates, uint32_t current)
@@ -663,10 +709,13 @@ int AdvancedPanel::getRequiredHeight() const
     // "Where it's going": the explanation and the line of advice under it.
     constexpr int kDelivery    = 84 + 4 + 36;
 
+    // The show picker with its buttons, the Save row, and the gap after them.
+    constexpr int kShows       = 32 + 4 + 32 + 16;
+
     const int headphoneRows = headphoneToggles.empty()
         ? 0 : kMicListLabel + static_cast<int> (headphoneToggles.size()) * kMicToggle + 6;
 
-    return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount) + headphoneRows
+    return kMargins + kCloseButton + (kSection * 7) + kShows + (kRow * kRowCount) + headphoneRows
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
          + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kActivity;
@@ -712,6 +761,21 @@ void AdvancedPanel::resized()
         label.setBounds (r);
         area.removeFromTop (4);
     };
+
+    // Shows first: loading one sets most of what is below, so it is the place
+    // to start rather than something found after scrolling past it all.
+    section (showsSection);
+    {
+        auto r = area.removeFromTop (32);
+        deleteShowButton.setBounds (r.removeFromRight (72));
+        r.removeFromRight (6);
+        loadShowButton.setBounds (r.removeFromRight (72));
+        r.removeFromRight (6);
+        showsCombo.setBounds (r);
+        area.removeFromTop (4);
+        saveShowButton.setBounds (area.removeFromTop (32).removeFromLeft (180));
+    }
+    area.removeFromTop (16);
 
     // Where recordings go comes first, above the read-only format rows. It is
     // the choice a user comes in here to make -- picking an SD card before a

@@ -10,6 +10,7 @@ add_executable(mma_core_tests
     test_SessionFolderNaming.cpp
     test_CameraSelection.cpp
     test_AppSettings.cpp
+    test_ShowTemplate.cpp
     test_SessionRecovery.cpp
     test_ActivityJournal.cpp
     test_CardRemovalNotice.cpp
