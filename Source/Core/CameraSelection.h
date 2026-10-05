@@ -30,6 +30,27 @@ enum class PreviewQuality
     Full  // as large as the panel allows, for a quick check of focus and framing
 };
 
+/// How much picture one camera is asked to record. Best takes whatever the
+/// camera can deliver smoothly, up to 4K; the other two cap it, for a card
+/// that is short of space or speed, or a machine that is short of CPU.
+enum class CameraQuality
+{
+    Best,   // up to 4K at ~30 fps
+    HD1080, // at most 1920x1080
+    HD720   // at most 1280x720
+};
+
+struct CameraFrameLimit
+{
+    int maxWidth = 0;
+    int maxHeight = 0;
+};
+
+/// "best", "1080p", "720p": the settings-file spelling. Anything unknown reads
+/// as Best, so a newer file opened by an older build loses nothing worse.
+const char* cameraQualityKey (CameraQuality quality) noexcept;
+CameraQuality cameraQualityFromKey (const std::string& key) noexcept;
+
 struct PreviewSettings
 {
     int maxViewHeight = 0; // the tallest the live picture is drawn
@@ -104,8 +125,18 @@ public:
     std::vector<CameraPlan> buildIntendedPlans() const;
 
     /// What a take with this many cameras adds to the bytes-per-second the
-    /// §6.4 remaining-time figure is worked out from.
+    /// §6.4 remaining-time figure is worked out from, camera by camera at the
+    /// quality each one is set to.
     int64_t getEstimatedBytesPerSecond() const;
+
+    /// Per camera, remembered across an unplug like every other choice.
+    void setQuality (const std::string& id, CameraQuality quality);
+    CameraQuality getQuality (const std::string& id) const;
+
+    /// The largest frame a camera at this quality is asked for.
+    static CameraFrameLimit frameLimitFor (CameraQuality quality) noexcept;
+    /// The pessimistic disk budget for one camera at this quality.
+    static int64_t estimatedBytesPerSecondFor (CameraQuality quality) noexcept;
 
     static PreviewSettings previewSettingsFor (PreviewQuality quality);
 
@@ -115,6 +146,7 @@ private:
         bool enabled = false;
         std::string assignedName;
         std::string lastDisplayName;
+        CameraQuality quality = CameraQuality::Best;
     };
 
     std::vector<CameraDeviceInfo> available;

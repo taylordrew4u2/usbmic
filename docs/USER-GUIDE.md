@@ -153,7 +153,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.17 release candidate.
+> to show the implemented flows, not as proof of the v1.13.18 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
@@ -291,6 +291,10 @@ this feature works out for you.
   picked by default is slower. A camera with a 4K mode that runs at 30 fps
   (Continuity Camera, a 4K webcam, a USB 3 capture card) records in 4K; a
   USB 2 capture dongle tops out at 1080p whatever its HDMI input accepts.
+- **Quality, per camera** (Cameras panel): **Best (up to 4K)**, **1080p** or
+  **720p (smaller files)**. Each camera row says what it is actually running at
+  ("Running at 3840 x 2160, 30 fps"), and the free-space and card-speed checks
+  budget each camera at its own setting. Fixed during a take.
 - SobStage asks JUCE and the operating system for high-quality camera capture;
   the exact format is selected by the platform and driver. The preview toggle
   changes only how large the picture is drawn on screen; it does not deliberately

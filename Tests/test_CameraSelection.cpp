@@ -164,6 +164,38 @@ TEST_CASE (CameraSelection_videoCountsAgainstRemainingTime)
     REQUIRE (selection.getEstimatedBytesPerSecond() == CameraSelection::kEstimatedVideoBytesPerSecond);
 }
 
+TEST_CASE (CameraSelection_qualityCapsSizeAndBudget)
+{
+    CameraSelection selection;
+    selection.setAvailableCameras (twoCameras());
+
+    REQUIRE (selection.getQuality ("cam-a") == CameraQuality::Best);
+    REQUIRE (CameraSelection::frameLimitFor (CameraQuality::Best).maxHeight == 2160);
+    REQUIRE (CameraSelection::frameLimitFor (CameraQuality::HD1080).maxHeight == 1080);
+    REQUIRE (CameraSelection::frameLimitFor (CameraQuality::HD720).maxHeight == 720);
+
+    // A camera turned down to 720p costs the card less than one left at Best.
+    selection.setQuality ("cam-b", CameraQuality::HD720);
+    REQUIRE (selection.getEstimatedBytesPerSecond()
+             == CameraSelection::kEstimatedVideoBytesPerSecond
+                + CameraSelection::estimatedBytesPerSecondFor (CameraQuality::HD720));
+    REQUIRE (CameraSelection::estimatedBytesPerSecondFor (CameraQuality::HD720)
+             < CameraSelection::estimatedBytesPerSecondFor (CameraQuality::HD1080));
+
+    // Unplugging forgets nothing.
+    selection.setAvailableCameras ({});
+    selection.setAvailableCameras (twoCameras());
+    REQUIRE (selection.getQuality ("cam-b") == CameraQuality::HD720);
+}
+
+TEST_CASE (CameraSelection_qualityKeysRoundTrip)
+{
+    for (const auto q : { CameraQuality::Best, CameraQuality::HD1080, CameraQuality::HD720 })
+        REQUIRE (cameraQualityFromKey (cameraQualityKey (q)) == q);
+
+    REQUIRE (cameraQualityFromKey ("8k-someday") == CameraQuality::Best);
+}
+
 TEST_CASE (CameraSelection_previewSizeNeverDrivesCaptureSize)
 {
     // The only thing the preview setting decides is how tall the picture is

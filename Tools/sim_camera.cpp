@@ -854,6 +854,45 @@ void aCameraWaitsForPrivacyPermission()
     check (controller.getProblem().isEmpty(), "the permission message clears");
 }
 
+/// The per-camera quality caps what the camera is asked for, survives as a
+/// choice, reopens the camera to take effect, and the panel can say what the
+/// camera is actually running at once it reports.
+void aCameraQualityCapsTheOpenAndReportsTheFormat()
+{
+    std::printf ("\nPer-camera recording quality\n");
+
+    fakecamera::setDevices ({ "Cam Link 4K" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetOpenCallCount();
+
+    mma::CameraController controller;
+    refreshNow (controller);
+    controller.getSelection().setEnabled ("Cam Link 4K", true);
+    controller.applySelection (true);
+
+    check (fakecamera::getOpenCallCount() == 1 && fakecamera::getLastOpenMaxHeight() == 2160,
+           "Best asks for up to 4K");
+    check (controller.getActiveFormatText ("Cam Link 4K").isEmpty(),
+           "nothing is claimed before the camera reports its format");
+
+    fakecamera::emitFormat ("Cam Link 4K", 3840, 2160, 29.97);
+    check (controller.applyPendingCameraList()
+               && controller.getActiveFormatText ("Cam Link 4K") == "3840 x 2160, 30 fps",
+           "the reported format is shown as size and rounded frame rate");
+
+    controller.setCameraQuality ("Cam Link 4K", mma::CameraQuality::HD1080);
+    controller.applyPendingCameraList();
+    check (fakecamera::getOpenCallCount() == 2 && fakecamera::getLastOpenMaxHeight() == 1080,
+           "choosing 1080p reopens the camera capped at 1080");
+    check (controller.getActiveFormatText ("Cam Link 4K").isEmpty(),
+           "the old format is not shown for the reopened camera");
+
+    controller.setCameraQuality ("Cam Link 4K", mma::CameraQuality::HD1080);
+    check (fakecamera::getOpenCallCount() == 2, "choosing the same quality again does nothing");
+}
+
 /// A callback already queued when an identical capture card reconnects belongs
 /// to the old platform object. Product-name identity must not let that event
 /// certify the replacement generation.
@@ -1800,6 +1839,7 @@ int main()
     aLateFirstFrameRecoversAfterTheSignalTimeout();
     anAllBlackPictureIsExplainedNotShown();
     aCameraWaitsForPrivacyPermission();
+    aCameraQualityCapsTheOpenAndReportsTheFormat();
     aStaleGenerationFrameCannotCertifyAReopenedCamera();
     aRuntimeCameraErrorInvalidatesThePreview();
     switchingOffARecordingCameraWaitsForTheTakeToEnd();

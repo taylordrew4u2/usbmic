@@ -1,8 +1,8 @@
 diff --git a/modules/juce_video/capture/juce_CameraDevice.h b/modules/juce_video/capture/juce_CameraDevice.h
-index 21bd4f6367..bb7b16df20 100644
+index 21bd4f6367..b2846d8238 100644
 --- a/modules/juce_video/capture/juce_CameraDevice.h
 +++ b/modules/juce_video/capture/juce_CameraDevice.h
-@@ -172,6 +172,17 @@ public:
+@@ -172,6 +172,21 @@ public:
          and reopen the device to be able to use it further. */
      std::function<void (const String& /*error*/)> onErrorOccurred;
  
@@ -17,24 +17,31 @@ index 21bd4f6367..bb7b16df20 100644
 +        movie was finalized successfully. */
 +    std::function<void (const File& /*file*/, const String& /*error*/)> onRecordingFinished;
 +
++    /** macOS only: invoked on the message thread once the capture session is
++        running, with the frame size and rate the camera is actually delivering. */
++    std::function<void (int /*width*/, int /*height*/, double /*framesPerSecond*/)> onFormatChanged;
++
      //==============================================================================
      /**
          Receives callbacks with individual frames from a CameraDevice. It is mainly
 diff --git a/modules/juce_video/native/juce_CameraDevice_mac.h b/modules/juce_video/native/juce_CameraDevice_mac.h
-index ddcba1f320..a42124ae3b 100644
+index ddcba1f320..5b6f18bc87 100644
 --- a/modules/juce_video/native/juce_CameraDevice_mac.h
 +++ b/modules/juce_video/native/juce_CameraDevice_mac.h
-@@ -29,13 +29,17 @@
+@@ -29,13 +29,19 @@
  
  struct CameraDevice::Pimpl
  {
 -    Pimpl (CameraDevice& ownerToUse, const String& deviceNameToUse, int /*index*/,
 +    Pimpl (CameraDevice& ownerToUse, const String& deviceNameToUse, int index,
             int /*minWidth*/, int /*minHeight*/,
-            int /*maxWidth*/, int /*maxHeight*/,
+-           int /*maxWidth*/, int /*maxHeight*/,
++           int maxWidthToUse, int maxHeightToUse,
             bool useHighQuality)
          : owner (ownerToUse),
 -          deviceName (deviceNameToUse)
++          maxWidth (maxWidthToUse > 0 ? maxWidthToUse : 4096),
++          maxHeight (maxHeightToUse > 0 ? maxHeightToUse : 2160),
 +          deviceName (deviceNameToUse),
 +          deviceIndex (index),
 +          delegateOwner (std::make_shared<DelegateOwnerLink>())
@@ -44,7 +51,7 @@ index ddcba1f320..a42124ae3b 100644
          imageOutput = []() -> std::unique_ptr<ImageOutputBase>
          {
             #if JUCE_USE_NEW_CAMERA_API
-@@ -48,6 +52,16 @@ struct CameraDevice::Pimpl
+@@ -48,6 +54,16 @@ struct CameraDevice::Pimpl
  
          session = [[AVCaptureSession alloc] init];
  
@@ -61,7 +68,7 @@ index ddcba1f320..a42124ae3b 100644
          session.sessionPreset = useHighQuality ? AVCaptureSessionPresetHigh
                                                 : AVCaptureSessionPresetMedium;
  
-@@ -55,7 +69,7 @@ struct CameraDevice::Pimpl
+@@ -55,7 +71,7 @@ struct CameraDevice::Pimpl
  
          static DelegateClass cls;
          callbackDelegate = (id<AVCaptureFileOutputRecordingDelegate>) [cls.createInstance() init];
@@ -70,7 +77,7 @@ index ddcba1f320..a42124ae3b 100644
  
          JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wundeclared-selector")
          [[NSNotificationCenter defaultCenter] addObserver: callbackDelegate
-@@ -67,14 +81,59 @@ struct CameraDevice::Pimpl
+@@ -67,14 +83,59 @@ struct CameraDevice::Pimpl
  
      ~Pimpl()
      {
@@ -134,7 +141,7 @@ index ddcba1f320..a42124ae3b 100644
      }
  
      //==============================================================================
-@@ -82,8 +141,96 @@ struct CameraDevice::Pimpl
+@@ -82,8 +143,97 @@ struct CameraDevice::Pimpl
  
      void startSession()
      {
@@ -225,6 +232,7 @@ index ddcba1f320..a42124ae3b 100644
 +        }
 +
 +        startRetriesLeft = maxStartRetries;
++        reportActiveFormat();
 +
 +        const ScopedLock sl (listenerLock);
 +
@@ -233,7 +241,7 @@ index ddcba1f320..a42124ae3b 100644
      }
  
      void takeStillPicture (std::function<void (const Image&)> pictureTakenCallbackToUse)
-@@ -107,18 +254,30 @@ struct CameraDevice::Pimpl
+@@ -107,18 +257,30 @@ struct CameraDevice::Pimpl
          file.deleteFile();
  
          startSession();
@@ -271,7 +279,7 @@ index ddcba1f320..a42124ae3b 100644
      }
  
      Time getTimeOfFirstRecordedFrame() const
-@@ -185,29 +344,45 @@ struct CameraDevice::Pimpl
+@@ -185,29 +347,45 @@ struct CameraDevice::Pimpl
          // `startRecordingToFile`, or `takeStillPicture` before calling this
          // function.
          jassert (! [session isRunning]);
@@ -321,7 +329,7 @@ index ddcba1f320..a42124ae3b 100644
  
              JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wundeclared-selector")
              addMethod (@selector (captureSessionRuntimeError:), sessionRuntimeError);
-@@ -216,22 +391,61 @@ private:
+@@ -216,22 +394,61 @@ private:
              registerClass();
          }
  
@@ -387,7 +395,7 @@ index ddcba1f320..a42124ae3b 100644
          }
      };
  
-@@ -256,6 +470,11 @@ private:
+@@ -256,6 +473,11 @@ private:
              delegate.reset ([cls.createInstance() init]);
          }
  
@@ -399,7 +407,7 @@ index ddcba1f320..a42124ae3b 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -288,7 +507,7 @@ private:
+@@ -288,7 +510,7 @@ private:
              if (imageOutput == nil)
                  return;
  
@@ -408,7 +416,7 @@ index ddcba1f320..a42124ae3b 100644
  
              [imageOutput capturePhotoWithSettings: [AVCapturePhotoSettings photoSettings]
                                           delegate: delegate.get()];
-@@ -308,23 +527,51 @@ private:
+@@ -308,23 +530,51 @@ private:
                          [[maybe_unused]] String errorString = error != nil ? nsStringToJuce (error.localizedDescription) : String();
  
                          JUCE_CAMERA_LOG ("Still picture capture failed, error: " + errorString);
@@ -465,7 +473,7 @@ index ddcba1f320..a42124ae3b 100644
          };
  
          AVCapturePhotoOutput* imageOutput = nil;
-@@ -336,6 +583,11 @@ private:
+@@ -336,6 +586,11 @@ private:
      class PreCatalinaStillImageOutput  : public ImageOutputBase
      {
      public:
@@ -477,7 +485,7 @@ index ddcba1f320..a42124ae3b 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -378,19 +630,27 @@ private:
+@@ -378,19 +633,27 @@ private:
          {
              if (auto* videoConnection = p.getVideoConnection())
              {
@@ -507,7 +515,7 @@ index ddcba1f320..a42124ae3b 100644
                  }];
              }
          }
-@@ -442,35 +702,157 @@ private:
+@@ -442,35 +705,163 @@ private:
          }
      }
  
@@ -521,9 +529,9 @@ index ddcba1f320..a42124ae3b 100644
 +        return rate;
 +    }
 +
-+    static bool isAtMost4K (CMVideoDimensions dims)
++    bool fitsLimit (CMVideoDimensions dims) const
 +    {
-+        return dims.width <= 4096 && dims.height <= 2160;
++        return dims.width <= jmin (4096, maxWidth) && dims.height <= jmin (2160, maxHeight);
 +    }
 +
 +    // The High preset tops out at 1080p on most Macs, so a 4K camera
@@ -531,7 +539,7 @@ index ddcba1f320..a42124ae3b 100644
 +    // a quarter of its resolution. Ask for the 4K preset when this camera has
 +    // a 4K mode that can run at ~30 fps; a 4K mode that only manages a few
 +    // frames a second would be worse than smooth 1080p.
-+    static bool cameraHasSmooth4K (AVCaptureDevice* device)
++    bool cameraHasSmooth4K (AVCaptureDevice* device) const
 +    {
 +        for (AVCaptureDeviceFormat* format in device.formats)
 +        {
@@ -540,7 +548,7 @@ index ddcba1f320..a42124ae3b 100644
 +
 +            const auto dims = CMVideoFormatDescriptionGetDimensions (format.formatDescription);
 +
-+            if (dims.width >= 3840 && dims.height >= 2160 && isAtMost4K (dims)
++            if (dims.width >= 3840 && dims.height >= 2160 && fitsLimit (dims)
 +                && maxRateOf (format) >= smoothRate)
 +                return true;
 +        }
@@ -553,8 +561,14 @@ index ddcba1f320..a42124ae3b 100644
 +        if (device == nil || ! [session.sessionPreset isEqualToString: AVCaptureSessionPresetHigh])
 +            return;
 +
-+        if (cameraHasSmooth4K (device) && [session canSetSessionPreset: AVCaptureSessionPreset3840x2160])
-+            session.sessionPreset = AVCaptureSessionPreset3840x2160;
++        // A lower limit asks for that size outright: left on High, a camera
++        // whose High is 4K would ignore the user's choice.
++        auto* preset = maxHeight >= 2160 ? (cameraHasSmooth4K (device) ? AVCaptureSessionPreset3840x2160 : nil)
++                     : maxHeight >= 1080 ? AVCaptureSessionPreset1920x1080
++                                         : AVCaptureSessionPreset1280x720;
++
++        if (preset != nil && [session canSetSessionPreset: preset])
++            session.sessionPreset = preset;
 +    }
 +
 +    // A "USB2 Video" HDMI dongle typically lists 1080p uncompressed at ~5 fps
@@ -563,7 +577,7 @@ index ddcba1f320..a42124ae3b 100644
 +    // format the session chose cannot reach ~30 fps, switch to the largest
 +    // format up to 4K that can, and pin it to 30 fps. Cameras that already
 +    // run smoothly (FaceTime, most webcams) are left exactly as they were.
-+    static bool chooseSmoothFormat (AVCaptureDevice* device)
++    bool chooseSmoothFormat (AVCaptureDevice* device) const
 +    {
 +
 +        if (device == nil || device.activeFormat == nil || maxRateOf (device.activeFormat) >= smoothRate)
@@ -580,7 +594,7 @@ index ddcba1f320..a42124ae3b 100644
 +
 +            const auto dims = CMVideoFormatDescriptionGetDimensions (format.formatDescription);
 +
-+            if (! isAtMost4K (dims))
++            if (! fitsLimit (dims))
 +                continue;
 +
 +            const auto pixels = (int64) dims.width * (int64) dims.height;
@@ -635,22 +649,18 @@ index ddcba1f320..a42124ae3b 100644
 +                    break;
 +                }
 +            }
-+
+ 
+-                    NSError* err = nil;
+-                    AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: device
+-                                                                                               error: &err];
 +            if (selectedDevice == nil)
 +            {
 +                openingError = "The selected camera is no longer available";
 +                return;
 +            }
  
--                    NSError* err = nil;
--                    AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: device
--                                                                                               error: &err];
-+            removeCurrentSessionVideoInputs();
- 
 -                    jassert (err == nil);
-+            NSError* err = nil;
-+            AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: selectedDevice
-+                                                                                       error: &err];
++            removeCurrentSessionVideoInputs();
  
 -                    if ([session canAddInput: inputDevice])
 -                    {
@@ -662,11 +672,15 @@ index ddcba1f320..a42124ae3b 100644
 -                        jassertfalse;
 -                        [inputDevice release];
 -                    }
-+            if (err != nil)
-+                openingError = nsStringToJuce (err.localizedDescription);
++            NSError* err = nil;
++            AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: selectedDevice
++                                                                                       error: &err];
  
 -                    return;
 -                }
++            if (err != nil)
++                openingError = nsStringToJuce (err.localizedDescription);
++
 +            if (inputDevice != nil && [session canAddInput: inputDevice])
 +            {
 +                [session addInput: inputDevice];
@@ -683,7 +697,7 @@ index ddcba1f320..a42124ae3b 100644
              }
          }
      }
-@@ -499,6 +881,12 @@ private:
+@@ -499,6 +890,12 @@ private:
  
      void refreshIfNeeded()
      {
@@ -696,7 +710,7 @@ index ddcba1f320..a42124ae3b 100644
          if (getVideoConnection() == nullptr)
              refreshConnections();
      }
-@@ -509,7 +897,7 @@ private:
+@@ -509,7 +906,7 @@ private:
  
          if (connections != nil)
              for (AVCaptureConnection* connection in connections)
@@ -705,7 +719,7 @@ index ddcba1f320..a42124ae3b 100644
                      for (AVCaptureInputPort* port in [connection inputPorts])
                          if ([[port mediaType] isEqual: AVMediaTypeVideo])
                              return connection;
-@@ -534,17 +922,82 @@ private:
+@@ -534,17 +931,100 @@ private:
          listeners.call ([=] (Listener& l) { l.imageReceived (image); });
  
          if (! listeners.isEmpty())
@@ -779,6 +793,24 @@ index ddcba1f320..a42124ae3b 100644
 +        }
 +    }
 +
++    void reportActiveFormat()
++    {
++        if (currentInput == nil || owner.onFormatChanged == nullptr)
++            return;
++
++        @try
++        {
++            AVCaptureDevice* device = currentInput.device;
++            const auto dims = CMVideoFormatDescriptionGetDimensions (device.activeFormat.formatDescription);
++            const auto duration = device.activeVideoMinFrameDuration;
++            const double fps = (duration.value > 0 && duration.timescale > 0)
++                                 ? (double) duration.timescale / (double) duration.value
++                                 : 0.0;
++            owner.onFormatChanged ((int) dims.width, (int) dims.height, fps);
++        }
++        @catch (NSException*) {}
++    }
++
 +    void recordingStarted (const File& file)
 +    {
 +        NullCheckedInvocation::invoke (owner.onRecordingStarted, file);
@@ -792,16 +824,18 @@ index ddcba1f320..a42124ae3b 100644
      }
  
      void cameraSessionRuntimeError (const String& error)
-@@ -557,6 +1010,8 @@ private:
+@@ -556,7 +1036,10 @@ private:
+ 
      //==============================================================================
      CameraDevice& owner;
++    int maxWidth = 4096, maxHeight = 2160;
      String deviceName;
 +    int deviceIndex = -1;
 +    String deviceIdentifier;
  
      AVCaptureSession* session = nil;
      AVCaptureMovieFileOutput* fileOutput = nil;
-@@ -566,7 +1021,15 @@ private:
+@@ -566,7 +1049,15 @@ private:
      id<AVCaptureFileOutputRecordingDelegate> callbackDelegate = nil;
      String openingError;
      Time firstPresentationTime;

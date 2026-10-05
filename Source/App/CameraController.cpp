@@ -378,8 +378,10 @@ bool CameraController::applyPendingRuntimeEvents()
     std::vector<FrameNotification> frames;
     std::vector<RecordingStartedNotification> recordingsStarted;
     std::vector<RecordingFinishedNotification> recordingsFinished;
+    std::vector<FormatNotification> formats;
     {
         const std::lock_guard<std::mutex> guard (runtimeErrorMailbox->mutex);
+        formats.swap (runtimeErrorMailbox->formats);
         errors.swap (runtimeErrorMailbox->pending);
         frames.swap (runtimeErrorMailbox->frames);
         recordingsStarted.swap (runtimeErrorMailbox->recordingsStarted);
@@ -387,6 +389,27 @@ bool CameraController::applyPendingRuntimeEvents()
     }
 
     bool changed = false;
+
+    for (const auto& format : formats)
+    {
+        const auto entry = open.find (format.id);
+        if (entry == open.end() || entry->second.viewerRevision != format.viewerRevision)
+            continue;
+
+        juce::String text;
+        if (format.width > 0 && format.height > 0)
+        {
+            text = juce::String (format.width) + " x " + juce::String (format.height);
+            if (format.fps > 0.0)
+                text += ", " + juce::String (juce::roundToInt (format.fps)) + " fps";
+        }
+
+        if (text != entry->second.activeFormatText)
+        {
+            entry->second.activeFormatText = text;
+            changed = true;
+        }
+    }
 
     for (const auto& started : recordingsStarted)
     {
@@ -1065,10 +1088,13 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     // that is the point of the exercise. Since one open device feeds both the
     // view and the recording, the safe request is high-quality capture while
     // making the *view* cheap by drawing it small, which PreviewQuality does.
+    // The user's per-camera quality caps the size asked for; the macOS
+    // backend honours it (Windows still lets the driver choose).
+    const auto limit = CameraSelection::frameLimitFor (selection.getQuality (id));
     std::unique_ptr<juce::CameraDevice> device (
         juce::CameraDevice::openDevice (osIndex,
                                         640, 480,      // never settle below this
-                                        8192, 8192,    // allow the platform's high-quality choice
+                                        limit.maxWidth, limit.maxHeight,
                                         true));        // highQuality
 
     if (device == nullptr)
@@ -1114,6 +1140,11 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     {
         const std::lock_guard<std::mutex> guard (mailbox->mutex);
         mailbox->pending.push_back ({ id, viewerRevision, error });
+    };
+    entry.device->onFormatChanged = [mailbox, id, viewerRevision] (int width, int height, double fps)
+    {
+        const std::lock_guard<std::mutex> guard (mailbox->mutex);
+        mailbox->formats.push_back ({ id, viewerRevision, width, height, fps });
     };
 
     // JUCE documents that the macOS preview must be created before anything
@@ -1304,6 +1335,36 @@ void CameraController::advanceSignalClockForTesting (double milliseconds)
 #endif
 }
 #endif
+
+juce::String CameraController::getActiveFormatText (const std::string& deviceId) const
+{
+#if JUCE_USE_CAMERA
+    const auto entry = open.find (deviceId);
+    return entry != open.end() ? entry->second.activeFormatText : juce::String();
+#else
+    juce::ignoreUnused (deviceId);
+    return {};
+#endif
+}
+
+void CameraController::setCameraQuality (const std::string& id, CameraQuality quality)
+{
+    if (selection.getQuality (id) == quality)
+        return;
+
+    selection.setQuality (id, quality);
+
+#if JUCE_USE_CAMERA
+    // Reopen now so the new size is what the preview shows and the next take
+    // records. Never mid-take: the take's cameras are fixed until Stop, and
+    // the UI keeps this control off while recording.
+    if (! takeActive && open.count (id) > 0)
+    {
+        closeCamera (id);
+        applySelection (false);
+    }
+#endif
+}
 
 uint64_t CameraController::getViewerRevision (const std::string& deviceId) const
 {

@@ -107,6 +107,11 @@ MainComponent::MainComponent (Application& app)
         refreshCameras(); // the name goes on the file, so the panel restates it
     };
 
+    cameraPanel.onCameraQualityChanged = [this] (const std::string& id, CameraQuality quality) {
+        application.setCameraQuality (id, quality);
+        refreshCameras();
+    };
+
     cameraPanel.onPreviewQualityChanged = [this] (PreviewQuality quality) {
         application.setCameraPreviewQuality (quality);
         mainScreen.setFullPreview (quality == PreviewQuality::Full);
@@ -1276,7 +1281,9 @@ void MainComponent::refreshCameras()
                              takeState != takeCameraStates.end() && takeState->second.starting,
                              controller.getPlannedFileNameFor (camera.id),
                              controller.getViewerRevision (camera.id),
-                             controller.getSignalStatusText (camera.id) });
+                             controller.getSignalStatusText (camera.id),
+                             controller.getSelection().getQuality (camera.id),
+                             controller.getActiveFormatText (camera.id) });
     }
 
     // Keep remembered rows actionable while the asynchronous first snapshot
@@ -1298,7 +1305,9 @@ void MainComponent::refreshCameras()
                              // Was hardcoded empty, which is what stopped the
                              // incomplete-file warning reaching an unplugged
                              // camera -- the one case that truncates a movie.
-                             controller.getSignalStatusText (camera.id) });
+                             controller.getSignalStatusText (camera.id),
+                             controller.getSelection().getQuality (camera.id),
+                             {} });
     }
 
     // Only the visible surface owns preview hosts. Keeping CameraPanel rows

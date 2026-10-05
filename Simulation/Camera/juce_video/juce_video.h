@@ -47,6 +47,7 @@ public:
     std::function<void (const String&)> onErrorOccurred;
     std::function<void (const File&)> onRecordingStarted;
     std::function<void (const File&, const String&)> onRecordingFinished;
+    std::function<void (int, int, double)> onFormatChanged;
 
     Component* createViewerComponent();
 
@@ -100,6 +101,11 @@ int getAddListenerCallCount();
 int getRemoveListenerCallCount();
 void resetListenerCallCounts();
 void resetOpenCallCount();
+/// The maxWidth/maxHeight passed to the most recent openDevice().
+int getLastOpenMaxHeight();
+/// Reports the format the named camera "settled on", as the macOS backend does
+/// once its session starts.
+void emitFormat (const juce::String& deviceName, int width, int height, double fps);
 int getOpenCallCount();
 void resetViewerCreateCallCount();
 int getViewerCreateCallCount();
