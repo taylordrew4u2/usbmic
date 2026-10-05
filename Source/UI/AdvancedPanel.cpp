@@ -164,8 +164,9 @@ AdvancedPanel::AdvancedPanel()
 
     deliveryNote.setText ("Every streaming service turns everything it plays to the same "
                           "loudness, so how loud you record decides what people hear -- "
-                          "and the peak meters can't tell you. Nothing is changed for you: "
-                          "this measures the mix and says which way to move.",
+                          "and the peak meters can't tell you. Your recording is never changed: "
+                          "this measures the mix and says which way to move. After each take, "
+                          "a ready-to-upload copy of the mix at this loudness is saved beside it.",
                           juce::dontSendNotification);
     deliveryNote.setJustificationType (juce::Justification::topLeft);
     deliveryNote.setMinimumHorizontalScale (1.0f);
@@ -661,7 +662,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kCombine     = 28 + 32;
 
     // "Where it's going": the explanation and the line of advice under it.
-    constexpr int kDelivery    = 84 + 4 + 36;
+    constexpr int kDelivery    = 100 + 4 + 36;
 
     const int headphoneRows = headphoneToggles.empty()
         ? 0 : kMicListLabel + static_cast<int> (headphoneToggles.size()) * kMicToggle + 6;
@@ -748,7 +749,7 @@ void AdvancedPanel::resized()
 
     section (deliverySection);
     row (deliveryLabel, deliveryCombo);
-    deliveryNote.setBounds (area.removeFromTop (84));
+    deliveryNote.setBounds (area.removeFromTop (100));
     area.removeFromTop (4);
     loudnessAdviceLabel.setBounds (area.removeFromTop (36));
     area.removeFromTop (12);

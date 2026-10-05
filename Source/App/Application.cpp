@@ -2748,6 +2748,22 @@ void Application::toggleRecording()
                                || lastTakeVerdict == TakeAudioVerdict::DroppedByApp;
         }
 
+        // A copy of the mix set to the delivery target's loudness, when one is
+        // chosen: the advice in Settings, carried out. Read from the take's own
+        // finished MIX.wav (and any split parts) on a worker of its own, so the
+        // stop is never kept waiting for it; the take's files are only read.
+        // A card that stopped answering is not asked to be read again.
+        if (deliveryTarget.isNotEmpty() && currentSessionFolder.isNotEmpty())
+        {
+            if (takeCardUnresponsive)
+                noteActivity (ActivityLevel::Warning, "Podcast copy",
+                              "No podcast-ready copy was made: the card stopped answering.");
+            else if (! podcastExporter.start (juce::File (currentSessionFolder), "MIX.wav",
+                                              deliveryTarget.toStdString()))
+                noteActivity (ActivityLevel::Warning, "Podcast copy",
+                              "No podcast-ready copy was made for " + deliveryTarget + ".");
+        }
+
         // §6.2: the take is on disk and the UI has not shown where yet. Only
         // raised when a folder was actually opened -- a start that failed
         // preflight never got one, and "saved" would be a lie.
@@ -4583,6 +4599,14 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // a full disk, a pulled card): mirror the take state into the sleep
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
+
+    // Podcast-ready copies finished since the last tick. Reported here, on
+    // the message thread, because the worker that made them may not touch the
+    // journal -- and up here, above every early return, so a warning holding
+    // the line cannot hold back the news that the copy was saved.
+    for (const auto& exported : podcastExporter.collectFinished())
+        noteActivity (exported.written ? ActivityLevel::Stopped : ActivityLevel::Warning,
+                      "Podcast copy", exported.message, exported.written);
 
     // The microphone answer read at launch goes stale the moment the user
     // answers the first-run prompt or revokes access in System Settings. Kept
@@ -6652,6 +6676,10 @@ void Application::shutdown()
     // chance to stall; this request never joins the worker.
     takeCombiner.cancel();
 
+    // Likewise the podcast-ready copy: told now, waited for (briefly) below,
+    // by which time it has usually cleared away its unfinished file.
+    podcastExporter.cancel();
+
     // The drive check, early: its worker deletes its 200 MB scratch file on
     // the way out, and the sooner it is told the more of teardown it has to
     // get there. The next run sweeps up anything it still leaves.
@@ -6691,6 +6719,9 @@ void Application::shutdown()
     mirrorRecoveryTask.cancel();
     recoveryAcknowledgementTask.cancel();
     filesystemStatusProbe.stop();
+
+    // Bounded: a worker stuck on a card that went away is left to the OS.
+    podcastExporter.waitUntilIdle (PodcastExporter::kShutdownWaitMs);
 
     // The rig as the user is leaving it, so tomorrow starts where today ended.
     saveSettings();
