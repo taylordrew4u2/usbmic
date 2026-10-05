@@ -189,6 +189,33 @@ AdvancedPanel::AdvancedPanel()
     diagnosticsExportButton.onClick = [this] { if (onDiagnosticsExportClicked) onDiagnosticsExportClicked(); };
     addAndMakeVisible (diagnosticsExportButton);
 
+    // Off by default: PRIVACY.md says the app sends nothing anywhere, and this
+    // is the one request it can make, so it is the user's to switch on. The
+    // note says what that costs them in the same breath as the switch.
+    checkForUpdatesToggle.setToggleState (false, juce::dontSendNotification);
+    checkForUpdatesToggle.onClick = [this]
+    { if (onCheckForUpdatesToggled) onCheckForUpdatesToggled (checkForUpdatesToggle.getToggleState()); };
+    addAndMakeVisible (checkForUpdatesToggle);
+
+    checkForUpdatesNote.setText ("Contacts GitHub once a day to look for a new version. Sends nothing about you.",
+                                 juce::dontSendNotification);
+    checkForUpdatesNote.setFont (juce::Font (12.0f, juce::Font::italic));
+    checkForUpdatesNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    addAndMakeVisible (checkForUpdatesNote);
+
+    // Works with the switch off: pressing it is the user asking, today, once.
+    checkNowButton.onClick = [this] { if (onCheckForUpdatesNowClicked) onCheckForUpdatesNowClicked(); };
+    addAndMakeVisible (checkNowButton);
+
+    updateStatusLabel.setFont (juce::Font (13.0f));
+    updateStatusLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+    addAndMakeVisible (updateStatusLabel);
+
+    // Opens the release page in the browser. Nothing is downloaded or
+    // installed behind the user's back; they take it from there.
+    downloadUpdateButton.onClick = [this] { if (onDownloadUpdateClicked) onDownloadUpdateClicked(); };
+    addChildComponent (downloadUpdateButton);
+
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
 
@@ -203,6 +230,7 @@ AdvancedPanel::AdvancedPanel()
         { &deliverySection, "LOUDNESS FOR STREAMING" },
         { &micSection,     "MICROPHONES" },
         { &outputSection,  "MONITORING AND OUTPUT" },
+        { &updatesSection, "UPDATES" },
         { &activitySection, "WHAT HAPPENED" },
     };
 
@@ -644,6 +672,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kAggregate     = 20 + 16;
     constexpr int kMirror        = 28 + 16;
     constexpr int kDiagnostics   = 36;
+    constexpr int kUpdates       = 28 + 20 + 32 + 16; // switch, note, Check now row, gap
     constexpr int kActivity      = 16 + kActivityHeight;
 
     // save-to volume, destination folder, sample rate, bit depth, buffer size,
@@ -666,10 +695,10 @@ int AdvancedPanel::getRequiredHeight() const
     const int headphoneRows = headphoneToggles.empty()
         ? 0 : kMicListLabel + static_cast<int> (headphoneToggles.size()) * kMicToggle + 6;
 
-    return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount) + headphoneRows
+    return kMargins + kCloseButton + (kSection * 7) + (kRow * kRowCount) + headphoneRows
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
-         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kActivity;
+         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kUpdates + kActivity;
 }
 
 void AdvancedPanel::resized()
@@ -800,6 +829,26 @@ void AdvancedPanel::resized()
     diagnosticsExportButton.setBounds (area.removeFromTop (36).removeFromLeft (180));
     area.removeFromTop (16);
 
+    section (updatesSection);
+    checkForUpdatesToggle.setBounds (area.removeFromTop (28));
+    checkForUpdatesNote.setBounds (area.removeFromTop (20).reduced (20, 0));
+    {
+        // Check now, then what it found, then Download when there is
+        // something to download -- one line, read left to right.
+        auto r = area.removeFromTop (32);
+        checkNowButton.setBounds (r.removeFromLeft (110));
+        r.removeFromLeft (12);
+
+        if (downloadUpdateButton.isVisible())
+        {
+            downloadUpdateButton.setBounds (r.removeFromRight (110));
+            r.removeFromRight (12);
+        }
+
+        updateStatusLabel.setBounds (r);
+    }
+    area.removeFromTop (16);
+
     // Last, and deliberately: it is the thing you come looking for rather than
     // the thing you set, and it grows downwards without pushing a control off
     // the bottom of the panel.
@@ -821,6 +870,26 @@ void AdvancedPanel::setCombineVideoState (bool on, const juce::String& unavailab
     resized();
 }
 
+
+void AdvancedPanel::setUpdateState (bool checkEnabled, const juce::String& statusText,
+                                    bool updateAvailable, bool canCheckNow)
+{
+    checkForUpdatesToggle.setToggleState (checkEnabled, juce::dontSendNotification);
+    checkNowButton.setEnabled (canCheckNow);
+
+    // A newer version is the one thing here worth the accent colour.
+    updateStatusLabel.setColour (juce::Label::textColourId,
+                                 updateAvailable ? AppLookAndFeel::accent : AppLookAndFeel::secondary);
+    updateStatusLabel.setText (statusText, juce::dontSendNotification);
+
+    // Laid out again only when Download comes or goes. This runs on the
+    // refresh tick, and a relayout twice a second for nothing is waste.
+    if (downloadUpdateButton.isVisible() != updateAvailable)
+    {
+        downloadUpdateButton.setVisible (updateAvailable);
+        resized();
+    }
+}
 
 void AdvancedPanel::setDeliveryTargets (const juce::StringArray& names, const juce::String& chosen)
 {

@@ -200,6 +200,18 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onDiagnosticsExportClicked = [this] { exportDiagnostics(); };
 
+    advancedPanel.onCheckForUpdatesToggled = [this] (bool enabled) {
+        application.setCheckForUpdates (enabled);
+        refreshAdvanced();
+    };
+
+    advancedPanel.onCheckForUpdatesNowClicked = [this] {
+        application.checkForUpdatesNow();
+        refreshAdvanced();
+    };
+
+    advancedPanel.onDownloadUpdateClicked = [this] { application.openUpdatePage(); };
+
     // §10.1/§6.2: the question asked before the first take, and the answer
     // given after every one. Children of this component rather than
     // AlertWindows so they arrive in the app's own palette and spacing, and
@@ -870,6 +882,10 @@ void MainComponent::refreshStatus()
     // releases metadata/combining/saved notices once every movie is real.
     application.pollCameraFinalization();
 
+    // The opt-in update check: starts the launch check once it is due and no
+    // take is running, and passes on a result that arrived during one.
+    application.pollUpdateCheck();
+
     announceTakeTransitions();
 
     // The capture-rebuilt callback is the source of truth after construction.
@@ -1098,6 +1114,10 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setCombineVideoState (application.getCombineVideoAndAudio(),
                                         application.getCombineUnavailableReason());
     advancedPanel.setMirrorEnabled (application.isMirrorEnabledByUser());
+    advancedPanel.setUpdateState (application.getCheckForUpdates(),
+                                  application.getUpdateStatusText(),
+                                  application.isUpdateAvailable(),
+                                  ! application.isRecording() && ! application.isUpdateCheckRunning());
     advancedPanel.setDeliveryTargets (Application::getDeliveryTargetNames(),
                                       application.getDeliveryTarget());
     // The measured figure leads the advice it is based on. getLoudnessReading()

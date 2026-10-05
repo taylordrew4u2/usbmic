@@ -51,6 +51,7 @@ add_executable(mma_core_tests
     test_QuitGate.cpp
     test_WriteSafetyActions.cpp
     test_FailedOpenRetry.cpp
+    test_UpdateCheck.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)
