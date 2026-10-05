@@ -5,6 +5,7 @@
 #include "UI/ModalCard.h"
 #include "UI/AdvancedPanel.h"
 #include "UI/SaveLocationPrompt.h"
+#include "UI/SetupGuidePanel.h"
 #include "UI/CameraPreviewCover.h"
 #include <algorithm>
 #include <cmath>
@@ -702,6 +703,91 @@ int main()
             std::printf ("%s: %s\n", name, ok ? "PASS" : "FAIL");
             failures += ok ? 0 : 1;
         }
+    }
+
+    // --- The setup guide at the drawer's narrowest and widest -----------------
+    //
+    // Every page, with a four-microphone rig, at the size the drawer gives it
+    // and at exactly the height it asks for: every control inside the panel,
+    // none on top of another, and Back and Next under the page's own content
+    // rather than clipped off the bottom of it.
+    {
+        std::printf ("\n-- setup guide pages fit the drawer --\n");
+
+        mma::SetupGuideRig rig;
+        rig.micCount = 4;
+        rig.headphoneJackCount = 4;
+        rig.cameraCount = 1;
+        rig.camerasOn = 1;
+        rig.recordBlockedReason = "Checking the drive is fast enough to record to.";
+
+        std::vector<mma::SetupGuidePanel::MicRow> mics;
+        std::vector<mma::SetupGuidePanel::HeadphoneRow> phones;
+        for (int i = 1; i <= 4; ++i)
+        {
+            mics.push_back ({ "Person " + juce::String (i), "Yeti Stereo Microphone" });
+            phones.push_back ({ "key" + juce::String (i), "Person " + juce::String (i), i != 2 });
+        }
+
+        bool everyPageFits = true;
+
+        for (const int width : { 366, 488 })
+            for (const auto step : mma::SetupGuide::stepsFor (rig))
+            {
+                mma::SetupGuidePanel guide;
+                guide.setMicrophones (mics);
+                guide.setHeadphones (phones);
+                guide.setDestinationFolder ("/Users/someone/Music/SobStage Recordings");
+                guide.setPage (mma::SetupGuide::pageFor (step, rig));
+                guide.setSize (width, 10);
+                guide.setSize (width, guide.getRequiredHeight());
+
+                std::vector<juce::Rectangle<int>> placed;
+                bool fits = true;
+
+                for (int i = 0; i < guide.getNumChildComponents(); ++i)
+                {
+                    auto* child = guide.getChildComponent (i);
+                    if (! child->isVisible())
+                        continue;
+
+                    const auto b = child->getBounds();
+                    fits = fits && ! b.isEmpty() && guide.getLocalBounds().contains (b);
+
+                    for (const auto& other : placed)
+                        fits = fits && ! other.intersects (b);
+
+                    placed.push_back (b);
+                }
+
+                const auto* next = findButton (guide, step == mma::SetupGuideStep::TestTake ? "Done" : "Next");
+                fits = fits && next != nullptr && next->isVisible()
+                    && next->getBottom() <= guide.getHeight() - 12;
+
+                // A page's own controls: one Name per microphone, one switch
+                // per headphone socket, and the folder's Change... button.
+                int visibleNames = 0, visibleToggles = 0;
+                for (int i = 0; i < guide.getNumChildComponents(); ++i)
+                    if (auto* b = dynamic_cast<juce::Button*> (guide.getChildComponent (i)); b != nullptr && b->isVisible())
+                    {
+                        visibleNames += b->getButtonText() == "Name" ? 1 : 0;
+                        visibleToggles += dynamic_cast<juce::ToggleButton*> (b) != nullptr ? 1 : 0;
+                    }
+
+                fits = fits && visibleNames == (step == mma::SetupGuideStep::Names ? 4 : 0);
+                fits = fits && visibleToggles == (step == mma::SetupGuideStep::Headphones ? 4 : 0);
+
+                const auto* change = findButton (guide, "Change...");
+                fits = fits && change != nullptr && change->isVisible() == (step == mma::SetupGuideStep::SaveFolder);
+
+                if (! fits)
+                    std::printf ("  FAIL  page %d at width %d\n", static_cast<int> (step), width);
+
+                everyPageFits = everyPageFits && fits;
+            }
+
+        std::printf ("every setup guide page fits at both drawer widths: %s\n", everyPageFits ? "PASS" : "FAIL");
+        failures += everyPageFits ? 0 : 1;
     }
 
     return failures == 0 ? 0 : 1;

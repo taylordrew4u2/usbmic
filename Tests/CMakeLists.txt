@@ -10,6 +10,7 @@ add_executable(mma_core_tests
     test_SessionFolderNaming.cpp
     test_CameraSelection.cpp
     test_AppSettings.cpp
+    test_ShowTemplate.cpp
     test_SessionRecovery.cpp
     test_ActivityJournal.cpp
     test_CardRemovalNotice.cpp
@@ -37,6 +38,7 @@ add_executable(mma_core_tests
     test_SystemPermissions.cpp
     test_SleepInhibitor.cpp
     test_HelpTopics.cpp
+    test_SetupGuide.cpp
     test_TakeWatchdog.cpp
     test_RecordingProof.cpp
     test_CaptureCoordinator.cpp
@@ -51,6 +53,7 @@ add_executable(mma_core_tests
     test_QuitGate.cpp
     test_WriteSafetyActions.cpp
     test_FailedOpenRetry.cpp
+    test_UpdateCheck.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)

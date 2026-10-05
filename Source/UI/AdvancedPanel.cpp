@@ -123,8 +123,31 @@ AdvancedPanel::AdvancedPanel()
     // quietly switched the headphone output, save drive, rate or bit depth.
     // Tab still reaches them.
     for (auto* c : { &outputDeviceCombo, &storageCombo, &sampleRateCombo,
-                     &bitDepthCombo, &bufferSizeCombo, &deliveryCombo })
+                     &bitDepthCombo, &bufferSizeCombo, &deliveryCombo, &showsCombo })
         c->setMouseClickGrabsKeyboardFocus (false);
+
+    // Choosing a show in the list only selects it. Loading changes the whole
+    // rig, so it waits for the button rather than happening on a stray pick.
+    showsCombo.setTitle ("Saved shows");
+    showsCombo.setTextWhenNothingSelected ("Choose a saved show");
+    showsCombo.setTextWhenNoChoicesAvailable ("No saved shows yet");
+    showsCombo.onChange = [this] { updateShowButtons(); };
+    addAndMakeVisible (showsCombo);
+
+    loadShowButton.onClick = [this] {
+        if (onLoadShowClicked && getSelectedShow().isNotEmpty())
+            onLoadShowClicked (getSelectedShow());
+    };
+    deleteShowButton.onClick = [this] {
+        if (onDeleteShowClicked && getSelectedShow().isNotEmpty())
+            onDeleteShowClicked (getSelectedShow());
+    };
+    saveShowButton.onClick = [this] { if (onSaveShowClicked) onSaveShowClicked(); };
+
+    for (auto* b : { &loadShowButton, &deleteShowButton, &saveShowButton })
+        addAndMakeVisible (b);
+
+    updateShowButtons();
 
     trimViewport.setViewedComponent (&trimContainer, false);
     addAndMakeVisible (trimViewport);
@@ -164,8 +187,9 @@ AdvancedPanel::AdvancedPanel()
 
     deliveryNote.setText ("Every streaming service turns everything it plays to the same "
                           "loudness, so how loud you record decides what people hear -- "
-                          "and the peak meters can't tell you. Nothing is changed for you: "
-                          "this measures the mix and says which way to move.",
+                          "and the peak meters can't tell you. Your recording is never changed: "
+                          "this measures the mix and says which way to move. After each take, "
+                          "a ready-to-upload copy of the mix at this loudness is saved beside it.",
                           juce::dontSendNotification);
     deliveryNote.setJustificationType (juce::Justification::topLeft);
     deliveryNote.setMinimumHorizontalScale (1.0f);
@@ -189,20 +213,52 @@ AdvancedPanel::AdvancedPanel()
     diagnosticsExportButton.onClick = [this] { if (onDiagnosticsExportClicked) onDiagnosticsExportClicked(); };
     addAndMakeVisible (diagnosticsExportButton);
 
+    // Off by default: PRIVACY.md says the app sends nothing anywhere, and this
+    // is the one request it can make, so it is the user's to switch on. The
+    // note says what that costs them in the same breath as the switch.
+    checkForUpdatesToggle.setToggleState (false, juce::dontSendNotification);
+    checkForUpdatesToggle.onClick = [this]
+    { if (onCheckForUpdatesToggled) onCheckForUpdatesToggled (checkForUpdatesToggle.getToggleState()); };
+    addAndMakeVisible (checkForUpdatesToggle);
+
+    checkForUpdatesNote.setText ("Contacts GitHub once a day to look for a new version. Sends nothing about you.",
+                                 juce::dontSendNotification);
+    checkForUpdatesNote.setFont (juce::Font (12.0f, juce::Font::italic));
+    checkForUpdatesNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+    addAndMakeVisible (checkForUpdatesNote);
+
+    // Works with the switch off: pressing it is the user asking, today, once.
+    checkNowButton.onClick = [this] { if (onCheckForUpdatesNowClicked) onCheckForUpdatesNowClicked(); };
+    addAndMakeVisible (checkNowButton);
+
+    updateStatusLabel.setFont (juce::Font (13.0f));
+    updateStatusLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+    addAndMakeVisible (updateStatusLabel);
+
+    // Opens the release page in the browser. Nothing is downloaded or
+    // installed behind the user's back; they take it from there.
+    downloadUpdateButton.onClick = [this] { if (onDownloadUpdateClicked) onDownloadUpdateClicked(); };
+    addChildComponent (downloadUpdateButton);
+
     closeButton.onClick = [this] { if (onCloseClicked) onCloseClicked(); };
     addAndMakeVisible (closeButton);
 
     helpButton.onClick = [this] { if (onHelpClicked) onHelpClicked(); };
     addAndMakeVisible (helpButton);
 
+    setupGuideButton.onClick = [this] { if (onSetupGuideClicked) onSetupGuideClicked(); };
+    addAndMakeVisible (setupGuideButton);
+
     // Four headings over what was a flat list. The reader can now find the
     // storage picker by scanning four words instead of reading fifteen rows.
     const std::pair<juce::Label*, const char*> sections[] = {
+        { &showsSection,   "SHOWS" },
         { &storageSection, "WHERE RECORDINGS GO" },
         { &formatSection,  "RECORDING FORMAT" },
         { &deliverySection, "LOUDNESS FOR STREAMING" },
         { &micSection,     "MICROPHONES" },
         { &outputSection,  "MONITORING AND OUTPUT" },
+        { &updatesSection, "UPDATES" },
         { &activitySection, "WHAT HAPPENED" },
     };
 
@@ -297,6 +353,28 @@ void AdvancedPanel::setOutputDevices (const juce::StringArray& names, const juce
 
     lastOutputSignature = signature;
     fillCombo (outputDeviceCombo, names, selected);
+}
+
+void AdvancedPanel::setShows (const juce::StringArray& names, const juce::String& select)
+{
+    const auto keep = select.isNotEmpty() ? select : getSelectedShow();
+
+    showNames = names;
+    fillCombo (showsCombo, names, keep);
+    updateShowButtons();
+}
+
+juce::String AdvancedPanel::getSelectedShow() const
+{
+    const int index = showsCombo.getSelectedId() - 1;
+    return index >= 0 && index < showNames.size() ? showNames[index] : juce::String();
+}
+
+void AdvancedPanel::updateShowButtons()
+{
+    const bool chosen = getSelectedShow().isNotEmpty();
+    loadShowButton.setEnabled (chosen);
+    deleteShowButton.setEnabled (chosen);
 }
 
 void AdvancedPanel::setSampleRates (const std::vector<uint32_t>& rates, uint32_t current)
@@ -644,6 +722,7 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kAggregate     = 20 + 16;
     constexpr int kMirror        = 28 + 16;
     constexpr int kDiagnostics   = 36;
+    constexpr int kUpdates       = 28 + 20 + 32 + 16; // switch, note, Check now row, gap
     constexpr int kActivity      = 16 + kActivityHeight;
 
     // save-to volume, destination folder, sample rate, bit depth, buffer size,
@@ -661,15 +740,18 @@ int AdvancedPanel::getRequiredHeight() const
     constexpr int kCombine     = 28 + 32;
 
     // "Where it's going": the explanation and the line of advice under it.
-    constexpr int kDelivery    = 84 + 4 + 36;
+    constexpr int kDelivery    = 100 + 4 + 36;
+
+    // The show picker with its buttons, the Save row, and the gap after them.
+    constexpr int kShows       = 32 + 4 + 32 + 16;
 
     const int headphoneRows = headphoneToggles.empty()
         ? 0 : kMicListLabel + static_cast<int> (headphoneToggles.size()) * kMicToggle + 6;
 
-    return kMargins + kCloseButton + (kSection * 6) + (kRow * kRowCount) + headphoneRows
+    return kMargins + kCloseButton + (kSection * 7) + kShows + (kRow * kRowCount) + headphoneRows
          + kMicListLabel + static_cast<int> (micToggles.size()) * kMicToggle
          + kSectionGaps + kClockHelp + kDrift + kTrimViewport + kAggregate
-         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kActivity;
+         + kMirror + kMirrorNote + kCombine + kDelivery + kDiagnostics + kUpdates + kActivity;
 }
 
 void AdvancedPanel::resized()
@@ -685,6 +767,10 @@ void AdvancedPanel::resized()
         closeButton.setBounds (top.removeFromLeft (110));
         top.removeFromLeft (8);
         helpButton.setBounds (top.removeFromLeft (64));
+        top.removeFromLeft (8);
+        // Whatever the row has left, up to what the words need: at the
+        // narrowest drawer that is still the whole label.
+        setupGuideButton.setBounds (top.removeFromLeft (juce::jmin (170, top.getWidth())));
     }
     area.removeFromTop (14);
 
@@ -712,6 +798,21 @@ void AdvancedPanel::resized()
         label.setBounds (r);
         area.removeFromTop (4);
     };
+
+    // Shows first: loading one sets most of what is below, so it is the place
+    // to start rather than something found after scrolling past it all.
+    section (showsSection);
+    {
+        auto r = area.removeFromTop (32);
+        deleteShowButton.setBounds (r.removeFromRight (72));
+        r.removeFromRight (6);
+        loadShowButton.setBounds (r.removeFromRight (72));
+        r.removeFromRight (6);
+        showsCombo.setBounds (r);
+        area.removeFromTop (4);
+        saveShowButton.setBounds (area.removeFromTop (32).removeFromLeft (180));
+    }
+    area.removeFromTop (16);
 
     // Where recordings go comes first, above the read-only format rows. It is
     // the choice a user comes in here to make -- picking an SD card before a
@@ -748,7 +849,7 @@ void AdvancedPanel::resized()
 
     section (deliverySection);
     row (deliveryLabel, deliveryCombo);
-    deliveryNote.setBounds (area.removeFromTop (84));
+    deliveryNote.setBounds (area.removeFromTop (100));
     area.removeFromTop (4);
     loudnessAdviceLabel.setBounds (area.removeFromTop (36));
     area.removeFromTop (12);
@@ -800,6 +901,26 @@ void AdvancedPanel::resized()
     diagnosticsExportButton.setBounds (area.removeFromTop (36).removeFromLeft (180));
     area.removeFromTop (16);
 
+    section (updatesSection);
+    checkForUpdatesToggle.setBounds (area.removeFromTop (28));
+    checkForUpdatesNote.setBounds (area.removeFromTop (20).reduced (20, 0));
+    {
+        // Check now, then what it found, then Download when there is
+        // something to download -- one line, read left to right.
+        auto r = area.removeFromTop (32);
+        checkNowButton.setBounds (r.removeFromLeft (110));
+        r.removeFromLeft (12);
+
+        if (downloadUpdateButton.isVisible())
+        {
+            downloadUpdateButton.setBounds (r.removeFromRight (110));
+            r.removeFromRight (12);
+        }
+
+        updateStatusLabel.setBounds (r);
+    }
+    area.removeFromTop (16);
+
     // Last, and deliberately: it is the thing you come looking for rather than
     // the thing you set, and it grows downwards without pushing a control off
     // the bottom of the panel.
@@ -821,6 +942,26 @@ void AdvancedPanel::setCombineVideoState (bool on, const juce::String& unavailab
     resized();
 }
 
+
+void AdvancedPanel::setUpdateState (bool checkEnabled, const juce::String& statusText,
+                                    bool updateAvailable, bool canCheckNow)
+{
+    checkForUpdatesToggle.setToggleState (checkEnabled, juce::dontSendNotification);
+    checkNowButton.setEnabled (canCheckNow);
+
+    // A newer version is the one thing here worth the accent colour.
+    updateStatusLabel.setColour (juce::Label::textColourId,
+                                 updateAvailable ? AppLookAndFeel::accent : AppLookAndFeel::secondary);
+    updateStatusLabel.setText (statusText, juce::dontSendNotification);
+
+    // Laid out again only when Download comes or goes. This runs on the
+    // refresh tick, and a relayout twice a second for nothing is waste.
+    if (downloadUpdateButton.isVisible() != updateAvailable)
+    {
+        downloadUpdateButton.setVisible (updateAvailable);
+        resized();
+    }
+}
 
 void AdvancedPanel::setDeliveryTargets (const juce::StringArray& names, const juce::String& chosen)
 {

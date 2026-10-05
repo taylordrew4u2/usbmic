@@ -53,11 +53,20 @@ simulated soaks at 44.1 and 48 kHz, against a 1 ms ceiling.
 - **Crash recovery.** After a kill mid-take, the next launch finds the
   unfinished session, repairs the WAV headers from the audio on disk and offers
   it back.
-- **Loudness guidance** from a from-scratch ITU-R BS.1770-4 meter, with
+- **Podcast-ready export** from a from-scratch ITU-R BS.1770-4 meter, with
   platform targets (Spotify, Apple Podcasts, EBU R128) corrected for mono
-  delivery. It advises; it never changes the stems.
+  delivery. After each take a copy of the mix is saved at the chosen
+  platform's loudness, with a look-ahead true-peak limiter so nothing clips.
+  The stems and the original mix are never changed.
 - **Camera capture** on macOS and Windows: one video file per camera beside the
   audio, with an optional lossless remux of picture and mix into one file.
+  Per-camera quality (up to 4K at 30 fps on a Mac), with each camera showing
+  the format it is actually delivering.
+- **Saved shows**: the whole rig (mic names, trims, who hears the mix,
+  cameras, destination, loudness target) saved under a name and loaded with
+  one click.
+- **First-run setup guide** that walks a new user from plugging in mics to a
+  test take, and an **opt-in update check** that is off by default.
 - **Combined input device on macOS** via CoreAudio's public aggregate-device
   API, so Zoom, OBS or a DAW see every mic as one multichannel input.
 
@@ -110,7 +119,7 @@ Every constant and behavior traces to the build specification in
 
 ## Project status
 
-The current source is the **v1.13.18 release candidate**. The engine, the
+The current source is the **v1.13.19 release candidate**. The engine, the
 simulated backends and the end-to-end app runs pass in CI on all three
 platforms. Real-driver timing and a completed take from physical microphones
 are still release gates: a PUPGSIS T12S interface has been detected on a real
@@ -160,7 +169,7 @@ Packaging, build options and every harness are documented in
 ctest --test-dir build --output-on-failure
 ```
 
-- **707 unit tests** covering the engine: drift loop, ring buffers, monitor
+- **740 unit tests** covering the engine: drift loop, ring buffers, monitor
   bus, metering, loudness, session writer, crash recovery and more.
 - **Platform simulators:** `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
   `sim_mix_bus` run the shipping code against virtual devices; the audio

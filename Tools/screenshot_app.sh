@@ -53,7 +53,7 @@ sleep 1
 Xvfb "$DISPLAY_NUM" -screen 0 1280x900x24 >/dev/null 2>&1 &
 sleep 2
 
-DISPLAY="$DISPLAY_NUM" nohup "./$APP" >/tmp/mma-screenshot-app.log 2>&1 &
+DISPLAY="$DISPLAY_NUM" MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >/tmp/mma-screenshot-app.log 2>&1 &
 APP_PID=$!
 
 sleep "$SETTLE"
