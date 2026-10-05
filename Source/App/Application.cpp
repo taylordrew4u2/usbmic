@@ -434,6 +434,7 @@ void Application::initialise()
         if (const auto* remembered = rememberedSettings.findCamera (camera.id))
         {
             cameraController.getSelection().setEnabled (camera.id, remembered->enabled);
+            cameraController.getSelection().setQuality (camera.id, cameraQualityFromKey (remembered->quality));
 
             if (! remembered->assignedName.empty())
                 cameraController.getSelection().setAssignedName (camera.id, remembered->assignedName);
@@ -454,6 +455,12 @@ void Application::setCameraName (const std::string& id, const juce::String& name
     // appear in the filename rather than something that still has to be cleaned.
     // A cleared name is empty, not "Session", so the camera's own name returns.
     cameraController.getSelection().setAssignedName (id, SessionFolderNaming::sanitizeNameOrEmpty (name.toStdString()));
+    saveSettings();
+}
+
+void Application::setCameraQuality (const std::string& id, CameraQuality quality)
+{
+    cameraController.setCameraQuality (id, quality);
     saveSettings();
 }
 
@@ -5785,6 +5792,7 @@ void Application::loadSettings()
     for (const auto& camera : rememberedSettings.cameras)
     {
         cameraController.getSelection().setEnabled (camera.id, camera.enabled);
+        cameraController.getSelection().setQuality (camera.id, cameraQualityFromKey (camera.quality));
         if (! camera.assignedName.empty())
             cameraController.getSelection().setAssignedName (camera.id, camera.assignedName);
     }
@@ -5947,7 +5955,8 @@ void Application::saveSettings()
     for (const auto& camera : selection.getKnownCameras())
         settings.cameras.push_back ({ camera.id,
                                       selection.isEnabled (camera.id),
-                                      selection.getDisplayName (camera.id) });
+                                      selection.getDisplayName (camera.id),
+                                      cameraQualityKey (selection.getQuality (camera.id)) });
 
     const auto file = getSettingsFile();
     file.getParentDirectory().createDirectory();
