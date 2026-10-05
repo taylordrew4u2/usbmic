@@ -575,6 +575,38 @@ public:
     /// thing this feature needs that the app cannot install for the user.
     juce::String getCombineUnavailableReason();
 
+    /// The opt-in update check. Off by default: PRIVACY.md promises the app
+    /// sends nothing anywhere, and this is the one request it can make, so it
+    /// is made only once the user has said yes. Switched on, it asks GitHub at
+    /// most once a day -- at launch, and when it is first switched on. Nothing
+    /// is installed: the user is pointed at the release page and downloads it
+    /// themselves.
+    void setCheckForUpdates (bool on);
+    bool getCheckForUpdates() const noexcept { return checkForUpdates; }
+
+    /// Settings' Check now: asks GitHub immediately, whether or not the
+    /// automatic check is on, because pressing the button is the user asking.
+    /// Does nothing during a take or while a check is already out.
+    void checkForUpdatesNow();
+
+    /// From the status tick. Starts the automatic check once it is due and no
+    /// take is running, and hands a result that arrived mid-take to the
+    /// activity list once the take is over.
+    void pollUpdateCheck();
+
+    /// The line beside Check now: "Checking...", "You have the latest version",
+    /// "Version X is available". Empty during a take, which is not the moment.
+    juce::String getUpdateStatusText() const;
+
+    /// True when a newer release is known and no take is running -- which is
+    /// when Settings offers Download.
+    bool isUpdateAvailable() const;
+    bool isUpdateCheckRunning() const { return updateCheckRunning->load(); }
+
+    /// Opens the newer release's page in the user's browser. Never downloads
+    /// or installs anything itself.
+    void openUpdatePage() const;
+
     /// Which platform the take is being aimed at, by name, or empty for none.
     ///
     /// Streaming services all normalise what they are given to one loudness
@@ -683,6 +715,20 @@ private:
     // One export at a time; the flag is shared with its detached worker.
     std::shared_ptr<std::atomic<bool>> diagnosticsExportRunning
         = std::make_shared<std::atomic<bool>> (false);
+    // The update check (see setCheckForUpdates). The running flag is shared
+    // with the detached request so a second press cannot start a second one.
+    bool checkForUpdates = false;
+    double lastUpdateCheckSeconds = 0.0;
+    bool automaticUpdateCheckWanted = false;
+    std::shared_ptr<std::atomic<bool>> updateCheckRunning
+        = std::make_shared<std::atomic<bool>> (false);
+    juce::String availableUpdateVersion, availableUpdatePage;
+    juce::String updateCheckProblem;
+    bool updateCheckSucceeded = false;
+    // A newer release learned about mid-take, still owed its activity line.
+    bool updateNoticePending = false;
+    void startUpdateCheck();
+    void finishUpdateCheck (bool reached, const juce::String& responseText);
     juce::String lastMirrorFolder;
     double savedNoticeSeconds = 0.0; // how long "Saved to ..." stays on screen
 

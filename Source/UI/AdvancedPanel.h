@@ -107,6 +107,16 @@ public:
     std::function<void (const juce::String&)> onAggregateNameChanged;
     std::function<void()> onDiagnosticsExportClicked;
 
+    /// The opt-in update check: the switch, Check now, and the line between
+    /// them that says what the last check found. `statusText` empty means
+    /// nothing to say; `updateAvailable` shows Download; `canCheckNow` is false
+    /// during a take or while a check is already out.
+    void setUpdateState (bool checkEnabled, const juce::String& statusText,
+                         bool updateAvailable, bool canCheckNow);
+    std::function<void (bool)> onCheckForUpdatesToggled;
+    std::function<void()> onCheckForUpdatesNowClicked;
+    std::function<void()> onDownloadUpdateClicked;
+
     /// §10.3 says one door. A door has to open both ways: showing this panel
     /// hides the main screen, and the button that opened it lives there, so
     /// without this the panel is a dead end with no way back.
@@ -200,6 +210,14 @@ private:
     juce::Label destinationFolderLabel;
     juce::TextButton destinationFolderButton { "Change..." };
     juce::TextButton diagnosticsExportButton { "Export diagnostics" };
+
+    // Off unless switched on, and the note under it says in one line what
+    // switching it on means -- the only thing the app ever sends anywhere.
+    juce::ToggleButton checkForUpdatesToggle { "Check for updates" };
+    juce::Label checkForUpdatesNote;
+    juce::TextButton checkNowButton { "Check now" };
+    juce::Label updateStatusLabel;
+    juce::TextButton downloadUpdateButton { "Download" };
     juce::TextButton closeButton { "Close" };
     juce::TextButton helpButton { "Help" };
 
@@ -225,7 +243,8 @@ private:
     // every unrelated row on the way past it. resized() records where the
     // rules go; paint() draws them, since a rule is a line rather than a
     // component.
-    juce::Label storageSection, formatSection, micSection, outputSection, activitySection;
+    juce::Label storageSection, formatSection, micSection, outputSection, updatesSection,
+                activitySection;
     juce::Label activityLabel; // multi-line, newest first, populated externally
     std::vector<int> ruleYs;
     std::vector<std::unique_ptr<juce::ToggleButton>> micToggles;

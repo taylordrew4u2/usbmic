@@ -1,5 +1,6 @@
 #include "AppSettings.h"
 #include <algorithm>
+#include <cmath>
 
 namespace mma {
 
@@ -21,6 +22,10 @@ JsonValue AppSettings::toJson() const
     root["sampleRateOverride"] = JsonValue (static_cast<double> (sampleRateOverride));
     root["bitDepthOverride"] = JsonValue (static_cast<double> (bitDepthOverride));
     root["bufferSizeOverride"] = JsonValue (static_cast<double> (bufferSizeOverride));
+    root["checkForUpdates"] = JsonValue (checkForUpdates);
+    // Whole seconds: JsonValue writes a fractional number to six significant
+    // figures, which would round a 2026 timestamp by minutes.
+    root["lastUpdateCheckSeconds"] = JsonValue (std::floor (lastUpdateCheckSeconds));
 
     JsonValue portArr = JsonValue::makeArray();
     for (const auto& p : ports)
@@ -117,6 +122,8 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
         s.bitDepthOverride = static_cast<int> (p->asDouble (0.0));
     if (auto* p = v.find ("bufferSizeOverride"))
         s.bufferSizeOverride = static_cast<int> (p->asDouble (0.0));
+    if (auto* p = v.find ("checkForUpdates")) s.checkForUpdates = p->asBool (false);
+    if (auto* p = v.find ("lastUpdateCheckSeconds")) s.lastUpdateCheckSeconds = p->asDouble (0.0);
 
     if (auto* p = v.find ("ports"))
         for (const auto& pv : p->asArray())
