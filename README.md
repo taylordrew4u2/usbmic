@@ -1,724 +1,136 @@
 <p align="center">
-  <img src="docs/images/app-icon.png" alt="SobStage icon: a sobbing face on slate -- a bone ring, two eyes, a frown, and a single cyan tear, the one saturated thing in the mark" width="128">
+  <img src="docs/images/app-icon.png" alt="SobStage icon: a sobbing face on slate with a single cyan tear" width="128">
 </p>
 
-# SobStage
+<h1 align="center">SobStage</h1>
 
-### Multi-microphone aggregator, recorder, and monitor
+<p align="center"><strong>Record up to eight USB microphones as sample-aligned multitrack, and give everyone in the room the same live headphone mix.</strong></p>
 
 <p align="center">
   <a href="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml"><img src="https://github.com/taylordrew4u2/usbmic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/taylordrew4u2/usbmic/releases/latest"><img src="https://img.shields.io/github/v/release/taylordrew4u2/usbmic?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/tests-707%20passing-brightgreen" alt="707 tests passing">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++17">
+  <img src="https://img.shields.io/badge/JUCE-7.0.12-8a2be2" alt="JUCE 7.0.12">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
+  <img src="https://img.shields.io/badge/license-GPLv3-blue" alt="GPLv3">
 </p>
 
-Desktop application for macOS and Windows, with a Linux build for testing and
-early use. It aggregates up to 8 external microphones, records every microphone
-to discrete files plus one summed mix directly to an external card, and feeds
-one identical live low-latency monitor mix to everyone in the room.
+<p align="center">
+  <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording: two microphone meters moving, Start recording pressed, the take clock counting while the file count grows, then Stop and a Saved card listing every file with its size" width="660"></a>
+</p>
 
-The full build specification lives in [`docs/SPEC.md`](docs/SPEC.md) and is the
-source of truth for every constant and behavior in this codebase. Where the code
-implements a spec rule, the section number is cited in a comment.
+## Overview
 
----
+SobStage is a desktop recorder for podcasts, panels and live sessions where
+several people each have their own USB microphone. It aggregates up to eight
+external microphones (or the individual inputs of a multi-channel interface),
+writes one 24-bit WAV per person plus a summed mix straight to an external
+card, and plays one low-latency monitor mix back to every headphone jack.
 
-## The engineering problem, in one paragraph
+The hard part is that eight USB microphones are eight independent crystal
+oscillators. Over a four-hour take their clocks drift apart, and a multitrack
+whose tracks do not line up is just eight files. SobStage resamples every
+stream continuously against a reference clock inside a real-time callback that
+may not allocate, lock or log, while also writing to disk and keeping monitor
+latency inside a 10 ms budget.
 
-Eight USB microphones are eight independent crystal oscillators. No two tick at
-exactly the same rate, so over a four-hour take the tracks slide apart — and a
-multitrack recording whose tracks do not line up is not a recording, it is eight
-files. Fixing that means resampling seven streams continuously against a
-reference, in a callback that may not allocate, may not lock, and may not log,
-while also writing 24-bit audio to disk and feeding a monitor mix back out under
-a latency budget small enough that nobody in the room hears themselves late.
+**Measured result:** at most 0.042 ms of inter-channel drift across four-hour
+simulated soaks at 44.1 and 48 kHz, against a 1 ms ceiling.
 
-**Measured result: at most 0.042 ms of inter-channel drift in the current
-four-hour 44.1/48 kHz soaks, against a 1 ms ceiling — more than a 23× margin.**
+## Key features
+
+- **Multitrack from mixed hardware.** One file per input, not per device, so a
+  four-input interface yields four tracks. Stereo USB mics are collapsed to
+  mono only after analysis proves both sides identical, and that verdict is
+  remembered per physical port.
+- **Shared live monitor mix** with per-channel trim, a brickwall limiter,
+  runaway-level cut and feedback protection. On macOS it plays out of every
+  microphone's own headphone jack at once.
+- **Never loses audio silently.** Dropped samples, unplugged mics, a slow or
+  departed card and low space are announced immediately, with the take time
+  they happened at. A pre-flight benchmark refuses to arm a card that cannot
+  sustain twice the required throughput.
+- **Crash recovery.** After a kill mid-take, the next launch finds the
+  unfinished session, repairs the WAV headers from the audio on disk and offers
+  it back.
+- **Loudness guidance** from a from-scratch ITU-R BS.1770-4 meter, with
+  platform targets (Spotify, Apple Podcasts, EBU R128) corrected for mono
+  delivery. It advises; it never changes the stems.
+- **Camera capture** on macOS and Windows: one video file per camera beside the
+  audio, with an optional lossless remux of picture and mix into one file.
+- **Combined input device on macOS** via CoreAudio's public aggregate-device
+  API, so Zoom, OBS or a DAW see every mic as one multichannel input.
+
+<p align="center">
+  <img src="docs/images/main-screen.png" alt="The main screen: a channel strip per microphone, a summed mix bar, a session name field, the record button, and monitor controls" width="430">
+  <img src="docs/images/mid-take-alert.png" alt="A mid-take alert card listing that a microphone stopped sending sound, a camera went away, and a microphone came back, each with its time into the take" width="430">
+</p>
+
+More screenshots and a walkthrough of every screen are in the
+[user guide](docs/USER-GUIDE.md).
+
+## Tech stack
 
 | | |
 |---|---|
-| **Clock drift** | PI-loop asynchronous sample-rate conversion, corrected from ring-buffer fill error, clamped to ±200 PPM and slewed at 5 PPM/s so a correction is never audible. The master is a *reference*, not an exemption — it is resampled too. |
-| **Real-time safety** | No allocation, no locking, no logging and no file I/O on any audio thread. Cross-thread handoff is SPSC lock-free ring buffers with acquire/release publication. |
-| **Loudness** | A from-scratch ITU-R BS.1770-4 implementation — K-weighting, 400 ms blocks at 75% overlap, −70 LUFS absolute and −10 LU relative gating, true peak by 4× oversampling. Verified against the standard's own reference tones to **within 0.02 LU** at 44.1, 48 and 96 kHz. |
-| **Never lose audio silently** | A dropped sample is *reported*, never quietly swallowed. Empty files say they are empty rather than presenting as a successful take — see the last screenshot below. |
-| **Testing what cannot be run** | CoreAudio and WASAPI cannot compile on Linux, so the *unmodified* backend sources are compiled against stand-in OS headers and driven by simulated device layers that reproduce the awkward shapes real hardware takes. This has found multiple user-facing defects that were otherwise unreachable from an available machine. |
-
-707 unit tests, an end-to-end take and an end-to-end refusal through the real
-app, long-running capture harnesses, and CoreAudio, WASAPI and camera simulation
-checks run in CI.
-
-### Honest limits
-
-The section that is unusual, and deliberate: **[Current status](#current-status)**
-enumerates exactly what has been verified and what has not, at the granularity of
-"compiled" vs "executed" vs "run against real hardware". A PUPGSIS T12S has
-been detected on a real Mac at its fixed 44.1 kHz rate, but a completed take from
-physical microphones has not yet passed the release matrix on any platform.
-That is stated here, in the release checklist, and in the platform table below.
-
-> **Read [Current status](#current-status) before running this on anything you
-> care about.** The engine is extensively tested, and the macOS and Windows
-> audio backends execute against simulated CoreAudio and WASAPI device layers.
-> Real-driver timing, multi-device hardware behavior and full-take validation
-> remain release gates. See [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
-
-## How your rig becomes tracks
-
-<p align="center">
-  <img src="docs/images/rig-to-tracks.svg" alt="Three rows showing how devices become tracks. A one-input Blue Yeti becomes one take channel and one file. A four-input Scarlett 18i8 becomes four take channels and four files. A livestream mixer with two inputs that is also the headphone output becomes two take channels, with the monitor mix flowing back out over the same single stream." width="880">
-</p>
-
-The rule that matters, because getting it wrong is silent: **one device is not
-one microphone.** An interface with four people plugged into it is a single
-device presenting four inputs, and each of those is somebody who expects their
-own track. Taking one channel per device — which this did — discarded everyone
-but the first, and if the discarded input carried the microphone that mattered,
-the take came back silent from a rig that was working perfectly.
-
-A two-input device is the ambiguous case: it might be a stereo USB microphone
-putting the same voice on both sides, or two people on a small interface. §0.1
-settles which way to guess. Keeping both sides of a duplicated mono mic costs a
-redundant file; collapsing two microphones into one loses somebody entirely,
-with nothing said. Those are not comparable, so both sides are kept until §2.1's
-analyzer has actually listened and found them identical — a verdict §2.4
-remembers per port, so a stereo mic still collapses correctly from its second
-take onward.
-
-The third row is the case that is easy to get wrong twice. A small livestream
-mixer is *one* device in both directions: it carries the microphones in and the
-monitor mix back out. Opening it for output, claiming it exclusively, and then
-opening it again for input asks macOS for a second claim on a device this
-process has just taken — and the refusal arrives as "couldn't be opened for
-recording" against a microphone that is plugged in and working. So it is opened
-once, and that single stream carries both halves of the cycle.
-
-## What it looks like
-
-<p align="center">
-  <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording of SobStage: the main screen with two microphone meters moving, Start recording pressed, the button turning red while the take clock counts up and the line above it reports six files growing, then Stop, and a card headed Saved listing MIX.wav, a WAV per microphone, activity.log and session.json with their sizes and the backup copy's location" width="660"></a>
-</p>
-
-<p align="center"><em>One take, start to finish: record, watch the files grow, stop, see exactly what was saved.
-<a href="docs/images/demo.mp4">Watch the video</a> (20 s).
-Recorded from the real app on Linux with two virtual microphones. Those
-are why the test output's warning line is visible, and why a "sound was
-dropped" card flashes up for a moment: the virtual microphones deliver
-audio faster than real time, and SobStage reports it.
-<code>Tools/record_demo.sh</code> regenerates the video.</em></p>
-
-<p align="center">
-  <img src="docs/images/main-screen.png" alt="The main screen: channel strips side by side, a summed mix bar, a session name field, the record button, a row with monitor volume and mute, and Help and Settings in the masthead" width="660">
-</p>
-
-One strip per microphone: a little crying face that fills with the level (it
-sheds a tear when you get loud, two when you clip), the name, a level track with
-a peak tick, and the number. The summed **MIX** sits on the same row in its own
-lighter cell, because §9.1 requires the bus to be distinguishable from a channel
-at a glance rather than by reading the label. Under them the take name and the
-one button worth pressing; everything else — how much room is left, where the
-files are going, the monitor level — sits quietly in the footer.
-
-<p align="center">
-  <img src="docs/images/settings.png" alt="The Settings drawer open down the right-hand side of the window, with the live main screen -- strips, mix bar, record button and footer -- still on the left" width="660">
-</p>
-
-Settings opens as a drawer down the right-hand side, with the main screen
-still live on the left: the meters keep moving, the camera tiles keep
-running, and recording can be started without closing it. The Settings
-button stays lit while it is open and closes it again; so do Close at the
-top of the drawer and Escape. Where recordings go
-comes first, because picking a card before a take is what most people open it
-for. Then the format — sample rate, bit depth and buffer size, each a real
-control rather than a readout, the way Audio MIDI Setup treats them: pick it,
-the app tries it, and if the hardware refuses the main screen says so by name.
-Automatic is the default for rate and buffer, and it stays on whatever rate the
-interface is already running rather than forcing one the hardware may refuse.
-Then where the take is being delivered (which sets the loudness target), and
-which microphones to record — each explained where it is set, rather than
-assumed. An interface with several inputs is one box with a tick box per
-socket underneath it, so an eight-input interface with two people on it
-records two files rather than eight; and clicking a strip's name on the main
-screen names that socket's person, not the whole box. Both are port memory:
-they follow the interface across a replug and a relaunch. Every microphone is
-locked to this computer's clock, so there is no clock master to choose.
-Opening it widens the window if it must, so both halves fit.
-
-<p align="center">
-  <img src="docs/images/help.png" alt="Help: headings over plain paragraphs -- the recording is silent, dynamic or condenser microphone, the amber line under the strips, sample rate bit depth and buffer size, a mixer or interface with several sockets, where the files are, still stuck -- with Open Settings and Export diagnostics buttons at the bottom" width="660">
-</p>
-
-Help is the third door, beside Settings in the masthead and again beside
-Close on the Settings drawer, and opens as a drawer the same way. It answers "why is it silent?" in the app, in the
-order the causes actually turn up. First the checklist for a mixer or
-interface: the box ticked in Settings, microphone permission, the channel
-unmuted with its faders up, the USB send (LOOPBACK on a PUPGSIS T12S)
-switched on, the gain up, and then speak and watch the meter. Then whether the
-microphone is dynamic or a condenser that needs 48 V the mixer may not have;
-what the amber line under the strips means and what to do about each cause it
-names; what to choose for sample rate, bit depth and buffer size and why; how
-an interface with several sockets is shown and named; where the files are;
-and what to send when none of that applied. The words live in `Source/Core`
-rather than in the UI, so a test holds them to account.
-
-<p align="center">
-  <img src="docs/images/save-prompt.png" alt="A card over the main screen headed 'Where does this recording go?', with a name field, the destination folder, the folder name this take will create, the list of files it will contain, the backup copy's location, an 'ask me every time' checkbox, and buttons reading Not yet, Choose a different folder and Start recording" width="660">
-</p>
-
-Before the first take, one card answers the question §6.2 says a novice must
-never be left with. The folder name updates as the recording is named, the list
-underneath is what will actually be written, and the backup copy's location is
-stated rather than left to be discovered. Answering it once is the whole cost —
-every press of record after this starts immediately.
-
-<p align="center">
-  <img src="docs/images/mid-take-alert.png" alt="A card over a running take headed 'Something changed mid-take.', listing that a microphone stopped sending sound, a camera went away, and a microphone came back, each with how far into the take it happened, with Stop recording and Keep recording buttons" width="660">
-</p>
-
-If something goes wrong while a take is running -- a microphone unplugged or
-gone quiet, a camera switched off or lost, sound dropped, the drive falling
-behind or nearly full -- this card comes up the moment it happens and says
-so, with how far into the take it was. It does not come up quietly: the
-whole window flashes red, a banner across the card says SOMETHING IS WRONG
-in letters that read from the back of the room, and a two-tone siren sounds
-in the headphones, all until someone presses Keep recording or Stop
-recording. The take carries on behind it; Keep recording dismisses the card,
-Stop recording is the same press as the record button. Each change is said
-once, and good news (a mic coming back) joins the card quietly rather than
-raising it.
-
-Starting and stopping are announced the same way. For three seconds the
-whole window flashes RECORDING in red, or RECORDING STOPPED in cyan, with the
-take's name under it, and the headphones play a rising chirp for a start and
-a falling one for a stop. The banner takes no clicks, so nothing behind it
-waits on it. Both announcements and the alarm respect the system's
-reduced-motion setting by pulsing slowly instead of flashing.
-
-<p align="center">
-  <img src="docs/images/recording.png" alt="A take in progress: the record button is red and reads 'Recording. Tap to stop.', a green line says '5 files -- 670 bytes so far', and the footer reads 'Recording for 0m 06s' beside the session folder being written into" width="660">
-</p>
-
-A take running. The button says what pressing it does now, not what it did a
-moment ago; the green line names the files appearing on disk as they appear,
-and the footer counts the take and the room left beside the folder it is
-writing into. §6.2's question — "is it actually recording, and where?" — is
-answered on screen rather than by going to look.
-
-<p align="center">
-  <img src="docs/images/saved-take.png" alt="A card headed 'Saved.' showing the session folder path, '5 files, 3.2 KB', each file listed with its size, a warning that the files are empty, and buttons reading Done and Open the folder" width="660">
-</p>
-
-And when the take stops, the files themselves — named, with their sizes, and a
-button that opens the folder. This shot is the virtual-microphone rig, so the
-files really are empty and the card says so instead of calling it saved.
-
-> The screenshots are historical UI checkpoints from several earlier binaries;
-> the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.18 release candidate.
-> They were rendered headless on Linux by
-> [`Tools/screenshot_app.sh`](Tools/screenshot_app.sh) against the virtual ALSA microphones
-> [`Tools/setup_alsa_fixture.sh`](Tools/setup_alsa_fixture.sh) creates — the
-> last three by driving an actual take from record to stop.
->
-> **Why that historical shot reads `-60.0` and shows empty files.** The image
-> predates v1.10.0 and captured the old failure where a missing monitor callback
-> also stopped capture. The current app supplies a software clock when no output
-> is available, and the positive end-to-end gate requires real signal in every
-> expected stem. The shot is retained as an honest UI checkpoint, not as a
-> description of current recording behavior.
->
-> The record path itself is not in question, and is not taken on trust:
-> [`Tools/live_capture.cpp`](Tools/live_capture.cpp) drives the same ALSA
-> backend directly, against the same fixture, and checks the bytes that come
-> out —
->
-> ```
-> Audio through the real driver (backend callback, contiguous):
->   mic1: 440=0.2000 1k=0.0001   mic2: 440=0.0001 1k=0.2000  (48128 / 48128 frames)
->   PASS  both devices delivered a full second
->   PASS  mic 1 delivers its own 440 Hz tone, cleanly
->   PASS  mic 2 delivers its own 1000 Hz tone, cleanly
->
-> Full stack on the real backend:
->   files: A=192000 B=192000 MIX=192000 bytes
->   PASS  all three files were written with audio
->   PASS  every stem and the mix are frame-locked
->   PASS  the stems and mix carry signal, not silence
-> ```
->
-> On hardware with a real output the strips carry live levels and the files
-> carry audio.
->
-> The release checklist requires a fresh screenshot pass before a general
-> release. Until then, treat the pictures as historical and the visible version
-> label as the boundary of what each one proves.
-
-## Download
-
-**Latest release: [the Releases page](../../releases/latest).**
-[`CHANGELOG.md`](CHANGELOG.md) lists what changed in each one and what is still
-missing.
-
-The source currently describes the **v1.13.18 release candidate**. It is not a
-general-release claim: signing, artifact inspection and physical-hardware gates
-are tracked in [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). For help, see
-[`SUPPORT.md`](SUPPORT.md); data handling is documented in
-[`PRIVACY.md`](PRIVACY.md).
-
-Builds for macOS, Windows and Linux are produced by the
-[Release workflow](.github/workflows/release.yml):
-
-- **macOS** — `SobStage-macOS.dmg`, a normal drag-to-install disk
-  image: mount it and drag the app onto the Applications alias beside it.
-  `SobStage-macOS.zip` carries the same `.app` for anyone who would
-  rather not mount an image.
-- **Windows and Linux** — `SobStage-Windows.zip` and
-  `-Linux.zip`.
-- **Tagged releases** — all of the above are attached to the
-  [Releases page](../../releases). Start here; this is the supported download.
-- **Any commit** — run the Release workflow from the Actions tab
-  (`workflow_dispatch`) and download the artifacts it uploads. It uses the same
-  source revision and package layout, but an untagged rehearsal may be
-  ad-hoc/unsigned. Artifacts are wrapped in an extra `.zip` by GitHub and expire
-  after 90 days, so prefer a release unless you specifically need an untagged
-  commit.
-
-Each archive and the disk image contain the application, this README, `LICENSE`,
-`LICENSING.md`, `SUPPORT.md`, `PRIVACY.md` and the release checklist.
-Tagged releases also carry `SobStage-<version>-source.zip`, containing the exact
-SobStage and pinned JUCE source revisions, and `SHA256SUMS` covering every
-download.
-
-To check one downloaded file before opening it, keep it beside `SHA256SUMS` and
-run the command for your system (replace the filename when checking another
-asset):
-
-```sh
-# macOS
-grep ' SobStage-macOS.dmg$' SHA256SUMS | shasum -a 256 -c -
-
-# Linux
-grep ' SobStage-Linux.zip$' SHA256SUMS | sha256sum -c -
-```
-
-On Windows, PowerShell can compare the published and measured values directly:
-
-```powershell
-$expected = ((Select-String ' SobStage-Windows.zip$' SHA256SUMS).Line -split '\s+')[0]
-$actual = (Get-FileHash SobStage-Windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actual -ne $expected) { throw 'SobStage-Windows.zip checksum does not match' }
-```
-
-The workflow signs and notarizes the macOS app and Authenticode-signs the
-Windows executable when the repository carries those credentials. Without them
-the macOS app is ad-hoc signed and the Windows executable unsigned, and the
-workflow log labels the build that way. Current releases are unsigned.
-[Installing → macOS](#macos) explains the one extra step an ad-hoc build needs;
-a notarized release does not need it.
-
-The Blue Yeti in the spec is reference hardware only. Recording-input discovery
-uses a positive external-hardware rule and fails closed rather than guessing:
-
-- macOS admits directly attached USB, FireWire and Thunderbolt transports;
-- Windows admits USB, FireWire and Thunderbolt device-tree branches only when
-  Windows also marks the hardware or one of its ancestors removable;
-- Linux admits kernel ALSA cards whose sysfs ancestry says they are removable.
-
-The computer's own microphone, known phone/Continuity transports,
-Bluetooth/AirPlay, network, aggregate, virtual, internal and unknown inputs are
-deliberately omitted. There is one hard identity limit: a phone or wireless
-receiver that presents itself to the OS as generic removable USB Audio Class
-hardware is indistinguishable from a USB interface and may be admitted. The app
-does not guess from product names or vendor IDs. A categorical “never a phone”
-guarantee therefore remains unmet. Output choices are unaffected. The policy is
-covered by automated checks, but the physical-hardware matrix below is still
-required on every platform.
-
-§1 names macOS and Windows as the shipping targets. Linux now has a real ALSA
-backend too, so the Linux build finds and records from microphones rather than
-being a development shell — what it lacks is the §7 combined-device support,
-which needs a driver on every platform but macOS.
-
-Step-by-step setup is in [Installing](#installing) below.
-
-### Licence
-
-**GPLv3** — see [`LICENSE`](LICENSE). The project uses JUCE 7 under an
-open-source distribution model. [`LICENSING.md`](LICENSING.md) links the
-official JUCE 7 terms and the current official licensing page; consult those
-sources before distributing a binary or considering a proprietary build.
-
-## What to expect on your platform
-
-This is the **v1.13.18 release candidate**. The recording engine is covered by
-707 unit tests plus capture and platform harnesses. What differs by platform is
-how much of the *device* layer has been run against a live audio system and
-physical hardware.
-
-| Platform | Status | What this means for you |
-|---|---|---|
-| **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.18 candidate. |
-| **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
-
-The automated environment can exercise ALSA through virtual PCMs and the other
-backends through simulators. It cannot substitute for a physical interface,
-headphone path, removable card or real camera.
-
-What the simulation cannot reproduce is a real driver's timing, firmware quirks
-and scheduling. Those are release unknowns until the hardware checklist passes.
-
-**If something misbehaves**, use *Settings → Export diagnostics*. It creates a
-zip containing logs, recent session metadata, device names and stable IDs, and
-local destination paths — never audio. Review it before sharing, especially on
-a public issue, then follow [`SUPPORT.md`](SUPPORT.md).
-
-## Installing
-
-No separate installer is used. The macOS app and Windows portable ZIP carry
-their application runtime; the Linux ZIP expects the system audio/desktop
-libraries listed below. Current releases are ad-hoc signed on macOS and
-unsigned on Windows; the workflow signs and notarizes once the credentials in
-[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) exist.
-
-### macOS
-
-1. Double-click `SobStage-macOS.dmg`. A window opens showing the app
-   and an arrow pointing at your **Applications** folder.
-2. Drag the crying face onto **Applications**. That is the install.
-3. Open **Terminal** and run this once before first launch:
-
-   ```sh
-   xattr -dr com.apple.quarantine "/Applications/SobStage.app"
-   ```
-
-   Then open the app normally. This step is needed because current releases
-   are ad-hoc signed rather than notarized with a Developer ID;
-   without clearing that flag you get *"SobStage is damaged and
-   can't be opened"*. Nothing is wrong with the download — see
-   [Troubleshooting](#troubleshooting-macos) below for the full explanation.
-
-   Control-click → **Open** is the usual advice for an unsigned app and it does
-   *not* work here: it gets past an app with no signature, not a quarantined one
-   whose ad-hoc signature Gatekeeper will not accept.
-4. macOS will ask for **microphone permission** — allow it, or every meter
-   stays silent. If you declined by accident: System Settings → Privacy &
-   Security → Microphone → enable SobStage.
-5. Plug in your USB, FireWire or Thunderbolt microphones, and plug headphones
-   into each microphone's headphone jack. SobStage plays the same mix to all of
-   them through its combined **SobStage** device; switch a person's headphones
-   on or off in **Settings → Who hears the mix in their headphones**. If you use
-   cameras, macOS also asks for **camera permission**; SobStage waits for your
-   answer and starts the cameras when you click Allow. The Mac's microphone,
-   iPhone/Continuity, Bluetooth/AirPlay and software inputs are intentionally
-   left out. Monitoring is live from launch; there is nothing to arm.
-
-#### Troubleshooting (macOS)
-
-**macOS says "SobStage is damaged and can't be opened."**
-
-Nothing is damaged and your download is fine — this is what Gatekeeper says
-when a quarantined app's signature does not satisfy it. Control-click → Open
-does *not* clear it. Run this once, in Terminal:
-
-```sh
-xattr -dr com.apple.quarantine "/Applications/SobStage.app"
-```
-
-Then open the app normally. If you put the app somewhere other than
-Applications, point the command at wherever it actually is.
-
-This workaround is for an ad-hoc signed build, which is what every release so
-far is. Once the workflow has Developer ID credentials it signs, notarizes and
-staples the app and this step goes away.
-
-### Windows
-
-1. Unzip `SobStage-Windows.zip` anywhere (e.g. a folder in
-   `Program Files` or your Desktop).
-2. Run `bin\SobStage.exe` from the unzipped folder. Current releases are not
-   Authenticode-signed, so SmartScreen shows "unknown publisher" on first run:
-   choose **More info → Run anyway**. Check the download against `SHA256SUMS`
-   first. A signed build shows its verified publisher instead, though a new
-   publisher may still get a reputation warning until it has established trust.
-3. If no microphones appear: Settings → Privacy & security → Microphone →
-   make sure **Let desktop apps access your microphone** is on.
-4. Plug in mics and headphones; monitoring is live from launch.
-
-### Linux
-
-1. On Debian or Ubuntu, install the runtime providers used by the verified build:
-
-   ```sh
-   sudo apt-get install libasound2-dev libx11-dev libxext-dev libxinerama-dev \
-     libxrandr-dev libxcursor-dev libxcomposite-dev libfreetype6-dev \
-     libfontconfig1-dev libgl1-mesa-dev
-   ```
-
-2. Unzip `SobStage-Linux.zip`.
-3. From the unzipped folder, run it:
-   ```sh
-   "bin/SobStage"
-   ```
-4. The production build lists only ALSA hardware whose Linux device ancestry
-   identifies it as removable. Built-in cards, PipeWire/PulseAudio aliases and
-   virtual PCMs are intentionally omitted. If a plugged-in interface does not
-   appear, check that your user can access ALSA devices (often through the
-   `audio` group) and report the hardware details. Developers can compile a
-   separate test-only build that admits the virtual fixture; release packages
-   never enable that option.
-
-### Using it
-
-- **One device for other apps (macOS)** — the app publishes a combined input
-  device containing the eligible external inputs, created through CoreAudio's
-  public aggregate-device API: no separately installed HAL driver or separate
-  driver signature is required. The SobStage app itself is still signed. It is published as a
-  CoreAudio input choice (for example in Zoom, OBS or a DAW) under a name you set in **Settings →
-  Combined device name**, with one channel per mic and the same §3.1 clock
-  master the app itself uses. It tracks hot-plug and is removed when the app
-  quits. On Windows this needs the §7 virtual-device driver — the Settings
-  panel says so rather than pretending.
-
-- **Everyone hears the same mix (macOS)** — the headphone mix plays out of
-  every microphone's own jack at once through the SobStage device. Each
-  person's jack can be switched off in Settings; a switched-off jack gets
-  silence, never a different mix. Picking another output under **Monitoring
-  and output** in Settings turns this off, and that choice is remembered.
-
-- **Tell your mics apart** — tap (or speak into) a microphone and its strip
-  lights up. Click a strip to name that mic; the name sticks to the physical
-  port across replug and goes into that mic's recording filename.
-- **Name the take** — type into the *Session name* box before pressing record;
-  the folder becomes `2026-08-27_1030_<name>`. Leaving it empty is fine.
-- **Spacebar** mutes and unmutes the headphones instantly. Recording is never
-  affected by muting.
-- **Help** is in the masthead beside Settings. If a meter is flat or a take
-  came out silent, start there: it lists the causes in the order they actually
-  turn up, with what to do about each.
-- If the sound ever cuts out on its own, that is the feedback protection —
-  the mute button becomes **Unmute (sound was cut)** and pressing it brings
-  the sound back.
-- **Before your first take, the app asks where it's going.** One card, two
-  questions: what to call the recording, and where to put it. It shows the
-  exact folder that will be created, what will be inside it, and where the
-  backup copy goes, with a button to pick somewhere else. Answer it once and
-  every later press of record starts immediately — the question is asked again
-  only if you point the app at a different drive, or tick *Ask me this before
-  every recording*.
-- **While you record, you can watch the files appear.** The screen shows the
-  take's own folder and a live count and size — "Writing 5 files — 240 MB so
-  far" — read off the disk rather than assumed.
-- **When you stop, you get the files.** Not a line of status text: a panel
-  naming every file that was written, with its size, plus the backup copy's
-  location and an **Open the folder** button. If the files came out empty it
-  says so, and says to check the mute switches on the mics.
-
-### Loudness — aiming at where the take is going
-
-- **Every streaming service turns everything it plays to the same loudness.**
-  So how loud your take is decides what people hear, and peak meters can't tell
-  you: two takes peaking at the same number can be 6 dB apart to the ear, and
-  it's the louder one that gets turned down.
-- **Pick where it's going in Settings** and the app measures the mix the way the
-  platforms do — [ITU-R BS.1770](https://www.itu.int/rec/R-REC-BS.1770), K-weighted
-  and gated, the same standard they all normalise against — then says which way
-  to move and by how much. **Nothing is changed for you**; the stems stay at unity.
-- **Mono needs a different number, and this is the part that catches people.**
-  Every file this app writes is mono, and a mono file played through both
-  speakers is the same signal twice — which measures **3 LU louder** than the
-  single channel. Delivered at Spotify's published −14, a mono take plays back
-  at −11: three decibels hotter than everything around it. So the aim here is
-  **−17 mono for Spotify** and **−19 for Apple Podcasts**, and the app says so
-  rather than quietly applying it.
-- **It will never tell you to clip.** Under the target but already peaking near
-  the platform's ceiling? The suggested gain is cut to what the ceiling allows,
-  and it says why. Meeting a loudness figure by clipping trades a number the
-  platform would have fixed anyway for distortion it can't.
-- **True peak, not sample peak.** A waveform can pass between two samples higher
-  than either, so a file that looks like it sits at −1 dBFS can still clip a
-  platform's decoder.
-- Targets are the platforms' own published figures: Spotify, YouTube, Amazon and
-  Tidal at −14 LUFS; Apple Music and Apple Podcasts at −16; EBU R128 broadcast at
-  −23. All with a −1 dBTP ceiling. Off by default — a rehearsal isn't being
-  delivered anywhere.
-
-**What to aim for at the microphone**, which is a different question: record so
-peaks land around −12 to −6 dBFS and never touch 0. Headroom is free before the
-take and impossible after it — a clipped sample cannot be un-clipped, whereas a
-quiet-but-clean take is one gain move from correct, which is exactly the move
-this feature works out for you.
-
-### Cameras
-
-- **Every camera the OS reports is on by default** and records for the whole
-  take; the **Cameras** button on the main screen is where you switch one off.
-  USB webcams, built-in and
-  Continuity cameras, and capture cards may appear. Camera selection is separate
-  from the macOS audio-input policy.
-- SobStage opens each camera and shows its live preview. Switching one off is
-  remembered across an unplug and a relaunch. Name each camera and the name goes on its
-  file. For this release candidate, confirm a capture card's preview is visibly
-  non-black and its test recording plays before relying on it for a take.
-- On a Mac, a camera or capture card that sends only black (no signal, wrong
-  input mode, or an HDCP-protected source) is named on its tile after about
-  1.5 s, and an HDMI capture dongle is switched to a 30 fps mode when the one
-  picked by default is slower. A camera with a 4K mode that runs at 30 fps
-  (Continuity Camera, a 4K webcam, a USB 3 capture card) records in 4K; a
-  USB 2 capture dongle tops out at 1080p whatever its HDMI input accepts.
-- **Quality, per camera** (Cameras panel): **Best (up to 4K)**, **1080p** or
-  **720p (smaller files)**. Each camera row says what it is actually running at
-  ("Running at 3840 x 2160, 30 fps"), and the free-space and card-speed checks
-  budget each camera at its own setting. Fixed during a take.
-- SobStage asks JUCE and the operating system for high-quality camera capture;
-  the exact format is selected by the platform and driver. The preview toggle
-  changes only how large the picture is drawn on screen; it does not deliberately
-  request a lower recording format.
-- **Picture and sound are separate files.** Each camera writes one video file
-  into the same session folder as the audio, with no sound track of its own —
-  the sound is the WAVs beside it, and `session.json` records the pairing and
-  the shared session origin that lines them up in an editor.
-- **Optionally, one file with both — and nothing is re-encoded.** Off by
-  default. Switch on *Also save video with the sound in one file* in Settings
-  and each camera additionally gets a `..._with-sound.mov` (`.mkv` on Windows)
-  once the take stops — written **beside** the originals, never instead of
-  them, so a combine that fails costs nothing that was not already saved.
-  **The picture is copied bit for bit** and **the sound stays 24-bit PCM**
-  (FLAC in the Matroska case, which is also lossless). The combined file is
-  not a compressed convenience copy: it is the same data in one container, so
-  it is as good as the parts it was made from. The sound is the MIX, with your
-  trims and the mix-bus limiter already on it.
-  The audio is trimmed to where each camera actually started, because the stems
-  open before any camera does and a take laid together without accounting for
-  that runs a fraction of a second out of sync. On a Mac nothing needs
-  installing: SobStage uses macOS's own video tools. **On Windows it needs
-  [ffmpeg](https://ffmpeg.org)**; if it is missing, the toggle says so before a
-  take rather than after one.
-- **A camera counts against the card's speed, not just its space.** §6.4 blocks
-  arming when the card cannot sustain twice what the take needs; that figure now
-  includes the video, because a card that keeps up with eight microphones can
-  still be too slow once a camera is writing alongside them. Refusing before the
-  take is the entire point — §6.4 says never degrade mid-take.
-- **Each camera says what it will write** — `Writes V01_Kitchen-Cam.mov`,
-  under its name, updating as you rename it. Renaming is the moment you want to
-  know what the name does.
-- **Every camera plugged in records**, each to its own file for the whole
-  take, without a trip to this panel first. Switching one off here is the
-  exception, and that choice is remembered across an unplug and a relaunch.
-  The first launch may therefore raise the operating system's camera
-  permission prompt before you have pressed record.
-- **macOS and Windows only.** JUCE implements camera capture on those two
-  targets; the Linux build says so in one sentence instead of showing controls
-  that cannot work. The sound recording works either way.
-
-<p align="center">
-  <img src="docs/images/cameras.png" alt="The Cameras panel on Linux: a Done button, the heading Cameras, a paragraph explaining that video and sound save as separate files, and a line saying this build cannot use cameras" width="660">
-</p>
-
-That shot is the Linux build, which is the one this container can render — so
-it is showing the sentence rather than the cameras. On macOS and Windows the
-same panel carries a row per camera: its name, a switch, the file it will write,
-and a live-preview area. The final candidate's real capture-card picture and
-recording remain part of the physical-hardware gate.
-
-- **It remembers your rig.** Microphone names and trims, which mics are
-  switched off, where recordings go, the backup setting, the combined-device
-  name, your cameras and their names — all of it is still there next time you
-  open the app. Setting up once means setting up once.
-- **If the drive starts falling behind, you are told before anything is lost.**
-  At half a buffer the screen says so; if it reaches nine tenths with no backup
-  copy running, the separate microphone tracks stop and the mixed file keeps
-  going, so what survives is one complete recording of everyone rather than
-  eight with the same hole in them. The sample position where that happened
-  goes into `session.json`.
-- **If the drive goes away mid-take, you are told immediately.** Pulling the
-  card stops the recording, closes every open file, and says so — and if the
-  backup copy was running, it gives you the folder that still holds a complete
-  copy. Until now those failed writes were discarded: the recording carried on
-  writing into nothing, with the elapsed time still climbing.
-- **If the app is killed mid-take, it hands the recording back.** On the next
-  launch it checks the destination and the backup folder for takes that never
-  got a stop timestamp, repairs their file headers from the audio actually on
-  disk, and shows you what it found before the main screen — with a button that
-  opens the folder. Files holding less than a second are reported as empty
-  rather than offered, and are left on disk rather than deleted.
-
-<p align="center">
-  <img src="docs/images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">
-</p>
-
-That shot is real: the app was killed with SIGKILL part-way through a take,
-and this is what came up on the next launch.
-
-### First run — where things go, on every platform
-
-- **Recordings** start at `~/RECORDINGS` immediately while removable-volume
-  discovery runs away from the window thread. Connected card choices appear in
-  **Settings → Save recordings to** after that scan finishes; a stale mount
-  under `/Volumes` cannot hold the app closed at launch or quit. Free-space and
-  destination-status polling use the same detached, one-at-a-time pattern, and
-  a result for a destination you have since changed is ignored. The app
-  benchmarks a new destination away from the window thread before enabling the
-  record button (§6.4). The benchmark measures the card once; whether that is
-  fast enough is decided fresh each time you reach for record, so switching a
-  camera on can block arming a card that was fine for the microphones alone —
-  and the message says the cameras are what did it. A benchmark that cannot be
-  started or completed blocks recording with an explanation; it cannot silently
-  become a pass or make launch or quit wait for the worker.
-- **Video goes in the same folder** as the audio for that take, one file per
-  camera, named `V01_<camera name>`. The remaining-time figure on the main
-  screen accounts for it, so "Room for 2h 10m" stays true once a camera is
-  running.
-- **A local backup copy** of each take is kept by default in
-  `RECORDINGS-MIRROR` in your home directory, so a card failure is an
-  inconvenience rather than data loss. Toggle it in the Settings panel. The
-  destination and enabled-backup interrupted-take scans also run away from the
-  window thread. Recording stays disabled, with the reason shown, until both
-  required scans succeed; a scan that cannot run fails closed. Recovered takes
-  are shown after both scans settle, while stale work from an old destination is
-  abandoned without delaying launch, a location change or shutdown.
-- **Your settings** live beside the log, at
-  `SobStage/settings.json`. Delete it to start over from defaults;
-  a corrupt or unreadable one is ignored rather than fatal.
-- **The log** lives at `SobStage/log.txt` under your user
-  application-data directory (`~/Library` on macOS, `%APPDATA%` on Windows,
-  `~/.config` on Linux). **Export diagnostics** in the Settings panel bundles
-  it with recent session metadata, device identifiers and local destination
-  paths — never audio. Read [`PRIVACY.md`](PRIVACY.md) before sharing the zip.
-
-### Uninstalling
-
-Delete the app. The only things it leaves behind are your recordings
-(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above —
-remove those too if you want nothing left.
-
-## Layout
-
-```
-Source/Core/        platform-independent engine logic, no JUCE dependency
-                    (including settings persistence and §6.6 crash recovery)
-Source/Platform/    shipping CoreAudio/WASAPI backends + isolated post-v1 stubs
-Source/UI/          JUCE components: channel meters, main screen, settings and
-                    camera panels, the save-location and saved-take cards
-Source/App/         composition root wiring devices + engine + monitor + UI
-Tests/              headless unit tests for Source/Core
-Tools/              capture harnesses: e2e_capture, soak_drift, sim_* (see Building)
-Simulation/         stand-in CoreAudio and WASAPI headers + virtual device layers,
-                    so the macOS and Windows backends can be executed anywhere,
-                    plus a stand-in juce_video so the camera path compiles on
-                    a machine that has no camera API at all
-docs/SPEC.md        the build specification, verbatim
-```
-
-`Source/Core` deliberately has no JUCE dependency. That is what makes the engine
-testable on a headless machine with no audio hardware, and it is where the
-spec's hard numbers live.
-
-## Building
-
-**Core library and tests** (no network, no JUCE, no audio hardware required):
+| Language | C++17 (Objective-C++ for the macOS movie combiner) |
+| Framework | [JUCE](https://juce.com) 7.0.12, pinned by commit and fetched by CMake; only the UI and app layers depend on it |
+| Audio backends | CoreAudio (macOS), WASAPI exclusive mode (Windows), ALSA (Linux) |
+| Build | CMake 3.22+, CPack packaging |
+| Testing | Dependency-free test framework, CTest, ASan / UBSan / TSan, Xvfb-driven end-to-end runs |
+| CI / release | GitHub Actions on Linux, macOS and Windows; DMG and ZIP packaging with SHA-256 sums and a source bundle |
+
+## Engineering highlights
+
+- **Clock-drift compensation.** Asynchronous sample-rate conversion driven by
+  a PI loop on ring-buffer fill error, clamped to ±200 PPM and slewed at
+  5 PPM/s so corrections are inaudible. The reference device is resampled too.
+  Long-running harnesses found and fixed integral windup and a block-delivery
+  limit cycle that unit tests could not see.
+- **Real-time safety.** No allocation, locking, logging or file I/O on any
+  audio thread. Cross-thread handoff uses lock-free SPSC ring buffers with
+  acquire/release publication, sized for at least 30 s of audio.
+- **Loudness metering to the standard.** K-weighting, 400 ms blocks at 75%
+  overlap, absolute and relative gating, and true peak via 4x oversampling,
+  checked against the standard's reference signals at 44.1, 48 and 96 kHz.
+- **Testing platform code anywhere.** The CoreAudio and WASAPI backends are
+  compiled *unmodified* against stand-in OS headers and driven by simulated
+  device layers covering buffer layouts, sample formats, exclusive-mode
+  refusals and hot-plug. Re-introducing nine known defects turned every one of
+  them red. The camera path is simulated the same way.
+- **Engine isolated from the framework.** `Source/Core` has no JUCE
+  dependency, so the whole engine builds and tests on a headless machine with
+  no audio hardware and no network.
+- **Fail-closed device policy.** Only removable USB, FireWire and Thunderbolt
+  inputs are admitted on each OS; built-in, Bluetooth, virtual and unknown
+  inputs are excluded rather than guessed at.
+
+Every constant and behavior traces to the build specification in
+[`docs/SPEC.md`](docs/SPEC.md); the code cites the section it implements.
+
+## Project status
+
+The current source is the **v1.13.18 release candidate**. The engine, the
+simulated backends and the end-to-end app runs pass in CI on all three
+platforms. Real-driver timing and a completed take from physical microphones
+are still release gates: a PUPGSIS T12S interface has been detected on a real
+Mac, but the full hardware matrix has not yet passed. Linux has a working ALSA
+backend and is an early-use build. See [verification status](docs/VERIFICATION.md)
+and [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) for exactly what has and has
+not been proven.
+
+## Getting started
+
+Download the latest build from the
+[Releases page](https://github.com/taylordrew4u2/usbmic/releases/latest).
+Current releases are not yet code-signed; [docs/INSTALLING.md](docs/INSTALLING.md)
+covers checksum verification, the one-time Gatekeeper step on macOS,
+SmartScreen on Windows, and runtime packages on Linux.
+
+### Building from source
+
+The engine and its tests need only CMake and a C++17 compiler: no JUCE, no
+network and no audio hardware.
 
 ```sh
 cmake -B build
@@ -726,457 +138,67 @@ cmake --build build -j
 ./build/Tests/mma_core_tests
 ```
 
-**The full GUI application** (requires network access to fetch JUCE 7.0.12):
-
-```sh
-cmake -B build -DMMA_BUILD_APP=ON
-cmake --build build -j
-```
-
-`MMA_BUILD_APP` is `OFF` by default so the engine and its tests build anywhere.
-
-**Packaging a build to hand to someone:**
+The full GUI application fetches JUCE 7.0.12 at configure time:
 
 ```sh
 cmake -B build -DMMA_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j
-cmake --install build --prefix dist --config Release   # a clean tree
-cmake --build build --config Release --target package  # or a .zip
 ```
 
-**The capture harnesses** (`Tools/`, built by default alongside the engine).
-Neither is a unit test: they take minutes and answer questions unit tests
-cannot. Both found real bugs — see [Executed, not just
-compiled](#executed-not-just-compiled).
-
-```sh
-./build/e2e_capture /tmp/take   # two mics, mismatched clocks, decode the WAVs
-./build/soak_drift 4.0          # §3.4: four clocks, four hours, drift at the end
-
-./Tools/setup_alsa_fixture.sh   # Linux: virtual mics carrying known tones
-./build/live_capture /tmp/live  # ...then the REAL ALSA backend, end to end
-```
-
-**The platform simulations** run the macOS and Windows backends — unmodified —
-against stand-in OS headers, so they execute on any machine rather than only on
-the one OS that can compile them natively. `ctest` runs both, so they are
-covered by the ordinary test command too.
-
-```sh
-./build/sim_coreaudio           # interleaved buffers, rate ranges, hog mode, hotplug
-./build/sim_wasapi              # exclusive-mode negotiation, PCM conversion, threading
-./build/sim_mix_bus             # both limiters: 8 mics at full scale, trims, NaN/inf
-```
-
-**The UI walk** drives the real app through every screen it has. A test build
-(`-DMMA_ALLOW_TEST_INPUTS=ON`) walks its own live window: Settings, Help and
-Cameras; every picker, tick box and slider moved and put back; a microphone
-renamed; diagnostics exported; a take recorded through a mid-take buffer
-change. It then kills the app mid-take and checks the next launch offers the
-take back, and kills a microphone mid-take and checks the alert card.
-
-```sh
-./Tools/e2e_ui_walk.sh          # Linux, Xvfb; about five minutes
-```
-
-Linux needs JUCE's usual dependencies for the GUI build:
-
-```sh
-sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev \
-  libxrandr-dev libxcursor-dev libxcomposite-dev libfreetype6-dev \
-  libfontconfig1-dev libgl1-mesa-dev
-```
-
-## Continuous integration
-
-`.github/workflows/ci.yml` runs two jobs on Linux, macOS and Windows for every
-push to `main` and every pull request, and can be run on demand from the
-Actions tab.
-
-- **Core + tests** builds the engine and runs its unit tests. It needs no JUCE
-  and no audio hardware, so it runs unchanged everywhere and guards the
-  portability the platform builds depend on.
-- **App** builds the full JUCE application. `CoreAudioBackend` and
-  `WasapiAsioBackend` sit behind `JUCE_MAC` / `JUCE_WINDOWS` guards, so only
-  the matching runner compiles each one; without this job neither is built
-  anywhere.
-
-The app job pins macOS to `macos-14`. JUCE 7.0.12 calls
-`CGWindowListCreateImage`, which the macOS 15+ SDK marks unavailable, so JUCE's
-own tooling fails to build on newer runners. Moving to a newer SDK means moving
-to JUCE 8.
-
-## Current status
-
-### Implemented and verified
-
-All of `Source/Core` plus the platform-neutral Linux input policy, covered by
-707 unit tests passing in CI on Linux, macOS
-and Windows. The table below lists the largest areas rather than every file:
-
-| Area | Spec | Tests |
-|---|---|---|
-| `MonitorBus` — sum, trim, brickwall limiter, runaway cut, feedback protection, master volume | §5 | 20 |
-| `RecordingEngine` — mid-take unplug/reconnect/new-mic events | §6.5 | 15 |
-| `PreflightThroughputTest` — rolling-minimum throughput, 2x gate, FAT32 | §6.4 | 22 |
-| `SessionFolderNaming` — sanitization, truncation, collision suffixes | §6.2 | 11 |
-| `DriftCompensator` — PI loop, ±200 PPM clamp, 5 PPM/s slew | §3.2 | 11 |
-| `DeviceInputStream` — per-device ring, drift loop, resampler onto the pulling clock | §3.2, §3.3 | 29 |
-| `AlsaBackend` — real Linux audio: enumeration, exclusive-mode gate, capture, inotify hotplug | §2, §5.4, §11 | `live_capture` |
-| `AlsaInputPolicy` — fail-closed removable-hardware selection | §2 | 13 |
-| `DeviceManager` — 8-mic cap, 9th exclusion, master selection and failover | §1, §3.1, §3.3 | 18 |
-| `RingBuffer` — lock-free SPSC, 30s / 64 MB minimum sizing | §6.3 | 9 |
-| `Metering` — ballistics, peak hold, clip latch | §8.1 | 9 |
-| `SessionWriter` — RIFF/WAVE headers, auto-split, periodic header rewrite | §6.1, §6.6 | 16 |
-| `SampleRateNegotiator` — highest common rate capped at 48 kHz | §2.2 | 14 |
-| `PolarPatternDetector` — non-cardioid detection | §14.4 | 5 |
-| `ChannelLayoutAnalyzer` — mono collapse rules, 60 s timeout | §2.1 | 12 |
-| `DeadChannelDetector` — silence against an active reference channel | §8.1 | 5 |
-| `SessionMetadata` + JSON | §6.2 | 9 |
-
-### Executed, not just compiled
-
-`Tools/e2e_capture` drives the real capture path with synthetic audio — two
-mics on mismatched clocks, recorded to disk, then the WAVs are decoded and
-checked by Goertzel that each stem holds its own microphone's tone and the mix
-holds both. `Tools/soak_drift` is the §3.4 gate above. Neither is a unit test:
-they take minutes, and they answer questions unit tests cannot.
-
-Both found real bugs that the unit-test suite did not:
-
-- **Integral windup.** The PI loop's integral saturated at the ±200 PPM clamp
-  long before the deliberately slow 5 PPM/s slew could deliver it, so every
-  crossing had to unwind from saturation. Over hours the loop swung between
-  +140 and −45 PPM instead of settling, starved rings, and failed §3.4 at
-  3.04 ms. Integration now pauses whenever the output is rate- or clamp-limited.
-- **Pre-roll sized from ring capacity.** Playout started at half the ring, which
-  meant 1024 samples — **21 ms of monitor latency**, on its own more than twice
-  the entire §5.4 budget. Pre-roll is now a fixed two blocks, and the monitor
-  path measures 5.33 ms end to end against the 10 ms ceiling.
-
-A third, smaller one: the output clock starts before any device has delivered,
-so the first pull of every take underran. That is normal startup rather than
-lost audio, and counting it made the §0.1 metric untrustworthy.
-
-The fourth was the one the soak could not see. `Tools/soak_drift` feeds each
-microphone's drift as an extra sample slipped into a block, so the ring level
-moves one sample at a time; a real device delivers whole blocks on its own
-clock, so the level a pull sees moves in steps of a block, and against that
-the §3.2 loop limit-cycled — a device 60 PPM slow never converged, a device
-150 PPM slow dropped a block of audio every few seconds, and every microphone
-in the rig was reported at +200 PPM. `Tools/sim_drift_loop` models delivery
-the real way, deterministically, and is now the test: five clocks at ±150,
-±60 and 0 PPM lock within 1 PPM with no loss, at every rung of the buffer
-ladder with the jitter that rung is meant to absorb. `Tools/e2e_realtime_mics.sh`
-then does the same through the real app, with the virtual microphones paced
-to real, independent clocks: the take is checked, the ladder is checked, and
-the drift the app reports is checked against the clocks it was given.
-
-### Exercised against a real OS audio API
-
-`Source/Platform/AlsaBackend.cpp` is a real Linux backend on ALSA, and
-`Tools/live_capture` drives it: ALSA opens the devices, libasound delivers the
-audio on threads the backend creates, and the harness checks what comes out.
-`Tools/setup_alsa_fixture.sh` builds file-backed virtual microphones carrying
-known tones, so this runs on a machine with no sound hardware. The fixture is
-available only in a separately compiled test build; the production binary's
-positive hardware policy rejects virtual inputs.
-
-Measured, five runs identical: each device delivers its own tone at 0.2000
-magnitude with 0.0001 leakage of the other — a 2000:1 separation — and §5.4
-correctly refuses a shared (`default`) output by name.
-
-This does **not** make CoreAudio or WASAPI verified; those are different APIs.
-What it retires is the broader claim that `IAudioBackend`'s contract had never
-met a real audio system: it has, and it holds. Two honest limits of the fixture:
-ALSA's `file` plugin delivers as fast as it is read rather than at 48 kHz, so
-the timing is not real-time and the capture ring floods (which is why the
-full-stack layer asserts frame-locked files and signal, not per-stem tone
-coherence); and it cannot refuse a sample format, so the fixture must be
-written in whatever format the backend negotiates.
-
-### Executed against simulated CoreAudio and WASAPI
-
-`CoreAudioBackend.cpp` and `WasapiAsioBackend.cpp` can only be compiled on their
-own OS, so on every other machine they were unverified by construction — which
-is how five user-facing defects lived in them undetected, including a stereo USB
-microphone recording silence on macOS and a 16- or 24-bit microphone refusing to
-open at all on Windows.
-
-`Simulation/` closes that gap. It supplies stand-in OS headers — the ~10
-CoreAudio calls and ~30 WASAPI symbols these two files actually use — behind a
-configurable virtual device layer. `Tools/sim_coreaudio` and `Tools/sim_wasapi`
-then compile **the backend sources unmodified** against those headers and drive
-them. The code under test is the code that ships; only the operating system
-underneath it is fake.
-
-The devices are configured to be awkward on purpose, because the ideal case was
-never what failed:
-
-| Simulated | CoreAudio | WASAPI |
-|---|---|---|
-| Buffer shapes | interleaved and one-channel-per-buffer, input and output | interleaved, in every accepted wire format |
-| Formats | continuous and discrete sample-rate ranges | float32, 32-, 24- and 16-bit PCM; devices accepting only one |
-| Exclusivity | hog mode granted, denied, and held by another process | exclusive-only; a shared-mode request fails the simulation outright |
-| Refusals | a rate the device cannot reach; a rate it already holds | a rejected period the device renames; a device that accepts nothing |
-| Hotplug | `kAudioHardwarePropertyDevices` listener | registered `IMMNotificationClient` |
-| Scale | eight interleaved stereo mics at the §1 ceiling | eight mics at once in four different wire formats |
-
-The current baseline is 239 CoreAudio checks and 131 WASAPI checks, run by `ctest`
-on Linux, macOS and Windows alike. The WASAPI backend's worker thread is a real
-thread doing a real event handshake, so that path is exercised rather than
-reasoned about. Both simulators run under AddressSanitizer,
-UndefinedBehaviorSanitizer and ThreadSanitizer.
-The release checklist requires recording the final counts if the candidate gains
-another check during hardening.
-
-The CoreAudio simulator includes a start call that returns only after the UI
-deadline, including a callback delivered before that late return. Input open
-stops waiting after five seconds in production; the detached worker retains the
-stream, serializes its cleanup, and prevents duplicate opens from stacking on
-the same device. A single admission-and-lease gate covers the IOProc and all
-property listeners, so teardown can close admission and drain every callback
-before application-owned state is released. The same harness retains listener
-client data deliberately and verifies that SobStage keeps the inert stream
-quarantined instead of creating a use-after-free or unsafe retry.
-
-Input and output HAL opens and closes use bounded ownership paths. The simulator
-stalls rate, buffer, hog-mode, IOProc create/start/stop/destroy and listener
-operations, including late callbacks and failed cleanup-worker construction.
-That liveness evidence is still not a substitute for the physical audio matrix.
-
-**Whether the simulation is worth anything was checked by breaking things.** Each
-of the five shipped defects was re-introduced, plus four more (a dropped
-`AUDCLNT_BUFFERFLAGS_SILENT` check, PCM writes that wrap instead of clip, a
-removed buffer-alignment retry, a removed hotplug registration). All nine turned
-the harnesses red:
-
-| Re-introduced defect | Checks failed |
+| Platform | Requirements |
 |---|---|
-| CoreAudio IOProc skips non-mono input buffers | 6 |
-| CoreAudio reads only the maximum of a rate range | 1 |
-| CoreAudio proceeds when hog mode is denied | 3 |
-| CoreAudio treats an already-correct rate as fatal | 2 |
-| WASAPI offers float32 only | 28 |
-| WASAPI ignores the SILENT flag | 1 |
-| WASAPI PCM writes wrap instead of clipping | 1 |
-| WASAPI drops the buffer-alignment retry | 2 |
-| WASAPI hotplug registration removed | 2 |
+| macOS | Xcode command-line tools. CI builds on `macos-14`, because JUCE 7.0.12 does not build against the macOS 15 SDK. |
+| Windows | Visual Studio (MSVC) with the C++ desktop workload. |
+| Linux | `libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev libfreetype6-dev libfontconfig1-dev libgl1-mesa-dev` |
 
-Writing the simulation also found a bug in the simulation itself, which is worth
-recording because it is the failure mode this whole approach risks: `HRESULT`
-was first typed as `long`, which is 64-bit on Linux, so every `0x8889xxxx` error
-code came out positive and `FAILED()` read every WASAPI failure as success. The
-harness caught it as fifteen red checks rather than passing silently.
+Packaging, build options and every harness are documented in
+[docs/BUILDING.md](docs/BUILDING.md).
 
-**What this does not establish** is behaviour against a real driver — its
-timing, firmware quirks or scheduling. Simulation checks the backend against the
-API shapes represented by the fake; it cannot certify either an unmodelled OS
-behavior or a particular piece of hardware. Real-driver and device behavior on
-all three platforms remains in the physical matrix. See [What to expect on your
-platform](#what-to-expect-on-your-platform).
+## Testing
 
-### Compiled and rendered
+```sh
+ctest --test-dir build --output-on-failure
+```
 
-The full application builds and links in CI on Linux, macOS and Windows, so
-`Source/UI` is not unverified code either:
+- **707 unit tests** covering the engine: drift loop, ring buffers, monitor
+  bus, metering, loudness, session writer, crash recovery and more.
+- **Platform simulators:** `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
+  `sim_mix_bus` run the shipping code against virtual devices; the audio
+  simulators and unit tests also run under ASan, UBSan and TSan in CI.
+- **Capture harnesses:** `e2e_capture` records two mics on mismatched clocks and
+  decodes the WAVs; `soak_drift` runs the four-hour drift gate; `live_capture`
+  drives the real ALSA backend against virtual microphones carrying known tones.
+- **End-to-end app runs:** scripts in `Tools/` drive the real application under
+  Xvfb through a full take, a refused take, a disk-full take, a mid-take crash
+  and recovery, and every screen of the UI.
 
-- `ChannelMeterComponent`, `MixBarComponent`, `MainScreen`, `AdvancedPanel`,
-  `CameraPanel`, `ModalCard`, `SaveLocationPrompt`, `SavedTakePanel`,
-  `MainComponent`, `Main.cpp` — JUCE components using the §9.2 palette.
-- `CameraController` compiles twice: once as it ships (camera path compiled out
-  on Linux) and once with `JUCE_USE_CAMERA=1` against `Simulation/Camera`'s
-  stand-in `juce_video`, via the `sim_camera` target. That simulator executes
-  340 checks covering enumeration, selection, arrival/removal, open
-  failure/retry, a list reorder during open, actual-frame gating and loss,
-  native-viewer lifetime and reparenting, runtime-error recovery, an enabled
-  capture card missing from the OS list, recording-start truth and asynchronous
-  movie finalization and start refusal. A separate seven-check synchronous
-  lifecycle probe covers DirectShow start and finish callback ordering. It
-  verifies that an interrupted camera
-  stays out for the rest of that take and its remembered preview reopens only
-  afterwards; final-candidate AVFoundation/DirectShow open, visibly non-black
-  preview and recording still need macOS or Windows hardware.
-- `RecoveredTakesPanel` has been rendered against a real interrupted take:
-  a session folder with no stop timestamp and four WAVs whose size fields were
-  zeroed, as a SIGKILL leaves them. The app found it at launch, repaired all
-  four headers, and offered the three that held real audio while reporting the
-  0.4-second one as empty. The repaired files were then confirmed playable by
-  a decoder outside this project.
+## Project structure
 
-The app has also been driven headless under Xvfb against the virtual ALSA
-microphones, through a whole take: press record, answer the save-location card,
-watch the file count and total climb on the main screen, stop, and read the
-saved-take panel listing every file that was written with its size. Pressing
-record a second time started immediately with no card, into a `_2` folder — so
-"asked once, then never again" is a checked claim rather than an intended one.
+```
+Source/Core/       platform-independent engine (no JUCE): drift, buffers, mixing, metering, writing, recovery
+Source/Platform/   CoreAudio, WASAPI and ALSA backends; macOS aggregate device; OS integrations
+Source/UI/         JUCE components: meters, main screen, settings, help, cameras, alert cards
+Source/App/        composition root wiring devices, engine, monitor and UI
+Tests/             unit tests for Source/Core
+Tools/             capture harnesses, simulators, end-to-end scripts, release tooling
+Simulation/        stand-in CoreAudio, WASAPI and camera APIs with virtual device layers
+docs/              specification, guides and verification record
+```
 
-What that does **not** cover is a successful physical-camera workflow. An older
-v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
-first-frame enqueue, but that run did not verify a visibly non-black SobStage
-preview or a completed recording. The simulator drives the
-`CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
-the v1.13.18 AVFoundation/DirectShow viewer and `startRecordingToFile`
-paths still need the physical macOS and Windows matrix. See *Not yet validated
-against hardware*.
+## Documentation
 
-### Hardware signals and safeguards
+- [User guide](docs/USER-GUIDE.md): screens, device-to-track mapping, loudness, cameras
+- [Installing](docs/INSTALLING.md): downloads, per-platform setup, file locations, troubleshooting
+- [Building and testing](docs/BUILDING.md): build options, harnesses, CI
+- [Verification status](docs/VERIFICATION.md): what is proven and how, design decisions
+- [Specification](docs/SPEC.md) · [Changelog](CHANGELOG.md) · [Support](SUPPORT.md) · [Privacy](PRIVACY.md)
 
-The app treats unavailable platform evidence as unknown rather than inventing a
-warning. CPU pressure is measured from the audio callback's own deadline usage;
-platform thermal and USB-controller evidence is reported only where the OS can
-provide it. The release matrix still verifies those paths on the supported
-hardware rather than treating a simulator as proof.
+## License
 
-- **Thermal throttling** (§6.6). On macOS, `SystemThermalState` reads
-  `NSProcessInfo.thermalState`; serious and critical states feed the warning.
-  Windows and Linux currently report unknown and retain the callback-deadline
-  pressure check rather than guessing from an unsupported platform signal.
-- **USB host-controller topology** (§14.3). `ControllerContentionDetector`
-  treats unknown topology as unjudgeable and stays silent. No current backend
-  populates a dependable controller ID; implementing that requires a separate
-  OS-registry mapping and physical validation.
+Released under the **GNU General Public License v3**; see [`LICENSE`](LICENSE).
+JUCE 7 is used under its open-source terms. [`LICENSING.md`](LICENSING.md)
+explains the distribution obligations and links the official JUCE terms.
 
-### Deliberately stubbed
+## Author
 
-Virtual device backends per §7 — with one carve-out that ships: on macOS the
-combined device needs no driver at all, because CoreAudio's public
-`AudioHardwareCreateAggregateDevice` API publishes a system-wide aggregate
-(`Source/Platform/MacSystemAggregateDevice.cpp`). Other apps see one named
-multi-channel input containing the eligible external inputs, with per-sub-device drift
-compensation handled by the HAL. What remains stubbed is Windows, and the
-§7 "virtual cable carrying the summed mix" use case; each is gated on
-something that cannot be obtained from source code:
-
-| Backend | State | Blocked on |
-|---|---|---|
-| A — none (standalone recorder + monitor) | Implemented (`NullBackend`) | nothing |
-| B — ASIO output DLL | Interface + stub | ASIO SDK, COM registration |
-| C — licensed signed virtual cable | Interface + stub | commercial per-seat license (VB-Audio / VAC / Thesycon) |
-| D — own attestation-signed WDM driver | Interface + stub | registered legal entity, EV certificate, Partner Center |
-
-### Release-owner gates
-
-These release gates require credentials, hardware or distribution operations
-outside the source tree:
-
-- Add the Apple Developer ID/notarization and Windows Authenticode credentials
-  named in `RELEASE_CHECKLIST.md`; the release workflow ships ad-hoc/unsigned
-  builds without them and verifies signatures again after packaging once they
-  exist.
-- Complete owner/legal/privacy/licensing sign-off and the physical matrix.
-
-An installed macOS HAL plugin, Windows virtual input, automatic crash upload
-and automatic updating are explicitly outside v1. The shipped macOS combined
-input is transient and uses CoreAudio's public aggregate-device API; Windows v1
-is the standalone recorder and monitor.
-
-### Not yet validated against hardware
-
-The entire §12 validation matrix is outstanding. A PUPGSIS T12S has enumerated
-on a real Mac at 44.1 kHz, but no completed physical-microphone take has passed
-the matrix. In particular:
-
-- **§3.4 passes against simulated clocks, and only those.** `Tools/soak_drift`
-  runs four dissimilar clocks (+40 / +100 / −80 / +45 PPM) for four hours at
-  both 44.1 and 48 kHz. The current results are **1 sample = 0.023 ms** at
-  44.1 kHz and **2 samples = 0.042 ms** at 48 kHz against the 1 ms ceiling,
-  with zero underruns. Simulated offsets are steady, though; real crystals
-  wander with temperature and load, so the hardware run is still owed. What this does
-  retire is the question of whether the *software* holds alignment — it does,
-  and it did not before the two bugs above were found.
-- **§5.4 latency ceiling** — the 10 ms ceiling must be confirmed by loopback on
-  macOS CoreAudio and Windows WASAPI exclusive. Add ASIO only if a real ASIO
-  path later ships.
-- Hostile-event matrix, card throughput on real slow media, bus-power
-  exhaustion, and the §10.7 novice acceptance test.
-- **The card-removal path is proven at the pipeline, not in the running app.**
-  `WritePipeline` noticing a failed write is tested against a real failing
-  write — the process's maximum file size is capped so the write returns EFBIG,
-  which is what a departed card looks like from inside `write()`. What has not
-  been exercised is the whole path in the app: the virtual-microphone rig here
-  produces no audio, so no bytes are written and no write can fail. Stopping
-  the take, finalizing, and showing the alert are wired to that flag and each
-  tested or exercised separately, but the four together need a real card to
-  pull out.
-- **No physical camera has completed the candidate workflow.** `sim_camera`
-  executes discovery, selection, arrival/removal, open failure/retry, native
-  viewer lifetime/reparenting, runtime-error recovery, a topology reorder
-  during open, and the no-false-recovery policy for a mid-take unplug/replug.
-  Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
-  a first-frame enqueue; that did not verify a visible non-black preview or a
-  completed recording, and the v1.13.18 artifacts remain untested with a
-  physical capture card.
-  Outstanding on real hardware:
-  what resolution `openDevice` actually settles on, what the recorded file
-  costs per second against the estimate the remaining-time figure uses
-  (`CameraSelection::kEstimatedVideoBytesPerSecond`, deliberately pessimistic
-  at ~64 Mbit/s, sized for 4K), whether two cameras can be held open at once on a given
-  machine, and whether recording video alongside eight microphones stays
-  within the §6.6 CPU budget.
-
-## Judgment calls
-
-- **No JUCE in `Source/Core`.** The spec does not require this, but without it
-  nothing could be tested in an environment without JUCE, and §13 orders drift
-  compensation first — before any UI exists to host it.
-- **Hand-rolled test framework** (`Tests/TestFramework.h`) instead of Catch2,
-  and a small hand-rolled JSON writer/parser (`Source/Core/Json.h`) instead of
-  nlohmann. Both avoid a network fetch in the build. Either can be swapped for
-  the mainstream library later; the JSON one is used for `session.json`, `settings.json` and the activity journal.
-- **`MMA_BUILD_APP` defaults to `OFF`** so that `cmake -B build && cmake --build
-  build` succeeds on any machine. Turn it on for real platform builds.
-- Backends B/C/D return an explicit unavailable status rather than pretending to
-  work, so §7's requirement that the UI names which applications can and cannot
-  see the aggregate device stays truthful.
-- **One question before the first take, and none after that.** §10.4 says a
-  record press starts immediately with no confirmation, and it is right: a
-  dialog on every press is friction on the one control that matters. But §6.2
-  says a novice losing track of their recording is a total product failure, and
-  the app was relying on a 12px grey line to prevent it. The reading taken here
-  is that §10.4 forbids *confirming the act of recording*, not *telling someone
-  where their files will be* — so the card is shown at most once per
-  destination, before the first take against it, and the answer is remembered
-  against the folder it was given about. Every press after that goes straight
-  to recording. A user who wants it every time can ask for that on the card.
-- **A recovered stub is reported, not deleted.** §6.6 says to "discard any
-  recovered file containing under 1 second of audio; report it as empty rather
-  than presenting an unplayable stub." The reporting half is taken literally;
-  the discarding half is not. Silently removing a file from someone's card at
-  launch, before they have seen it or asked for anything, is a worse mistake
-  than listing a short file — so a stub is excluded from what is offered and
-  left exactly where it is.
-- **The listening level is the one setting not written when it changes.**
-  Everything else that is remembered goes to disk the moment it changes, so a
-  crash cannot cost it. Master volume is written only at shutdown: it is the
-  one control that moves continuously while someone listens, and it is comfort
-  rather than setup — losing it costs a second to reset, where losing a trim
-  costs the ear-work that found it.
-- **Cameras are an addition, not a spec item.** `docs/SPEC.md` is about
-  microphones and says nothing about video, so everything in the Cameras panel
-  is a judgment call against the spec's own principles rather than a
-  requirement being met: every plugged-in camera recording by default because
-  a take with a camera missing from it cannot be redone, while §6.5's
-  card-full failure is guarded by the remaining-time figure counting every
-  recording camera; capture
-  requests JUCE's high-quality capture mode while only the *drawing* is made
-  cheap (the OS/driver still chooses the actual format), because §6.6 is
-  about not spending CPU where it costs audio; picture and sound as separate
-  files, because §6.1's whole premise is one clean track per person and a
-  camera's own microphone would put a room mic into that. Nothing about the
-  camera path can affect the audio path — it is opened, recorded and closed
-  entirely outside the audio callback.
-
-## Build order
-
-Per §13, and where this repository sits against it:
-
-1. Multi-device capture with drift compensation — **engine written, gated on the
-   §3.4 hardware measurement**
-2. Direct-to-card write pipeline with throughput benchmarking — **written and
-   unit-tested, hostile-event matrix outstanding**
-3. Shared monitor bus with limiter, mute, feedback protection — **written and
-   unit-tested, gated on the §5.4 latency measurement**
-4. Metering — **written and unit-tested**
-5. Virtual device backends — **A implemented and compiled on all three platforms, B/C/D stubbed per above**
-6. UI and zero-knowledge setup flow — **builds in CI on all three platforms and runs headless; T12S enumeration confirmed, completed hardware workflow outstanding**
+Taylor Drew Kozero ([@taylordrew4u2](https://github.com/taylordrew4u2))
