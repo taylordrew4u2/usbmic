@@ -24,11 +24,20 @@ struct PodcastExportResult
     double measuredLufs = 0.0;
     double measuredTruePeakDbtp = 0.0;
     double gainDb = 0.0;
+
+    /// True when reaching the target would have meant limiting much of the
+    /// take hard, so the copy fell back to the gain the peaks allow unlimited
+    /// (adviseForTarget's) and is quieter than the target.
     bool limitedByTruePeak = false;
 
-    /// Where the copy lands: the target, or short of it when the peaks would
-    /// not allow the whole of the gain.
+    /// The deepest the peak limiter turned anything down, in dB. Zero when no
+    /// peak needed it.
+    double peakLimitingDb = 0.0;
+
+    /// The copy as measured on its way to disk: the target, or short of it
+    /// after a fallback.
     double resultingLufs = 0.0;
+    double resultingTruePeakDbtp = 0.0;
 
     /// One sentence in the app's voice (§10.6): what was saved, or why
     /// nothing was. Never empty.
@@ -44,10 +53,17 @@ juce::String podcastCopyFileName (const juce::String& mixFileName, const std::st
 /// Writes a loudness-normalised copy of a finished take's mix beside it.
 ///
 /// Reads `mixFileName` in `sessionFolder` -- and MIX_001.wav onwards, when a
-/// long take split -- measures it with LoudnessMeter, asks adviseForTarget()
-/// what gain the target wants (already capped so the true peak stays under the
-/// platform's ceiling), and writes the mix again with that gain as one 24-bit
-/// WAV at the same rate. The take's own files are only ever read.
+/// long take split -- measures it with LoudnessMeter, applies the gain that
+/// reaches monoTargetLufs(), and runs a look-ahead peak limiter (4x
+/// oversampled, aiming 0.5 dB under the platform's true-peak ceiling) so the
+/// transients that gain pushes over are turned down rather than clipped. The
+/// result is one mono 24-bit WAV at the same rate. The take's own files are
+/// only ever read.
+///
+/// A take so peaky that reaching the target would mean limiting a good part
+/// of it by more than 10 dB is not squashed to get there: it gets the gain
+/// adviseForTarget() offers instead (capped so its peaks fit unlimited), and
+/// the message says it is quieter than the target and why.
 ///
 /// Nothing is written for a take too short or too quiet to measure: a copy
 /// "normalised" from a meaningless figure would be the one file in the folder
