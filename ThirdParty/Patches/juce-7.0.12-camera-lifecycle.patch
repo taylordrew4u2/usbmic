@@ -21,7 +21,7 @@ index 21bd4f6367..bb7b16df20 100644
      /**
          Receives callbacks with individual frames from a CameraDevice. It is mainly
 diff --git a/modules/juce_video/native/juce_CameraDevice_mac.h b/modules/juce_video/native/juce_CameraDevice_mac.h
-index ddcba1f320..48b244d7c6 100644
+index ddcba1f320..a42124ae3b 100644
 --- a/modules/juce_video/native/juce_CameraDevice_mac.h
 +++ b/modules/juce_video/native/juce_CameraDevice_mac.h
 @@ -29,13 +29,17 @@
@@ -507,27 +507,64 @@ index ddcba1f320..48b244d7c6 100644
                  }];
              }
          }
-@@ -442,35 +702,119 @@ private:
+@@ -442,35 +702,157 @@ private:
          }
      }
  
++    static constexpr Float64 smoothRate = 29.0;
++
++    static Float64 maxRateOf (AVCaptureDeviceFormat* format)
++    {
++        Float64 rate = 0;
++        for (AVFrameRateRange* range in format.videoSupportedFrameRateRanges)
++            rate = jmax (rate, range.maxFrameRate);
++        return rate;
++    }
++
++    static bool isAtMost4K (CMVideoDimensions dims)
++    {
++        return dims.width <= 4096 && dims.height <= 2160;
++    }
++
++    // The High preset tops out at 1080p on most Macs, so a 4K camera
++    // (Continuity Camera, a 4K webcam, a USB 3 capture card) was recorded at
++    // a quarter of its resolution. Ask for the 4K preset when this camera has
++    // a 4K mode that can run at ~30 fps; a 4K mode that only manages a few
++    // frames a second would be worse than smooth 1080p.
++    static bool cameraHasSmooth4K (AVCaptureDevice* device)
++    {
++        for (AVCaptureDeviceFormat* format in device.formats)
++        {
++            if (! [format.mediaType isEqualToString: AVMediaTypeVideo])
++                continue;
++
++            const auto dims = CMVideoFormatDescriptionGetDimensions (format.formatDescription);
++
++            if (dims.width >= 3840 && dims.height >= 2160 && isAtMost4K (dims)
++                && maxRateOf (format) >= smoothRate)
++                return true;
++        }
++
++        return false;
++    }
++
++    void chooseHighestPreset (AVCaptureDevice* device)
++    {
++        if (device == nil || ! [session.sessionPreset isEqualToString: AVCaptureSessionPresetHigh])
++            return;
++
++        if (cameraHasSmooth4K (device) && [session canSetSessionPreset: AVCaptureSessionPreset3840x2160])
++            session.sessionPreset = AVCaptureSessionPreset3840x2160;
++    }
++
 +    // A "USB2 Video" HDMI dongle typically lists 1080p uncompressed at ~5 fps
 +    // beside MJPEG 1080p at 30 fps, and the High preset can land on the slow
 +    // one (or on a mode the dongle advertises but streams black). When the
 +    // format the session chose cannot reach ~30 fps, switch to the largest
-+    // format up to 1080p that can, and pin it to 30 fps. Cameras that already
++    // format up to 4K that can, and pin it to 30 fps. Cameras that already
 +    // run smoothly (FaceTime, most webcams) are left exactly as they were.
 +    static bool chooseSmoothFormat (AVCaptureDevice* device)
 +    {
-+        constexpr Float64 smoothRate = 29.0;
-+
-+        auto maxRateOf = [] (AVCaptureDeviceFormat* format)
-+        {
-+            Float64 rate = 0;
-+            for (AVFrameRateRange* range in format.videoSupportedFrameRateRanges)
-+                rate = jmax (rate, range.maxFrameRate);
-+            return rate;
-+        };
 +
 +        if (device == nil || device.activeFormat == nil || maxRateOf (device.activeFormat) >= smoothRate)
 +            return false;
@@ -543,7 +580,7 @@ index ddcba1f320..48b244d7c6 100644
 +
 +            const auto dims = CMVideoFormatDescriptionGetDimensions (format.formatDescription);
 +
-+            if (dims.width > 1920 || dims.height > 1080)
++            if (! isAtMost4K (dims))
 +                continue;
 +
 +            const auto pixels = (int64) dims.width * (int64) dims.height;
@@ -598,18 +635,22 @@ index ddcba1f320..48b244d7c6 100644
 +                    break;
 +                }
 +            }
- 
--                    NSError* err = nil;
--                    AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: device
--                                                                                               error: &err];
++
 +            if (selectedDevice == nil)
 +            {
 +                openingError = "The selected camera is no longer available";
 +                return;
 +            }
  
--                    jassert (err == nil);
+-                    NSError* err = nil;
+-                    AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: device
+-                                                                                               error: &err];
 +            removeCurrentSessionVideoInputs();
+ 
+-                    jassert (err == nil);
++            NSError* err = nil;
++            AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: selectedDevice
++                                                                                       error: &err];
  
 -                    if ([session canAddInput: inputDevice])
 -                    {
@@ -621,19 +662,16 @@ index ddcba1f320..48b244d7c6 100644
 -                        jassertfalse;
 -                        [inputDevice release];
 -                    }
-+            NSError* err = nil;
-+            AVCaptureDeviceInput* inputDevice = [[AVCaptureDeviceInput alloc] initWithDevice: selectedDevice
-+                                                                                       error: &err];
++            if (err != nil)
++                openingError = nsStringToJuce (err.localizedDescription);
  
 -                    return;
 -                }
-+            if (err != nil)
-+                openingError = nsStringToJuce (err.localizedDescription);
-+
 +            if (inputDevice != nil && [session canAddInput: inputDevice])
 +            {
 +                [session addInput: inputDevice];
 +                currentInput = inputDevice;
++                chooseHighestPreset (selectedDevice);
 +                chooseSmoothFormat (selectedDevice);
 +            }
 +            else
@@ -645,7 +683,7 @@ index ddcba1f320..48b244d7c6 100644
              }
          }
      }
-@@ -499,6 +843,12 @@ private:
+@@ -499,6 +881,12 @@ private:
  
      void refreshIfNeeded()
      {
@@ -658,7 +696,7 @@ index ddcba1f320..48b244d7c6 100644
          if (getVideoConnection() == nullptr)
              refreshConnections();
      }
-@@ -509,7 +859,7 @@ private:
+@@ -509,7 +897,7 @@ private:
  
          if (connections != nil)
              for (AVCaptureConnection* connection in connections)
@@ -667,7 +705,7 @@ index ddcba1f320..48b244d7c6 100644
                      for (AVCaptureInputPort* port in [connection inputPorts])
                          if ([[port mediaType] isEqual: AVMediaTypeVideo])
                              return connection;
-@@ -534,17 +884,82 @@ private:
+@@ -534,17 +922,82 @@ private:
          listeners.call ([=] (Listener& l) { l.imageReceived (image); });
  
          if (! listeners.isEmpty())
@@ -754,7 +792,7 @@ index ddcba1f320..48b244d7c6 100644
      }
  
      void cameraSessionRuntimeError (const String& error)
-@@ -557,6 +972,8 @@ private:
+@@ -557,6 +1010,8 @@ private:
      //==============================================================================
      CameraDevice& owner;
      String deviceName;
@@ -763,7 +801,7 @@ index ddcba1f320..48b244d7c6 100644
  
      AVCaptureSession* session = nil;
      AVCaptureMovieFileOutput* fileOutput = nil;
-@@ -566,7 +983,15 @@ private:
+@@ -566,7 +1021,15 @@ private:
      id<AVCaptureFileOutputRecordingDelegate> callbackDelegate = nil;
      String openingError;
      Time firstPresentationTime;

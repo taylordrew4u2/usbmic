@@ -60,8 +60,9 @@ public:
     /// only to keep the §6.4 remaining-time estimate honest once video is in
     /// the take. Deliberately pessimistic: telling someone they have less room
     /// than they do costs them nothing, and the reverse costs them the end of
-    /// their recording.
-    static constexpr int64_t kEstimatedVideoBytesPerSecond = 4 * 1000 * 1000; // ~32 Mbit/s
+    /// their recording. Sized for a 4K camera on a Mac (the 4K preset is used
+    /// whenever a camera can run it at ~30 fps), not for 1080p.
+    static constexpr int64_t kEstimatedVideoBytesPerSecond = 8 * 1000 * 1000; // ~64 Mbit/s
 
     /// Replaces the list of connected cameras, keeping every choice already
     /// made about a camera that is still there. A camera that comes back after
