@@ -43,6 +43,10 @@ public:
         /// live. Otherwise this is the actionable waiting/open failure shown
         /// in place of a misleading black preview.
         juce::String signalStatusText;
+        CameraQuality quality = CameraQuality::Best;
+        /// What the camera says it is delivering ("3840 x 2160, 30 fps").
+        /// Empty until it reports, and on platforms that don't.
+        juce::String activeFormatText;
     };
 
     /// The camera list and the state of each one. Rebuilds the rows -- and the
@@ -72,6 +76,7 @@ public:
     std::function<void (const std::string&, bool)> onCameraEnabledChanged;
     std::function<void (const std::string&, const juce::String&)> onCameraRenamed;
     std::function<void (PreviewQuality)> onPreviewQualityChanged;
+    std::function<void (const std::string&, CameraQuality)> onCameraQualityChanged;
     std::function<void()> onCloseClicked;
 
 private:
@@ -85,6 +90,9 @@ private:
         std::unique_ptr<juce::Component> viewer;
         std::unique_ptr<juce::Label> placeholder;
         std::unique_ptr<juce::Label> fileName;
+        std::unique_ptr<juce::Label> qualityLabel;
+        std::unique_ptr<juce::ComboBox> qualityCombo;
+        std::unique_ptr<juce::Label> formatLabel;
     };
 
     juce::Label heading, explanation, problemLabel, unavailableLabel;
@@ -105,6 +113,8 @@ private:
     juce::StringArray lastFileNames;
     std::vector<uint64_t> lastViewerRevisions;
     juce::StringArray lastSignalStatusTexts;
+    std::vector<int> lastQualities;
+    juce::StringArray lastFormatTexts;
     PreviewQuality previewQuality = PreviewQuality::Low;
     bool recording = false;
     int recordingCameraCount = 0;
@@ -113,6 +123,7 @@ private:
     int viewHeight() const;
     void rebuildRows (const std::vector<CameraRow>& cameras);
     void updateRecordingHeading();
+    static juce::String formatLine (const CameraRow& camera, bool recordingNow);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CameraPanel)
 };

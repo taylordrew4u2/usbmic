@@ -160,6 +160,16 @@ public:
     /// picture. Empty once a frame has arrived.
     juce::String getSignalStatusText (const std::string& deviceId) const;
 
+    /// "3840 x 2160, 30 fps": what this camera reported it is actually
+    /// delivering, once its session started. Empty until then, and on
+    /// platforms that do not report it.
+    juce::String getActiveFormatText (const std::string& deviceId) const;
+
+    /// The user picked a recording quality for one camera. Remembered, and
+    /// applied by reopening the camera -- never during a take, whose cameras
+    /// are fixed until Stop.
+    void setCameraQuality (const std::string& id, CameraQuality quality);
+
 #if defined(SOBSTAGE_CAMERA_SIMULATION)
     /// Advances only the signal-timeout clock used by the deterministic camera
     /// simulator. Shipping builds always use the monotonic system clock.
@@ -271,6 +281,7 @@ private:
         bool firstFrameReceived = false;
         bool signalTimedOut = false;
         int blackFramesInARow = 0;
+        juce::String activeFormatText;
         bool pictureBlack = false;
         double openedAtMs = 0.0;
         double lastFrameAtMs = 0.0;
@@ -337,9 +348,18 @@ private:
         double startOffsetSeconds = 0.0;
     };
 
+    struct FormatNotification
+    {
+        std::string id;
+        uint64_t viewerRevision = 0;
+        int width = 0, height = 0;
+        double fps = 0.0;
+    };
+
     struct RuntimeErrorMailbox
     {
         std::mutex mutex;
+        std::vector<FormatNotification> formats;
         std::vector<RuntimeCameraError> pending;
         std::vector<FrameNotification> frames;
         std::vector<RecordingStartedNotification> recordingsStarted;

@@ -80,6 +80,7 @@ JsonValue AppSettings::toJson() const
         cv["id"] = JsonValue (c.id);
         cv["enabled"] = JsonValue (c.enabled);
         cv["assignedName"] = JsonValue (c.assignedName);
+        cv["quality"] = JsonValue (c.quality);
         cameraArr.push_back (cv);
     }
     root["cameras"] = cameraArr;
@@ -195,6 +196,7 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
 
             if (auto* n = cv.find ("enabled")) camera.enabled = n->asBool (false);
             if (auto* n = cv.find ("assignedName")) camera.assignedName = n->asString();
+            if (auto* n = cv.find ("quality")) camera.quality = n->asString();
             s.cameras.push_back (camera);
         }
 

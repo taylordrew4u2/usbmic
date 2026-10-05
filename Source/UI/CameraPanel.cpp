@@ -18,10 +18,10 @@ CameraPanel::CameraPanel()
 
     // The whole shape of the feature in one sentence, in the plain language
     // §10.2 requires: no codecs, no containers, no bitrates.
-    explanation.setText ("Turn on any camera that's plugged in and you'll see it live. "
-                         "Press record and it saves alongside the sound -- the picture and "
-                         "the sound are separate files, so the video has no sound of its own "
-                         "and your microphone tracks stay untouched.",
+    explanation.setText ("Every camera that's plugged in shows live here and records with the "
+                         "sound, each to its own file. The video files have no sound of their "
+                         "own, so your microphone tracks stay untouched. Switch off any camera "
+                         "you don't want.",
                          juce::dontSendNotification);
     explanation.setFont (juce::Font (13.0f));
     explanation.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
@@ -40,8 +40,8 @@ CameraPanel::CameraPanel()
 
     // Said out loud, because it is the question this toggle raises and the
     // wrong answer would make someone record a worse take to save some CPU.
-    qualityNote.setText ("Recording asks the camera for high-quality video. This only "
-                         "changes the picture on this screen.", juce::dontSendNotification);
+    qualityNote.setText ("This only changes the picture on this screen. How much each "
+                         "camera records is its Quality setting below.", juce::dontSendNotification);
     qualityNote.setFont (juce::Font (12.0f));
     qualityNote.setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
     qualityNote.setMinimumHorizontalScale (1.0f);
@@ -62,6 +62,17 @@ CameraPanel::CameraPanel()
 }
 
 CameraPanel::~CameraPanel() = default;
+
+juce::String CameraPanel::formatLine (const CameraRow& camera, bool recordingNow)
+{
+    if (! camera.enabled || ! camera.available)
+        return {};
+
+    if (camera.activeFormatText.isNotEmpty())
+        return (recordingNow ? "Recording at " : "Running at ") + camera.activeFormatText;
+
+    return camera.signalStatusText.isEmpty() ? juce::String() : juce::String ("Not running yet");
+}
 
 int CameraPanel::viewHeight() const
 {
@@ -175,9 +186,13 @@ void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
     juce::StringArray fileNames;
     std::vector<uint64_t> viewerRevisions;
     juce::StringArray signalStatusTexts;
+    std::vector<int> qualities;
+    juce::StringArray formatTexts;
 
     for (const auto& camera : cameras)
     {
+        qualities.push_back (static_cast<int> (camera.quality));
+        formatTexts.add (camera.activeFormatText);
         ids.push_back (camera.id);
         enabled.push_back (camera.enabled ? 1 : 0);
         available.push_back (camera.available ? 1 : 0);
@@ -195,8 +210,23 @@ void CameraPanel::setCameras (const std::vector<CameraRow>& cameras)
         && startingThisTake == lastStartingThisTake
         && fileNames == lastFileNames
         && viewerRevisions == lastViewerRevisions
-        && signalStatusTexts == lastSignalStatusTexts)
+        && signalStatusTexts == lastSignalStatusTexts
+        && qualities == lastQualities)
+    {
+        // What the camera reports arrives a moment after it opens. Say it in
+        // place: a rebuild would reparent the live preview for one label.
+        if (formatTexts != lastFormatTexts && rows.size() == cameras.size())
+            for (size_t i = 0; i < rows.size(); ++i)
+                if (rows[i].formatLabel != nullptr)
+                    rows[i].formatLabel->setText (formatLine (cameras[i], recording),
+                                                  juce::dontSendNotification);
+
+        lastFormatTexts = std::move (formatTexts);
         return;
+    }
+
+    lastQualities = std::move (qualities);
+    lastFormatTexts = std::move (formatTexts);
 
     lastCameraIds = std::move (ids);
     lastEnabled = std::move (enabled);
@@ -283,6 +313,37 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
                                juce::dontSendNotification);
         addAndMakeVisible (*row.fileName);
 
+        // How much picture to ask this camera for. Best is whatever it can do
+        // smoothly up to 4K; the caps are for a slow card, a full one, or a
+        // busy machine. Fixed for the take, like everything else about it.
+        row.qualityLabel = std::make_unique<juce::Label>();
+        row.qualityLabel->setText ("Quality", juce::dontSendNotification);
+        row.qualityLabel->setFont (juce::Font (13.0f));
+        row.qualityLabel->setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
+        addAndMakeVisible (*row.qualityLabel);
+
+        row.qualityCombo = std::make_unique<juce::ComboBox>();
+        row.qualityCombo->addItem ("Best (up to 4K)", 1 + static_cast<int> (CameraQuality::Best));
+        row.qualityCombo->addItem ("1080p", 1 + static_cast<int> (CameraQuality::HD1080));
+        row.qualityCombo->addItem ("720p (smaller files)", 1 + static_cast<int> (CameraQuality::HD720));
+        row.qualityCombo->setSelectedId (1 + static_cast<int> (camera.quality), juce::dontSendNotification);
+        row.qualityCombo->setTitle ("Recording quality for " + camera.displayName);
+        row.qualityCombo->setEnabled (! recording);
+        row.qualityCombo->setWantsKeyboardFocus (false);
+        row.qualityCombo->onChange = [this, id = camera.id, combo = row.qualityCombo.get()] {
+            const int selected = combo->getSelectedId();
+            if (selected > 0 && onCameraQualityChanged)
+                onCameraQualityChanged (id, static_cast<CameraQuality> (selected - 1));
+        };
+        addAndMakeVisible (*row.qualityCombo);
+
+        row.formatLabel = std::make_unique<juce::Label>();
+        row.formatLabel->setText (formatLine (camera, recording), juce::dontSendNotification);
+        row.formatLabel->setFont (juce::Font (12.0f));
+        row.formatLabel->setColour (juce::Label::textColourId, AppLookAndFeel::tertiary);
+        row.formatLabel->setMinimumHorizontalScale (1.0f);
+        addAndMakeVisible (*row.formatLabel);
+
         if (camera.enabled && camera.available && makeViewer)
             row.viewer = makeViewer (camera.id);
 
@@ -336,7 +397,7 @@ int CameraPanel::getRequiredHeight() const
         height += 40;
 
     for (size_t i = 0; i < rows.size(); ++i)
-        height += kRowHeight + 18 + 6 + viewHeight() + kViewGap;
+        height += kRowHeight + 18 + 4 + kRowHeight + 6 + viewHeight() + kViewGap;
 
     if (rows.empty())
         height += 60;
@@ -399,6 +460,13 @@ void CameraPanel::resized()
         row.enabledToggle->setBounds (header);
 
         row.fileName->setBounds (area.removeFromTop (18));
+        area.removeFromTop (4);
+
+        auto settingsLine = area.removeFromTop (kRowHeight);
+        row.qualityLabel->setBounds (settingsLine.removeFromLeft (60));
+        row.qualityCombo->setBounds (settingsLine.removeFromLeft (juce::jmin (180, settingsLine.getWidth() / 2)).reduced (0, 2));
+        settingsLine.removeFromLeft (12);
+        row.formatLabel->setBounds (settingsLine);
         area.removeFromTop (6);
         auto view = area.removeFromTop (viewHeight());
 

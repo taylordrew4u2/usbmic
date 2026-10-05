@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.13.18 -- 2026-10-05 (release candidate)
+
+Better camera settings.
+
+### Added
+
+- **Camera settings, per camera.** Each camera in the Cameras panel now has a
+  **Quality** choice: Best (up to 4K), 1080p, or 720p for smaller files. It is
+  remembered, and changing it reopens the camera straight away (not during a
+  take).
+- **See what each camera is really doing.** Each camera row says what it is
+  running at, for example "Running at 3840 x 2160, 30 fps" (Mac).
+- The free-space and card-speed checks now budget each camera at its own
+  quality, so a camera turned down to 720p no longer counts as a 4K stream.
+- Clearer wording in the Cameras panel.
+
 ## v1.13.17 -- 2026-10-05 (release candidate)
 
 4K camera recording on the Mac.

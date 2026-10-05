@@ -550,6 +550,7 @@ public:
     void setCameraEnabled (const std::string& id, bool enabled);
     void setCameraName (const std::string& id, const juce::String& name);
     void setCameraPreviewQuality (PreviewQuality quality);
+    void setCameraQuality (const std::string& id, CameraQuality quality);
     PreviewQuality getCameraPreviewQuality() const { return cameraController.getPreviewQuality(); }
 
     /// Opens cameras the user explicitly enabled. A newly discovered camera is
