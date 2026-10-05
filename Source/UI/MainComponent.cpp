@@ -212,6 +212,16 @@ MainComponent::MainComponent (Application& app)
 
     advancedPanel.onDownloadUpdateClicked = [this] { application.openUpdatePage(); };
 
+    advancedPanel.onLoadShowClicked = [this] (const juce::String& name) {
+        // The rig is rebuilt by the load, which rebinds the strips through the
+        // capture callback; the panel is restated now so it shows the show.
+        application.applyTemplate (name);
+        refreshAdvanced();
+    };
+
+    advancedPanel.onSaveShowClicked = [this] { promptSaveShow(); };
+    advancedPanel.onDeleteShowClicked = [this] (const juce::String& name) { confirmDeleteShow (name); };
+
     // §10.1/§6.2: the question asked before the first take, and the answer
     // given after every one. Children of this component rather than
     // AlertWindows so they arrive in the app's own palette and spacing, and
@@ -875,6 +885,64 @@ void MainComponent::promptRenameMic (int index)
         true); // delete the window when dismissed
 }
 
+void MainComponent::refreshShows (const juce::String& select)
+{
+    advancedPanel.setShows (application.listTemplates(), select);
+}
+
+void MainComponent::promptSaveShow()
+{
+    auto* window = new juce::AlertWindow ("Save this setup as a show",
+                                          "Microphone names, trims and switches, headphones, cameras, "
+                                          "where takes go and the recording format -- all brought back "
+                                          "with one click. A show with the same name is replaced.",
+                                          juce::MessageBoxIconType::QuestionIcon, this);
+    window->addTextEditor ("name", advancedPanel.getSelectedShow());
+    window->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    window->enterModalState (true,
+        juce::ModalCallbackFunction::create ([this, window] (int result)
+        {
+            if (result == 1)
+            {
+                const auto name = window->getTextEditorContents ("name").trim();
+
+                if (application.saveTemplate (name))
+                    refreshShows (name);
+
+                refreshAdvanced();
+            }
+
+            grabKeyboardFocus();
+        }),
+        true);
+}
+
+void MainComponent::confirmDeleteShow (const juce::String& name)
+{
+    if (name.isEmpty())
+        return;
+
+    // Asked, because it cannot be undone and the button sits beside Load.
+    auto* window = new juce::AlertWindow ("Delete \"" + name + "\"?",
+                                          "The saved show is removed. Your current setup is not changed.",
+                                          juce::MessageBoxIconType::WarningIcon, this);
+    window->addButton ("Delete", 1);
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    window->enterModalState (true,
+        juce::ModalCallbackFunction::create ([this, name] (int result)
+        {
+            if (result == 1 && application.deleteTemplate (name))
+                refreshShows();
+
+            refreshAdvanced();
+            grabKeyboardFocus();
+        }),
+        true);
+}
+
 void MainComponent::refreshStatus()
 {
     // AVFoundation closes movie files on its own callback queue. Consume that
@@ -1467,6 +1535,7 @@ void MainComponent::toggleAdvanced()
             cameraPanel.setCameras ({});
         }
 
+        refreshShows();
         refreshAdvanced();
     }
 

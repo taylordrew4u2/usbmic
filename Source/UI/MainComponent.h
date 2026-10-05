@@ -157,6 +157,13 @@ private:
     std::unique_ptr<juce::FileChooser> folderChooser;
     void promptRenameMic (int index);
 
+    /// Show templates. The list is read from disk when Settings opens and after
+    /// a save or delete, never on the refresh tick: it is a folder of files, and
+    /// nothing else changes it while the app is running.
+    void refreshShows (const juce::String& select = {});
+    void promptSaveShow();
+    void confirmDeleteShow (const juce::String& name);
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
 

@@ -18,6 +18,7 @@
 #include "../Core/SampleRateNegotiator.h"
 #include "../Core/WriteSafetyActions.h"
 #include "../Core/UpdateCheck.h"
+#include "../Core/ShowTemplate.h"
 #include "../Platform/NullBackend.h"
 #include <algorithm>
 #include <cstdio>
@@ -6164,6 +6165,213 @@ void Application::saveSettings()
                       "Couldn't save your settings, so they may not be remembered next time.");
 
     rememberedSettings = settings;
+}
+
+juce::File Application::getTemplatesFolder()
+{
+    return getSupportFolder().getChildFile ("Templates");
+}
+
+juce::File Application::getTemplateFile (const juce::String& name)
+{
+    // Sanitized by the same §6.2 rule as a session folder, so a typed name can
+    // never point outside Templates/ or carry a character the disk refuses.
+    const auto fileName = ShowTemplate::fileNameFor (name.toStdString());
+    return fileName.empty() ? juce::File() : getTemplatesFolder().getChildFile (juce::String (fileName));
+}
+
+juce::StringArray Application::listTemplates() const
+{
+    juce::StringArray names;
+
+    for (const auto& entry : juce::RangedDirectoryIterator (getTemplatesFolder(), false, "*.json",
+                                                            juce::File::findFiles))
+    {
+        const auto file = entry.getFile();
+        const auto loaded = ShowTemplate::fromJsonString (file.loadFileAsString().toStdString());
+
+        // A file that is not a template is not offered: loading it would only
+        // say it could not be read.
+        if (! loaded.has_value())
+            continue;
+
+        // The name as typed, unless it no longer leads back to this file -- one
+        // renamed by hand -- in which case the file's own name, which does.
+        const auto typed = juce::String (loaded->name);
+        names.addIfNotAlreadyThere (typed.isNotEmpty() && getTemplateFile (typed) == file
+                                        ? typed : file.getFileNameWithoutExtension());
+    }
+
+    names.sortNatural();
+    return names;
+}
+
+bool Application::saveTemplate (const juce::String& name)
+{
+    const auto clean = juce::String (ShowTemplate::cleanName (name.toStdString()));
+    const auto file = getTemplateFile (clean);
+
+    if (file == juce::File())
+    {
+        noteActivity (ActivityLevel::Warning, "Shows",
+                      "A show needs a name with at least one letter or number in it.");
+        return false;
+    }
+
+    // Brings rememberedSettings up to the rig as it stands, so what is saved
+    // is what the user is looking at rather than what was true at launch.
+    saveSettings();
+
+    std::vector<std::string> connected;
+    for (const auto& device : deviceManager.getDevices())
+        connected.push_back (device.identity.key());
+
+    const auto show = ShowTemplate::extract (clean.toStdString(), rememberedSettings, connected);
+
+    file.getParentDirectory().createDirectory();
+
+    if (! replaceWithTextChecked (file, juce::String (show.toJsonString())))
+    {
+        noteActivity (ActivityLevel::Failed, "Shows",
+                      "Couldn't save the show \"" + clean + "\", so it won't be in the list.");
+        return false;
+    }
+
+    noteActivity (ActivityLevel::Started, "Shows",
+                  "Saved this setup as \"" + clean + "\".");
+    return true;
+}
+
+bool Application::applyTemplate (const juce::String& name)
+{
+    // §6.5 fixes a take's microphones, names and destination until it stops,
+    // and half of a show applying now and half at Stop is not a show at all.
+    if (isRecording() || (capture != nullptr && capture->isRecording()))
+    {
+        noteActivity (ActivityLevel::Warning, "Shows",
+                      "Can't load \"" + name + "\" while a take is being recorded. Stop first, "
+                      "then load it.");
+        return false;
+    }
+
+    const auto file = getTemplateFile (name);
+    const auto loaded = file.existsAsFile()
+                            ? ShowTemplate::fromJsonString (file.loadFileAsString().toStdString())
+                            : std::nullopt;
+
+    if (! loaded.has_value())
+    {
+        noteActivity (ActivityLevel::Failed, "Shows",
+                      "Couldn't read the saved show \"" + name + "\", so nothing was changed.");
+        return false;
+    }
+
+    // Laid over the rig as it stands right now, not as it was at launch, so
+    // anything the show does not mention stays exactly as the user left it.
+    saveSettings();
+    rememberedSettings = loaded->applyTo (rememberedSettings);
+    const auto& s = rememberedSettings;
+
+    const bool rateChanged = s.sampleRateOverride != sampleRateOverride;
+    const bool destinationChanged = s.destinationFolder != destinationFolder;
+
+    // The same assignments loadSettings() makes at launch, guarded the same
+    // way so no intermediate state is written back over the file.
+    applyingRememberedSettings = true;
+
+    askWhereToSaveEveryTime = s.askWhereToSaveEveryTime;
+    mirrorPolicy.setEnabledByUser (s.mirrorEnabled);
+    masterVolume = s.masterVolume;
+    rememberedOutputDeviceId = s.rememberedOutputDeviceId;
+    monitorThroughCombinedDevice = s.monitorThroughCombinedDevice;
+    headphonesOffKeys = { s.headphonesOffKeys.begin(), s.headphonesOffKeys.end() };
+    combineVideoAndAudio = s.combineVideoAndAudio;
+    deliveryTarget = juce::String (s.deliveryTarget);
+    sampleRateOverride = s.sampleRateOverride;
+
+    // 0 is the default depth, which is 24 -- saveSettings() writes 24 as 0.
+    if (s.bitDepthOverride == 16 || s.bitDepthOverride == 24 || s.bitDepthOverride == 32)
+        currentBitDepth = s.bitDepthOverride;
+    else if (s.bitDepthOverride == 0)
+        currentBitDepth = 24;
+
+    if (auto* bus = getMonitorBus())
+        bus->setMasterVolume (masterVolume);
+
+    // §2.4: back into the store every path already reads names and trims from.
+    for (const auto& port : s.ports)
+    {
+        PortIdentity id;
+        id.locationId = port.key;
+        portIdentityStore.put (id, port.settings);
+    }
+
+    // Both ways, unlike applyRememberedDeviceSettings(): at launch nothing is
+    // switched off yet, but a show can have someone back on tonight.
+    for (const auto& device : deviceManager.getDevices())
+    {
+        const auto key = device.identity.key();
+        const bool wantEnabled = ! s.isMicDisabled (key);
+
+        if (device.userEnabled != wantEnabled)
+            deviceManager.setUserEnabled (key, wantEnabled);
+    }
+
+    // Only the cameras the show names, and only where the answer differs:
+    // switching one on through the user's path also clears a crash guard, and
+    // that is not something to do to a camera the show never mentioned.
+    for (const auto& camera : loaded->cameras)
+    {
+        if (cameraController.getSelection().isEnabled (camera.id) != camera.enabled)
+            cameraController.setCameraEnabledByUser (camera.id, camera.enabled);
+
+        cameraController.setCameraQuality (camera.id, cameraQualityFromKey (camera.quality));
+
+        if (! camera.assignedName.empty())
+            cameraController.getSelection().setAssignedName (camera.id, camera.assignedName);
+    }
+
+    applyingRememberedSettings = false;
+
+    // Then the live rig catches up, through the same paths the Settings
+    // controls take. The destination goes through its own checks rather than
+    // being assigned, so a card that has gone away is found before a take.
+    if (destinationChanged && ! s.destinationFolder.empty())
+        setDestinationFolder (juce::File (juce::String (s.destinationFolder)));
+
+    applyHeadphoneGains();
+    reselectOutputDevice();
+
+    // A new rate reopens the streams through the hot-plug path, as the rate
+    // picker does; otherwise a rebuild is enough to pick up names, trims and
+    // which microphones are on.
+    if (rateChanged)
+        onDeviceListChanged();
+    else
+        restartCapture();
+
+    saveSettings();
+
+    noteActivity (ActivityLevel::Started, "Shows", "Loaded \"" + name + "\".");
+    return true;
+}
+
+bool Application::deleteTemplate (const juce::String& name)
+{
+    const auto file = getTemplateFile (name);
+
+    if (! file.existsAsFile())
+        return false;
+
+    if (! file.deleteFile())
+    {
+        noteActivity (ActivityLevel::Failed, "Shows",
+                      "Couldn't delete the saved show \"" + name + "\".");
+        return false;
+    }
+
+    noteActivity (ActivityLevel::Stopped, "Shows", "Deleted the saved show \"" + name + "\".");
+    return true;
 }
 
 juce::File Application::getLogFile()
