@@ -94,6 +94,20 @@ private:
 
     std::fstream file;
     std::string currentFilePath;
+
+    /// A second descriptor on the open file, held for the life of that file,
+    /// that the periodic sync and the last-resort header patch go through.
+    ///
+    /// Both used to reopen the file BY PATH every time. The take's own stream
+    /// follows the file wherever it goes, but a path does not: rename the take
+    /// folder in Finder mid-take, or drag it somewhere else on the same card,
+    /// and the very next 5-second sync failed to open a path that no longer
+    /// existed. That failure reads as the card going away, so a healthy take
+    /// was stopped under "the drive stopped responding" within five seconds.
+    /// POSIX only; -1 when not open (and always on Windows, which will not
+    /// rename a folder holding an open file in the first place).
+    int syncDescriptor = -1;
+    void closeSyncDescriptor() noexcept;
     std::string writeProblem;
     bool outOfSpace = false;
     uint64_t dataBytesWrittenToCurrentFile = 0;
