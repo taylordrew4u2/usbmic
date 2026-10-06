@@ -299,6 +299,14 @@ private:
     /// reason exists to end, so the band is measured from the text.
     int monitorProblemHeight() const noexcept;
 
+    /// The advice line and the reason the record button is off, each one line
+    /// unless its sentence needs more, then up to three. Measured the way JUCE
+    /// will wrap it when it draws, so a reason is never cut off mid-sentence
+    /// and a short one never moves anything.
+    int adviceHeight() const noexcept { return wrappedLineHeight (adviceLabel); }
+    int disabledReasonHeight() const noexcept { return wrappedLineHeight (disabledReasonLabel); }
+    int wrappedLineHeight (const juce::Label& label) const noexcept;
+
     /// Lays out again and tells the owner, via onRequiredHeightChanged.
     void requiredHeightChanged();
 

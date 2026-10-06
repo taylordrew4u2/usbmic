@@ -313,4 +313,107 @@ std::string ShowTemplate::fileNameFor (const std::string& name)
     return stem.empty() ? std::string() : stem + ".json";
 }
 
+namespace {
+
+std::string lowerAscii (std::string s)
+{
+    std::transform (s.begin(), s.end(), s.begin(),
+                    [] (char c) { return static_cast<char> (std::tolower (static_cast<unsigned char> (c))); });
+    return s;
+}
+
+bool sameFileName (const std::string& a, const std::string& b)
+{
+    return lowerAscii (a) == lowerAscii (b);
+}
+
+std::string stemOf (const std::string& fileName)
+{
+    const auto dot = fileName.rfind ('.');
+    return dot == std::string::npos ? fileName : fileName.substr (0, dot);
+}
+
+} // namespace
+
+std::vector<std::pair<std::string, std::string>> ShowTemplate::listShows (const std::vector<StoredFile>& files)
+{
+    // In file-name order, so which of two copies keeps the name does not
+    // depend on the order the disk happened to return them in.
+    std::vector<const StoredFile*> sorted;
+    for (const auto& f : files)
+        if (f.name.has_value() && ! f.fileName.empty())
+            sorted.push_back (&f);
+
+    std::sort (sorted.begin(), sorted.end(),
+               [] (const StoredFile* a, const StoredFile* b) { return a->fileName < b->fileName; });
+
+    std::vector<std::pair<std::string, std::string>> shows;
+    std::set<const StoredFile*> placed;
+
+    const auto claim = [&] (const std::string& listed, const StoredFile* f)
+    {
+        if (listed.empty() || placed.count (f) != 0)
+            return;
+
+        for (const auto& show : shows)
+            if (show.first == listed)
+                return;
+
+        shows.emplace_back (listed, f->fileName);
+        placed.insert (f);
+    };
+
+    // A name's own file first, then the "-2" files that names sharing it were
+    // given, then whatever is left under its file name.
+    for (const auto* f : sorted)
+        if (sameFileName (f->fileName, fileNameFor (*f->name)))
+            claim (cleanName (*f->name), f);
+
+    for (const auto* f : sorted)
+        claim (cleanName (*f->name), f);
+
+    for (const auto* f : sorted)
+        claim (stemOf (f->fileName), f);
+
+    return shows;
+}
+
+std::string ShowTemplate::findFileFor (const std::string& name, const std::vector<StoredFile>& files)
+{
+    const auto clean = cleanName (name);
+
+    for (const auto& show : listShows (files))
+        if (show.first == clean)
+            return show.second;
+
+    return {};
+}
+
+std::string ShowTemplate::fileNameForSaving (const std::string& name, const std::vector<StoredFile>& files)
+{
+    const auto base = fileNameFor (name);
+
+    if (base.empty())
+        return {};
+
+    if (auto own = findFileFor (name, files); ! own.empty())
+        return own;
+
+    // Any file at all counts as taken, a stray one that is not a template
+    // included: saving must never write over something it did not make.
+    const auto taken = [&files] (const std::string& candidate)
+    {
+        return std::any_of (files.begin(), files.end(),
+                            [&candidate] (const StoredFile& f) { return sameFileName (f.fileName, candidate); });
+    };
+
+    const auto stem = stemOf (base);
+    auto candidate = base;
+
+    for (int suffix = 2; taken (candidate); ++suffix)
+        candidate = stem + "-" + std::to_string (suffix) + ".json";
+
+    return candidate;
+}
+
 } // namespace mma
