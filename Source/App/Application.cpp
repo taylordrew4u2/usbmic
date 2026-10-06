@@ -6339,6 +6339,9 @@ void Application::saveSettings()
         return;
 
     AppSettings settings;
+    // Whatever a newer version wrote that this one cannot read goes back out
+    // as it came in, so running an older copy once does not erase it.
+    settings.keepUnknownFieldsFrom (rememberedSettings);
     settings.destinationFolder = destinationFolder;
     settings.confirmedSaveLocation = confirmedSaveLocation;
     settings.askWhereToSaveEveryTime = askWhereToSaveEveryTime;

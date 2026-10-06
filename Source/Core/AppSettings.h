@@ -1,7 +1,9 @@
 #pragma once
 #include "Json.h"
 #include "PortIdentity.h"
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mma {
@@ -133,6 +135,27 @@ struct AppSettings
     /// launch.
     std::vector<std::string> disabledMicKeys;
     std::vector<PersistedCamera> cameras;
+
+    /// Members a newer version wrote that this one does not know, kept so
+    /// they are written back exactly as they were read. Without them, opening
+    /// an older copy of the app once -- the one still in the DMG, or one kept
+    /// after a downgrade -- rewrote settings.json on the first change and
+    /// silently threw away every setting the newer version had added, so the
+    /// newer copy came back having forgotten them. Top-level members, and
+    /// those inside each port (by port key) and camera (by id) entry.
+    using UnknownMembers = std::vector<std::pair<std::string, JsonValue>>;
+    UnknownMembers unknownFields;
+    std::map<std::string, UnknownMembers> unknownPortFields;
+    std::map<std::string, UnknownMembers> unknownCameraFields;
+
+    /// Carries another AppSettings' unknown members onto this one: what the
+    /// App layer does when it rebuilds the settings from the live rig.
+    void keepUnknownFieldsFrom (const AppSettings& other)
+    {
+        unknownFields = other.unknownFields;
+        unknownPortFields = other.unknownPortFields;
+        unknownCameraFields = other.unknownCameraFields;
+    }
 
     JsonValue toJson() const;
     static AppSettings fromJson (const JsonValue& v);

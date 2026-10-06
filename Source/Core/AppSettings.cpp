@@ -4,6 +4,59 @@
 
 namespace mma {
 
+namespace {
+
+void appendUnknown (JsonValue& object, const AppSettings::UnknownMembers& unknown)
+{
+    // Never over a member this version wrote itself: what it knows, it owns.
+    for (const auto& [key, value] : unknown)
+        if (object.find (key) == nullptr)
+            object[key] = value;
+}
+
+AppSettings::UnknownMembers unknownMembersOf (const JsonValue& object, const JsonValue& known)
+{
+    AppSettings::UnknownMembers unknown;
+
+    for (const auto& [key, value] : object.getMembers())
+        if (known.find (key) == nullptr)
+            unknown.emplace_back (key, value);
+
+    return unknown;
+}
+
+/// What this version writes, at the top level and inside one port and one
+/// camera entry. Taken from toJson() itself, so a member added there is known
+/// here without a second list to keep in step.
+struct KnownShapes
+{
+    JsonValue top, port, camera;
+
+    KnownShapes()
+    {
+        AppSettings sample;
+        sample.ports.push_back ({ "k", {} });
+        PersistedCamera sampleCamera;
+        sampleCamera.id = "c";
+        sample.cameras.push_back (sampleCamera);
+        top = sample.toJson();
+
+        if (const auto* p = top.find ("ports"); p != nullptr && ! p->asArray().empty())
+            port = p->asArray().front();
+
+        if (const auto* c = top.find ("cameras"); c != nullptr && ! c->asArray().empty())
+            camera = c->asArray().front();
+    }
+};
+
+const KnownShapes& knownShapes()
+{
+    static const KnownShapes shapes;
+    return shapes;
+}
+
+} // namespace
+
 JsonValue AppSettings::toJson() const
 {
     JsonValue root = JsonValue::makeObject();
@@ -65,6 +118,9 @@ JsonValue AppSettings::toJson() const
         }
         pv["inputTrims"] = inputTrims;
 
+        if (const auto it = unknownPortFields.find (p.key); it != unknownPortFields.end())
+            appendUnknown (pv, it->second);
+
         portArr.push_back (pv);
     }
     root["ports"] = portArr;
@@ -87,9 +143,15 @@ JsonValue AppSettings::toJson() const
         cv["enabled"] = JsonValue (c.enabled);
         cv["assignedName"] = JsonValue (c.assignedName);
         cv["quality"] = JsonValue (c.quality);
+
+        if (const auto it = unknownCameraFields.find (c.id); it != unknownCameraFields.end())
+            appendUnknown (cv, it->second);
+
         cameraArr.push_back (cv);
     }
     root["cameras"] = cameraArr;
+
+    appendUnknown (root, unknownFields);
 
     return root;
 }
@@ -184,6 +246,9 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
                         port.settings.inputTrimDb[input] = static_cast<float> (trimV->asDouble());
                 }
 
+            if (auto unknown = unknownMembersOf (pv, knownShapes().port); ! unknown.empty())
+                s.unknownPortFields[port.key] = std::move (unknown);
+
             s.ports.push_back (port);
         }
 
@@ -209,8 +274,14 @@ AppSettings AppSettings::fromJson (const JsonValue& v)
             if (auto* n = cv.find ("enabled")) camera.enabled = n->asBool (false);
             if (auto* n = cv.find ("assignedName")) camera.assignedName = n->asString();
             if (auto* n = cv.find ("quality")) camera.quality = n->asString();
+
+            if (auto unknown = unknownMembersOf (cv, knownShapes().camera); ! unknown.empty())
+                s.unknownCameraFields[camera.id] = std::move (unknown);
+
             s.cameras.push_back (camera);
         }
+
+    s.unknownFields = unknownMembersOf (v, knownShapes().top);
 
     return s;
 }

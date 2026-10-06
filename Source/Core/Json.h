@@ -52,6 +52,10 @@ public:
         return count;
     }
 
+    /// An object's members in the order they were read or added. Empty for
+    /// anything that is not an object.
+    const std::vector<std::pair<std::string, JsonValue>>& getMembers() const { return objectValue; }
+
     void push_back (JsonValue v) { arrayValue.push_back (std::move (v)); }
 
     JsonValue& operator[] (const std::string& key)
