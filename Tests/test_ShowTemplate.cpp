@@ -274,3 +274,57 @@ TEST_CASE (ShowTemplate_namesAreTidiedButKept)
     REQUIRE ((static_cast<unsigned char> (cut.back()) & 0xC0) == 0x80);
     REQUIRE ((static_cast<unsigned char> (cut[cut.size() - 2]) & 0xE0) == 0xC0);
 }
+
+TEST_CASE (ShowTemplate_namesThatSanitizeAlikeGetTheirOwnFiles)
+{
+    using F = ShowTemplate::StoredFile;
+    std::vector<F> folder;
+
+    // The first takes the plain file.
+    REQUIRE (ShowTemplate::fileNameForSaving ("Live stage", folder) == std::string ("Live-stage.json"));
+    folder.push_back ({ "Live-stage.json", std::string ("Live stage") });
+
+    // A different name that sanitizes the same way is not written over it.
+    REQUIRE (ShowTemplate::fileNameForSaving ("Live-stage", folder) == std::string ("Live-stage-2.json"));
+    folder.push_back ({ "Live-stage-2.json", std::string ("Live-stage") });
+    REQUIRE (ShowTemplate::fileNameForSaving ("live stage", folder) == std::string ("live-stage-3.json"));
+
+    // Saving the same name again replaces its own file, whichever it is.
+    REQUIRE (ShowTemplate::fileNameForSaving ("Live stage", folder) == std::string ("Live-stage.json"));
+    REQUIRE (ShowTemplate::fileNameForSaving ("  Live-stage ", folder) == std::string ("Live-stage-2.json"));
+
+    // Listed, loaded and deleted by the stored name.
+    REQUIRE (ShowTemplate::listShows (folder).size() == 2u);
+    REQUIRE (ShowTemplate::findFileFor ("Live stage", folder) == std::string ("Live-stage.json"));
+    REQUIRE (ShowTemplate::findFileFor ("Live-stage", folder) == std::string ("Live-stage-2.json"));
+    REQUIRE (ShowTemplate::findFileFor ("live stage", folder).empty());
+
+    // Nothing usable in the name: no file.
+    REQUIRE (ShowTemplate::fileNameForSaving ("!!!", folder).empty());
+}
+
+TEST_CASE (ShowTemplate_strayFilesAreNeverOverwrittenOrLost)
+{
+    using F = ShowTemplate::StoredFile;
+
+    // Not a template: never offered, never written over. Taken ignores case,
+    // because the Mac's disk does.
+    std::vector<F> folder { { "tuesday.json", std::nullopt } };
+    REQUIRE (ShowTemplate::listShows (folder).empty());
+    REQUIRE (ShowTemplate::fileNameForSaving ("Tuesday", folder) == std::string ("Tuesday-2.json"));
+
+    // A template with no name, and a copy made by hand, are listed by their
+    // file names so they can still be loaded or deleted.
+    folder = { { "Tuesday.json", std::string ("Tuesday") },
+               { "Tuesday-copy.json", std::string ("Tuesday") },
+               { "Old.json", std::string() } };
+    REQUIRE (ShowTemplate::findFileFor ("Tuesday", folder) == std::string ("Tuesday.json"));
+    REQUIRE (ShowTemplate::findFileFor ("Tuesday-copy", folder) == std::string ("Tuesday-copy.json"));
+    REQUIRE (ShowTemplate::findFileFor ("Old", folder) == std::string ("Old.json"));
+    REQUIRE (ShowTemplate::listShows (folder).size() == 3u);
+
+    // The name's own file wins over a copy that sorts first.
+    folder = { { "A-copy.json", std::string ("Show") }, { "Show.json", std::string ("Show") } };
+    REQUIRE (ShowTemplate::findFileFor ("Show", folder) == std::string ("Show.json"));
+    REQUIRE (ShowTemplate::findFileFor ("A-copy", folder) == std::string ("A-copy.json"));
+}

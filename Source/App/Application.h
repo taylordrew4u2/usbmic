@@ -14,6 +14,7 @@
 #include "../Core/TakeStopSnapshot.h"
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/AppSettings.h"
+#include "../Core/ShowTemplate.h"
 #include "../Core/SessionRecovery.h"
 #include "../Core/CardRemovalNotice.h"
 #include "../Core/PreflightThroughputTest.h"
@@ -1179,9 +1180,10 @@ private:
     void loadSettings();
     void saveSettings();
 
-    /// Where show templates live, and the file a named one is (or would be)
-    /// in. An invalid File when the name has nothing usable in it.
+    /// Where show templates live, what is in that folder, and the file the
+    /// show listed as `name` is kept in -- an invalid File when there is none.
     static juce::File getTemplatesFolder();
+    static std::vector<ShowTemplate::StoredFile> scanTemplateFiles();
     static juce::File getTemplateFile (const juce::String& name);
 
     struct RecoveryActivity

@@ -564,6 +564,94 @@ int main()
         }
     }
 
+    // --- Long advice and record-button reasons wrap rather than cut ---------
+    //
+    // Both lines were one fixed 20px row, so a sentence longer than the window
+    // was squashed and then cut off. They grow to fit -- below the record
+    // button, which must not move for a sentence that fits on one line.
+    {
+        std::printf ("\nAdvice and the record-button reason wrap to fit\n");
+
+        const juce::String shortText = "Choose where recordings go first.";
+        const juce::String longText = "Recording is off because the card that takes were going to has gone away. "
+                                      "Plug it back in, or choose another place to save in Settings, and the "
+                                      "button comes back on its own -- nothing recorded so far is lost.";
+
+        for (const int width : { 1180, 707, 560 })
+        {
+            const auto recordTop = [&findButton] (mma::MainScreen& s)
+            {
+                auto* b = findButton (s, "Start recording");
+                return b != nullptr ? b->getY() : -1;
+            };
+
+            const auto layOut = [width] (mma::MainScreen& s)
+            {
+                s.setSize (width, 420);
+                s.setVisibleHeight (420);
+                s.setSize (width, s.getRequiredHeight());
+                s.resized();
+            };
+
+            mma::MainScreen plain;
+            plain.setMicCount (3);
+            plain.setRecordButtonEnabled (false, shortText);
+            layOut (plain);
+            const int plainTop = recordTop (plain);
+
+            for (const bool longOne : { false, true })
+            {
+                mma::MainScreen s;
+                s.setMicCount (3);
+                const auto text = longOne ? longText : shortText;
+                s.setRecordButtonEnabled (false, text);
+                s.setAdviceText (text);
+                layOut (s);
+
+                bool ok = recordTop (s) == plainTop && plainTop >= 0;
+                // Both labels carry the same text here; the reason is the one
+                // directly under the button, the advice the lower one.
+                std::vector<juce::Label*> found;
+
+                for (int i = 0; i < s.getNumChildComponents(); ++i)
+                {
+                    auto* label = dynamic_cast<juce::Label*> (s.getChildComponent (i));
+                    if (label == nullptr || label->getText() != text)
+                        continue;
+
+                    // Lines the label's height allows JUCE to draw, against the
+                    // lines the sentence needs at this width.
+                    const auto font = label->getFont();
+                    const auto area = label->getBorderSize().subtractedFrom (label->getLocalBounds());
+                    const int allowed = juce::jmax (1, (int) ((float) area.getHeight() / font.getHeight()));
+                    const float needed = font.getStringWidthFloat (text);
+                    const bool fits = needed < (float) area.getWidth()
+                                   || (float) allowed > (needed + 80.0f) / (float) area.getWidth();
+
+                    ok = ok && fits && label->getBottom() <= s.getHeight() - 40 - 16;
+                    found.push_back (label);
+                }
+
+                std::sort (found.begin(), found.end(),
+                           [] (juce::Label* a, juce::Label* b) { return a->getY() < b->getY(); });
+                const int reasonHeight = found.size() == 2 ? found[0]->getHeight() : 0;
+                const int adviceHeight = found.size() == 2 ? found[1]->getHeight() : 0;
+
+                auto* mute = findButton (s, "Mute");
+                ok = ok && reasonHeight > 0 && adviceHeight > 0
+                        // A sentence that fits on one line keeps the 20px row;
+                        // the fit check above covers the ones that wrap.
+                        && (longOne || (reasonHeight == 20 && adviceHeight == 20))
+                        && mute != nullptr && mute->getHeight() >= 28;
+
+                std::printf ("  %s  %4dpx %-5s reason %2dpx, advice %2dpx, record button at y=%d\n",
+                             ok ? "PASS" : "FAIL", width, longOne ? "long" : "short",
+                             reasonHeight, adviceHeight, recordTop (s));
+                failures += ok ? 0 : 1;
+            }
+        }
+    }
+
     // --- The remaining-time line in a narrow window -------------------------
     //
     // Beside an open drawer the screen is ~707px wide, and the window can be
