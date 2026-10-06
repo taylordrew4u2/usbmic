@@ -20,7 +20,8 @@ Builds for macOS, Windows and Linux are produced by the
 - **macOS** — `SobStage-macOS.dmg`, a normal drag-to-install disk
   image: mount it and drag the app onto the Applications alias beside it.
   `SobStage-macOS.zip` carries the same `.app` for anyone who would
-  rather not mount an image.
+  rather not mount an image. Needs macOS 13 (Ventura) or later; one universal
+  app runs natively on Apple silicon and Intel Macs.
 - **Windows and Linux** — `SobStage-Windows.zip` and
   `-Linux.zip`.
 - **Tagged releases** — all of the above are attached to the
@@ -251,5 +252,10 @@ staples the app and this step goes away.
 ## Uninstalling
 
 Delete the app. The only things it leaves behind are your recordings
-(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above —
-remove those too if you want nothing left.
+(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above (which
+also holds your saved shows) — remove those too if you want nothing left.
+
+On a Mac, SobStage removes its combined **SobStage** input device when it
+quits and on its next launch. If it was force-quit or the Mac lost power and
+you then deleted the app, that device can still be listed: remove it in
+**Audio MIDI Setup** (select it and press the minus button).
