@@ -176,6 +176,15 @@ This workaround is for an ad-hoc signed build, which is what every release so
 far is. Once the workflow has Developer ID credentials it signs, notarizes and
 staples the app and this step goes away.
 
+**macOS asks for microphone or camera permission again after an update.**
+
+Expected with the current ad-hoc signed builds: macOS ties the permission to
+the exact signed copy of the app, and every update is a new one. Click
+**Allow** again. If no prompt appears and SobStage says it isn't allowed, open
+System Settings → Privacy & Security → Microphone (or Camera) and switch
+SobStage off and back on; SobStage picks up the change by itself. A Developer
+ID signed build keeps the permission across updates.
+
 ### Windows
 
 1. Unzip `SobStage-Windows.zip` anywhere (e.g. a folder in
