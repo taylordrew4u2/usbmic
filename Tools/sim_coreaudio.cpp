@@ -5,8 +5,11 @@
 // the backend once got wrong, or that it must keep getting right.
 
 #include "../Simulation/CoreAudio/FakeCoreAudio.h"
+#include "../Source/Core/HeadphoneRouting.h"
 #include "../Source/Core/SampleFormat.h"
 #include "../Source/Platform/CoreAudioBackend.h"
+#include "../Source/Platform/MacCoreAudioQueries.h"
+#include "../Source/Platform/SystemAggregateDevice.h"
 
 #include <chrono>
 #include <atomic>
@@ -508,6 +511,116 @@ void hogModeIsTakenAndReleased()
     backend.closeAllStreams();
     check (! fakeca::hogModeHeld (id), "and released on close, so other apps get the device back");
     check (fakeca::hogOwnerPid (id) == -1, "with the owner cleared, not just changed");
+}
+
+/// Hog mode is per device, not per direction. Taken on a microphone's own
+/// headphone jack it locked the microphone too, and Zoom or OBS recording from
+/// it -- or from the combined device it belongs to -- lost it. A plain output
+/// is still taken exclusively, so the rule is a carve-out, not a retreat.
+void hogModeIsNotTakenOnAMicrophonesOwnOutput()
+{
+    std::printf ("\nHog mode on an output that is also a microphone\n");
+    fakeca::reset();
+
+    auto yeti = microphone ("Yeti", "uid-yeti", 2, fakeca::BufferShape::interleaved);
+    yeti.outputChannels = 2;
+    const auto yetiId = fakeca::addDevice (yeti);
+    const auto plainId = fakeca::addDevice (headphones ("Interface Out", "uid-plain", 2,
+                                                        fakeca::BufferShape::oneChannelPerBuffer));
+
+    // An output-only endpoint the combined device lists as a sub-device: the
+    // inputs check alone would miss it.
+    const auto jackId = fakeca::addDevice (headphones ("Mic Jack", "uid-jack", 2,
+                                                       fakeca::BufferShape::oneChannelPerBuffer));
+    fakeca::DeviceSpec combined;
+    combined.name = "SobStage";
+    combined.uid = mma::kOurAggregateUid;
+    combined.inputChannels = 2;
+    combined.transportType = kAudioDeviceTransportTypeAggregate;
+    combined.subDeviceUids = { "uid-yeti", "uid-jack" };
+    fakeca::addDevice (combined);
+
+    const auto silent = [] (const float* const*, int, float* const*, int, int) {};
+
+    {
+        mma::CoreAudioBackend backend;
+        check (backend.openExclusiveOutputStream ("uid-yeti", 48000.0, 256, silent),
+               "the microphone's headphone jack still opens for monitoring");
+        check (fakeca::isRunning (yetiId), "and plays");
+        check (! fakeca::hogModeHeld (yetiId), "without hog mode, so other apps keep the microphone");
+        backend.closeAllStreams();
+    }
+
+    {
+        mma::CoreAudioBackend backend;
+        check (backend.openExclusiveOutputStream ("uid-jack", 48000.0, 256, silent),
+               "a sub-device of the combined device opens");
+        check (! fakeca::hogModeHeld (jackId), "without hog mode either");
+        backend.closeAllStreams();
+    }
+
+    {
+        mma::CoreAudioBackend backend;
+        check (backend.openExclusiveOutputStream ("uid-plain", 48000.0, 256, silent),
+               "a plain output opens");
+        check (fakeca::hogOwnerPid (plainId) == static_cast<int> (getpid()),
+               "and is still held exclusively by this process");
+        backend.closeAllStreams();
+        check (! fakeca::hogModeHeld (plainId), "until it is closed");
+    }
+}
+
+/// The combined device is built by the HAL after the create call returns, and
+/// read too soon it listed no sub-devices -- so no headphone jacks, and
+/// monitoring went to another output. The shared layout reads, against an
+/// aggregate whose sub-devices activate late, settle within the bounded wait.
+void aCombinedDeviceThatActivatesLateIsWaitedFor()
+{
+    std::printf ("\nA combined device whose sub-devices activate late\n");
+    fakeca::reset();
+
+    auto yetiA = microphone ("Yeti", "uid-yeti-a", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    yetiA.outputChannels = 2;
+    fakeca::addDevice (yetiA);
+    auto yetiB = microphone ("Yeti", "uid-yeti-b", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    yetiB.outputChannels = 2;
+    fakeca::addDevice (yetiB);
+
+    fakeca::DeviceSpec combined;
+    combined.name = "SobStage";
+    combined.uid = mma::kOurAggregateUid;
+    combined.transportType = kAudioDeviceTransportTypeAggregate;
+    combined.subDeviceUids = { "uid-yeti-a", "uid-yeti-b" };
+    combined.subDeviceActivationDelayReads = 4;
+    const auto combinedId = fakeca::addDevice (combined);
+
+    namespace q = mma::macaudio;
+
+    // What MacSystemAggregateDevice::getOutputLayout() reads, through the
+    // same shared queries.
+    const auto readLayout = [combinedId]
+    {
+        std::vector<mma::CombinedDeviceOutputs> layout;
+        for (auto sub : q::readActiveSubDevices (combinedId))
+            layout.push_back ({ q::readStringProperty (sub, kAudioDevicePropertyDeviceUID),
+                                q::countChannels (sub, false) });
+        return layout;
+    };
+
+    check (q::findDeviceByUID (mma::kOurAggregateUid) == combinedId, "the combined device is found by UID");
+    check (! mma::combinedDeviceHasHeadphones (readLayout()),
+           "read at once, it has no jacks yet -- the defect");
+
+    int pauses = 0;
+    const bool settled = mma::waitForCombinedLayout (readLayout, { "uid-yeti-a", "uid-yeti-b" }, 50,
+                                                     [&pauses] { ++pauses; });
+    check (settled, "waiting lets every sub-device activate");
+    check (pauses > 0 && pauses < 50, "within the bound");
+
+    const auto layout = readLayout();
+    check (mma::combinedDeviceHasHeadphones (layout), "and then both headphone jacks are there");
+    check (layout.size() == 2 && layout[0].outputChannels == 2 && layout[1].outputChannels == 2,
+           "each with its own two output channels");
 }
 
 /// Re-checking an output this app already holds must report it as available.
@@ -2010,6 +2123,8 @@ int main()
     aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
+    hogModeIsNotTakenOnAMicrophonesOwnOutput();
+    aCombinedDeviceThatActivatesLateIsWaitedFor();
     theReportedLatencyIsTheRoundTrip();
     aFixedRateOutputIsNotPromisedForMonitoring();
     anOutputThatSupportsTheRateIsStillOffered();

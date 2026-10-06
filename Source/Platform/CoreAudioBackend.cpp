@@ -6,6 +6,8 @@
 
 #if JUCE_MAC
 
+#include "MacCoreAudioQueries.h"
+
 #include <CoreAudio/CoreAudio.h>
 #include <AudioToolbox/AudioToolbox.h>
 #include <unistd.h> // getpid() for hog-mode ownership
@@ -344,42 +346,12 @@ void holdAudioTeardownQuarantine (
     registry->changed.notify_all();
 }
 
-// Reads a CoreAudio string property (device name, manufacturer, etc.) into a
-// std::string, freeing the CFString afterward.
-std::string readStringProperty (AudioObjectID device, AudioObjectPropertySelector selector)
-{
-    AudioObjectPropertyAddress address { selector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
-    CFStringRef value = nullptr;
-    UInt32 size = sizeof (value);
-
-    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &value) != noErr || value == nullptr)
-        return {};
-
-    char buffer[512] = {};
-    CFStringGetCString (value, buffer, sizeof (buffer), kCFStringEncodingUTF8);
-    CFRelease (value);
-    return std::string (buffer);
-}
-
-int countChannels (AudioObjectID device, bool input)
-{
-    AudioObjectPropertyAddress address { kAudioDevicePropertyStreamConfiguration,
-                                         input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput,
-                                         kAudioObjectPropertyElementMain };
-    UInt32 size = 0;
-    if (AudioObjectGetPropertyDataSize (device, &address, 0, nullptr, &size) != noErr || size == 0)
-        return 0;
-
-    std::vector<char> bufferStorage (size);
-    auto* bufferList = reinterpret_cast<AudioBufferList*> (bufferStorage.data());
-    if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, bufferList) != noErr)
-        return 0;
-
-    int total = 0;
-    for (UInt32 i = 0; i < bufferList->mNumberBuffers; ++i)
-        total += static_cast<int> (bufferList->mBuffers[i].mNumberChannels);
-    return total;
-}
+// The shared HAL reads (MacCoreAudioQueries.h), also used by the combined
+// device.
+using macaudio::readStringProperty;
+using macaudio::countChannels;
+using macaudio::findDeviceByUID;
+using macaudio::readActiveSubDevices;
 
 /// §2.3: the depths this device can actually deliver.
 ///
@@ -730,29 +702,6 @@ bool isBuiltInHeadphoneOutput (const std::string& uid, bool isBuiltIn, UInt32 da
 
     return isBuiltIn
         && (uid == "BuiltInHeadphoneOutputDevice" || dataSource == kHeadphonesDataSource);
-}
-
-/// Resolves a device UID (the stable identifier §2.4 stores) to a live
-/// AudioObjectID. Returns kAudioObjectUnknown when the device is not present,
-/// which is the normal case after an unplug.
-AudioObjectID findDeviceByUID (const std::string& uid)
-{
-    AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices,
-                                         kAudioObjectPropertyScopeGlobal,
-                                         kAudioObjectPropertyElementMain };
-    UInt32 size = 0;
-    if (AudioObjectGetPropertyDataSize (kAudioObjectSystemObject, &address, 0, nullptr, &size) != noErr)
-        return kAudioObjectUnknown;
-
-    std::vector<AudioObjectID> devices (size / sizeof (AudioObjectID));
-    if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr, &size, devices.data()) != noErr)
-        return kAudioObjectUnknown;
-
-    for (auto device : devices)
-        if (readStringProperty (device, kAudioDevicePropertyDeviceUID) == uid)
-            return device;
-
-    return kAudioObjectUnknown;
 }
 
 /// True only when the HAL positively lists this stream's device as gone: its
@@ -1245,6 +1194,31 @@ CoreAudioOpenResult createAndStartStream (CoreAudioStream& stream)
     return { true, {}, true, true };
 }
 
+/// Whether hog mode on this output would take a microphone away from other
+/// apps. Hog mode is per DEVICE, not per direction: on a microphone's own
+/// headphone jack (a Yeti's) it locks the microphone's input too, and Zoom or
+/// OBS recording from that microphone -- or from the combined device it is a
+/// part of -- loses it. So it is skipped on the combined device itself, on any
+/// output that also has input streams, and on any device the combined device
+/// lists as a sub-device. Their inputs are microphones already running, so
+/// there is nothing a second client could do to the timing that hog mode
+/// would prevent.
+bool outputIsSharedWithRecording (AudioObjectID device, const std::string& deviceUid)
+{
+    if (deviceUid == kOurAggregateUid)
+        return true;
+
+    if (countChannels (device, true) > 0)
+        return true;
+
+    if (const auto combined = findDeviceByUID (kOurAggregateUid); combined != kAudioObjectUnknown)
+        for (const auto sub : readActiveSubDevices (combined))
+            if (sub == device)
+                return true;
+
+    return false;
+}
+
 // Every device call involved in opening belongs in the bounded HAL
 // transaction, including UID resolution, transport/rate checks, buffer setup,
 // hog mode, IOProc creation and Start. A bad driver can block any of these --
@@ -1310,11 +1284,10 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
     stream.deinterleaveScratch.assign (scratchSamples, 0.0f);
     stream.interleaveScratch.assign (scratchSamples, 0.0f);
 
-    // Not on the combined device. Other apps record from it, and hog mode
-    // would take it away from them -- the one thing it exists to give them.
-    // Its sub-devices are microphones already running, so there is nothing a
-    // second client could do to its timing that hog mode would prevent.
-    if (isOutput && deviceUid != kOurAggregateUid)
+    // Not on a device other apps record from: hog mode would take it away from
+    // them -- the one thing the combined device exists to give them. See
+    // outputIsSharedWithRecording().
+    if (isOutput && ! outputIsSharedWithRecording (device, deviceUid))
     {
         if (! takeHogMode (device))
         {

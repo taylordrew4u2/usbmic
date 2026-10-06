@@ -1258,6 +1258,21 @@ bool Application::publishAggregateDevice()
         return false;
     }
 
+    // publish() waits briefly for the new device to list its microphones, so
+    // the output choice that follows can see their headphone jacks. One that
+    // is slower still would leave monitoring on another output until some
+    // later device-list change; look once more shortly, through the same pass
+    // a hot-plug takes, so the combined device is picked up when it is ready.
+    if (! uids.empty() && ! combinedLayoutIsComplete (systemAggregate->getOutputLayout(), uids))
+    {
+        const auto alive = getAliveToken();
+        juce::Timer::callAfterDelay (750, [this, alive]
+        {
+            if (alive.lock() != nullptr)
+                onDeviceListChanged();
+        });
+    }
+
     publishedUids = std::move (uids);
     publishedMaster = std::move (master);
     publishedNameStd = name;
@@ -1456,8 +1471,16 @@ void Application::onDeviceListChanged()
         return;
 
     // A device-list change is also when a TCC answer tends to land. The
-    // restart a new grant needs is the one this function ends with anyway.
+    // restart a new grant needs is the one rescanDevices() ends with anyway.
     (void) refreshMicrophonePermission();
+
+    rescanDevices();
+}
+
+void Application::rescanDevices()
+{
+    if (audioBackend == nullptr)
+        return;
 
     auto inputDevices = audioBackend->enumerateInputDevices();
 
@@ -2579,7 +2602,7 @@ void Application::toggleRecording()
         // 2 s poll: a grant that has just landed reopens the streams here, so
         // the take starts on live inputs, and a fresh revoke blocks the gate.
         if (refreshMicrophonePermission())
-            onDeviceListChanged();
+            rescanDevices(); // the permission was just read; not again
 
         if (const auto blocked = getRecordDisabledReason(); blocked.isNotEmpty())
         {
@@ -4805,6 +4828,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
 
+    // The assertion above holds a plugged-in Mac up with its lid shut; on
+    // battery nothing can, so the performer hears it while the lid is open.
+    if (batteryRecordingNotice.tick (isRecording(), sinceLastCallSeconds, &SleepInhibitor::queryPowerSource))
+        noteActivity (ActivityLevel::Warning, "Recording", BatteryRecordingNotice::kMessage, true);
+
     // Podcast-ready copies finished since the last tick. Reported here, on
     // the message thread, because the worker that made them may not touch the
     // journal -- and up here, above every early return, so a warning holding
@@ -4822,8 +4850,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         // Access just arrived: re-enumerate (a Mac lists no microphones while
         // access is missing) and reopen the streams once. Mid-take the reopen
-        // is deferred to the stop, as for any other device change.
-        onDeviceListChanged();
+        // is deferred to the stop, as for any other device change. The
+        // permission was read a moment ago, so it is not read again.
+        rescanDevices();
     }
 
     // Record says "The microphones aren't open: ..." and tells the user what
@@ -6207,17 +6236,9 @@ juce::File Application::getTemplatesFolder()
     return getSupportFolder().getChildFile ("Templates");
 }
 
-juce::File Application::getTemplateFile (const juce::String& name)
+std::vector<ShowTemplate::StoredFile> Application::scanTemplateFiles()
 {
-    // Sanitized by the same §6.2 rule as a session folder, so a typed name can
-    // never point outside Templates/ or carry a character the disk refuses.
-    const auto fileName = ShowTemplate::fileNameFor (name.toStdString());
-    return fileName.empty() ? juce::File() : getTemplatesFolder().getChildFile (juce::String (fileName));
-}
-
-juce::StringArray Application::listTemplates() const
-{
-    juce::StringArray names;
+    std::vector<ShowTemplate::StoredFile> files;
 
     for (const auto& entry : juce::RangedDirectoryIterator (getTemplatesFolder(), false, "*.json",
                                                             juce::File::findFiles))
@@ -6225,17 +6246,30 @@ juce::StringArray Application::listTemplates() const
         const auto file = entry.getFile();
         const auto loaded = ShowTemplate::fromJsonString (file.loadFileAsString().toStdString());
 
-        // A file that is not a template is not offered: loading it would only
-        // say it could not be read.
-        if (! loaded.has_value())
-            continue;
-
-        // The name as typed, unless it no longer leads back to this file -- one
-        // renamed by hand -- in which case the file's own name, which does.
-        const auto typed = juce::String (loaded->name);
-        names.addIfNotAlreadyThere (typed.isNotEmpty() && getTemplateFile (typed) == file
-                                        ? typed : file.getFileNameWithoutExtension());
+        // A file that is not a template is still recorded, so saving never
+        // picks its name; it is just never offered as a show.
+        files.push_back ({ file.getFileName().toStdString(),
+                           loaded.has_value() ? std::optional<std::string> (loaded->name) : std::nullopt });
     }
+
+    return files;
+}
+
+juce::File Application::getTemplateFile (const juce::String& name)
+{
+    // Found by the name stored in the file, not by sanitizing `name`: "Live
+    // stage" and "Live-stage" sanitize alike, and the second lives in
+    // "Live-stage-2.json".
+    const auto fileName = ShowTemplate::findFileFor (name.toStdString(), scanTemplateFiles());
+    return fileName.empty() ? juce::File() : getTemplatesFolder().getChildFile (juce::String (fileName));
+}
+
+juce::StringArray Application::listTemplates() const
+{
+    juce::StringArray names;
+
+    for (const auto& show : ShowTemplate::listShows (scanTemplateFiles()))
+        names.add (juce::String (show.first));
 
     names.sortNatural();
     return names;
@@ -6244,7 +6278,14 @@ juce::StringArray Application::listTemplates() const
 bool Application::saveTemplate (const juce::String& name)
 {
     const auto clean = juce::String (ShowTemplate::cleanName (name.toStdString()));
-    const auto file = getTemplateFile (clean);
+
+    // Its own file when the show was saved before, so it is replaced; never
+    // the file of a different show whose name sanitizes the same way. Sanitized
+    // by the same §6.2 rule as a session folder, so a typed name can never
+    // point outside Templates/ or carry a character the disk refuses.
+    const auto fileName = ShowTemplate::fileNameForSaving (clean.toStdString(), scanTemplateFiles());
+    const auto file = fileName.empty() ? juce::File()
+                                       : getTemplatesFolder().getChildFile (juce::String (fileName));
 
     if (file == juce::File())
     {

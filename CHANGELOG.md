@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.13.20 -- 2026-10-06 (release candidate)
+
+Mac fixes.
+
+### Fixed
+
+- **Mac: closing the lid no longer stops a recording on the charger.** On
+  battery, SobStage warns once per take to keep the lid open.
+- **Mac: monitoring through a Yeti's own headphone jack no longer locks that
+  Yeti** away from Zoom, OBS and other apps recording from the SobStage
+  device.
+- **Mac: headphones go to the right place straight away** after the
+  combined SobStage device is created, instead of briefly to another output.
+- **Mac cameras:** the 30 fps / 4K mode chosen for a camera now sticks once
+  the camera starts; the live preview no longer risks going black when the
+  screen updates (Record, Stop, a status change); and the combined video's
+  picture lines up with the sound more closely.
+- **Show names that look alike** ("Live stage", "Live-stage") are saved as
+  separate shows instead of one replacing the other.
+- **Long messages wrap** on the main screen (up to three lines) instead of
+  being cut off.
+
 ## v1.13.19 -- 2026-10-05 (release candidate)
 
 Four new features.

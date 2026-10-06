@@ -103,6 +103,28 @@ public:
 private:
     std::shared_ptr<std::atomic<juce::Component*>> target;
 };
+
+/// Seconds after the audio's t=0 that a camera's movie begins.
+///
+/// `firstFrameMs` is the backend's estimate of when the movie's first frame
+/// was captured, on the same high-resolution counter as `audioStartMs`. The
+/// macOS backend takes it from the movie output itself (the callback's own
+/// time less what the writer had already recorded), so a didStart delivered
+/// late -- a busy delegate queue, a slow USB start -- no longer pushes the
+/// picture later than it really is. Zero means the backend cannot tell; the
+/// callback's arrival is then the best evidence there is. An estimate from the
+/// future, or from before the movie could have been asked for, is not
+/// believed either.
+double cameraStartOffsetSeconds (double audioStartMs, double firstFrameMs, double callbackMs)
+{
+    if (audioStartMs <= 0.0)
+        return 0.0;
+
+    const bool plausible = firstFrameMs > 0.0 && firstFrameMs <= callbackMs
+                        && callbackMs - firstFrameMs < kStartupGuardMs;
+    const auto startedMs = plausible ? firstFrameMs : callbackMs;
+    return juce::jmax (0.0, (startedMs - audioStartMs) / 1000.0);
+}
 #endif
 
 } // namespace
@@ -1481,12 +1503,10 @@ bool CameraController::startRecording (const juce::File& sessionFolder, double a
         const auto generation = takeGeneration;
         entry->second.device->onRecordingStarted =
             [mailbox, id = plan.deviceId, viewerRevision, generation, audioStartMs]
-            (const juce::File& startedFile)
+            (const juce::File& startedFile, double firstFrameMs)
             {
-                const auto offset = audioStartMs > 0.0
-                    ? juce::jmax (0.0,
-                        (juce::Time::getMillisecondCounterHiRes() - audioStartMs) / 1000.0)
-                    : 0.0;
+                const auto offset = cameraStartOffsetSeconds (
+                    audioStartMs, firstFrameMs, juce::Time::getMillisecondCounterHiRes());
                 const std::lock_guard<std::mutex> guard (mailbox->mutex);
                 mailbox->recordingsStarted.push_back (
                     { id, viewerRevision, generation, startedFile, offset });

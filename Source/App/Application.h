@@ -14,6 +14,7 @@
 #include "../Core/TakeStopSnapshot.h"
 #include "../Core/SessionFolderNaming.h"
 #include "../Core/AppSettings.h"
+#include "../Core/ShowTemplate.h"
 #include "../Core/SessionRecovery.h"
 #include "../Core/CardRemovalNotice.h"
 #include "../Core/PreflightThroughputTest.h"
@@ -40,6 +41,7 @@
 #include "../Core/CaptureCoordinator.h"
 #include "../Core/TapToNameDetector.h"
 #include "../Core/FailedOpenRetry.h"
+#include "../Core/BatteryRecordingNotice.h"
 #include "../Core/PermissionGuidance.h"
 #include "../Platform/SleepInhibitor.h"
 #include "CameraController.h"
@@ -916,6 +918,10 @@ private:
     /// take records. Released on stop, in shutdown(), and by its destructor.
     SleepInhibitor sleepInhibitor;
     void syncSleepInhibitor();
+
+    /// §6.6: on battery a closed lid still sleeps the Mac and ends the take,
+    /// so a take recording on battery says so once.
+    BatteryRecordingNotice batteryRecordingNotice;
     PortIdentityStore portIdentityStore;
 
     std::string selectedOutputDeviceId;
@@ -1160,7 +1166,11 @@ private:
     /// §11: the newest session.json files under `root`, newest first. Static
     /// because it runs on the diagnostics export's detached worker.
     static juce::Array<juce::File> findRecentSessionMetadata (const juce::String& root, int maximum);
+    /// Re-reads the microphone permission, then rescanDevices().
     void onDeviceListChanged();
+    /// The device-list pass itself, for a caller that has just called
+    /// refreshMicrophonePermission() and must not pay for a second read.
+    void rescanDevices();
     void chooseInitialDestination();
 
     /// Read once at launch, written whenever a remembered setting changes and
@@ -1170,9 +1180,10 @@ private:
     void loadSettings();
     void saveSettings();
 
-    /// Where show templates live, and the file a named one is (or would be)
-    /// in. An invalid File when the name has nothing usable in it.
+    /// Where show templates live, what is in that folder, and the file the
+    /// show listed as `name` is kept in -- an invalid File when there is none.
     static juce::File getTemplatesFolder();
+    static std::vector<ShowTemplate::StoredFile> scanTemplateFiles();
     static juce::File getTemplateFile (const juce::String& name);
 
     struct RecoveryActivity

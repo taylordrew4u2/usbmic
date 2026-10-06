@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <vector>
@@ -46,6 +47,43 @@ inline bool combinedDeviceHasHeadphones (const std::vector<CombinedDeviceOutputs
             return true;
 
     return false;
+}
+
+/// True when every expected sub-device is in the combined device's active
+/// layout. Order is the HAL's to choose, so only membership is compared.
+inline bool combinedLayoutIsComplete (const std::vector<CombinedDeviceOutputs>& layout,
+                                      const std::vector<std::string>& expectedIds)
+{
+    for (const auto& id : expectedIds)
+        if (std::none_of (layout.begin(), layout.end(),
+                          [&id] (const CombinedDeviceOutputs& d) { return d.deviceId == id; }))
+            return false;
+
+    return true;
+}
+
+/// A combined device just created is built by the OS asynchronously: for a
+/// moment its active sub-device list can be empty, and a layout read then says
+/// "no headphone jacks" about a rig full of them. Reads `readLayout` until it
+/// lists every expected sub-device, calling `pause` between reads, at most
+/// `maxPauses` times. Returns whether it got there; the caller goes on either
+/// way, so a sub-device that never activates costs only the bound.
+inline bool waitForCombinedLayout (const std::function<std::vector<CombinedDeviceOutputs>()>& readLayout,
+                                   const std::vector<std::string>& expectedIds,
+                                   int maxPauses,
+                                   const std::function<void()>& pause)
+{
+    for (int pauses = 0;; ++pauses)
+    {
+        if (combinedLayoutIsComplete (readLayout(), expectedIds))
+            return true;
+
+        if (pauses >= maxPauses)
+            return false;
+
+        if (pause != nullptr)
+            pause();
+    }
 }
 
 } // namespace mma

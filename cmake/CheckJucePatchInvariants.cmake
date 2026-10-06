@@ -25,7 +25,18 @@ set(required_added_lines
     "+                        [retainedSession startRunning];"
     "+                            weakRef->sessionStartFinished (started, raised);"
     "+        if (sessionStartQueued)"
-    "+        return view;")
+    "+        return view;"
+    # MAC-CAM-3: a chosen smooth format stays locked through startRunning
+    # (Apple's documented macOS pattern), is unlocked on the session queue on
+    # every path, and is re-asserted once after the start if it was replaced.
+    "+        heldDevice = [device retain];"
+    "+                        [deviceToUnlock unlockForConfiguration];"
+    "+        releaseHeldDevice();"
+    "+        reassertChosenFormat();"
+    # MAC-CAM-4: didStart reports the movie's first-frame estimate on the
+    # host clock, not just its own arrival.
+    "+                const CMTime recorded = [output recordedDuration];"
+    "+            withOwner (self, [&] (Pimpl& owner) { owner.recordingStarted (file, firstFrameMs); });")
 
 set(failed FALSE)
 foreach (line IN LISTS required_added_lines)
@@ -48,6 +59,13 @@ if (start_at EQUAL -1)
 endif()
 if (layer_at EQUAL -1 OR start_at EQUAL -1 OR start_at LESS layer_at)
     message(FATAL_ERROR "MAC-CAM-2 preview layer is not attached before the capture session starts")
+endif()
+
+# MAC-CAM-3: the held format is unlocked only after startRunning has returned.
+string(FIND "${patch_text}" "+                        [retainedSession startRunning];" running_at)
+string(FIND "${patch_text}" "+                        [deviceToUnlock unlockForConfiguration];" unlock_at)
+if (running_at EQUAL -1 OR unlock_at EQUAL -1 OR unlock_at LESS running_at)
+    message(FATAL_ERROR "MAC-CAM-3 the chosen format is unlocked before the session has started")
 endif()
 
 # B5: a movie start that raises must be reported through onRecordingFinished,

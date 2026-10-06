@@ -246,6 +246,11 @@ private:
     std::vector<CameraView> cameraViews;
     bool previewsHidden = false;
 
+    /// The caption's words and colour from the view's name, take state and
+    /// signal text. Text only: it never touches the native preview.
+    void refreshCameraCaption (CameraView& view);
+    static juce::String placeholderTextFor (const juce::String& signalStatusText);
+
     int cameraScale = 1;
 
     /// The viewport height the owner last reported; 0 until it does.
@@ -298,6 +303,14 @@ private:
     /// one line at this width. Clipping it leaves exactly the dead end the
     /// reason exists to end, so the band is measured from the text.
     int monitorProblemHeight() const noexcept;
+
+    /// The advice line and the reason the record button is off, each one line
+    /// unless its sentence needs more, then up to three. Measured the way JUCE
+    /// will wrap it when it draws, so a reason is never cut off mid-sentence
+    /// and a short one never moves anything.
+    int adviceHeight() const noexcept { return wrappedLineHeight (adviceLabel); }
+    int disabledReasonHeight() const noexcept { return wrappedLineHeight (disabledReasonLabel); }
+    int wrappedLineHeight (const juce::Label& label) const noexcept;
 
     /// Lays out again and tells the owner, via onRequiredHeightChanged.
     void requiredHeightChanged();

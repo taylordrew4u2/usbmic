@@ -111,11 +111,14 @@ int main()
     std::printf ("-- camera viewer revision invalidates UI caches --\n");
 
     int mainViewerCreates = 0;
+    juce::Component* lastMainViewer = nullptr;
     mma::MainScreen cameraScreen;
-    cameraScreen.makeViewer = [&mainViewerCreates] (const std::string&)
+    cameraScreen.makeViewer = [&mainViewerCreates, &lastMainViewer] (const std::string&)
     {
         ++mainViewerCreates;
-        return std::make_unique<juce::Component>();
+        auto viewer = std::make_unique<juce::Component>();
+        lastMainViewer = viewer.get();
+        return viewer;
     };
     cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1, {}, true } });
     cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1, {}, true } });
@@ -144,6 +147,46 @@ int main()
     cameraScreen.setRecording (true);
     const bool omittedCameraNeverClaimsRec = hasExactLabel ("NOT RECORDING: HDMI")
                                           && ! hasExactLabel ("REC: HDMI");
+
+    // Words around the picture change in place. Reparenting the native preview
+    // for a caption, a rename or a signal message can leave AVFoundation's
+    // layer black, so only a new viewer revision may rebuild the host.
+    const int createsBeforeWords = mainViewerCreates;
+    auto* const viewerBeforeWords = lastMainViewer;
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3, {}, false, true } });
+    const bool startingCaptionInPlace = hasExactLabel ("STARTING: HDMI");
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3, {}, true } });
+    const bool recCaptionInPlace = hasExactLabel ("REC: HDMI");
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3, "Signal dropped.", true } });
+    const bool signalCaptionInPlace = hasExactLabel ("SIGNAL LOST: HDMI");
+    cameraScreen.setCameraTiles ({ { "capture", "Wide shot", 3, {}, true } });
+    const bool renameInPlace = hasExactLabel ("REC: Wide shot");
+    const bool captionsKeepViewerHost = startingCaptionInPlace && recCaptionInPlace
+        && signalCaptionInPlace && renameInPlace
+        && mainViewerCreates == createsBeforeWords
+        && viewerBeforeWords != nullptr
+        && cameraScreen.getIndexOfChildComponent (viewerBeforeWords) >= 0;
+
+    int placeholderCreates = 0;
+    mma::MainScreen placeholderScreen;
+    placeholderScreen.makeViewer = [&placeholderCreates] (const std::string&)
+    {
+        ++placeholderCreates;
+        return std::unique_ptr<juce::Component>();
+    };
+    const auto placeholderHas = [&placeholderScreen] (const juce::String& text)
+    {
+        for (int i = 0; i < placeholderScreen.getNumChildComponents(); ++i)
+            if (auto* label = dynamic_cast<juce::Label*> (placeholderScreen.getChildComponent (i));
+                label != nullptr && label->getText() == text)
+                return true;
+
+        return false;
+    };
+    placeholderScreen.setCameraTiles ({ { "late", "Late", 1, "Waiting for video.", false } });
+    placeholderScreen.setCameraTiles ({ { "late", "Late", 1, "No video signal.", false } });
+    const bool statusTextUpdatesPlaceholderInPlace = placeholderCreates == 1
+        && placeholderHas ("No video signal.") && ! placeholderHas ("Waiting for video.");
 
     int panelViewerCreates = 0;
     mma::CameraPanel cameraPanel;
@@ -243,6 +286,10 @@ int main()
                  stoppedCaptionDropsRec ? "PASS" : "FAIL");
     std::printf ("camera omitted from frozen take never claims REC: %s\n",
                  omittedCameraNeverClaimsRec ? "PASS" : "FAIL");
+    std::printf ("caption/name/signal changes keep the viewer host: %s\n",
+                 captionsKeepViewerHost ? "PASS" : "FAIL");
+    std::printf ("status text updates the placeholder in place: %s\n",
+                 statusTextUpdatesPlaceholderInPlace ? "PASS" : "FAIL");
     std::printf ("panel cache preserves unchanged viewer: %s\n",
                  panelCacheKeepsViewer ? "PASS" : "FAIL");
     std::printf ("panel revision rebuilds viewer: %s\n\n",
@@ -262,6 +309,8 @@ int main()
     failures += recCaptionIsOutsideNativePreview ? 0 : 1;
     failures += stoppedCaptionDropsRec ? 0 : 1;
     failures += omittedCameraNeverClaimsRec ? 0 : 1;
+    failures += captionsKeepViewerHost ? 0 : 1;
+    failures += statusTextUpdatesPlaceholderInPlace ? 0 : 1;
     failures += panelCacheKeepsViewer ? 0 : 1;
     failures += panelRevisionRebuildsViewer ? 0 : 1;
     failures += takeFreezesCameraControls ? 0 : 1;
@@ -510,6 +559,94 @@ int main()
 
                 std::printf ("  %s  %-26s %4dpx wide: mute %2dpx, volume %2dpx tall\n",
                              ok ? "PASS" : "FAIL", fc.label, width, muteHeight, sliderHeight);
+                failures += ok ? 0 : 1;
+            }
+        }
+    }
+
+    // --- Long advice and record-button reasons wrap rather than cut ---------
+    //
+    // Both lines were one fixed 20px row, so a sentence longer than the window
+    // was squashed and then cut off. They grow to fit -- below the record
+    // button, which must not move for a sentence that fits on one line.
+    {
+        std::printf ("\nAdvice and the record-button reason wrap to fit\n");
+
+        const juce::String shortText = "Choose where recordings go first.";
+        const juce::String longText = "Recording is off because the card that takes were going to has gone away. "
+                                      "Plug it back in, or choose another place to save in Settings, and the "
+                                      "button comes back on its own -- nothing recorded so far is lost.";
+
+        for (const int width : { 1180, 707, 560 })
+        {
+            const auto recordTop = [&findButton] (mma::MainScreen& s)
+            {
+                auto* b = findButton (s, "Start recording");
+                return b != nullptr ? b->getY() : -1;
+            };
+
+            const auto layOut = [width] (mma::MainScreen& s)
+            {
+                s.setSize (width, 420);
+                s.setVisibleHeight (420);
+                s.setSize (width, s.getRequiredHeight());
+                s.resized();
+            };
+
+            mma::MainScreen plain;
+            plain.setMicCount (3);
+            plain.setRecordButtonEnabled (false, shortText);
+            layOut (plain);
+            const int plainTop = recordTop (plain);
+
+            for (const bool longOne : { false, true })
+            {
+                mma::MainScreen s;
+                s.setMicCount (3);
+                const auto text = longOne ? longText : shortText;
+                s.setRecordButtonEnabled (false, text);
+                s.setAdviceText (text);
+                layOut (s);
+
+                bool ok = recordTop (s) == plainTop && plainTop >= 0;
+                // Both labels carry the same text here; the reason is the one
+                // directly under the button, the advice the lower one.
+                std::vector<juce::Label*> found;
+
+                for (int i = 0; i < s.getNumChildComponents(); ++i)
+                {
+                    auto* label = dynamic_cast<juce::Label*> (s.getChildComponent (i));
+                    if (label == nullptr || label->getText() != text)
+                        continue;
+
+                    // Lines the label's height allows JUCE to draw, against the
+                    // lines the sentence needs at this width.
+                    const auto font = label->getFont();
+                    const auto area = label->getBorderSize().subtractedFrom (label->getLocalBounds());
+                    const int allowed = juce::jmax (1, (int) ((float) area.getHeight() / font.getHeight()));
+                    const float needed = font.getStringWidthFloat (text);
+                    const bool fits = needed < (float) area.getWidth()
+                                   || (float) allowed > (needed + 80.0f) / (float) area.getWidth();
+
+                    ok = ok && fits && label->getBottom() <= s.getHeight() - 40 - 16;
+                    found.push_back (label);
+                }
+
+                std::sort (found.begin(), found.end(),
+                           [] (juce::Label* a, juce::Label* b) { return a->getY() < b->getY(); });
+                const int reasonHeight = found.size() == 2 ? found[0]->getHeight() : 0;
+                const int adviceHeight = found.size() == 2 ? found[1]->getHeight() : 0;
+
+                auto* mute = findButton (s, "Mute");
+                ok = ok && reasonHeight > 0 && adviceHeight > 0
+                        // A sentence that fits on one line keeps the 20px row;
+                        // the fit check above covers the ones that wrap.
+                        && (longOne || (reasonHeight == 20 && adviceHeight == 20))
+                        && mute != nullptr && mute->getHeight() >= 28;
+
+                std::printf ("  %s  %4dpx %-5s reason %2dpx, advice %2dpx, record button at y=%d\n",
+                             ok ? "PASS" : "FAIL", width, longOne ? "long" : "short",
+                             reasonHeight, adviceHeight, recordTop (s));
                 failures += ok ? 0 : 1;
             }
         }

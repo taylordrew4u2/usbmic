@@ -106,6 +106,7 @@ MainScreen::MainScreen()
     adviceLabel.setJustificationType (juce::Justification::centred);
     adviceLabel.setColour (juce::Label::textColourId, AppLookAndFeel::secondary);
     adviceLabel.setFont (juce::Font (12.0f));
+    adviceLabel.setMinimumHorizontalScale (1.0f); // wrap, never squash or cut
     addChildComponent (adviceLabel);
 
     monitorProblemLabel.setJustificationType (juce::Justification::centred);
@@ -126,6 +127,7 @@ MainScreen::MainScreen()
     disabledReasonLabel.setJustificationType (juce::Justification::centred);
     disabledReasonLabel.setColour (juce::Label::textColourId, AppLookAndFeel::warning);
     disabledReasonLabel.setFont (juce::Font (12.0f));
+    disabledReasonLabel.setMinimumHorizontalScale (1.0f); // wrap, never squash or cut
     addChildComponent (disabledReasonLabel);
 
     // The bare number told a user nothing about what it controlled. Naming it
@@ -326,6 +328,37 @@ int MainScreen::monitorProblemHeight() const noexcept
     return juce::jmax (kOneLine, lines * kLineHeight + 3);
 }
 
+int MainScreen::wrappedLineHeight (const juce::Label& label) const noexcept
+{
+    constexpr int kOneLine  = 20;
+    constexpr int kMaxLines = 3;
+
+    const auto text = label.getText().trim();
+
+    if (text.isEmpty())
+        return kOneLine;
+
+    const auto font = label.getFont();
+    const auto border = label.getBorderSize();
+    const float width = (float) juce::jmax (1, (getWidth() > 0 ? getWidth() : 1180) - 32
+                                                   - border.getLeftAndRight());
+    const float textWidth = font.getStringWidthFloat (text);
+
+    // JUCE's own rule in GlyphArrangement: one line when it fits, otherwise
+    // the fewest lines that beat the text's width plus an 80px allowance for
+    // ragged breaks. Reserving fewer than it draws squashes the font; more
+    // only leaves a gap.
+    const int lines = textWidth < width
+                          ? 1
+                          : juce::jlimit (1, kMaxLines, (int) ((textWidth + 80.0f) / width) + 1);
+
+    if (lines == 1)
+        return kOneLine;
+
+    const int lineHeight = (int) std::ceil (font.getHeight()) + 3;
+    return lines * lineHeight + border.getTopAndBottom() + 2;
+}
+
 int MainScreen::nonCameraHeight() const noexcept
 {
     // Every band resized() lays out beneath the pictures. Kept here rather than
@@ -343,11 +376,14 @@ int MainScreen::nonCameraHeight() const noexcept
     // when there is no reason to give. resized() spends one or the other, and a
     // budget that counted neither handed the shortfall to the footer: at
     // exactly this height the mute button came out 13px tall.
-    const int kReasonRow = disabledReasonLabel.isVisible() ? 20 + 8 : 14;
-    // files, monitor problem, advice. The monitor problem is measured rather
-    // than assumed: it grows to fit a reason, and a band reserved at one line
-    // while three are drawn is content spilling past the bottom of the window.
-    const int kStatusLines = 18 + monitorProblemHeight() + 20;
+    // Measured, like the monitor problem below, because the reason can run to
+    // more than one line.
+    const int kReasonRow = disabledReasonLabel.isVisible() ? disabledReasonHeight() + 8 : 14;
+    // files, monitor problem, advice. The monitor problem and the advice are
+    // measured rather than assumed: they grow to fit their sentence, and a band
+    // reserved at one line while three are drawn is content spilling past the
+    // bottom of the window.
+    const int kStatusLines = 18 + monitorProblemHeight() + adviceHeight();
     constexpr int kFooter      = 40;
 
     // MIX is laid out with the microphones, so it counts towards the wrap.
@@ -445,69 +481,47 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
         startingStates.push_back (tile.startingThisTake ? 1 : 0);
     }
 
-    const auto captionText = [this] (const juce::String& name, bool recordingThisCamera,
-                                     bool startingThisCamera, const juce::String& signalProblem)
+    // Only the set of cameras and their viewer revisions decide whether the
+    // native previews are rebuilt. A revision is bumped whenever a camera's
+    // picture appears, goes black or is lost, which is exactly when the host
+    // must change between preview and placeholder. Everything else -- a
+    // rename, a signal message, a take's REC/STARTING state -- is words
+    // around the picture. Reparenting the NSView that holds AVFoundation's
+    // preview layer for any of those can leave the layer black, so they are
+    // said in place and the view hierarchy is left alone.
+    const bool sameViewers = ids == lastTileIds && viewerRevisions == lastTileViewerRevisions
+                          && cameraViews.size() == tiles.size();
+
+    if (sameViewers)
     {
-        if (! recording)
-            return name;
+        // Called from the UI tick, so the unchanged case must cost nothing.
+        if (displayNames == lastTileDisplayNames
+            && signalStatusTexts == lastTileSignalStatusTexts
+            && recordingStates == lastTileRecordingStates
+            && startingStates == lastTileStartingStates)
+            return;
 
-        if (recordingThisCamera && signalProblem.isNotEmpty())
-            return "SIGNAL LOST: " + name;
-
-        if (recordingThisCamera)
-            return "REC: " + name;
-
-        if (startingThisCamera)
-            return "STARTING: " + name;
-
-        return "NOT RECORDING: " + name;
-    };
-
-    const bool sameViews = ids == lastTileIds && displayNames == lastTileDisplayNames
-        && viewerRevisions == lastTileViewerRevisions
-        && signalStatusTexts == lastTileSignalStatusTexts;
-
-    // A start-confirmation callback changes only the caption. Reparenting the
-    // native preview for that state flip can itself produce a black AVFoundation
-    // layer, so update the existing caption and leave the view hierarchy alone.
-    if (sameViews && (recordingStates != lastTileRecordingStates
-                      || startingStates != lastTileStartingStates))
-    {
-        for (size_t i = 0; i < cameraViews.size() && i < tiles.size(); ++i)
+        for (size_t i = 0; i < cameraViews.size(); ++i)
         {
             auto& view = cameraViews[i];
             const auto& tile = tiles[i];
+            view.displayName = tile.displayName;
+            view.signalStatusText = tile.signalStatusText;
             view.recordingThisTake = tile.recordingThisTake;
             view.startingThisTake = tile.startingThisTake;
+            refreshCameraCaption (view);
 
-            if (view.caption != nullptr)
-            {
-                view.caption->setText (captionText (view.displayName,
-                                                    view.recordingThisTake,
-                                                    view.startingThisTake,
-                                                    view.signalStatusText),
-                                       juce::dontSendNotification);
-                view.caption->setColour (juce::Label::textColourId,
-                    view.recordingThisTake && view.signalStatusText.isEmpty()
-                        ? AppLookAndFeel::danger : AppLookAndFeel::warning);
-            }
+            if (view.placeholder != nullptr)
+                view.placeholder->setText (placeholderTextFor (view.signalStatusText),
+                                           juce::dontSendNotification);
         }
 
+        lastTileDisplayNames = std::move (displayNames);
+        lastTileSignalStatusTexts = std::move (signalStatusTexts);
         lastTileRecordingStates = std::move (recordingStates);
         lastTileStartingStates = std::move (startingStates);
         return;
     }
-
-    // Called from the UI tick, so it must be free to run every frame. Only an
-    // actual change to the set of switched-on cameras rebuilds anything --
-    // tearing a viewer down and remaking it 60 times a second would flicker and
-    // churn the device for no reason.
-    if (ids == lastTileIds && displayNames == lastTileDisplayNames
-        && viewerRevisions == lastTileViewerRevisions
-        && signalStatusTexts == lastTileSignalStatusTexts
-        && recordingStates == lastTileRecordingStates
-        && startingStates == lastTileStartingStates)
-        return;
 
     lastTileIds = std::move (ids);
     lastTileDisplayNames = std::move (displayNames);
@@ -542,9 +556,7 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
             // empty rectangle -- and on Linux, where JUCE has no CameraDevice
             // at all, this is the honest thing to show rather than a black box.
             view.placeholder = std::make_unique<juce::Label>();
-            view.placeholder->setText (tile.signalStatusText.isNotEmpty()
-                                           ? tile.signalStatusText
-                                           : "No picture from this camera.",
+            view.placeholder->setText (placeholderTextFor (tile.signalStatusText),
                                        juce::dontSendNotification);
             view.placeholder->setJustificationType (juce::Justification::centred);
             view.placeholder->setFont (juce::Font (12.0f));
@@ -556,24 +568,43 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
         // §14.6 solves for microphones, and the answer is the same: put the
         // name on the thing.
         view.caption = std::make_unique<juce::Label>();
-        const bool recordingThisCamera = recording && tile.recordingThisTake;
-        view.caption->setText (captionText (tile.displayName, recordingThisCamera,
-                                           recording && tile.startingThisTake,
-                                           tile.signalStatusText),
-                               juce::dontSendNotification);
         view.caption->setJustificationType (juce::Justification::centred);
         view.caption->setFont (juce::Font (12.0f));
-        view.caption->setColour (juce::Label::textColourId,
-                                 recordingThisCamera && tile.signalStatusText.isEmpty()
-                                     ? AppLookAndFeel::danger
-                                     : recording ? AppLookAndFeel::warning
-                                                 : AppLookAndFeel::secondary);
+        refreshCameraCaption (view);
         addAndMakeVisible (*view.caption);
 
         cameraViews.push_back (std::move (view));
     }
 
     resized();
+}
+
+juce::String MainScreen::placeholderTextFor (const juce::String& signalStatusText)
+{
+    return signalStatusText.isNotEmpty() ? signalStatusText
+                                         : juce::String ("No picture from this camera.");
+}
+
+void MainScreen::refreshCameraCaption (CameraView& view)
+{
+    if (view.caption == nullptr)
+        return;
+
+    const bool recordingThisCamera = recording && view.recordingThisTake;
+    const auto& name = view.displayName;
+
+    view.caption->setText (! recording ? name
+                           : recordingThisCamera && view.signalStatusText.isNotEmpty()
+                               ? "SIGNAL LOST: " + name
+                           : recordingThisCamera ? "REC: " + name
+                           : view.startingThisTake ? "STARTING: " + name
+                                                   : "NOT RECORDING: " + name,
+                           juce::dontSendNotification);
+    view.caption->setColour (juce::Label::textColourId,
+                             recordingThisCamera && view.signalStatusText.isEmpty()
+                                 ? AppLookAndFeel::danger
+                                 : recording ? AppLookAndFeel::warning
+                                             : AppLookAndFeel::secondary);
 }
 
 void MainScreen::releaseCameraViews()
@@ -703,22 +734,7 @@ void MainScreen::setRecording (bool isRecording)
         // painting which overlaps them. Put the per-camera recording proof in
         // the non-overlapping caption band beneath each preview instead.
         for (auto& view : cameraViews)
-            if (view.caption != nullptr)
-            {
-                const bool recordingThisCamera = recording && view.recordingThisTake;
-                view.caption->setText (! recording ? view.displayName
-                                       : recordingThisCamera && view.signalStatusText.isNotEmpty()
-                                           ? "SIGNAL LOST: " + view.displayName
-                                       : recordingThisCamera ? "REC: " + view.displayName
-                                       : view.startingThisTake ? "STARTING: " + view.displayName
-                                                               : "NOT RECORDING: " + view.displayName,
-                                       juce::dontSendNotification);
-                view.caption->setColour (juce::Label::textColourId,
-                                         recordingThisCamera && view.signalStatusText.isEmpty()
-                                             ? AppLookAndFeel::danger
-                                             : recording ? AppLookAndFeel::warning
-                                                         : AppLookAndFeel::secondary);
-            }
+            refreshCameraCaption (view);
 
         resized();
     }
@@ -763,8 +779,15 @@ void MainScreen::setCameraCount (int count)
 
 void MainScreen::setAdviceText (const juce::String& text)
 {
+    const int before = adviceHeight();
+
     adviceLabel.setText (text, juce::dontSendNotification);
     adviceLabel.setVisible (text.isNotEmpty());
+
+    // Compared first: this arrives on every status tick, and only a sentence
+    // that needs a different number of lines changes the height.
+    if (adviceHeight() != before)
+        requiredHeightChanged();
 }
 
 void MainScreen::setMonitorProblemText (const juce::String& text)
@@ -803,6 +826,8 @@ void MainScreen::requiredHeightChanged()
 void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disabledReason)
 {
     recordButton.setEnabled (enabled);
+
+    const int before = disabledReasonHeight();
     disabledReasonLabel.setText (disabledReason, juce::dontSendNotification);
 
     // resized() only reserves the reason row when it is visible, so the layout
@@ -811,6 +836,11 @@ void MainScreen::setRecordButtonEnabled (bool enabled, const juce::String& disab
     if (disabledReasonLabel.isVisible() == enabled)
     {
         disabledReasonLabel.setVisible (! enabled);
+        requiredHeightChanged();
+    }
+    else if (! enabled && disabledReasonHeight() != before)
+    {
+        // A different reason that wraps onto a different number of lines.
         requiredHeightChanged();
     }
 }
@@ -1046,7 +1076,7 @@ void MainScreen::resized()
     // from the button they belong to.
     if (disabledReasonLabel.isVisible())
     {
-        disabledReasonLabel.setBounds (area.removeFromTop (20));
+        disabledReasonLabel.setBounds (area.removeFromTop (disabledReasonHeight()));
         area.removeFromTop (8);
     }
     else
@@ -1066,7 +1096,7 @@ void MainScreen::resized()
     // device -- and a fixed 20px row clipped all of it to the first few words,
     // leaving the same dead end the reason was written to end.
     monitorProblemLabel.setBounds (area.removeFromTop (monitorProblemHeight()));
-    adviceLabel.setBounds (area.removeFromTop (20));
+    adviceLabel.setBounds (area.removeFromTop (adviceHeight()));
 
     // The footer: what the disk knows on the left, what the ears want on the
     // right. Both are ambient -- neither is something anyone comes to this

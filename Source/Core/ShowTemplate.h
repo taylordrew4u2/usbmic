@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mma {
@@ -83,6 +84,34 @@ struct ShowTemplate
     /// folder or fail on a filesystem that refuses the character. Empty when
     /// nothing usable is left in the name.
     static std::string fileNameFor (const std::string& name);
+
+    /// A .json file already in the templates folder, as the App layer found
+    /// it: its file name and the name stored inside it. `name` is empty for a
+    /// template that holds no name, and nullopt for a file that is not a
+    /// template at all.
+    struct StoredFile
+    {
+        std::string fileName;
+        std::optional<std::string> name;
+    };
+
+    /// Every saved show as {listed name, file name}. A show is listed, loaded
+    /// and deleted by the name stored in it, because two names can sanitize to
+    /// the same file name -- "Live stage" and "Live-stage" -- and the second is
+    /// then kept in "Live-stage-2.json". A file with no name of its own, or
+    /// one whose name another file already answers to (a copy made by hand),
+    /// is listed by its file name instead, so it can still be reached.
+    static std::vector<std::pair<std::string, std::string>> listShows (const std::vector<StoredFile>& files);
+
+    /// The file the show listed as `name` is kept in. Empty when there is none.
+    static std::string findFileFor (const std::string& name, const std::vector<StoredFile>& files);
+
+    /// The file saving `name` writes: the show's own file when one is already
+    /// listed under that name, so saving it again replaces it; otherwise
+    /// fileNameFor(), with "-2", "-3"... added while that file is taken by
+    /// something else. Taken is judged ignoring case, since the Mac's disk
+    /// does. Empty when nothing usable is left in the name.
+    static std::string fileNameForSaving (const std::string& name, const std::vector<StoredFile>& files);
 };
 
 } // namespace mma

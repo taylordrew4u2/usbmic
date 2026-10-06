@@ -1,15 +1,20 @@
 diff --git a/modules/juce_video/capture/juce_CameraDevice.h b/modules/juce_video/capture/juce_CameraDevice.h
-index 21bd4f6367..b2846d8238 100644
+index 21bd4f6367..205060f141 100644
 --- a/modules/juce_video/capture/juce_CameraDevice.h
 +++ b/modules/juce_video/capture/juce_CameraDevice.h
-@@ -172,6 +172,21 @@ public:
+@@ -172,6 +172,26 @@ public:
          and reopen the device to be able to use it further. */
      std::function<void (const String& /*error*/)> onErrorOccurred;
  
 +    /** On supported desktop backends, this callback is invoked once the platform
 +        confirms that it started writing the requested movie. The callback may be
-+        called from any thread. */
-+    std::function<void (const File& /*file*/)> onRecordingStarted;
++        called from any thread.
++
++        The second argument is the backend's best estimate of when the movie's
++        first frame was captured, as a Time::getMillisecondCounterHiRes() value,
++        or 0 when the backend has no better evidence than the callback itself
++        (the receiver should then read the counter on arrival). */
++    std::function<void (const File& /*file*/, double /*firstFrameMs*/)> onRecordingStarted;
 +
 +    /** On supported desktop backends, this callback is invoked once the platform has
 +        finished writing pending video data, or rejects the recording request. The
@@ -25,7 +30,7 @@ index 21bd4f6367..b2846d8238 100644
      /**
          Receives callbacks with individual frames from a CameraDevice. It is mainly
 diff --git a/modules/juce_video/native/juce_CameraDevice_mac.h b/modules/juce_video/native/juce_CameraDevice_mac.h
-index ddcba1f320..5b6f18bc87 100644
+index ddcba1f320..d3a11966df 100644
 --- a/modules/juce_video/native/juce_CameraDevice_mac.h
 +++ b/modules/juce_video/native/juce_CameraDevice_mac.h
 @@ -29,13 +29,19 @@
@@ -77,7 +82,7 @@ index ddcba1f320..5b6f18bc87 100644
  
          JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wundeclared-selector")
          [[NSNotificationCenter defaultCenter] addObserver: callbackDelegate
-@@ -67,14 +83,59 @@ struct CameraDevice::Pimpl
+@@ -67,14 +83,65 @@ struct CameraDevice::Pimpl
  
      ~Pimpl()
      {
@@ -132,6 +137,12 @@ index ddcba1f320..5b6f18bc87 100644
 +        [fileOutput release];
 +        fileOutput = nil;
 +        imageOutput.reset();
++
++        // A format hold that no start took over must not outlive this camera:
++        // a locked device cannot be configured by any other app.
++        releaseHeldDevice();
++        [chosenFormat release];
++        chosenFormat = nil;
          [session release];
          [callbackDelegate release];
 +
@@ -141,16 +152,36 @@ index ddcba1f320..5b6f18bc87 100644
      }
  
      //==============================================================================
-@@ -82,8 +143,97 @@ struct CameraDevice::Pimpl
+@@ -82,8 +149,132 @@ struct CameraDevice::Pimpl
  
      void startSession()
      {
 -        if (! [session isRunning])
 -            [session startRunning];
 +        if ([session isRunning] || sessionStartQueued || sessionClosed->load())
++        {
++            // A hold taken by a connection refresh on a running session has
++            // no start to wait for. Release it now, and put back the chosen
++            // format if that refresh's commit replaced it.
++            if ([session isRunning] && ! sessionStartQueued && heldDevice != nil)
++            {
++                releaseHeldDevice();
++                reassertChosenFormat();
++                reportActiveFormat();
++            }
++
 +            return;
++        }
 +
 +        sessionStartQueued = true;
++
++        // The format hold travels with the start. Apple's documented way to
++        // keep an activeFormat on macOS is to keep the device locked until
++        // startRunning has returned, or the session applies its preset's
++        // format again as it starts. The block below unlocks on every path,
++        // including a close that races the start.
++        auto* deviceToUnlock = heldDevice;
++        heldDevice = nil;
 +
 +        auto* retainedSession = [session retain];
 +        const auto closed = sessionClosed;
@@ -180,6 +211,20 @@ index ddcba1f320..5b6f18bc87 100644
 +                        ignoreUnused (exception);
 +                        raised = true;
 +                    }
++                }
++
++                if (deviceToUnlock != nil)
++                {
++                    @try
++                    {
++                        [deviceToUnlock unlockForConfiguration];
++                    }
++                    @catch (NSException* exception)
++                    {
++                        ignoreUnused (exception);
++                    }
++
++                    [deviceToUnlock release];
 +                }
 +
 +                bool started = false;
@@ -232,6 +277,7 @@ index ddcba1f320..5b6f18bc87 100644
 +        }
 +
 +        startRetriesLeft = maxStartRetries;
++        reassertChosenFormat();
 +        reportActiveFormat();
 +
 +        const ScopedLock sl (listenerLock);
@@ -241,7 +287,7 @@ index ddcba1f320..5b6f18bc87 100644
      }
  
      void takeStillPicture (std::function<void (const Image&)> pictureTakenCallbackToUse)
-@@ -107,18 +257,30 @@ struct CameraDevice::Pimpl
+@@ -107,18 +298,30 @@ struct CameraDevice::Pimpl
          file.deleteFile();
  
          startSession();
@@ -279,7 +325,7 @@ index ddcba1f320..5b6f18bc87 100644
      }
  
      Time getTimeOfFirstRecordedFrame() const
-@@ -185,29 +347,45 @@ struct CameraDevice::Pimpl
+@@ -185,29 +388,45 @@ struct CameraDevice::Pimpl
          // `startRecordingToFile`, or `takeStillPicture` before calling this
          // function.
          jassert (! [session isRunning]);
@@ -329,7 +375,7 @@ index ddcba1f320..5b6f18bc87 100644
  
              JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wundeclared-selector")
              addMethod (@selector (captureSessionRuntimeError:), sessionRuntimeError);
-@@ -216,22 +394,61 @@ private:
+@@ -216,22 +435,91 @@ private:
              registerClass();
          }
  
@@ -362,11 +408,41 @@ index ddcba1f320..5b6f18bc87 100644
 +            sendSuperclassMessage<void> (self, @selector (dealloc));
 +        }
 +
-+        static void didStartRecordingToOutputFileAtURL (id self, SEL, AVCaptureFileOutput*, NSURL* fileURL,
-+                                                         NSArray*)
++        static void didStartRecordingToOutputFileAtURL (id self, SEL, AVCaptureFileOutput* output,
++                                                         NSURL* fileURL, NSArray*)
 +        {
++            // Read first: everything before it is error. The counter is
++            // mach_absolute_time, the host clock the app's audio start is
++            // measured on. This callback fires once the writer has its first
++            // sample, but it can be delivered well after that (a busy delegate
++            // queue, a slow device). What the writer has already recorded
++            // grows with that delay, so subtracting it cancels the delivery
++            // lag. Not cancelled: the first frame's own capture-to-writer
++            // latency (typically up to a frame), which a movie output does not
++            // expose without an extra video data output on the session.
++            const auto callbackMs = Time::getMillisecondCounterHiRes();
++            auto firstFrameMs = callbackMs;
++
++            @try
++            {
++                const CMTime recorded = [output recordedDuration];
++
++                if (CMTIME_IS_NUMERIC (recorded))
++                {
++                    const auto recordedSeconds = CMTimeGetSeconds (recorded);
++
++                    // Anything longer is not a start-up delay; do not trust it.
++                    if (recordedSeconds > 0.0 && recordedSeconds < 5.0)
++                        firstFrameMs = callbackMs - recordedSeconds * 1000.0;
++                }
++            }
++            @catch (NSException* exception)
++            {
++                ignoreUnused (exception);
++            }
++
 +            const File file (nsStringToJuce ([fileURL path]));
-+            withOwner (self, [&] (Pimpl& owner) { owner.recordingStarted (file); });
++            withOwner (self, [&] (Pimpl& owner) { owner.recordingStarted (file, firstFrameMs); });
 +        }
          static void didPauseRecordingToOutputFileAtURL (id, SEL, AVCaptureFileOutput*, NSURL*, NSArray*) {}
          static void didResumeRecordingToOutputFileAtURL (id, SEL, AVCaptureFileOutput*, NSURL*, NSArray*) {}
@@ -395,7 +471,7 @@ index ddcba1f320..5b6f18bc87 100644
          }
      };
  
-@@ -256,6 +473,11 @@ private:
+@@ -256,6 +544,11 @@ private:
              delegate.reset ([cls.createInstance() init]);
          }
  
@@ -407,7 +483,7 @@ index ddcba1f320..5b6f18bc87 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -288,7 +510,7 @@ private:
+@@ -288,7 +581,7 @@ private:
              if (imageOutput == nil)
                  return;
  
@@ -416,7 +492,7 @@ index ddcba1f320..5b6f18bc87 100644
  
              [imageOutput capturePhotoWithSettings: [AVCapturePhotoSettings photoSettings]
                                           delegate: delegate.get()];
-@@ -308,23 +530,51 @@ private:
+@@ -308,23 +601,51 @@ private:
                          [[maybe_unused]] String errorString = error != nil ? nsStringToJuce (error.localizedDescription) : String();
  
                          JUCE_CAMERA_LOG ("Still picture capture failed, error: " + errorString);
@@ -473,7 +549,7 @@ index ddcba1f320..5b6f18bc87 100644
          };
  
          AVCapturePhotoOutput* imageOutput = nil;
-@@ -336,6 +586,11 @@ private:
+@@ -336,6 +657,11 @@ private:
      class PreCatalinaStillImageOutput  : public ImageOutputBase
      {
      public:
@@ -485,7 +561,7 @@ index ddcba1f320..5b6f18bc87 100644
          void addImageCapture (AVCaptureSession* s) override
          {
              if (imageOutput != nil)
-@@ -378,19 +633,27 @@ private:
+@@ -378,19 +704,27 @@ private:
          {
              if (auto* videoConnection = p.getVideoConnection())
              {
@@ -515,7 +591,7 @@ index ddcba1f320..5b6f18bc87 100644
                  }];
              }
          }
-@@ -442,35 +705,163 @@ private:
+@@ -442,35 +776,244 @@ private:
          }
      }
  
@@ -577,10 +653,22 @@ index ddcba1f320..5b6f18bc87 100644
 +    // format the session chose cannot reach ~30 fps, switch to the largest
 +    // format up to 4K that can, and pin it to 30 fps. Cameras that already
 +    // run smoothly (FaceTime, most webcams) are left exactly as they were.
-+    bool chooseSmoothFormat (AVCaptureDevice* device) const
++    //
++    // On success the device is left LOCKED (see holdFormat): the session
++    // re-applies its preset's format at commitConfiguration/startRunning
++    // unless the device stays locked until the start has returned.
++    bool chooseSmoothFormat (AVCaptureDevice* device)
 +    {
++        if (device == nil || device.activeFormat == nil)
++            return false;
 +
-+        if (device == nil || device.activeFormat == nil || maxRateOf (device.activeFormat) >= smoothRate)
++        // A connection refresh re-adds the input. Hold the format already
++        // chosen rather than judging the camera by the format that choice
++        // left active, which is smooth by construction and would be dropped.
++        if (chosenFormat != nil && [device.formats containsObject: chosenFormat])
++            return holdFormat (device, chosenFormat, chosenFrameDuration);
++
++        if (maxRateOf (device.activeFormat) >= smoothRate)
 +            return false;
 +
 +        AVCaptureDeviceFormat* best = nil;
@@ -610,16 +698,35 @@ index ddcba1f320..5b6f18bc87 100644
 +            }
 +        }
 +
-+        if (best == nil || ! [device lockForConfiguration: nil])
++        if (best == nil)
 +            return false;
 +
 +        const auto duration = (bestRange.minFrameRate <= 30.0 && bestRange.maxFrameRate >= 30.0)
 +                                ? CMTimeMake (1, 30)
 +                                : bestRange.minFrameDuration;
 +
++        if (! holdFormat (device, best, duration))
++            return false;
++
++        [chosenFormat release];
++        chosenFormat = [best retain];
++        chosenFrameDuration = duration;
++        return true;
++    }
++
++    // Locks the device, sets the format and frame duration, and KEEPS the
++    // lock. startSession hands it to the queued start, which unlocks after
++    // startRunning returns; every other path ends in releaseHeldDevice().
++    bool holdFormat (AVCaptureDevice* device, AVCaptureDeviceFormat* format, CMTime duration)
++    {
++        releaseHeldDevice();
++
++        if (! [device lockForConfiguration: nil])
++            return false;
++
 +        @try
 +        {
-+            device.activeFormat = best;
++            device.activeFormat = format;
 +            device.activeVideoMinFrameDuration = duration;
 +            device.activeVideoMaxFrameDuration = duration;
 +        }
@@ -629,14 +736,64 @@ index ddcba1f320..5b6f18bc87 100644
 +            return false;
 +        }
 +
-+        [device unlockForConfiguration];
++        heldDevice = [device retain];
 +        return true;
++    }
++
++    void releaseHeldDevice()
++    {
++        if (heldDevice == nil)
++            return;
++
++        @try
++        {
++            [heldDevice unlockForConfiguration];
++        }
++        @catch (NSException*) {}
++
++        [heldDevice release];
++        heldDevice = nil;
++    }
++
++    // The session can still have swapped the format: a retried start runs
++    // without the hold, and a running session's refresh commits before its
++    // hold is released. Put the chosen format back once, briefly locked.
++    void reassertChosenFormat()
++    {
++        if (chosenFormat == nil || currentInput == nil)
++            return;
++
++        @try
++        {
++            AVCaptureDevice* device = currentInput.device;
++
++            if ([device.activeFormat isEqual: chosenFormat]
++                && CMTimeCompare (device.activeVideoMinFrameDuration, chosenFrameDuration) == 0)
++                return;
++
++            if (! [device.formats containsObject: chosenFormat] || ! [device lockForConfiguration: nil])
++                return;
++
++            @try
++            {
++                device.activeFormat = chosenFormat;
++                device.activeVideoMinFrameDuration = chosenFrameDuration;
++                device.activeVideoMaxFrameDuration = chosenFrameDuration;
++            }
++            @catch (NSException*) {}
++
++            [device unlockForConfiguration];
++        }
++        @catch (NSException*) {}
 +    }
 +
      void addInput()
      {
          if (currentInput == nil)
          {
++            // A hold from an earlier add that never reached a start.
++            releaseHeldDevice();
++
 +            AVCaptureDevice* selectedDevice = nil;
 +
              for (AVCaptureDevice* device : getCaptureDevices())
@@ -697,7 +854,7 @@ index ddcba1f320..5b6f18bc87 100644
              }
          }
      }
-@@ -499,6 +890,12 @@ private:
+@@ -499,6 +1042,12 @@ private:
  
      void refreshIfNeeded()
      {
@@ -710,7 +867,7 @@ index ddcba1f320..5b6f18bc87 100644
          if (getVideoConnection() == nullptr)
              refreshConnections();
      }
-@@ -509,7 +906,7 @@ private:
+@@ -509,7 +1058,7 @@ private:
  
          if (connections != nil)
              for (AVCaptureConnection* connection in connections)
@@ -719,7 +876,7 @@ index ddcba1f320..5b6f18bc87 100644
                      for (AVCaptureInputPort* port in [connection inputPorts])
                          if ([[port mediaType] isEqual: AVMediaTypeVideo])
                              return connection;
-@@ -534,17 +931,100 @@ private:
+@@ -534,17 +1083,100 @@ private:
          listeners.call ([=] (Listener& l) { l.imageReceived (image); });
  
          if (! listeners.isEmpty())
@@ -811,9 +968,9 @@ index ddcba1f320..5b6f18bc87 100644
 +        @catch (NSException*) {}
 +    }
 +
-+    void recordingStarted (const File& file)
++    void recordingStarted (const File& file, double firstFrameMs)
 +    {
-+        NullCheckedInvocation::invoke (owner.onRecordingStarted, file);
++        NullCheckedInvocation::invoke (owner.onRecordingStarted, file, firstFrameMs);
 +    }
 +
 +    void recordingFinished (const File& file, const String& error)
@@ -824,7 +981,7 @@ index ddcba1f320..5b6f18bc87 100644
      }
  
      void cameraSessionRuntimeError (const String& error)
-@@ -556,7 +1036,10 @@ private:
+@@ -556,7 +1188,10 @@ private:
  
      //==============================================================================
      CameraDevice& owner;
@@ -835,7 +992,7 @@ index ddcba1f320..5b6f18bc87 100644
  
      AVCaptureSession* session = nil;
      AVCaptureMovieFileOutput* fileOutput = nil;
-@@ -566,7 +1049,15 @@ private:
+@@ -566,7 +1201,21 @@ private:
      id<AVCaptureFileOutputRecordingDelegate> callbackDelegate = nil;
      String openingError;
      Time firstPresentationTime;
@@ -843,6 +1000,12 @@ index ddcba1f320..5b6f18bc87 100644
 +    std::atomic<bool> isRecording { false };
 +    std::atomic<bool> recordingStopRequested { false };
 +    bool sessionStartQueued = false;
++
++    // Message thread only. heldDevice is locked for configuration (and
++    // retained) while a chosen format waits for its session to start.
++    AVCaptureDevice* heldDevice = nil;
++    AVCaptureDeviceFormat* chosenFormat = nil;
++    CMTime chosenFrameDuration = kCMTimeInvalid;
 +    static constexpr int maxStartRetries = 8;
 +    int startRetriesLeft = maxStartRetries;
 +
@@ -853,10 +1016,10 @@ index ddcba1f320..5b6f18bc87 100644
      CriticalSection listenerLock;
      ListenerList<Listener> listeners;
 diff --git a/modules/juce_video/native/juce_CameraDevice_windows.h b/modules/juce_video/native/juce_CameraDevice_windows.h
-index f775f938f1..ae18ae2f34 100644
+index f775f938f1..b7aea68c12 100644
 --- a/modules/juce_video/native/juce_CameraDevice_windows.h
 +++ b/modules/juce_video/native/juce_CameraDevice_windows.h
-@@ -188,7 +188,22 @@ struct CameraDevice::Pimpl  : public ChangeBroadcaster
+@@ -188,7 +188,24 @@ struct CameraDevice::Pimpl  : public ChangeBroadcaster
      void startRecordingToFile (const File& file, int quality)
      {
          addUser();
@@ -865,7 +1028,9 @@ index f775f938f1..ae18ae2f34 100644
 +
 +        if (isRecording)
 +        {
-+            NullCheckedInvocation::invoke (owner.onRecordingStarted, recordingFile);
++            // The graph is built synchronously above, so this call is as close
++            // to the first frame as this backend can tell: report no estimate.
++            NullCheckedInvocation::invoke (owner.onRecordingStarted, recordingFile, 0.0);
 +        }
 +        else
 +        {
@@ -879,7 +1044,7 @@ index f775f938f1..ae18ae2f34 100644
      }
  
      void stopRecording()
-@@ -198,6 +213,7 @@ struct CameraDevice::Pimpl  : public ChangeBroadcaster
+@@ -198,6 +215,7 @@ struct CameraDevice::Pimpl  : public ChangeBroadcaster
              removeFileCaptureFilter();
              removeUser();
              isRecording = false;
@@ -887,7 +1052,7 @@ index f775f938f1..ae18ae2f34 100644
          }
      }
  
-@@ -565,6 +581,7 @@ struct CameraDevice::Pimpl  : public ChangeBroadcaster
+@@ -565,6 +583,7 @@ struct CameraDevice::Pimpl  : public ChangeBroadcaster
      std::function<void (const Image&)> pictureTakenCallback;
  
      bool isRecording = false, openedSuccessfully = false;
