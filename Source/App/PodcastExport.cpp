@@ -10,6 +10,10 @@
 #include <functional>
 #include <thread>
 
+#if defined (__APPLE__)
+ #include <sys/resource.h>
+#endif
+
 namespace mma {
 
 namespace {
@@ -478,7 +482,9 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
             return rendered;
         }
 
-        stream.release();
+        // Still reachable after the writer takes it, to see the end of it
+        // reach the disk (below). The writer owns and deletes it.
+        auto* const fileStream = stream.release();
 
         const float gain = juce::Decibels::decibelsToGain (static_cast<float> (withGainDb), -1000.0f);
         LookAheadLimiter limiter (rate, limiterCeilingDb);
@@ -525,6 +531,18 @@ PodcastExportResult exportPodcastCopy (const juce::File& sessionFolder,
             // Closing is what writes the header's final sizes; a writer that
             // cannot flush leaves a file that only looks finished.
             writeFailed = writeFailed || ! writer->flush();
+
+            // The writer's flush only rewrites the header into the stream's
+            // buffer: the tail of the audio and the header itself reached the
+            // disk when the writer was deleted, where a failure is dropped.
+            // So a card that filled on those last bytes gave a short file that
+            // was renamed into place as finished. Pushed out and checked here.
+            if (! writeFailed)
+            {
+                fileStream->flush();
+                writeFailed = fileStream->getStatus().failed()
+                           || working.getSize() < fileStream->getPosition();
+            }
         }
 
         writer.reset();
@@ -658,6 +676,17 @@ bool PodcastExporter::start (const juce::File& sessionFolder, const juce::String
 
 void PodcastExporter::run (std::shared_ptr<State> state)
 {
+   #if defined (__APPLE__)
+    // The lowest disk priority, for this thread only -- what taskpolicy gives
+    // the combine's ffmpeg. The copy reads the whole mix up to four times and
+    // writes it up to three, on the card the next take is usually already
+    // recording to, and at normal priority that competed with the take's
+    // writer: ring fill, a fall back to mix-only, dropped video frames. With
+    // nothing else writing it still runs at full speed. Best effort: a Mac
+    // that refuses it makes the copy exactly as before.
+    (void) setiopolicy_np (IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE);
+   #endif
+
     for (;;)
     {
         Job job;

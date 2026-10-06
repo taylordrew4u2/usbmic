@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#include "../Core/ShowTemplate.h"
 #include <set>
 
 namespace mma {
@@ -449,6 +450,14 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         if (mainScreen.onMuteToggled)
             mainScreen.onMuteToggled();
 
+        return true;
+    }
+
+    // Cmd-, is where every Mac app keeps its settings; people press it before
+    // they go looking for the button. A second press closes them again.
+    if (key == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0))
+    {
+        toggleAdvanced();
         return true;
     }
 
@@ -947,8 +956,12 @@ void MainComponent::promptSaveShow()
             {
                 const auto name = window->getTextEditorContents ("name").trim();
 
+                // Selected by the name it is listed under, which is the
+                // tidied one: a name past 60 characters, or with a line break
+                // pasted in, was saved but left the picker on nothing, with
+                // Load and Delete greyed out.
                 if (application.saveTemplate (name))
-                    refreshShows (name);
+                    refreshShows (juce::String::fromUTF8 (ShowTemplate::cleanName (name.toStdString()).c_str()));
 
                 refreshAdvanced();
             }

@@ -197,7 +197,7 @@ public:
         {
             case QuitGate::Decision::QuitNow:
                 stopTimer();
-                quit();
+                quitOnceAfterTakeWorkIsSettled();
                 return;
 
             case QuitGate::Decision::StartWaiting:
@@ -257,7 +257,68 @@ public:
             return;
 
         stopTimer();
+        quitOnceAfterTakeWorkIsSettled();
+    }
+
+    // The podcast copy and the combined video are made after a take stops,
+    // and quitting cancels them. Quitting straight after a show -- the usual
+    // moment -- threw them away without a word, and the user found a folder
+    // without the file they were told would be there. So they are asked: wait
+    // for it (the app quits by itself once it is done), or quit now.
+    void quitOnceAfterTakeWorkIsSettled()
+    {
+        const auto work = application != nullptr ? application->unfinishedAfterTakeWork()
+                                                  : juce::String();
+
+        // A second Cmd+Q while waiting is the user saying "now".
+        if (work.isEmpty() || afterTakeWorkConfirmed || waitingForAfterTakeWork)
+        {
+            afterTakeWaitTimer.stopTimer();
+            quit();
+            return;
+        }
+
+       #if defined (MMA_UI_WALK)
         quit();
+       #else
+        if (confirmingAfterTakeWork)
+            return;
+
+        confirmingAfterTakeWork = true;
+
+        auto* window = new juce::AlertWindow ("Still saving " + work,
+                                              "SobStage is still making " + work + " from the last "
+                                              "take. Quitting now cancels it; the recording itself "
+                                              "is already saved.",
+                                              juce::MessageBoxIconType::QuestionIcon,
+                                              mainWindow != nullptr ? mainWindow->getContentComponent() : nullptr);
+        window->addButton ("Quit When Done", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        window->addButton ("Quit Now", 2);
+        window->addButton ("Don't Quit", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        window->enterModalState (true,
+            juce::ModalCallbackFunction::create ([this] (int result)
+            {
+                confirmingAfterTakeWork = false;
+
+                if (result == 2)
+                {
+                    afterTakeWorkConfirmed = true;
+                    quitOnceAfterTakeWorkIsSettled();
+                }
+                else if (result == 1)
+                {
+                    waitingForAfterTakeWork = true;
+                    afterTakeWaitTimer.startTimer (250);
+                }
+                else
+                {
+                    // Staying open: the next Cmd+Q mid-take must ask again.
+                    quitConfirmed = false;
+                }
+            }),
+            true);
+       #endif
     }
 
 private:
@@ -271,6 +332,27 @@ private:
     QuitGate quitGate;
     bool confirmingQuit = false;
     bool quitConfirmed = false;
+    bool confirmingAfterTakeWork = false;
+    bool afterTakeWorkConfirmed = false;
+    bool waitingForAfterTakeWork = false;
+    juce::TimedCallback afterTakeWaitTimer { [this]
+    {
+        // A new take started while waiting: the quit is off. Quitting by
+        // itself mid-show would be far worse than not quitting.
+        if (application != nullptr && application->isRecording())
+        {
+            afterTakeWaitTimer.stopTimer();
+            waitingForAfterTakeWork = false;
+            quitConfirmed = false;
+            return;
+        }
+
+        if (application == nullptr || application->unfinishedAfterTakeWork().isEmpty())
+        {
+            afterTakeWaitTimer.stopTimer();
+            quit();
+        }
+    } };
 
    #if defined (MMA_STALL_METER)
     std::unique_ptr<MessageThreadStallMeter> stallMeter;

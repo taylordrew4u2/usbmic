@@ -136,6 +136,11 @@ public:
     /// nonblocking quit poll; no device wait occurs on this thread.
     bool prepareToQuit();
 
+    /// The after-take work still running, in words for a quit prompt
+    /// ("the podcast copy", "the combined video", or both). Empty when none.
+    /// Quitting cancels it, so the user is asked before it is thrown away.
+    juce::String unfinishedAfterTakeWork() const;
+
     /// A take is being written right now.
     bool isRecording() const { return recordingEngine.getState() == RecordingState::Recording; }
 

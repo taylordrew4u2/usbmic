@@ -25,7 +25,7 @@
   <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording: two microphone meters moving, Start recording pressed, the take clock counting while the file count grows, then Stop and a Saved card listing every file with its size" width="680"></a>
 </p>
 
-> **Status:** v1.13.20 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
+> **Status:** v1.13.21 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
 
 ## Why I built it
 

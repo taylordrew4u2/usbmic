@@ -1262,6 +1262,18 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
     if (! setNominalSampleRate (device, sampleRate))
     {
         const double actual = getNominalSampleRate (device);
+
+        // Unplugged during the settle wait: the rate read now fails and comes
+        // back as 0, and the advice below became "Set the recording to 0 kHz".
+        if (actual <= 0.0 || ! readDeviceIsAlive (device))
+        {
+            return { false,
+                     isOutput
+                        ? "That sound output disconnected while SobStage was opening it. Choose another one."
+                        : "This interface disconnected while SobStage was opening it. Plug it back in, "
+                          "then try again." };
+        }
+
         return { false,
                  "This interface is running at " + formatRate (actual)
                     + " and won't change to the " + formatRate (sampleRate)
@@ -1834,6 +1846,17 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                 if (! stream->deviceUnavailableReported)
                 {
                     stream->deviceUnavailableReported = true;
+
+                    // The app silences this mic's channel on the report, and
+                    // mid-take only a `resumed` report gives it back. A USB hub
+                    // re-settling can drop DeviceIsAlive and raise it again on
+                    // the same AudioObjectID; with only the watchdog arming the
+                    // resume, that mic recorded silence for the rest of the
+                    // take while its audio arrived. Audio after this moment,
+                    // once the device is alive again, is the resume.
+                    if (! stream->isOutput)
+                        stream->deadReportedAt = now;
+
                     failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
                                           stream->isOutput
                                               ? "is no longer available, so you can't hear through "

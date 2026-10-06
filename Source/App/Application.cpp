@@ -3185,6 +3185,17 @@ bool Application::prepareToQuit()
         && ! cameraController.isFinalizingRecording();
 }
 
+juce::String Application::unfinishedAfterTakeWork() const
+{
+    const bool podcast = podcastExporter.isRunning();
+    const bool combined = takeCombiner.isRunning();
+
+    if (podcast && combined) return "the podcast copy and the combined video";
+    if (podcast)             return "the podcast copy";
+    if (combined)            return "the combined video";
+    return {};
+}
+
 juce::String Application::resolveSessionFolderName (juce::Time now, const juce::String& name) const
 {
     const juce::File root (destinationFolder);
