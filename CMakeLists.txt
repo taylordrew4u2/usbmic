@@ -488,6 +488,22 @@ if (MMA_BUILD_APP)
     add_test(NAME sim_take_combiner COMMAND sim_take_combiner)
     set_tests_properties(sim_take_combiner PROPERTIES TIMEOUT 10)
 
+    # settings.json, session.json and saved shows are replaced whole or not at
+    # all: a full disk (simulated with RLIMIT_FSIZE) must leave the previous
+    # file intact rather than renaming an empty one over it.
+    if (UNIX)
+        add_executable(sim_checked_text_write Tools/sim_checked_text_write.cpp)
+        target_compile_definitions(sim_checked_text_write PRIVATE
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+            JUCE_STANDALONE_APPLICATION=1)
+        target_include_directories(sim_checked_text_write PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+        target_link_libraries(sim_checked_text_write PRIVATE juce::juce_core)
+        add_test(NAME sim_checked_text_write COMMAND sim_checked_text_write)
+        set_tests_properties(sim_checked_text_write PROPERTIES TIMEOUT 20)
+    endif()
+
     # The podcast-ready copy written after a take: a quiet mono mix comes out
     # at each target's mono loudness with its true peak under the ceiling, a
     # transient-heavy one is limited onto the target rather than left short, a

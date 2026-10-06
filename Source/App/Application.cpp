@@ -21,6 +21,7 @@
 #include "../Core/UpdateCheck.h"
 #include "../Core/ShowTemplate.h"
 #include "../Platform/NullBackend.h"
+#include "CheckedTextWrite.h"
 #include <algorithm>
 #include <cstdio>
 #include <chrono>
@@ -146,24 +147,10 @@ juce::String appVersionString()
    #endif
 }
 
-// Writes text and then checks the file actually holds it. On a full drive
-// juce::File::replaceWithText can report success having left a truncated or
-// empty file behind -- seen for real: a take whose card filled up ended with a
-// zero-byte session.json and nothing said so. Everything durable this app
-// writes goes through here, so a write that did not survive is a write the
-// user hears about.
-bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
-{
-    // nullptr line endings: write the text verbatim. juce::File::replaceWithText
-    // defaults to turning every "\n" into "\r\n", which makes the file bigger
-    // than the string it came from -- so the size check below called every
-    // healthy multi-line write a failure. A false alarm on every take is the
-    // same disservice as the silence this check exists to end.
-    if (! file.replaceWithText (text, false, false, nullptr))
-        return false;
-
-    return file.getSize() == static_cast<juce::int64> (text.getNumBytesAsUTF8());
-}
+// replaceWithTextChecked (CheckedTextWrite.h): everything durable this app
+// writes goes through it, so a write that did not survive is a write the user
+// hears about -- and, on a full disk, one that leaves the previous file intact
+// rather than renaming an empty one over it.
 
 // replaceWithTextChecked for files on the card, from the message thread. A
 // card pulled mid-write can hold the write forever; past the deadline this
