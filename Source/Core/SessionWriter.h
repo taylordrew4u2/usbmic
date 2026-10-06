@@ -84,6 +84,14 @@ public:
     int getSplitFileCount() const { return splitIndex; }
     std::string getCurrentFilePath() const { return currentFilePath; }
 
+    /// Where the file being written is NOW, asked of the open file rather than
+    /// remembered: a take folder renamed or moved in Finder mid-take carries
+    /// the file with it, and the path this writer opened no longer exists.
+    /// F_GETPATH on macOS, /proc/self/fd on Linux. Empty when the system can't
+    /// say (no file open, Windows, a file that has been deleted). Call only
+    /// from the thread that drives this writer.
+    std::string resolveCurrentFilePath() const;
+
 private:
     std::string basePathNoExt;
     std::string originTimestamp;

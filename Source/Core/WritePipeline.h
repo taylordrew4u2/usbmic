@@ -194,7 +194,22 @@ public:
     bool mirrorRanOutOfSpace() const noexcept
     { return mirrorOutOfSpace.load (std::memory_order_acquire); }
 
+    /// The take's folder as it stands now, which is not always where it was
+    /// opened: a folder renamed or moved in Finder mid-take takes the open
+    /// files with it, and the audio goes on landing there. Read from the open
+    /// mix file about once a second by the writer thread, and once more at
+    /// stop() before the files close, so it survives stop(). The folder the
+    /// take started in until the system has said otherwise.
+    std::string getLiveSessionFolder() const;
+
 private:
+    mutable std::mutex liveFolderLock;
+    std::string liveSessionFolder;
+    std::string openedSessionFolder;
+    double secondsSinceFolderCheck = 0.0;
+    /// Writer thread (or stop(), after it has joined) only.
+    void refreshLiveSessionFolder();
+
     // Constructed small and resized by start(), which is the only place the
     // real channel count and rate are known. RingBuffer::reset reallocates, so
     // it must never be called while the audio thread is running.

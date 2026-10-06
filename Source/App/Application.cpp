@@ -2891,6 +2891,10 @@ void Application::toggleRecording()
         {
             capture->stopRecording();
 
+            // Where the files were finished, which is where session.json, the
+            // activity log and the saved-take card must look.
+            followRenamedTakeFolder();
+
             // Bounded inside the coordinator; said here, because a Stop that
             // could not finish the files must not read like a clean one.
             if (capture->didLastStopTimeOut())
@@ -4626,6 +4630,23 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         writeActivityLog (juce::File (currentMirrorFolder));
 }
 
+void Application::followRenamedTakeFolder()
+{
+    if (capture == nullptr || currentSessionFolder.isEmpty())
+        return;
+
+    const auto live = juce::String (capture->getLiveSessionFolder());
+
+    if (live.isEmpty() || live == currentSessionFolder)
+        return;
+
+    currentSessionFolder = live;
+
+    noteActivity (ActivityLevel::Warning, "Recording",
+                  "This take's folder was renamed or moved. It is still recording, into "
+                  + live + ".");
+}
+
 bool Application::isOnCard (const juce::File& file) const
 {
     // Path arithmetic only: asking the filesystem would be the very call that
@@ -4894,6 +4915,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // a full disk, a pulled card): mirror the take state into the sleep
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
+
+    // Before anything reads the take's files: a folder renamed in Finder
+    // mid-take is followed here, well inside the growth check's six seconds.
+    if (isRecording())
+        followRenamedTakeFolder();
 
     // The assertion above holds a plugged-in Mac up with its lid shut; on
     // battery nothing can, so the performer hears it while the lid is open.

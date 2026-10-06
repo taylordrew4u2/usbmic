@@ -13,6 +13,7 @@
  #include <windows.h>
 #else
  #include <fcntl.h>
+ #include <sys/param.h>
  #include <sys/stat.h>
  #include <unistd.h>
 #endif
@@ -449,6 +450,41 @@ bool SessionWriter::syncCurrentFileToStorage()
     if (ownsDescriptor)
         ::close (descriptor);
     return ok;
+#endif
+}
+
+std::string SessionWriter::resolveCurrentFilePath() const
+{
+#if defined (__APPLE__) && defined (F_GETPATH)
+    if (syncDescriptor < 0)
+        return {};
+
+    char buffer[MAXPATHLEN] = {};
+    if (::fcntl (syncDescriptor, F_GETPATH, buffer) != 0)
+        return {};
+
+    return std::string (buffer);
+#elif defined (__linux__)
+    if (syncDescriptor < 0)
+        return {};
+
+    const auto link = "/proc/self/fd/" + std::to_string (syncDescriptor);
+    char buffer[4096] = {};
+    const auto length = ::readlink (link.c_str(), buffer, sizeof (buffer) - 1);
+    if (length <= 0)
+        return {};
+
+    std::string path (buffer, static_cast<size_t> (length));
+
+    // The kernel's way of saying the file has no name any more.
+    const std::string deleted = " (deleted)";
+    if (path.size() >= deleted.size()
+        && path.compare (path.size() - deleted.size(), deleted.size(), deleted) == 0)
+        return {};
+
+    return path;
+#else
+    return {};
 #endif
 }
 

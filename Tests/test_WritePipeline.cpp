@@ -989,3 +989,51 @@ TEST_CASE (WritePipeline_EachStemIsWrittenAtItsOwnDeviceDepth)
     REQUIRE (mix.is_open());
     REQUIRE (readU32LE (mix, kDataSizeOffset) == 256 * 3);
 }
+
+#if ! defined (_WIN32)
+// A take folder renamed in Finder mid-take carries the open files with it. The
+// pipeline has to report where they now are, so the growth check and the
+// stop-time session.json follow the folder instead of the path it started at.
+TEST_CASE (WritePipeline_FollowsATakeFolderRenamedMidTake)
+{
+    ScopedTempTree tree ("rename");
+    const auto before = tree.root / "card" / "2026-10-06_1930_Show";
+    const auto after = tree.root / "card" / "Episode-12";
+    std::filesystem::create_directories (before);
+
+    WritePipeline p;
+    REQUIRE (p.start (before.string(), twoChannels(), 48000.0, 16, "2026-10-06T19:30:00Z"));
+    REQUIRE (p.getLiveSessionFolder() == before.string());
+
+    std::vector<float> a (4800, 0.25f), b (4800, -0.25f);
+    const float* chans[] = { a.data(), b.data() };
+    uint64_t total = 0;
+
+    // A little over a second of audio each time: the folder is re-read about
+    // once a second of audio written.
+    const auto pushAboutASecond = [&]
+    {
+        for (int i = 0; i < 12; ++i)
+            REQUIRE (p.pushBlock (chans, 2, 4800));
+        total += 12 * 4800;
+        REQUIRE (waitForWrittenFrames (p, total));
+    };
+
+    pushAboutASecond();
+
+    // Unmoved: the spelling the take was given, not a resolved one.
+    REQUIRE (p.getLiveSessionFolder() == before.string());
+
+    std::filesystem::rename (before, after);
+    pushAboutASecond();
+
+    std::error_code ec;
+    REQUIRE (std::filesystem::equivalent (p.getLiveSessionFolder(), after, ec));
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+
+    p.stop();
+    REQUIRE_FALSE (p.hasCardWriteFailed());
+    REQUIRE (std::filesystem::equivalent (p.getLiveSessionFolder(), after, ec));
+    REQUIRE (std::filesystem::exists (after / "MIX.wav"));
+}
+#endif

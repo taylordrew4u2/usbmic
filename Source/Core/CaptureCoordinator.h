@@ -329,6 +329,14 @@ public:
     }
     bool mirrorRanOutOfSpace() const { return pipeline != nullptr && pipeline->mirrorRanOutOfSpace(); }
 
+    /// Where the take's folder is now -- see WritePipeline::getLiveSessionFolder.
+    /// Survives stopRecording(), so the stop-time files follow a folder that
+    /// was renamed during the take. Empty before any take.
+    std::string getLiveSessionFolder() const
+    {
+        return pipeline != nullptr ? pipeline->getLiveSessionFolder() : lastTakeLiveSessionFolder;
+    }
+
     /// §6.3: the mirror's equivalent. The pipeline already stops mirroring on
     /// a failed write and deliberately leaves the card write alone -- what this
     /// exposes is the fact that it happened, so the take's owner can say so and
@@ -603,6 +611,7 @@ private:
     bool lastStopTimedOut = false;
 
     std::string lastTakeCardWriteProblem;
+    std::string lastTakeLiveSessionFolder;
     bool lastTakeCardWriteFailed = false;
     bool lastTakeMirrorWriteFailed = false;
 
