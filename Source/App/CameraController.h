@@ -183,9 +183,11 @@ public:
     /// audio take began. The sound is always started first -- the stem files
     /// and the writer thread are opened before any camera is asked to record --
     /// so each camera's file begins some way into the take, and how far in is
-    /// the one number the combining step cannot work out for itself. A camera
-    /// gives no timestamp for its first frame, so this is measured rather than
-    /// assumed: the counter is read again the moment the OS accepts the start.
+    /// the one number the combining step cannot work out for itself. It is
+    /// measured rather than assumed: the backend's estimate of the movie's
+    /// first frame on the same counter (macOS: the didStart time less what the
+    /// writer had already recorded), or, when it cannot give one, the counter
+    /// read again the moment the OS confirms the start.
     bool startRecording (const juce::File& sessionFolder, double audioStartMs = 0.0);
     void stopRecording();
     /// Finalizes camera files without reopening previews. Used only while the

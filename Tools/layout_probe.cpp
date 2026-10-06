@@ -111,11 +111,14 @@ int main()
     std::printf ("-- camera viewer revision invalidates UI caches --\n");
 
     int mainViewerCreates = 0;
+    juce::Component* lastMainViewer = nullptr;
     mma::MainScreen cameraScreen;
-    cameraScreen.makeViewer = [&mainViewerCreates] (const std::string&)
+    cameraScreen.makeViewer = [&mainViewerCreates, &lastMainViewer] (const std::string&)
     {
         ++mainViewerCreates;
-        return std::make_unique<juce::Component>();
+        auto viewer = std::make_unique<juce::Component>();
+        lastMainViewer = viewer.get();
+        return viewer;
     };
     cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1, {}, true } });
     cameraScreen.setCameraTiles ({ { "capture", "HDMI", 1, {}, true } });
@@ -144,6 +147,46 @@ int main()
     cameraScreen.setRecording (true);
     const bool omittedCameraNeverClaimsRec = hasExactLabel ("NOT RECORDING: HDMI")
                                           && ! hasExactLabel ("REC: HDMI");
+
+    // Words around the picture change in place. Reparenting the native preview
+    // for a caption, a rename or a signal message can leave AVFoundation's
+    // layer black, so only a new viewer revision may rebuild the host.
+    const int createsBeforeWords = mainViewerCreates;
+    auto* const viewerBeforeWords = lastMainViewer;
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3, {}, false, true } });
+    const bool startingCaptionInPlace = hasExactLabel ("STARTING: HDMI");
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3, {}, true } });
+    const bool recCaptionInPlace = hasExactLabel ("REC: HDMI");
+    cameraScreen.setCameraTiles ({ { "capture", "HDMI", 3, "Signal dropped.", true } });
+    const bool signalCaptionInPlace = hasExactLabel ("SIGNAL LOST: HDMI");
+    cameraScreen.setCameraTiles ({ { "capture", "Wide shot", 3, {}, true } });
+    const bool renameInPlace = hasExactLabel ("REC: Wide shot");
+    const bool captionsKeepViewerHost = startingCaptionInPlace && recCaptionInPlace
+        && signalCaptionInPlace && renameInPlace
+        && mainViewerCreates == createsBeforeWords
+        && viewerBeforeWords != nullptr
+        && cameraScreen.getIndexOfChildComponent (viewerBeforeWords) >= 0;
+
+    int placeholderCreates = 0;
+    mma::MainScreen placeholderScreen;
+    placeholderScreen.makeViewer = [&placeholderCreates] (const std::string&)
+    {
+        ++placeholderCreates;
+        return std::unique_ptr<juce::Component>();
+    };
+    const auto placeholderHas = [&placeholderScreen] (const juce::String& text)
+    {
+        for (int i = 0; i < placeholderScreen.getNumChildComponents(); ++i)
+            if (auto* label = dynamic_cast<juce::Label*> (placeholderScreen.getChildComponent (i));
+                label != nullptr && label->getText() == text)
+                return true;
+
+        return false;
+    };
+    placeholderScreen.setCameraTiles ({ { "late", "Late", 1, "Waiting for video.", false } });
+    placeholderScreen.setCameraTiles ({ { "late", "Late", 1, "No video signal.", false } });
+    const bool statusTextUpdatesPlaceholderInPlace = placeholderCreates == 1
+        && placeholderHas ("No video signal.") && ! placeholderHas ("Waiting for video.");
 
     int panelViewerCreates = 0;
     mma::CameraPanel cameraPanel;
@@ -243,6 +286,10 @@ int main()
                  stoppedCaptionDropsRec ? "PASS" : "FAIL");
     std::printf ("camera omitted from frozen take never claims REC: %s\n",
                  omittedCameraNeverClaimsRec ? "PASS" : "FAIL");
+    std::printf ("caption/name/signal changes keep the viewer host: %s\n",
+                 captionsKeepViewerHost ? "PASS" : "FAIL");
+    std::printf ("status text updates the placeholder in place: %s\n",
+                 statusTextUpdatesPlaceholderInPlace ? "PASS" : "FAIL");
     std::printf ("panel cache preserves unchanged viewer: %s\n",
                  panelCacheKeepsViewer ? "PASS" : "FAIL");
     std::printf ("panel revision rebuilds viewer: %s\n\n",
@@ -262,6 +309,8 @@ int main()
     failures += recCaptionIsOutsideNativePreview ? 0 : 1;
     failures += stoppedCaptionDropsRec ? 0 : 1;
     failures += omittedCameraNeverClaimsRec ? 0 : 1;
+    failures += captionsKeepViewerHost ? 0 : 1;
+    failures += statusTextUpdatesPlaceholderInPlace ? 0 : 1;
     failures += panelCacheKeepsViewer ? 0 : 1;
     failures += panelRevisionRebuildsViewer ? 0 : 1;
     failures += takeFreezesCameraControls ? 0 : 1;

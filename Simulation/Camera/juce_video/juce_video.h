@@ -45,7 +45,9 @@ public:
     const String& getName() const noexcept { return name; }
 
     std::function<void (const String&)> onErrorOccurred;
-    std::function<void (const File&)> onRecordingStarted;
+    /// The second argument is the backend's estimate of the movie's first
+    /// frame on Time::getMillisecondCounterHiRes(), or 0 when it has none.
+    std::function<void (const File&, double)> onRecordingStarted;
     std::function<void (const File&, const String&)> onRecordingFinished;
     std::function<void (int, int, double)> onFormatChanged;
 
@@ -120,7 +122,9 @@ int getActiveRecordingCount();
 void setAutoConfirmRecordingStart (bool shouldConfirm);
 void setStartRecordingSucceeds (bool shouldSucceed);
 int getPendingRecordingStartCount();
-void completePendingRecordingStarts();
+/// Confirms every delayed start. `firstFrameMs` is what the backend reports
+/// as the movie's first frame (0: no estimate, as on Windows).
+void completePendingRecordingStarts (double firstFrameMs = 0.0);
 void setFinalizationMode (FinalizationMode mode);
 int getPendingFinalizationCount();
 void completePendingFinalizations();

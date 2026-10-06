@@ -445,69 +445,47 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
         startingStates.push_back (tile.startingThisTake ? 1 : 0);
     }
 
-    const auto captionText = [this] (const juce::String& name, bool recordingThisCamera,
-                                     bool startingThisCamera, const juce::String& signalProblem)
+    // Only the set of cameras and their viewer revisions decide whether the
+    // native previews are rebuilt. A revision is bumped whenever a camera's
+    // picture appears, goes black or is lost, which is exactly when the host
+    // must change between preview and placeholder. Everything else -- a
+    // rename, a signal message, a take's REC/STARTING state -- is words
+    // around the picture. Reparenting the NSView that holds AVFoundation's
+    // preview layer for any of those can leave the layer black, so they are
+    // said in place and the view hierarchy is left alone.
+    const bool sameViewers = ids == lastTileIds && viewerRevisions == lastTileViewerRevisions
+                          && cameraViews.size() == tiles.size();
+
+    if (sameViewers)
     {
-        if (! recording)
-            return name;
+        // Called from the UI tick, so the unchanged case must cost nothing.
+        if (displayNames == lastTileDisplayNames
+            && signalStatusTexts == lastTileSignalStatusTexts
+            && recordingStates == lastTileRecordingStates
+            && startingStates == lastTileStartingStates)
+            return;
 
-        if (recordingThisCamera && signalProblem.isNotEmpty())
-            return "SIGNAL LOST: " + name;
-
-        if (recordingThisCamera)
-            return "REC: " + name;
-
-        if (startingThisCamera)
-            return "STARTING: " + name;
-
-        return "NOT RECORDING: " + name;
-    };
-
-    const bool sameViews = ids == lastTileIds && displayNames == lastTileDisplayNames
-        && viewerRevisions == lastTileViewerRevisions
-        && signalStatusTexts == lastTileSignalStatusTexts;
-
-    // A start-confirmation callback changes only the caption. Reparenting the
-    // native preview for that state flip can itself produce a black AVFoundation
-    // layer, so update the existing caption and leave the view hierarchy alone.
-    if (sameViews && (recordingStates != lastTileRecordingStates
-                      || startingStates != lastTileStartingStates))
-    {
-        for (size_t i = 0; i < cameraViews.size() && i < tiles.size(); ++i)
+        for (size_t i = 0; i < cameraViews.size(); ++i)
         {
             auto& view = cameraViews[i];
             const auto& tile = tiles[i];
+            view.displayName = tile.displayName;
+            view.signalStatusText = tile.signalStatusText;
             view.recordingThisTake = tile.recordingThisTake;
             view.startingThisTake = tile.startingThisTake;
+            refreshCameraCaption (view);
 
-            if (view.caption != nullptr)
-            {
-                view.caption->setText (captionText (view.displayName,
-                                                    view.recordingThisTake,
-                                                    view.startingThisTake,
-                                                    view.signalStatusText),
-                                       juce::dontSendNotification);
-                view.caption->setColour (juce::Label::textColourId,
-                    view.recordingThisTake && view.signalStatusText.isEmpty()
-                        ? AppLookAndFeel::danger : AppLookAndFeel::warning);
-            }
+            if (view.placeholder != nullptr)
+                view.placeholder->setText (placeholderTextFor (view.signalStatusText),
+                                           juce::dontSendNotification);
         }
 
+        lastTileDisplayNames = std::move (displayNames);
+        lastTileSignalStatusTexts = std::move (signalStatusTexts);
         lastTileRecordingStates = std::move (recordingStates);
         lastTileStartingStates = std::move (startingStates);
         return;
     }
-
-    // Called from the UI tick, so it must be free to run every frame. Only an
-    // actual change to the set of switched-on cameras rebuilds anything --
-    // tearing a viewer down and remaking it 60 times a second would flicker and
-    // churn the device for no reason.
-    if (ids == lastTileIds && displayNames == lastTileDisplayNames
-        && viewerRevisions == lastTileViewerRevisions
-        && signalStatusTexts == lastTileSignalStatusTexts
-        && recordingStates == lastTileRecordingStates
-        && startingStates == lastTileStartingStates)
-        return;
 
     lastTileIds = std::move (ids);
     lastTileDisplayNames = std::move (displayNames);
@@ -542,9 +520,7 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
             // empty rectangle -- and on Linux, where JUCE has no CameraDevice
             // at all, this is the honest thing to show rather than a black box.
             view.placeholder = std::make_unique<juce::Label>();
-            view.placeholder->setText (tile.signalStatusText.isNotEmpty()
-                                           ? tile.signalStatusText
-                                           : "No picture from this camera.",
+            view.placeholder->setText (placeholderTextFor (tile.signalStatusText),
                                        juce::dontSendNotification);
             view.placeholder->setJustificationType (juce::Justification::centred);
             view.placeholder->setFont (juce::Font (12.0f));
@@ -556,24 +532,43 @@ void MainScreen::setCameraTiles (const std::vector<CameraTile>& tiles)
         // §14.6 solves for microphones, and the answer is the same: put the
         // name on the thing.
         view.caption = std::make_unique<juce::Label>();
-        const bool recordingThisCamera = recording && tile.recordingThisTake;
-        view.caption->setText (captionText (tile.displayName, recordingThisCamera,
-                                           recording && tile.startingThisTake,
-                                           tile.signalStatusText),
-                               juce::dontSendNotification);
         view.caption->setJustificationType (juce::Justification::centred);
         view.caption->setFont (juce::Font (12.0f));
-        view.caption->setColour (juce::Label::textColourId,
-                                 recordingThisCamera && tile.signalStatusText.isEmpty()
-                                     ? AppLookAndFeel::danger
-                                     : recording ? AppLookAndFeel::warning
-                                                 : AppLookAndFeel::secondary);
+        refreshCameraCaption (view);
         addAndMakeVisible (*view.caption);
 
         cameraViews.push_back (std::move (view));
     }
 
     resized();
+}
+
+juce::String MainScreen::placeholderTextFor (const juce::String& signalStatusText)
+{
+    return signalStatusText.isNotEmpty() ? signalStatusText
+                                         : juce::String ("No picture from this camera.");
+}
+
+void MainScreen::refreshCameraCaption (CameraView& view)
+{
+    if (view.caption == nullptr)
+        return;
+
+    const bool recordingThisCamera = recording && view.recordingThisTake;
+    const auto& name = view.displayName;
+
+    view.caption->setText (! recording ? name
+                           : recordingThisCamera && view.signalStatusText.isNotEmpty()
+                               ? "SIGNAL LOST: " + name
+                           : recordingThisCamera ? "REC: " + name
+                           : view.startingThisTake ? "STARTING: " + name
+                                                   : "NOT RECORDING: " + name,
+                           juce::dontSendNotification);
+    view.caption->setColour (juce::Label::textColourId,
+                             recordingThisCamera && view.signalStatusText.isEmpty()
+                                 ? AppLookAndFeel::danger
+                                 : recording ? AppLookAndFeel::warning
+                                             : AppLookAndFeel::secondary);
 }
 
 void MainScreen::releaseCameraViews()
@@ -703,22 +698,7 @@ void MainScreen::setRecording (bool isRecording)
         // painting which overlaps them. Put the per-camera recording proof in
         // the non-overlapping caption band beneath each preview instead.
         for (auto& view : cameraViews)
-            if (view.caption != nullptr)
-            {
-                const bool recordingThisCamera = recording && view.recordingThisTake;
-                view.caption->setText (! recording ? view.displayName
-                                       : recordingThisCamera && view.signalStatusText.isNotEmpty()
-                                           ? "SIGNAL LOST: " + view.displayName
-                                       : recordingThisCamera ? "REC: " + view.displayName
-                                       : view.startingThisTake ? "STARTING: " + view.displayName
-                                                               : "NOT RECORDING: " + view.displayName,
-                                       juce::dontSendNotification);
-                view.caption->setColour (juce::Label::textColourId,
-                                         recordingThisCamera && view.signalStatusText.isEmpty()
-                                             ? AppLookAndFeel::danger
-                                             : recording ? AppLookAndFeel::warning
-                                                         : AppLookAndFeel::secondary);
-            }
+            refreshCameraCaption (view);
 
         resized();
     }

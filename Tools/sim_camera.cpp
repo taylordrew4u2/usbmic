@@ -14,6 +14,7 @@
 #include "../Source/App/CameraController.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -1356,6 +1357,64 @@ void recordingTruthWaitsForTheStartCallback()
     fakecamera::setAutoConfirmRecordingStart (true);
 }
 
+/// didStart can arrive well after the movie's first frame. When the backend
+/// says when that frame was, the offset is that time, not the callback's.
+void startOffsetUsesTheBackendsFirstFrameTime()
+{
+    std::printf ("\nCamera start offset uses the reported first frame\n");
+
+    fakecamera::setDevices ({ "Late-callback Camera" });
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetRecordingCallCounts();
+    fakecamera::setAutoConfirmRecordingStart (false);
+
+    const auto offsetFor = [] (double audioBeforeNowMs, double firstFrameAfterAudioMs)
+    {
+        mma::CameraController controller;
+        refreshNow (controller);
+        controller.getSelection().setEnabled ("Late-callback Camera", true);
+        controller.applySelection (true);
+
+        const auto takeFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                    .getNonexistentChildFile ("sobstage-camera-first-frame", {}, false);
+        takeFolder.createDirectory();
+
+        const auto audioStart = juce::Time::getMillisecondCounterHiRes() - audioBeforeNowMs;
+        controller.startRecording (takeFolder, audioStart);
+        fakecamera::completePendingRecordingStarts (firstFrameAfterAudioMs != 0.0
+                                                        ? audioStart + firstFrameAfterAudioMs
+                                                        : 0.0);
+        controller.applyPendingCameraList();
+        controller.stopRecording();
+        const auto inputs = controller.getCombinedTakeInputs();
+        takeFolder.deleteRecursively();
+        return inputs.size() == 1 ? inputs.front().videoStartOffsetSeconds : -1.0;
+    };
+
+    // The callback lands 400 ms after audio; the first frame was at 120 ms.
+    const auto reported = offsetFor (400.0, 120.0);
+    check (std::abs (reported - 0.120) < 1.0e-6,
+           "a reported first-frame time is used exactly, not the late callback");
+
+    // No estimate (Windows): the callback's arrival is still the measure.
+    const auto unreported = offsetFor (400.0, 0.0);
+    check (unreported >= 0.39 && unreported < 5.0,
+           "without an estimate the callback's arrival is used");
+
+    // An estimate from the future is not believed.
+    const auto future = offsetFor (400.0, 60000.0);
+    check (future >= 0.39 && future < 5.0,
+           "a first-frame time after the callback falls back to its arrival");
+
+    // A first frame before the audio began clamps to the start of the take.
+    const auto early = offsetFor (400.0, -50.0);
+    check (early == 0.0, "a first frame before t=0 is clamped to zero, never negative");
+
+    fakecamera::setAutoConfirmRecordingStart (true);
+}
+
 /// stopRecording must return immediately while AVFoundation closes the movie.
 /// No manifest/combiner input is exposed and no second take is allowed until
 /// the generation- and file-matched didFinish arrives.
@@ -1849,6 +1908,7 @@ int main()
     aSameNameCameraArrivingMidTakeDoesNotStopTheOneRecording();
     aSameNameTwinLeavingMidTakeDoesNotStopTheOneRecording();
     recordingTruthWaitsForTheStartCallback();
+    startOffsetUsesTheBackendsFirstFrameTime();
     delayedFinalizationBlocksClaimsAndTheNextTake();
     anUnplugAfterStopStillReceivesItsFinalization();
     finishWithoutStartIsAStartFailure();
