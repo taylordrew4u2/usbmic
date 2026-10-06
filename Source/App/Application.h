@@ -980,6 +980,9 @@ private:
     // revoked while running), the destination answer whenever the save
     // location changes.
     PermissionState microphonePermission = PermissionState::NotApplicable;
+    // macOS Restricted (an administrator's policy) rather than the user's own
+    // refusal. Read alongside microphonePermission; only the wording differs.
+    bool microphoneRestricted = false;
     PermissionState destinationWritePermission = PermissionState::NotApplicable;
     /// Latched so the journal entry is written once, not on every poll.
     bool journalledPermissionProblems = false;

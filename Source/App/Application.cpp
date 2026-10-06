@@ -323,6 +323,7 @@ void Application::initialise()
     // with a microphone plugged in to "plug in a USB microphone" -- advice for
     // a problem they did not have, about the one thing they had already done.
     microphonePermission = queryMicrophonePermission();
+    microphoneRestricted = isMicrophoneAccessRestricted();
 
     // Still "not yet asked": ask through AVFoundation now, so the prompt (if
     // one is due) appears at launch and the status the Record gate reads gets
@@ -415,7 +416,8 @@ void Application::initialise()
     cameraController.setStartupGuardFile (getSupportFolder().getChildFile ("camera-starting.txt"));
 #if JUCE_MAC
     cameraController.setCameraPermission ([] { return queryCameraPermission(); },
-                                          [] { requestCameraAccess(); });
+                                          [] { requestCameraAccess(); },
+                                          [] { return isCameraAccessRestricted(); });
 #endif
 
     // Enumeration only. Nothing is opened here, so a rig with no camera
@@ -1456,6 +1458,15 @@ bool Application::refreshMicrophonePermission()
 
     const auto current = queryMicrophonePermission();
     const auto refresh = PermissionRefresh::decide (microphonePermission, current);
+
+    // Restricted and Denied are the same state to everything but the wording,
+    // so a move between them (a profile installed or removed) is not a
+    // permission change; it only re-journals the sentence.
+    if (const bool restricted = isMicrophoneAccessRestricted(); restricted != microphoneRestricted)
+    {
+        microphoneRestricted = restricted;
+        journalledPermissionProblems = false;
+    }
 
     if (! refresh.changed)
         return false;
@@ -3584,7 +3595,8 @@ juce::String Application::getRecordDisabledReason() const
     // would be with nothing plugged in, and the two need different fixes.
     for (const auto& problem : PermissionGuidance::evaluate (microphonePermission,
                                                              destinationWritePermission,
-                                                             ! destinationFolder.empty()))
+                                                             ! destinationFolder.empty(),
+                                                             microphoneRestricted))
         if (problem.blocksRecording)
             return juce::String (problem.message);
 
@@ -4951,7 +4963,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         const auto permissionProblems =
             PermissionGuidance::evaluate (microphonePermission, destinationWritePermission,
-                                          ! destinationFolder.empty());
+                                          ! destinationFolder.empty(), microphoneRestricted);
 
         journalledPermissionProblems = true;
 

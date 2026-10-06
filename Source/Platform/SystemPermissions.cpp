@@ -32,6 +32,11 @@ PermissionState fromAVAuthorizationStatus (long status) noexcept
     }
 }
 
+bool isRestrictedAVAuthorizationStatus (long status) noexcept
+{
+    return status == 1;
+}
+
 PermissionState fromWindowsConsentValue (const std::string& value) noexcept
 {
     if (value == "Allow")
@@ -94,7 +99,8 @@ void requestAVAccess (const char* mediaTypeCode) noexcept
 }
 
 #if defined(__APPLE__)
-PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
+/// The raw AVAuthorizationStatus, or -1 when it cannot be read.
+long readAVAuthorizationStatus (const char* mediaTypeCode) noexcept
 {
     // Application.cpp is C++, not Objective-C++, and SystemThermalState.cpp
     // already reaches a small public AppKit surface through the Objective-C
@@ -104,7 +110,7 @@ PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
     // which is documented as safe to call at any time and never prompts.
     const auto deviceClass = reinterpret_cast<id> (objc_getClass ("AVCaptureDevice"));
     if (deviceClass == nullptr)
-        return PermissionState::NotApplicable;
+        return -1;
 
     const auto selector = sel_registerName ("authorizationStatusForMediaType:");
     const auto respondsSelector = sel_registerName ("respondsToSelector:");
@@ -112,24 +118,31 @@ PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
 
     if (! reinterpret_cast<SendBoolAndSelector> (objc_msgSend) (
             deviceClass, respondsSelector, selector))
-        return PermissionState::NotApplicable;
+        return -1;
 
     // AVMediaTypeAudio/Video are the NSString constants @"soun"/@"vide". Building it here
     // avoids linking AVFoundation just to read one exported symbol.
     const auto stringClass = reinterpret_cast<id> (objc_getClass ("NSString"));
     if (stringClass == nullptr)
-        return PermissionState::NotApplicable;
+        return -1;
 
     using SendStringFromUtf8 = id (*) (id, SEL, const char*);
     const auto mediaType = reinterpret_cast<SendStringFromUtf8> (objc_msgSend) (
         stringClass, sel_registerName ("stringWithUTF8String:"), mediaTypeCode);
     if (mediaType == nullptr)
-        return PermissionState::NotApplicable;
+        return -1;
 
     using SendIntegerWithObject = long (*) (id, SEL, id);
-    return permissions::fromAVAuthorizationStatus (
-        reinterpret_cast<SendIntegerWithObject> (objc_msgSend) (deviceClass, selector, mediaType));
+    return reinterpret_cast<SendIntegerWithObject> (objc_msgSend) (deviceClass, selector, mediaType);
 }
+
+PermissionState queryAVPermission (const char* mediaTypeCode) noexcept
+{
+    const auto status = readAVAuthorizationStatus (mediaTypeCode);
+    return status < 0 ? PermissionState::NotApplicable
+                      : permissions::fromAVAuthorizationStatus (status);
+}
+
 #endif
 } // namespace
 
@@ -147,6 +160,24 @@ void requestCameraAccess() noexcept
 {
     // CameraController::applyPendingCameraList() reads the answer.
     requestAVAccess ("vide"); // AVMediaTypeVideo
+}
+
+bool isMicrophoneAccessRestricted() noexcept
+{
+#if defined(__APPLE__)
+    return permissions::isRestrictedAVAuthorizationStatus (readAVAuthorizationStatus ("soun"));
+#else
+    return false;
+#endif
+}
+
+bool isCameraAccessRestricted() noexcept
+{
+#if defined(__APPLE__)
+    return permissions::isRestrictedAVAuthorizationStatus (readAVAuthorizationStatus ("vide"));
+#else
+    return false;
+#endif
 }
 
 PermissionState queryCameraPermission() noexcept

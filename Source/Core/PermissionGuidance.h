@@ -41,9 +41,21 @@ class PermissionGuidance
 {
 public:
     /// Everything currently worth telling the user, blocking problems first.
+    ///
+    /// microphoneRestricted: macOS reported Restricted (an administrator's
+    /// policy) rather than a refusal by the user. It changes only the words;
+    /// the user cannot switch that on, so they are sent to whoever can.
     static std::vector<PermissionProblem> evaluate (PermissionState microphone,
                                                     PermissionState removableVolume,
-                                                    bool destinationIsRemovable);
+                                                    bool destinationIsRemovable,
+                                                    bool microphoneRestricted = false);
+
+    /// The sentence for microphone access being refused (or, when restricted,
+    /// blocked by an administrator).
+    static std::string microphoneDeniedMessage (bool restricted);
+
+    /// The same for the cameras, which never block sound recording.
+    static std::string cameraDeniedMessage (bool restricted);
 
     /// True when the app cannot capture at all, which §10.4 shows next to the
     /// disabled record button.
