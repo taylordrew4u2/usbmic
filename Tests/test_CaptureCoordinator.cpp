@@ -411,6 +411,70 @@ TEST_CASE (CaptureCoordinator_ASliceOverTwiceTheNominalBufferIsStillRecorded)
     REQUIRE (c.getFramesMissedByLayout() == 0u);
 }
 
+namespace {
+int64_t largeCallbackNs = 0;
+int64_t largeCallbackClock() { return largeCallbackNs; }
+
+// Back to the zero clock Tests/main.cpp installs for every other test, which
+// keeps the bit-for-bit comparisons elsewhere in this file deterministic.
+struct LargeCallbackClockScope
+{
+    LargeCallbackClockScope() { largeCallbackNs = 1; DeviceInputStream::setClockForTesting (largeCallbackClock); }
+    ~LargeCallbackClockScope() { DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; }); }
+};
+} // namespace
+
+TEST_CASE (CaptureCoordinator_AnOutputRunningAtItsOwnLargerBufferKeepsTheLoopFree)
+{
+    // CoreAudio leaves a device at its own IO size when it refuses the one
+    // asked for, and an output then calls back with, say, 1024 frames against
+    // a nominal 64. Pulled from each ring 128 frames at a time, each ring was
+    // held at two slices -- far less than the callback takes at once -- and
+    // every drift loop sat at its 200 PPM clamp just to keep up at matched
+    // clocks, with nothing left over for a microphone's real drift.
+    LargeCallbackClockScope clock;
+
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (backend.inputCallbacks.size() == 2);
+
+    constexpr int inFrames = 64, outFrames = 1024;
+    std::vector<float> a (inFrames, 0.1f), b (inFrames, 0.2f);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    std::vector<float> out (outFrames, 0.0f);
+    float* outs[] = { out.data() };
+
+    double nextIn = 0.0, nextOut = 0.0005;
+    while (nextIn < 60.0)
+    {
+        if (nextIn <= nextOut)
+        {
+            largeCallbackNs = static_cast<int64_t> (nextIn * 1.0e9) + 1;
+            backend.inputCallbacks[0] (aIn, 1, nullptr, 0, inFrames);
+            backend.inputCallbacks[1] (bIn, 1, nullptr, 0, inFrames);
+            nextIn += inFrames / 48000.0;
+        }
+        else
+        {
+            largeCallbackNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            c.pullOutputBlock (outs, 1, outFrames);
+            nextOut += outFrames / 48000.0;
+        }
+    }
+
+    const double loop0 = c.getChannelRawDriftPpm (0);
+    const double loop1 = c.getChannelRawDriftPpm (1);
+    const auto underruns = c.getUnderrunSamples();
+    c.stopMonitoring();
+
+    REQUIRE (underruns == 0u);
+    REQUIRE (std::abs (loop0) < 50.0);
+    REQUIRE (std::abs (loop1) < 50.0);
+}
+
 TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
 {
     // §0.1: the backend knows the cause and the coordinator used to discard it,

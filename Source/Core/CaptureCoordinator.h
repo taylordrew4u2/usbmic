@@ -640,7 +640,7 @@ private:
     // Per-device pulled audio and the pointer table the writer wants, both
     // sized at startMonitoring(). The output callback fills these every block
     // and §11 forbids it allocating them there.
-    std::vector<float> deviceScratch;      // channelCount * bufferSize, contiguous per channel
+    std::vector<float> deviceScratch;      // channelCount * max (2 * bufferSize, 4096), contiguous per channel
     std::vector<const float*> devicePointers;
 
     // Written by the audio thread, read by the UI. Relaxed because a stale

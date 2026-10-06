@@ -44,11 +44,25 @@ DeviceInputStream::DeviceInputStream (double sampleRate) noexcept
 {
 }
 
+size_t DeviceInputStream::usableCapacity() const noexcept
+{
+    const size_t block = std::max ({ nominalBlockSamples,
+                                     largestPushSamples.load (std::memory_order_relaxed),
+                                     largestPullSamples.load (std::memory_order_relaxed) });
+    return std::min (ring.capacity(), block * static_cast<size_t> (kRingBlocks));
+}
+
 void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
 {
     const auto block = static_cast<size_t> (std::max (1, bufferSizeSamples));
 
-    ring.reset (block * static_cast<size_t> (kRingBlocks));
+    // Storage for the largest block a device may actually deliver, not just
+    // the one asked for; see kLargestDeviceBlock.
+    ring.reset (std::max (block, static_cast<size_t> (kLargestDeviceBlock))
+                * static_cast<size_t> (kRingBlocks));
+    nominalBlockSamples = block;
+    largestPushSamples.store (0, std::memory_order_relaxed);
+    largestPullSamples.store (0, std::memory_order_relaxed);
     rate = sampleRate > 0.0 ? sampleRate : 48000.0;
 
     // §5.4: this is monitor latency, so it is a fixed small number of blocks
@@ -67,6 +81,7 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     fillAverageValid = false;
     silenceOwed = 0.0;
     pullsSinceSilence = 0;
+    rebuffering = false;
 
     driftPpm.store (0.0, std::memory_order_relaxed);
     excessDrift.store (false, std::memory_order_relaxed);
@@ -116,12 +131,22 @@ void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcep
         return;
     }
 
+    // The device's real IO size, which CoreAudio does not promise is the one
+    // asked for. The usable part of the ring follows it up, so a device at
+    // 1156 frames gets sixteen of its own blocks of headroom rather than a
+    // ring smaller than one delivery.
+    if (static_cast<size_t> (numSamples) > largestPushSamples.load (std::memory_order_relaxed))
+        largestPushSamples.store (static_cast<size_t> (numSamples), std::memory_order_relaxed);
+
     // A full ring means the consumer is not keeping up. Dropping the newest
     // samples is the only lock-free option; the loop reacts by speeding this
     // device's playout back up. What is dropped is COUNTED: this used to
     // discard the return value, and a stalled consumer lost audio with every
     // counter on the screen still reading zero.
-    const auto written = ring.write (samples, static_cast<size_t> (numSamples));
+    const size_t usable = usableCapacity();
+    const size_t buffered = ring.availableForRead();
+    const size_t room = usable > buffered + 1 ? usable - buffered - 1 : 0;
+    const auto written = ring.write (samples, std::min (room, static_cast<size_t> (numSamples)));
 
     if (written < static_cast<size_t> (numSamples))
     {
@@ -217,7 +242,8 @@ void DeviceInputStream::noteSilence (int samples) noexcept
 {
     // Capped at what the ring can hold above target, which is the most late
     // audio a burst could ever leave there to be skipped.
-    const double cap = static_cast<double> (ring.capacity()) - static_cast<double> (targetFillSamples);
+    const double cap = static_cast<double> (usableCapacity())
+                     - static_cast<double> (targetFillSamples);
     silenceOwed = std::min (cap, silenceOwed + static_cast<double> (samples));
     pullsSinceSilence = 0;
 }
@@ -312,10 +338,52 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         fillAverageValid = false;
         silenceOwed = 0.0;
         pullsSinceSilence = 0;
+        rebuffering = false;
 
         driftPpm.store (0.0, std::memory_order_relaxed);
         excessDrift.store (false, std::memory_order_relaxed);
         driftReportingResetEpoch.fetch_add (1, std::memory_order_release);
+    }
+
+    // The output's real callback size, which CoreAudio does not promise is
+    // the one asked for either. Two of the pull, not two nominal blocks, is
+    // what has to be buffered when a pull begins: held at 128 samples, an
+    // output taking 1024 at a time ran the ring dry in every callback.
+    if (static_cast<size_t> (numSamples) > largestPullSamples.load (std::memory_order_relaxed))
+    {
+        largestPullSamples.store (static_cast<size_t> (numSamples), std::memory_order_relaxed);
+        targetFillSamples = std::max (nominalBlockSamples, static_cast<size_t> (numSamples))
+                          * static_cast<size_t> (kPreRollBlocks);
+
+        // A first pull lands during pre-roll, so the target is right before
+        // the stream starts. A larger one after that -- the software clock
+        // pulled at the nominal size until the output's first, bigger
+        // callback arrived -- finds a ring that cannot serve even this pull,
+        // and the loop, at 200 PPM, would take minutes to build the level up:
+        // a dry patch in every callback until then. So the stream buffers up
+        // to the new target once, in one gap, and that gap is counted.
+        if (started.load (std::memory_order_relaxed)
+            && ring.availableForRead() < static_cast<size_t> (numSamples) + nominalBlockSamples)
+            rebuffering = true;
+    }
+
+    if (rebuffering)
+    {
+        if (ring.availableForRead() < targetFillSamples)
+        {
+            // The consumer's clock still ran: counted and stamped, so the
+            // drift measurement does not read the gap as a slow output.
+            pulledSamples.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+            lastPullNs.store (nowNs(), std::memory_order_release);
+
+            std::fill (destination, destination + numSamples, 0.0f);
+            underruns.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
+            lossEvents.fetch_add (1, std::memory_order_relaxed);
+            return;
+        }
+
+        rebuffering = false;
+        fillAverageValid = false;
     }
 
     // Pre-roll. The output clock starts before any device has delivered, so
@@ -612,6 +680,14 @@ void DeviceInputStream::tickDriftReporting (double elapsedSeconds, double refere
         excessDriftSeconds = 0.0;
         excessDrift.store (false, std::memory_order_relaxed);
     }
+}
+
+double DeviceInputStream::getFillFraction() const noexcept
+{
+    const auto usable = usableCapacity();
+    return usable > 1 ? std::min (1.0, static_cast<double> (ring.availableForRead())
+                                           / static_cast<double> (usable - 1))
+                      : 0.0;
 }
 
 bool DeviceInputStream::deliveredWithin (int64_t windowNs) const noexcept
