@@ -24,7 +24,9 @@ struct CoreAudioDeviceListListenerState;
 /// attached USB, FireWire, and Thunderbolt hardware; built-in, phone/
 /// Continuity, wireless, aggregate, and virtual inputs are not recording
 /// sources. Hotplug arrives via
-/// kAudioHardwarePropertyDevices property listeners, never a timer (§2).
+/// kAudioHardwarePropertyDevices property listeners, never a timer (§2); the
+/// same callback also fires when coreaudiod restarts and when an output's data
+/// source or jack state changes (headphones in an Intel Mac's jack).
 /// Every open stream also watches its nominal rate, alive state, and processor
 /// overload property; those callbacks only touch atomics because CoreAudio may
 /// deliver overload notifications on the device IO thread.
@@ -73,6 +75,23 @@ private:
     std::unique_ptr<CoreAudioDeviceListListenerState> deviceListListenerState;
     bool deviceListListenerInstalled = false;
 
+    // coreaudiod restarting (kAudioHardwarePropertyServiceRestarted) and an
+    // output's route changing (kAudioDevicePropertyDataSource /
+    // kAudioDevicePropertyJackIsConnected: headphones into or out of an Intel
+    // Mac's jack, which changes no device list) are delivered through the same
+    // listener state, trampoline and callback as the device list, so they share
+    // its lease gate and its process-lifetime retirement. Each registration is
+    // remembered so it is removed before that state is retired.
+    bool serviceRestartListenerInstalled = false;
+
+    struct OutputRouteListener
+    {
+        uint32_t device = 0;   // AudioObjectID
+        uint32_t selector = 0; // AudioObjectPropertySelector, output scope
+    };
+
+    std::vector<OutputRouteListener> outputRouteListeners;
+
     std::string lastOpenError;
 
     std::string hotplugProblem;
@@ -93,6 +112,11 @@ private:
     static std::vector<AudioDeviceDescriptor> enumerateDevices (bool wantInput);
     void installDeviceListListener();
     void removeDeviceListListener();
+
+    /// Message thread only. Brings the output-route listeners in line with the
+    /// outputs now listed: one per route property each output actually has,
+    /// none left on a device that has gone.
+    void syncOutputRouteListeners();
     bool openStream (const std::string& deviceId, double sampleRate, int bufferSizeSamples,
                      AudioCallback callback, bool isOutput);
 

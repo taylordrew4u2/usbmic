@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.22 -- 2026-10-06 (release candidate)
+
+Mac fixes.
+
+### Fixed
+
+- **Mac (Intel): headphones plugged into the built-in jack become the
+  monitor output straight away**, and unplugging them moves the mix back off
+  the speakers. Before, nothing happened until some other device changed.
+- **Mac: the combined SobStage device comes back by itself** after macOS's
+  audio service restarts or the device is deleted outside the app. During a
+  take whose headphone mix runs through it, it is re-created after Stop.
+
 ## v1.13.21 -- 2026-10-06 (release candidate)
 
 Mac fixes.

@@ -930,6 +930,12 @@ private:
     PortIdentityStore portIdentityStore;
 
     std::string selectedOutputDeviceId;
+
+    /// Whether that output was a headphone jack when it was chosen, so an
+    /// Intel Mac's built-in output that goes back to its speakers when the
+    /// headphones come out is not kept as if nothing had changed. See
+    /// OutputDeviceSelector::currentIdToKeep.
+    bool selectedOutputWasHeadphoneJack = false;
     std::string selectedOutputDeviceName;
     std::string outputSelectionProblem;
 

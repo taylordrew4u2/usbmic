@@ -38,17 +38,62 @@ constexpr OSStatus kAudioHardwareUnspecifiedError = mmaFourCC ('w', 'h', 'a', 't
 constexpr OSStatus kAudioHardwareBadObjectError   = mmaFourCC ('!', 'o', 'b', 'j');
 constexpr OSStatus kAudioHardwareUnknownPropertyError = mmaFourCC ('w', 'h', 'o', '?');
 
-// --- CoreFoundation strings -------------------------------------------------
-// Only the three calls the backend makes are provided. A CFStringRef here is an
-// owning handle the caller releases, exactly as on macOS, so a missing
-// CFRelease shows up as a leak in the simulation too.
+// --- CoreFoundation ---------------------------------------------------------
+// Only the calls the backend and the combined device (MacSystemAggregateDevice)
+// make are provided. Every object here is an owning, reference-counted handle
+// the caller releases, exactly as on macOS, so a missing CFRelease shows up as
+// a leak in the simulation too.
+using CFTypeRef = const void*;
+using CFIndex = long;
+
+struct __CFAllocator;
+using CFAllocatorRef = const __CFAllocator*;
+constexpr CFAllocatorRef kCFAllocatorDefault = nullptr;
+
 struct __CFString;
 using CFStringRef = const __CFString*;
 using CFStringEncoding = UInt32;
 constexpr CFStringEncoding kCFStringEncodingUTF8 = 0x08000100;
 
+struct __CFArray;
+using CFArrayRef = const __CFArray*;
+using CFMutableArrayRef = __CFArray*;
+
+struct __CFDictionary;
+using CFDictionaryRef = const __CFDictionary*;
+using CFMutableDictionaryRef = __CFDictionary*;
+
+struct __CFNumber;
+using CFNumberRef = const __CFNumber*;
+using CFNumberType = CFIndex;
+constexpr CFNumberType kCFNumberIntType = 9;
+
+struct CFArrayCallBacks { CFIndex version; };
+struct CFDictionaryKeyCallBacks { CFIndex version; };
+struct CFDictionaryValueCallBacks { CFIndex version; };
+extern const CFArrayCallBacks kCFTypeArrayCallBacks;
+extern const CFDictionaryKeyCallBacks kCFTypeDictionaryKeyCallBacks;
+extern const CFDictionaryValueCallBacks kCFTypeDictionaryValueCallBacks;
+
 Boolean CFStringGetCString (CFStringRef value, char* buffer, long bufferSize, CFStringEncoding encoding);
-void CFRelease (CFStringRef value);
+CFStringRef CFStringCreateWithCString (CFAllocatorRef allocator, const char* text, CFStringEncoding encoding);
+
+/// CFSTR("...") is a compile-time constant on macOS that is never released.
+/// Here it is an immortal string interned per literal.
+CFStringRef mmaFakeConstantString (const char* text);
+#define CFSTR(text) mmaFakeConstantString (text)
+
+CFMutableArrayRef CFArrayCreateMutable (CFAllocatorRef allocator, CFIndex capacity, const CFArrayCallBacks* callBacks);
+void CFArrayAppendValue (CFMutableArrayRef array, const void* value);
+
+CFMutableDictionaryRef CFDictionaryCreateMutable (CFAllocatorRef allocator, CFIndex capacity,
+                                                  const CFDictionaryKeyCallBacks* keyCallBacks,
+                                                  const CFDictionaryValueCallBacks* valueCallBacks);
+void CFDictionarySetValue (CFMutableDictionaryRef dictionary, const void* key, const void* value);
+
+CFNumberRef CFNumberCreate (CFAllocatorRef allocator, CFNumberType type, const void* valuePtr);
+
+void CFRelease (CFTypeRef value);
 
 // --- Objects and properties -------------------------------------------------
 using AudioObjectID = UInt32;
@@ -73,6 +118,14 @@ constexpr AudioObjectPropertySelector kAudioDevicePropertyDeviceUID = mmaFourCC 
 // is routed to. Apple's own selector values.
 constexpr AudioObjectPropertySelector kAudioHardwarePropertyDefaultOutputDevice = mmaFourCC ('d', 'O', 'u', 't');
 constexpr AudioObjectPropertySelector kAudioDevicePropertyDataSource = mmaFourCC ('s', 's', 'r', 'c');
+
+// Whether something is plugged into a device's jack (output scope). Some Macs
+// report it alongside, or instead of, a data-source change.
+constexpr AudioObjectPropertySelector kAudioDevicePropertyJackIsConnected = mmaFourCC ('j', 'a', 'c', 'k');
+
+// Sent on the system object when coreaudiod has restarted: every AudioObjectID
+// the process held may now be stale, and aggregates may be gone.
+constexpr AudioObjectPropertySelector kAudioHardwarePropertyServiceRestarted = mmaFourCC ('s', 'r', 's', 't');
 
 // Transport types used by the backend's external-input allow-list. Values
 // match Apple's four-character codes so the shipping source is exercised
@@ -106,6 +159,15 @@ constexpr AudioObjectPropertySelector kAudioStreamPropertyLatency = mmaFourCC ('
 // An aggregate device's sub-devices that are present and contributing
 // channels, as AudioObjectIDs in channel order.
 constexpr AudioObjectPropertySelector kAudioAggregateDevicePropertyActiveSubDeviceList = mmaFourCC ('a', 'g', 'r', 'p');
+
+// The description dictionary keys AudioHardwareCreateAggregateDevice reads.
+// Apple defines these as C string literals for use with CFSTR().
+#define kAudioAggregateDeviceUIDKey "uid"
+#define kAudioAggregateDeviceNameKey "name"
+#define kAudioAggregateDeviceSubDeviceListKey "subdevices"
+#define kAudioAggregateDeviceMainSubDeviceKey "master"
+#define kAudioSubDeviceUIDKey "uid"
+#define kAudioSubDeviceDriftCompensationKey "drift"
 
 // §2.3: what a device can actually deliver. CoreAudio keeps this on the
 // STREAM, not the device, so finding it is two hops: ask the device for its
@@ -218,6 +280,8 @@ OSStatus AudioObjectSetPropertyData (AudioObjectID object,
                                      UInt32 inSize,
                                      const void* inData);
 
+Boolean AudioObjectHasProperty (AudioObjectID object, const AudioObjectPropertyAddress* address);
+
 OSStatus AudioObjectAddPropertyListener (AudioObjectID object,
                                          const AudioObjectPropertyAddress* address,
                                          AudioObjectPropertyListenerProc listener,
@@ -236,3 +300,6 @@ OSStatus AudioDeviceCreateIOProcID (AudioObjectID device,
 OSStatus AudioDeviceDestroyIOProcID (AudioObjectID device, AudioDeviceIOProcID procId);
 OSStatus AudioDeviceStart (AudioObjectID device, AudioDeviceIOProcID procId);
 OSStatus AudioDeviceStop (AudioObjectID device, AudioDeviceIOProcID procId);
+
+OSStatus AudioHardwareCreateAggregateDevice (CFDictionaryRef description, AudioObjectID* outDevice);
+OSStatus AudioHardwareDestroyAggregateDevice (AudioObjectID device);

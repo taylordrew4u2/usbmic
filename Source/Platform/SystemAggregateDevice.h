@@ -46,6 +46,13 @@ public:
     /// Whether the combined device exists right now.
     virtual bool isPublished() const { return false; }
 
+    /// True when the combined device this object published has been taken
+    /// away outside the app -- coreaudiod restarted (`sudo killall
+    /// coreaudiod`), or someone deleted it in Audio MIDI Setup. It is then
+    /// forgotten, so isPublished() is false and the next publish() makes it
+    /// afresh. False when nothing was published or it is still there.
+    virtual bool forgetIfLost() { return false; }
+
     /// The combined device's output channels, sub-device by sub-device, in
     /// the order the HAL lays them out -- each microphone's headphone jack.
     /// Empty when nothing is published or the platform has no such device.

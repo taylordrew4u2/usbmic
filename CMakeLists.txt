@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.21 LANGUAGES CXX)
+project(SobStage VERSION 1.13.22 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -672,6 +672,8 @@ if (MMA_BUILD_TOOLS)
     add_executable(sim_coreaudio
         Tools/sim_coreaudio.cpp
         Source/Platform/CoreAudioBackend.cpp
+        Source/Platform/MacSystemAggregateDevice.cpp
+        Source/Core/OutputDeviceSelector.cpp
         Simulation/CoreAudio/FakeCoreAudio.cpp)
     target_compile_definitions(sim_coreaudio PRIVATE MMA_SIMULATE_MAC=1)
     target_include_directories(sim_coreaudio PRIVATE Simulation/CoreAudio Source)

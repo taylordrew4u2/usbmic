@@ -5,6 +5,7 @@
 
 #include "MacCoreAudioQueries.h"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -45,6 +46,37 @@ void destroyLeftoverAggregate()
         if (AudioHardwareDestroyAggregateDevice (stale) != noErr)
             return;
     }
+}
+
+/// Every AudioObjectID the HAL lists now; empty when the list cannot be read.
+std::vector<AudioObjectID> readListedDevices()
+{
+    AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize (kAudioObjectSystemObject, &address, 0, nullptr, &size) != noErr)
+        return {};
+
+    std::vector<AudioObjectID> devices (size / sizeof (AudioObjectID));
+    if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr, &size, devices.data()) != noErr)
+        return {};
+
+    devices.resize (size / sizeof (AudioObjectID));
+    return devices;
+}
+
+/// True only when the device positively says it is no longer alive.
+bool reportsNotAlive (AudioObjectID device)
+{
+    AudioObjectPropertyAddress address { kAudioDevicePropertyDeviceIsAlive,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 alive = 1;
+    UInt32 size = sizeof (alive);
+
+    return AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, &alive) == noErr
+        && alive == 0;
 }
 
 } // namespace
@@ -156,6 +188,39 @@ public:
     }
 
     bool isPublished() const override { return aggregateId != kAudioObjectUnknown; }
+
+    bool forgetIfLost() override
+    {
+        if (aggregateId == kAudioObjectUnknown)
+            return false;
+
+        // An unreadable list proves nothing. Forgetting a device that is
+        // still there would have the next publish destroy and re-create it
+        // under every app recording from it.
+        const auto listed = readListedDevices();
+        if (listed.empty())
+            return false;
+
+        // Still listed under the same AudioObjectID, still ours, still alive:
+        // nothing to do. Anything else -- gone, back under a new ID after
+        // coreaudiod restarted, or dying -- means the ID held here no longer
+        // names it.
+        if (std::find (listed.begin(), listed.end(), aggregateId) != listed.end()
+            && readStringProperty (aggregateId, kAudioDevicePropertyDeviceUID) == kOurAggregateUid
+            && ! reportsNotAlive (aggregateId))
+            return false;
+
+        // Never destroyed through the stale ID; it names nothing, or
+        // something else. publishedName stays for the status line.
+        aggregateId = kAudioObjectUnknown;
+        publishedCount = 0;
+
+        // A restarted coreaudiod may have brought ours back under a new ID,
+        // and that one would refuse the create. It is ours by UID, as at the
+        // first publish, so the next publish clears it first.
+        clearedLeftoverFromEarlierRun = false;
+        return true;
+    }
 
     std::vector<CombinedDeviceOutputs> getOutputLayout() const override
     {

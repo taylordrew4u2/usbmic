@@ -125,6 +125,12 @@ struct CoreAudioDeviceListListenerState
     // IOProc. Once the high bit closes admission, the low bits drain callbacks
     // that were already inside the trampoline.
     std::atomic<uint64_t> callbackLeases { 0 };
+
+    // Set from the HAL thread when coreaudiod restarts: the per-output route
+    // listeners belong to the old service, even where a device kept its
+    // AudioObjectID, so the next sync on the message thread installs them
+    // afresh.
+    std::atomic<bool> serviceRestarted { false };
 };
 
 struct CoreAudioPendingInputAttempts
@@ -457,8 +463,11 @@ std::vector<uint32_t> querySupportedSampleRates (AudioObjectID device)
 // AudioObjectPropertyListenerProc trampoline: forwards into the backend's
 // DeviceChangeCallback. Registered on kAudioObjectSystemObject for
 // kAudioHardwarePropertyDevices so hotplug is delivered by the OS, never
-// polled on a timer (§2).
-OSStatus deviceListChanged (AudioObjectID, UInt32, const AudioObjectPropertyAddress*, void* clientData)
+// polled on a timer (§2) -- and, with the same clientData, for
+// kAudioHardwarePropertyServiceRestarted and on each output's data source /
+// jack state, because all three want the same re-evaluation.
+OSStatus deviceListChanged (AudioObjectID, UInt32 numAddresses,
+                            const AudioObjectPropertyAddress* addresses, void* clientData)
 {
     auto* state = static_cast<CoreAudioDeviceListListenerState*> (clientData);
 
@@ -471,10 +480,55 @@ OSStatus deviceListChanged (AudioObjectID, UInt32, const AudioObjectPropertyAddr
         ~LeaseReleaser() { releaseCallbackLease (state); }
     } lease { *state };
 
+    if (addresses != nullptr)
+        for (UInt32 i = 0; i < numAddresses; ++i)
+            if (addresses[i].mSelector == kAudioHardwarePropertyServiceRestarted)
+                state->serviceRestarted.store (true, std::memory_order_relaxed);
+
     if (state->callback)
         state->callback();
 
     return noErr;
+}
+
+/// coreaudiod restarted (`sudo killall coreaudiod`, a crash, some driver
+/// installs). Every AudioObjectID may now be stale and the combined device
+/// may be gone, and nothing guarantees a device-list notification follows.
+AudioObjectPropertyAddress serviceRestartedAddress()
+{
+    return { kAudioHardwarePropertyServiceRestarted,
+             kAudioObjectPropertyScopeGlobal,
+             kAudioObjectPropertyElementMain };
+}
+
+/// What an output is routed to. On an Intel Mac, headphones going into the
+/// built-in jack move "Built-in Output" from 'ispk' to 'hdpn' without adding
+/// or removing a device, so the device-list listener never hears it; some
+/// Macs report the plug through JackIsConnected as well or instead.
+constexpr AudioObjectPropertySelector kOutputRouteSelectors[] = { kAudioDevicePropertyDataSource,
+                                                                  kAudioDevicePropertyJackIsConnected };
+
+AudioObjectPropertyAddress outputRouteAddress (AudioObjectPropertySelector selector)
+{
+    return { selector, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain };
+}
+
+/// Every AudioObjectID the HAL lists now, or empty when it cannot be read.
+std::vector<AudioObjectID> readDeviceList()
+{
+    AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices,
+                                         kAudioObjectPropertyScopeGlobal,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize (kAudioObjectSystemObject, &address, 0, nullptr, &size) != noErr)
+        return {};
+
+    std::vector<AudioObjectID> devices (size / sizeof (AudioObjectID));
+    if (AudioObjectGetPropertyData (kAudioObjectSystemObject, &address, 0, nullptr, &size, devices.data()) != noErr)
+        return {};
+
+    devices.resize (size / sizeof (AudioObjectID));
+    return devices;
 }
 
 AudioObjectPropertyAddress nominalRateAddress()
@@ -1408,7 +1462,14 @@ std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateDevices (bool want
 }
 
 std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateInputDevices() { return enumerateDevices (true); }
-std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateOutputDevices() { return enumerateDevices (false); }
+std::vector<AudioDeviceDescriptor> CoreAudioBackend::enumerateOutputDevices()
+{
+    // Every rescan reads the outputs, so this is where the route listeners
+    // follow outputs arriving and leaving. The re-read below then sees the
+    // data source the listener will watch from here on.
+    syncOutputRouteListeners();
+    return enumerateDevices (false);
+}
 
 void CoreAudioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
 {
@@ -1421,6 +1482,7 @@ void CoreAudioBackend::setDeviceChangeCallback (DeviceChangeCallback callback)
     deviceListListenerState = std::make_unique<CoreAudioDeviceListListenerState>();
     deviceListListenerState->callback = std::move (callback);
     installDeviceListListener();
+    syncOutputRouteListeners();
 }
 
 void CoreAudioBackend::installDeviceListListener()
@@ -1446,6 +1508,84 @@ void CoreAudioBackend::installDeviceListListener()
     }
 
     deviceListListenerInstalled = true;
+
+    // Not essential, so a refusal is not reported: a restart that removed
+    // the combined device usually changes the device list too. When it does
+    // not, this is the only word the app gets.
+    auto restarted = serviceRestartedAddress();
+    serviceRestartListenerInstalled =
+        AudioObjectAddPropertyListener (kAudioObjectSystemObject, &restarted, deviceListChanged,
+                                        deviceListListenerState.get()) == noErr;
+}
+
+void CoreAudioBackend::syncOutputRouteListeners()
+{
+    if (deviceListListenerState == nullptr || ! deviceListListenerInstalled)
+        return;
+
+    const auto devices = readDeviceList();
+
+    // An unreadable list proves nothing about which devices left.
+    if (devices.empty())
+        return;
+
+    // After a coreaudiod restart nothing registered with the old service is
+    // trusted, listed or not.
+    const bool startAfresh = deviceListListenerState->serviceRestarted.exchange (
+        false, std::memory_order_relaxed);
+
+    const auto listed = [&devices, startAfresh] (AudioObjectID device)
+    {
+        return ! startAfresh && std::find (devices.begin(), devices.end(), device) != devices.end();
+    };
+
+    // A device that has left the list (or every one, after coreaudiod
+    // restarted) takes its registration with it. The remove usually fails
+    // because the object is gone; that is harmless, since the clientData is
+    // the listener state, which is never freed while the HAL may hold it.
+    outputRouteListeners.erase (
+        std::remove_if (outputRouteListeners.begin(), outputRouteListeners.end(),
+                        [&] (const OutputRouteListener& registration)
+                        {
+                            if (listed (registration.device))
+                                return false;
+
+                            auto address = outputRouteAddress (registration.selector);
+                            (void) AudioObjectRemovePropertyListener (registration.device, &address,
+                                                                      deviceListChanged,
+                                                                      deviceListListenerState.get());
+                            return true;
+                        }),
+        outputRouteListeners.end());
+
+    for (auto device : devices)
+    {
+        if (countChannels (device, false) <= 0)
+            continue;
+
+        for (auto selector : kOutputRouteSelectors)
+        {
+            const bool alreadyWatched = std::any_of (
+                outputRouteListeners.begin(), outputRouteListeners.end(),
+                [device, selector] (const OutputRouteListener& registration)
+                {
+                    return registration.device == device && registration.selector == selector;
+                });
+
+            if (alreadyWatched)
+                continue;
+
+            // Most outputs have neither property; only one that does can
+            // change route without changing the device list.
+            auto address = outputRouteAddress (selector);
+            if (! AudioObjectHasProperty (device, &address))
+                continue;
+
+            if (AudioObjectAddPropertyListener (device, &address, deviceListChanged,
+                                                deviceListListenerState.get()) == noErr)
+                outputRouteListeners.push_back ({ device, selector });
+        }
+    }
 }
 
 void CoreAudioBackend::removeDeviceListListener()
@@ -1454,6 +1594,17 @@ void CoreAudioBackend::removeDeviceListListener()
         return;
 
     closeCallbackGateAndDrain (*deviceListListenerState);
+
+    // Output-route registrations share this clientData. A device already gone
+    // refuses the remove, which is expected; the retirement below covers it.
+    for (const auto& registration : outputRouteListeners)
+    {
+        auto routeAddress = outputRouteAddress (registration.selector);
+        (void) AudioObjectRemovePropertyListener (registration.device, &routeAddress, deviceListChanged,
+                                                  deviceListListenerState.get());
+    }
+
+    outputRouteListeners.clear();
 
     AudioObjectPropertyAddress address { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
                                          kAudioObjectPropertyElementMain };
@@ -1465,6 +1616,17 @@ void CoreAudioBackend::removeDeviceListListener()
             deviceListListenerState.get()) == noErr;
 
     deviceListListenerInstalled = false;
+
+    if (serviceRestartListenerInstalled)
+    {
+        auto restarted = serviceRestartedAddress();
+        removed = AudioObjectRemovePropertyListener (
+                      kAudioObjectSystemObject, &restarted, deviceListChanged,
+                      deviceListListenerState.get()) == noErr
+               && removed;
+    }
+
+    serviceRestartListenerInstalled = false;
 
     // Even a successful remove may overlap a notification the HAL dispatched
     // just before it returned. Process-lifetime retirement makes that raw

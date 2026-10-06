@@ -45,6 +45,10 @@ struct DeviceSpec
     /// headphones are in the jack.
     UInt32 outputDataSource = 0;
 
+    /// kAudioDevicePropertyJackIsConnected on the output scope: 1 or 0, or -1
+    /// when the device does not have the property (most devices).
+    int jackConnected = -1;
+
     /// Rates the device reports. A discrete rate is a range whose ends are
     /// equal; a continuous range has them different, which is what a device
     /// with a sample-rate converter advertises.
@@ -152,6 +156,30 @@ bool setNominalRateExternally (AudioObjectID device, double sampleRate);
 
 /// Changes kAudioDevicePropertyDeviceIsAlive and notifies its listeners.
 bool setDeviceAlive (AudioObjectID device, bool alive);
+
+/// Moves a live output to another data source, as an Intel Mac's "Built-in
+/// Output" does when headphones go into or come out of its jack ('hdpn' /
+/// 'ispk'). The device list does NOT change; only the output-scope
+/// kAudioDevicePropertyDataSource listeners on that device are told.
+bool setOutputDataSource (AudioObjectID device, UInt32 dataSource);
+
+/// Changes kAudioDevicePropertyJackIsConnected (output scope) and notifies its
+/// listeners. Also without any device-list change.
+bool setJackConnected (AudioObjectID device, bool connected);
+
+/// Models `sudo killall coreaudiod`: every aggregate created through
+/// AudioHardwareCreateAggregateDevice is gone, and the ONLY notification is
+/// kAudioHardwarePropertyServiceRestarted on the system object -- the worst
+/// case, where no device-list notification arrives at all. Listeners on
+/// device objects are dropped (they belonged to the old service); devices keep
+/// their AudioObjectIDs, so a client cannot tell from the IDs alone.
+void restartService();
+
+/// Listeners on the system object for kAudioHardwarePropertyServiceRestarted.
+int serviceRestartListenerCount();
+
+/// How many aggregates AudioHardwareCreateAggregateDevice has made since reset().
+int aggregatesCreated();
 
 /// Fires one kAudioDeviceProcessorOverload event (one missed IO deadline).
 bool fireProcessorOverload (AudioObjectID device);
