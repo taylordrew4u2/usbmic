@@ -41,6 +41,8 @@ struct Device
     bool rateChangePending = false;
     double pendingRate = 0.0;
     int rateReadsRemaining = 0;
+
+    int subDeviceReadsUntilActive = 0;
 };
 
 struct Listener
@@ -82,6 +84,19 @@ Device* find (AudioObjectID id)
 {
     auto it = state().devices.find (id);
     return it == state().devices.end() ? nullptr : &it->second;
+}
+
+/// An aggregate's sub-devices that are present, in the order it lists them.
+std::vector<AudioObjectID> activeSubDevices (const Device& aggregate)
+{
+    std::vector<AudioObjectID> active;
+
+    for (const auto& uid : aggregate.spec.subDeviceUids)
+        for (const auto id : state().order)
+            if (state().devices.at (id).spec.uid == uid)
+                active.push_back (id);
+
+    return active;
 }
 
 /// Copies `bytes` from `source` into the caller's buffer, honouring CoreAudio's
@@ -254,6 +269,22 @@ OSStatus AudioObjectGetPropertyDataSize (AudioObjectID object,
     if (address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates)
     {
         *outSize = static_cast<UInt32> (device->spec.rateRanges.size() * sizeof (AudioValueRange));
+        return noErr;
+    }
+
+    if (address->mSelector == kAudioAggregateDevicePropertyActiveSubDeviceList)
+    {
+        if (device->spec.subDeviceUids.empty())
+            return kAudioHardwareUnknownPropertyError;
+
+        if (device->subDeviceReadsUntilActive > 0)
+        {
+            --device->subDeviceReadsUntilActive;
+            *outSize = 0;
+            return noErr;
+        }
+
+        *outSize = static_cast<UInt32> (activeSubDevices (*device).size() * sizeof (AudioObjectID));
         return noErr;
     }
 
@@ -435,6 +466,16 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
                             ? device->hogOwner
                             : (device->spec.allowHogMode ? -1 : kSomeOtherProcess);
             return deliver (&owner, sizeof (owner), ioSize, outData);
+        }
+
+        case kAudioAggregateDevicePropertyActiveSubDeviceList:
+        {
+            if (device->spec.subDeviceUids.empty())
+                return kAudioHardwareUnknownPropertyError;
+
+            const auto active = activeSubDevices (*device);
+            return deliver (active.data(), static_cast<UInt32> (active.size() * sizeof (AudioObjectID)),
+                            ioSize, outData);
         }
 
         default:
@@ -707,6 +748,7 @@ AudioObjectID addDevice (const DeviceSpec& spec)
 {
     const AudioObjectID id = state().nextId++;
     state().devices[id] = Device { spec, -1, {} };
+    state().devices[id].subDeviceReadsUntilActive = spec.subDeviceActivationDelayReads;
     state().order.push_back (id);
     fireDeviceListListeners();
     return id;

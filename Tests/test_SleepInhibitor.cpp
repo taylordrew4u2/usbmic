@@ -113,3 +113,15 @@ TEST_CASE (SleepInhibitor_PlatformBackendIsSafeEverywhere)
     inhibitor.setHeld (false);
     REQUIRE_FALSE (inhibitor.isHeld());
 }
+
+TEST_CASE (SleepInhibitor_PowerSourceProbeIsSafeEverywhere)
+{
+    // Off the Mac there is nothing to ask, and Unknown is never a battery
+    // warning. On the Mac it answers whatever is powering the runner.
+    const auto source = SleepInhibitor::queryPowerSource();
+#if ! defined(__APPLE__)
+    REQUIRE (source == PowerSource::Unknown);
+#else
+    REQUIRE (source == PowerSource::Unknown || source == PowerSource::AC || source == PowerSource::Battery);
+#endif
+}

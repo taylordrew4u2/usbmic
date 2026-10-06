@@ -40,3 +40,45 @@ TEST_CASE (HeadphoneRouting_AMicWithNoJackTakesNoChannels)
     REQUIRE (combinedDeviceHasHeadphones (layout));
     REQUIRE_FALSE (combinedDeviceHasHeadphones ({ { "lav", 0 } }));
 }
+
+TEST_CASE (HeadphoneRouting_LayoutIsCompleteOnlyWhenEverySubDeviceIsActive)
+{
+    REQUIRE (combinedLayoutIsComplete ({ { "yeti-b", 2 }, { "yeti-a", 2 } }, { "yeti-a", "yeti-b" }));
+    REQUIRE (combinedLayoutIsComplete ({ { "lav", 0 } }, { "lav" }));
+    REQUIRE_FALSE (combinedLayoutIsComplete ({}, { "yeti-a" }));
+    REQUIRE_FALSE (combinedLayoutIsComplete ({ { "yeti-a", 2 } }, { "yeti-a", "yeti-b" }));
+}
+
+TEST_CASE (HeadphoneRouting_ANewCombinedDeviceIsWaitedForUntilItsJacksAppear)
+{
+    // Empty for the first few reads after creation, as the HAL builds it.
+    int reads = 0, pauses = 0;
+    const auto read = [&reads]
+    {
+        return ++reads <= 3 ? std::vector<CombinedDeviceOutputs> {}
+                            : std::vector<CombinedDeviceOutputs> { { "yeti-a", 2 }, { "yeti-b", 2 } };
+    };
+
+    REQUIRE (waitForCombinedLayout (read, { "yeti-a", "yeti-b" }, 50, [&pauses] { ++pauses; }));
+    REQUIRE (reads == 4);
+    REQUIRE (pauses == 3);
+}
+
+TEST_CASE (HeadphoneRouting_ASubDeviceThatNeverActivatesCostsOnlyTheBound)
+{
+    int reads = 0, pauses = 0;
+    const auto read = [&reads]
+    {
+        ++reads;
+        return std::vector<CombinedDeviceOutputs> { { "yeti-a", 2 } };
+    };
+
+    REQUIRE_FALSE (waitForCombinedLayout (read, { "yeti-a", "gone" }, 5, [&pauses] { ++pauses; }));
+    REQUIRE (pauses == 5);
+    REQUIRE (reads == 6);
+
+    // Already there: no pause at all.
+    pauses = 0;
+    REQUIRE (waitForCombinedLayout (read, { "yeti-a" }, 5, [&pauses] { ++pauses; }));
+    REQUIRE (pauses == 0);
+}

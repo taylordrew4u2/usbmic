@@ -103,6 +103,10 @@ constexpr AudioObjectPropertySelector kAudioDevicePropertyLatency = mmaFourCC ('
 constexpr AudioObjectPropertySelector kAudioDevicePropertySafetyOffset = mmaFourCC ('s', 'a', 'f', 't');
 constexpr AudioObjectPropertySelector kAudioStreamPropertyLatency = mmaFourCC ('l', 't', 'n', 'c');
 
+// An aggregate device's sub-devices that are present and contributing
+// channels, as AudioObjectIDs in channel order.
+constexpr AudioObjectPropertySelector kAudioAggregateDevicePropertyActiveSubDeviceList = mmaFourCC ('a', 'g', 'r', 'p');
+
 // §2.3: what a device can actually deliver. CoreAudio keeps this on the
 // STREAM, not the device, so finding it is two hops: ask the device for its
 // streams, then ask a stream for its available physical formats. These are
