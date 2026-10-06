@@ -27,6 +27,12 @@ namespace permissions {
 /// would put a blocking error in front of a user whose microphone works.
 PermissionState fromAVAuthorizationStatus (long status) noexcept;
 
+/// True for AVAuthorizationStatusRestricted (1): an administrator (MDM, a
+/// configuration profile, Screen Time) has blocked access, so the user cannot
+/// switch it on themselves. Only the wording differs from Denied; the app
+/// behaves the same way for both.
+bool isRestrictedAVAuthorizationStatus (long status) noexcept;
+
 /// Windows stores per-capability consent under the CapabilityAccessManager
 /// consent store as the string "Allow" or "Deny".
 PermissionState fromWindowsConsentValue (const std::string& value) noexcept;
@@ -58,6 +64,11 @@ void requestMicrophoneAccess() noexcept;
 /// macOS only: the camera's AVFoundation status, as for the microphone.
 /// NotApplicable elsewhere.
 PermissionState queryCameraPermission() noexcept;
+
+/// macOS only: true when access is Restricted (blocked by an administrator)
+/// rather than refused by the user. False everywhere else.
+bool isMicrophoneAccessRestricted() noexcept;
+bool isCameraAccessRestricted() noexcept;
 
 /// macOS only: shows the camera prompt if one is due. Returns at once; read
 /// the answer later with queryCameraPermission().

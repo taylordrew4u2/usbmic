@@ -31,9 +31,36 @@ std::string PermissionGuidance::grantArrivedMessage (bool takeRunning)
     return "Microphone access is allowed now.";
 }
 
+std::string PermissionGuidance::microphoneDeniedMessage (bool restricted)
+{
+    // No "then reopen the app": the 2 s permission poll notices a change made
+    // in System Settings and reopens the microphones by itself, and telling
+    // someone to quit mid-setup costs them the window they were working in.
+    if (restricted)
+        return "This computer's administrator has blocked microphone access for apps, so SobStage "
+               "can't hear your microphones. Ask whoever manages this computer (your IT "
+               "department) to allow it; SobStage picks up the change by itself.";
+
+    return "This app isn't allowed to use your microphones yet. Turn on microphone access for it "
+           "in your computer's privacy settings; SobStage picks up the change by itself.";
+}
+
+std::string PermissionGuidance::cameraDeniedMessage (bool restricted)
+{
+    if (restricted)
+        return "This Mac's administrator has blocked camera access for apps, so SobStage can't "
+               "use your cameras. Ask whoever manages this Mac (your IT department) to allow it; "
+               "the cameras start as soon as they do. Sound recording is unaffected.";
+
+    return "SobStage isn't allowed to use cameras. Turn SobStage on in System Settings > "
+           "Privacy & Security > Camera; the cameras start as soon as you do. Sound recording "
+           "is unaffected.";
+}
+
 std::vector<PermissionProblem> PermissionGuidance::evaluate (PermissionState microphone,
                                                              PermissionState removableVolume,
-                                                             bool destinationIsRemovable)
+                                                             bool destinationIsRemovable,
+                                                             bool microphoneRestricted)
 {
     std::vector<PermissionProblem> problems;
 
@@ -41,8 +68,7 @@ std::vector<PermissionProblem> PermissionGuidance::evaluate (PermissionState mic
     // novice that is indistinguishable from broken hardware.
     if (microphone == PermissionState::Denied)
         problems.push_back ({ PermissionKind::Microphone,
-                              "This app isn't allowed to use your microphones yet. "
-                              "Turn on microphone access for it in your computer's privacy settings, then reopen the app.",
+                              microphoneDeniedMessage (microphoneRestricted),
                               true });
 
     // Only worth raising when the card is actually where the recording goes.

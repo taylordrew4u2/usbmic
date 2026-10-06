@@ -3,6 +3,7 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#include "../App/CappedFileLogger.h"
 #include "../Core/QuitGate.h"
 #if defined (MMA_STALL_METER)
  #include "MessageThreadStallMeter.h"
@@ -94,10 +95,11 @@ public:
         // §11: the diagnostics bundle promises a log, so one has to exist
         // before the first thing that can go wrong. The path comes from
         // Application so the bundle and the logger cannot disagree about where
-        // it is, and it is capped so a bundle a user emails stays small.
+        // it is, and it is capped so a bundle a user emails stays small --
+        // through the whole session, not only at launch (CappedFileLogger).
         constexpr int kMaxLogBytes = 256 * 1024;
 
-        logger = std::make_unique<juce::FileLogger> (
+        logger = std::make_unique<CappedFileLogger> (
             Application::getLogFile(),
             "SobStage " + getApplicationVersion(),
             kMaxLogBytes);
@@ -322,7 +324,7 @@ public:
     }
 
 private:
-    std::unique_ptr<juce::FileLogger> logger;
+    std::unique_ptr<CappedFileLogger> logger;
     std::unique_ptr<Application> application;
     // Declared before mainWindow, so it is destroyed after it. Members are
     // destroyed in reverse declaration order, and JUCE asserts if a component

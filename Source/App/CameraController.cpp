@@ -191,14 +191,16 @@ void CameraController::setStartupGuardFile (const juce::File& file)
 }
 
 void CameraController::setCameraPermission (std::function<PermissionState()> probe,
-                                            std::function<void()> request)
+                                            std::function<void()> request,
+                                            std::function<bool()> restricted)
 {
 #if JUCE_USE_CAMERA
     cameraPermissionProbe = std::move (probe);
     requestCameraPermission = std::move (request);
+    cameraAccessRestrictedProbe = std::move (restricted);
     cameraPermissionRequested = false;
 #else
-    juce::ignoreUnused (probe, request);
+    juce::ignoreUnused (probe, request, restricted);
 #endif
 }
 
@@ -1051,9 +1053,8 @@ void CameraController::applySelection (bool retryFailures)
         }
 
         openProblem = cameraPermission == PermissionState::Denied
-            ? juce::String ("SobStage isn't allowed to use cameras. Turn SobStage on in System "
-                            "Settings > Privacy & Security > Camera; the cameras start as soon as "
-                            "you do. Sound recording is unaffected.")
+            ? juce::String (PermissionGuidance::cameraDeniedMessage (
+                  cameraAccessRestrictedProbe != nullptr && cameraAccessRestrictedProbe()))
             : juce::String ("Waiting for you to allow camera access. Click Allow in the macOS "
                             "prompt; if none appeared, turn SobStage on in System Settings > "
                             "Privacy & Security > Camera.");

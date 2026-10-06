@@ -20,7 +20,8 @@ Builds for macOS, Windows and Linux are produced by the
 - **macOS** — `SobStage-macOS.dmg`, a normal drag-to-install disk
   image: mount it and drag the app onto the Applications alias beside it.
   `SobStage-macOS.zip` carries the same `.app` for anyone who would
-  rather not mount an image.
+  rather not mount an image. Needs macOS 13 (Ventura) or later; one universal
+  app runs natively on Apple silicon and Intel Macs.
 - **Windows and Linux** — `SobStage-Windows.zip` and
   `-Linux.zip`.
 - **Tagged releases** — all of the above are attached to the
@@ -175,6 +176,15 @@ This workaround is for an ad-hoc signed build, which is what every release so
 far is. Once the workflow has Developer ID credentials it signs, notarizes and
 staples the app and this step goes away.
 
+**macOS asks for microphone or camera permission again after an update.**
+
+Expected with the current ad-hoc signed builds: macOS ties the permission to
+the exact signed copy of the app, and every update is a new one. Click
+**Allow** again. If no prompt appears and SobStage says it isn't allowed, open
+System Settings → Privacy & Security → Microphone (or Camera) and switch
+SobStage off and back on; SobStage picks up the change by itself. A Developer
+ID signed build keeps the permission across updates.
+
 ### Windows
 
 1. Unzip `SobStage-Windows.zip` anywhere (e.g. a folder in
@@ -251,5 +261,10 @@ staples the app and this step goes away.
 ## Uninstalling
 
 Delete the app. The only things it leaves behind are your recordings
-(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above —
-remove those too if you want nothing left.
+(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above (which
+also holds your saved shows) — remove those too if you want nothing left.
+
+On a Mac, SobStage removes its combined **SobStage** input device when it
+quits and on its next launch. If it was force-quit or the Mac lost power and
+you then deleted the app, that device can still be listed: remove it in
+**Audio MIDI Setup** (select it and press the minus button).
