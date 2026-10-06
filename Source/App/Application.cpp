@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
+#include "../Platform/VolumeCapacity.h"
 #include "../Core/PreflightScratchFile.h"
 #if JUCE_MAC
  #include <sys/mount.h>
@@ -2513,7 +2514,12 @@ std::vector<Application::StorageVolume> Application::scanStorageVolumes()
 
         seen.add (full);
 
-        const auto freeBytes = root.getBytesFreeOnVolume();
+        // The space a recording can claim: on APFS that includes purgeable
+        // space, which getBytesFreeOnVolume leaves out.
+        const auto available = availableBytesForRecording (full.toStdString());
+        const auto freeBytes = available.has_value()
+            ? static_cast<juce::int64> (std::min<uint64_t> (*available, static_cast<uint64_t> (INT64_MAX)))
+            : root.getBytesFreeOnVolume();
         const bool removable = forceRemovable || root.isOnRemovableDrive();
 
         auto name = root.getVolumeLabel();
@@ -2682,7 +2688,16 @@ void Application::toggleRecording()
             mirrorPolicy.reset();
             {
                 const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-                mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
+
+                // Purgeable space counted: on a Mac with iCloud "Optimize Mac
+                // storage" on, the plain free figure can be a small fraction
+                // of what a write can actually claim, and the backup copy was
+                // refused for want of room the disk had.
+                const auto homeFree = availableBytesForRecording (home.getFullPathName().toStdString());
+                const auto freeBytes = homeFree.has_value()
+                    ? static_cast<int64_t> (std::min<uint64_t> (*homeFree, static_cast<uint64_t> (INT64_MAX)))
+                    : static_cast<int64_t> (home.getBytesFreeOnVolume());
+                mirrorPolicy.evaluateAtArm (freeBytes, projectedSessionBytes());
             }
 
             // §6: this is what actually opens the stem files and starts the

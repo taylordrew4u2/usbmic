@@ -1,6 +1,7 @@
 #include "FilesystemStatusProbe.h"
 #include "TakeCompleteness.h"
 #include "Utf8Path.h"
+#include "../Platform/VolumeCapacity.h"
 
 #include <algorithm>
 #include <cctype>
@@ -248,9 +249,10 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
         const fs::path destination = pathFromUtf8 (request.destinationPath);
         if (fs::is_directory (destination, error) && ! error)
         {
-            const auto space = fs::space (destination, error);
-            if (! error)
-                out.remainingSeconds = static_cast<double> (space.available)
+            // What a write can actually claim, purgeable space included on
+            // APFS -- see availableBytesForRecording.
+            if (const auto available = availableBytesForRecording (request.destinationPath))
+                out.remainingSeconds = static_cast<double> (*available)
                                      / request.bytesPerSecond;
         }
     }
@@ -261,9 +263,9 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
         const fs::path mirror = pathFromUtf8 (request.mirrorPath);
         if (fs::is_directory (mirror, error) && ! error)
         {
-            const auto space = fs::space (mirror, error);
-            if (! error && space.available <= static_cast<uintmax_t> (INT64_MAX))
-                out.mirrorFreeBytes = static_cast<int64_t> (space.available);
+            const auto available = availableBytesForRecording (request.mirrorPath);
+            if (available && *available <= static_cast<uint64_t> (INT64_MAX))
+                out.mirrorFreeBytes = static_cast<int64_t> (*available);
         }
     }
 
