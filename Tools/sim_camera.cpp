@@ -1471,6 +1471,76 @@ void delayedFinalizationBlocksClaimsAndTheNextTake()
     takeFolder.deleteRecursively();
 }
 
+/// A take folder renamed in Finder mid-take. AVFoundation's movie writer holds
+/// its file open, so the movie goes on into the moved folder and finishes
+/// there; the completion callback may name either the path it was started
+/// with or where the file now is. Either must count as this camera's movie
+/// finishing -- matching on the path made a moved movie look as if it never
+/// finished, so the take waited out the 15 s timeout and then called a good
+/// movie unusable. What the app consumes afterwards is the file NAME, joined
+/// to the folder's current path, so nothing may carry the old folder.
+void aTakeFolderRenamedMidTakeStillFinishesItsMovie()
+{
+    std::printf ("\nA take folder renamed in Finder while the camera records\n");
+
+    for (const bool delayed : { false, true })
+    {
+        fakecamera::setDevices ({ "Moving Camera" });
+        fakecamera::setOpenSucceeds (true);
+        fakecamera::setViewerSucceeds (true);
+        fakecamera::setAutoFrameOnListener (true);
+        fakecamera::resetRecordingCallCounts();
+        fakecamera::setFinalizationMode (delayed ? fakecamera::FinalizationMode::DelayedSuccess
+                                                 : fakecamera::FinalizationMode::ImmediateSuccess);
+
+        mma::CameraController controller;
+        refreshNow (controller);
+        controller.getSelection().setEnabled ("Moving Camera", true);
+        controller.applySelection (true);
+
+        const auto scratch = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                 .getNonexistentChildFile ("sobstage-camera-renamed-take", {}, false);
+        const auto takeFolder = scratch.getChildFile ("2026-10-06_1432_Kitchen");
+        const auto movedFolder = scratch.getChildFile ("Kitchen (keep)");
+        check (takeFolder.createDirectory().wasOk(), "a take folder is available");
+        check (controller.startRecording (takeFolder), "the camera starts into the take folder");
+
+        // Renamed while recording; the backend now reports the moved path.
+        check (takeFolder.moveFileTo (movedFolder), "the folder is renamed mid-take");
+        fakecamera::setReportedRecordingFolder (movedFolder);
+
+        controller.stopRecording();
+        if (delayed)
+        {
+            fakecamera::completePendingFinalizations();
+            controller.pollRecordingFinalization();
+        }
+
+        const std::string how = delayed ? " (finished after Stop)" : " (finished during Stop)";
+        check (controller.getRecordingFinalizationState()
+                   == mma::CameraController::RecordingFinalizationState::Succeeded,
+               "the moved movie's didFinish completes the take" + how);
+        check (controller.getRecordingFinalizationProblem().isEmpty(),
+               "and no camera is said to have failed to finish" + how);
+
+        const auto records = controller.getTakeVideoRecords();
+        const auto inputs = controller.getCombinedTakeInputs();
+        check (records.size() == 1 && inputs.size() == 1,
+               "the movie is in session.json's list and the combiner's inputs" + how);
+        check (records.size() == 1 && juce::String (records.front().fileName).isNotEmpty()
+                   && ! juce::String (records.front().fileName).containsAnyOf ("/\\")
+                   && inputs.size() == 1
+                   && inputs.front().videoFile == records.front().fileName
+                   && movedFolder.getChildFile (juce::String (records.front().fileName)).existsAsFile(),
+               "both name the file only, and it is found in the folder's new place" + how);
+
+        scratch.deleteRecursively();
+    }
+
+    fakecamera::setReportedRecordingFolder ({});
+    fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
+}
+
 /// MAC-CAM-2: a camera unplugged right AFTER Stop, while AVFoundation still
 /// owes its didFinish for the movie, must not be destroyed. Destroying it drops
 /// the completion callback, so the take waited 15 s and then reported a movie
@@ -1910,6 +1980,7 @@ int main()
     recordingTruthWaitsForTheStartCallback();
     startOffsetUsesTheBackendsFirstFrameTime();
     delayedFinalizationBlocksClaimsAndTheNextTake();
+    aTakeFolderRenamedMidTakeStillFinishesItsMovie();
     anUnplugAfterStopStillReceivesItsFinalization();
     finishWithoutStartIsAStartFailure();
     aSynchronousWriterStartFailureNeverClaimsAFile();

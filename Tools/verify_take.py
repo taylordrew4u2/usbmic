@@ -215,7 +215,8 @@ def main():
         check_reported_losses(j.get('dropouts') or [], check, a.expect_loss)
         mirror_ran = bool(j.get('mirrorActive'))
         if j.get('mirrorEnabled') and not mirror_ran:
-            print('  NOTE  mirror was enabled but did not run (low space on the internal drive?)')
+            print('  NOTE  mirror was enabled but did not run (low space on the internal drive, '
+                  'or the take was on the same disk as the mirror?)')
     else:
         check(False, 'session.json present')
 

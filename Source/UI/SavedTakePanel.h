@@ -33,7 +33,8 @@ public:
                   const juce::String& mirrorFolder,
                   const std::vector<FileRow>& files,
                   TakeAudioVerdict verdict,
-                  bool filesListed = true);
+                  bool filesListed = true,
+                  const juce::String& mirrorNote = {});
 
     /// §6.5: the take was stopped by the drive going away rather than by the
     /// user. Shown loudly above the file list, and the heading stops claiming

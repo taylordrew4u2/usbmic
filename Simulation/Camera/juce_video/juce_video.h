@@ -128,6 +128,12 @@ void completePendingRecordingStarts (double firstFrameMs = 0.0);
 void setFinalizationMode (FinalizationMode mode);
 int getPendingFinalizationCount();
 void completePendingFinalizations();
+/// From now on the start/finish callbacks name the movie inside `folder`
+/// rather than where it was started -- a backend reporting where the file is
+/// after its take folder was renamed or moved mid-take. A default-constructed
+/// File restores the path the recording was started with.
+/// resetRecordingCallCounts() also restores it.
+void setReportedRecordingFolder (const juce::File& folder);
 std::vector<int> getOpenedDeviceIndices();
 
 } // namespace fakecamera

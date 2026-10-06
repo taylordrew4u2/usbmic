@@ -435,13 +435,19 @@ bool CameraController::applyPendingRuntimeEvents()
         }
     }
 
+    // A take has at most one writer per camera, and the generation check below
+    // ties the callback to this take, so the camera id is the whole match. The
+    // path is deliberately not compared: a take folder renamed or moved in
+    // Finder mid-take leaves the movie writing on into the moved folder, and
+    // a backend that reports where the file now is must not be mistaken for
+    // one that never finished (which waited out the 15 s timeout and then
+    // called a good movie unusable).
     for (const auto& started : recordingsStarted)
     {
         const auto take = std::find_if (takeRecordings.begin(), takeRecordings.end(),
             [&] (const TakeRecording& recording)
             {
-                return recording.deviceId == started.id
-                    && recording.file == started.file;
+                return recording.deviceId == started.id;
             });
 
         if (take == takeRecordings.end() || started.takeGeneration != takeGeneration
@@ -517,8 +523,7 @@ bool CameraController::applyPendingRuntimeEvents()
         const auto take = std::find_if (takeRecordings.begin(), takeRecordings.end(),
             [&] (const TakeRecording& recording)
             {
-                return recording.deviceId == finished.id
-                    && recording.file == finished.file;
+                return recording.deviceId == finished.id; // see the didStart match above
             });
 
         if (take == takeRecordings.end() || finished.takeGeneration != takeGeneration

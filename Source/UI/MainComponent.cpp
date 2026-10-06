@@ -591,7 +591,7 @@ void MainComponent::showSaveLocationPrompt()
     saveLocationPrompt.setSessionName (mainScreen.getSessionName());
     saveLocationPrompt.setAskEveryTime (application.getAskWhereToSaveEveryTime());
     saveLocationPrompt.setPlan (plan.parentFolder, plan.folderName, plan.mirrorFolder, plan.fileNames,
-                                armedCameraCount, readyCameraCount);
+                                armedCameraCount, readyCameraCount, plan.mirrorNote);
 
     saveLocationPrompt.setBlockedReason (application.getRecordDisabledReason());
     // Room for the whole card BEFORE it is shown. ModalCard clamps itself to
@@ -873,7 +873,8 @@ void MainComponent::showSavedTake()
     for (const auto& file : take.files)
         rows.push_back ({ file.name, file.sizeBytes });
 
-    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows, take.verdict, take.filesListed);
+    savedTakePanel.setTake (take.folder, take.mirrorFolder, rows, take.verdict, take.filesListed,
+                            take.mirrorNote);
     growWindowToFit (savedTakePanel.getRequiredHeight() + 32);
 
     savedTakePanel.setBounds (getLocalBounds());
