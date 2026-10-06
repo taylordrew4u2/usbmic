@@ -920,6 +920,48 @@ void aDeviceAliveChangeIsReportedImmediately()
     backend.closeAllStreams();
 }
 
+/// A USB hub re-settling can drop DeviceIsAlive to 0 and back to 1 on the same
+/// AudioObjectID. The app silences the mic's channel on the "no longer
+/// available" report, and mid-take only a `resumed` report gives it back --
+/// which only the five-second watchdog used to arm, so a mic whose alive flag
+/// dipped recorded silence for the rest of the take while its audio arrived.
+void aMicWhoseAliveFlagDipsAndReturnsIsReportedAsResumed()
+{
+    std::printf ("\nA mic whose alive flag dips and comes back on the same AudioObject\n");
+    fakeca::reset();
+
+    const auto id = fakeca::addDevice (microphone ("Hub Mic", "uid-hub", 1,
+                                                   fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openInputStream ("uid-hub", 48000.0, 256, capture.callback()),
+           "the stream opens");
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+
+    fakeca::setDeviceAlive (id, false);
+    const auto dead = backend.takeStreamFailures();
+    check (dead.size() == 1 && dead.front().kind == mma::StreamFailureKind::deviceUnavailable,
+           "the dip is reported as the device becoming unavailable");
+
+    fakeca::setDeviceAlive (id, true);
+    check (backend.takeStreamFailures().empty(),
+           "coming back alive alone is not yet proof that audio is arriving");
+
+    // Strictly after the report on the backend's clock.
+    std::this_thread::sleep_for (std::chrono::milliseconds (2));
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+
+    const auto resumed = backend.takeStreamFailures();
+    check (resumed.size() == 1 && resumed.front().kind == mma::StreamFailureKind::resumed
+               && resumed.front().deviceId == "uid-hub",
+           "audio arriving after the dip is reported as the mic resuming");
+
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    check (backend.takeStreamFailures().empty(), "and the resume is reported once");
+    backend.closeAllStreams();
+}
+
 /// Processor-overload is normally notified from CoreAudio's IO thread. Input
 /// overruns must be surfaced as possible take loss; output overruns feed the
 /// monitor-glitch counter and must not be mislabelled as recorded-audio loss.
@@ -2133,6 +2175,7 @@ int main()
     hotplugArrivesThroughTheOsListener();
     aLiveSampleRateChangeIsReportedAndReenumerated();
     aDeviceAliveChangeIsReportedImmediately();
+    aMicWhoseAliveFlagDipsAndReturnsIsReportedAsResumed();
     processorOverloadsAreCountedOnTheRightPath();
     processorOverloadNotificationIsThreadSafe();
     aDeviceThatRefusesSafetyListenersSaysSo();

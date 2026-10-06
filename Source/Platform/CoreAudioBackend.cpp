@@ -1834,6 +1834,17 @@ std::vector<StreamFailure> CoreAudioBackend::takeStreamFailures()
                 if (! stream->deviceUnavailableReported)
                 {
                     stream->deviceUnavailableReported = true;
+
+                    // The app silences this mic's channel on the report, and
+                    // mid-take only a `resumed` report gives it back. A USB hub
+                    // re-settling can drop DeviceIsAlive and raise it again on
+                    // the same AudioObjectID; with only the watchdog arming the
+                    // resume, that mic recorded silence for the rest of the
+                    // take while its audio arrived. Audio after this moment,
+                    // once the device is alive again, is the resume.
+                    if (! stream->isOutput)
+                        stream->deadReportedAt = now;
+
                     failures.push_back ({ stream->isOutput ? std::string() : stream->uid,
                                           stream->isOutput
                                               ? "is no longer available, so you can't hear through "
