@@ -91,6 +91,9 @@ MainComponent::MainComponent (Application& app)
 
     mainScreen.onMicNameClicked = [this] (int index) { promptRenameMic (index); };
 
+    // The window is where Space means mute.
+    mainScreen.onSessionNameFinished = [this] { grabKeyboardFocus(); };
+
     // A reason under the record button, a no-microphones message or another
     // row of strips makes the screen taller. Re-fitted here, the viewport
     // scrolls to show it; left alone, the footer was squeezed into what was left.
@@ -460,6 +463,20 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         toggleAdvanced();
         return true;
     }
+
+   #if JUCE_MAC
+    // Cmd-M minimises every Mac window; it comes from a Window menu, and JUCE's
+    // stock menu bar has none, so here it only beeped. Minimising never
+    // touches a take. (Cmd-W is deliberately left alone: closing this window
+    // is quitting, and that is never one keystroke away during a show.)
+    if (key == juce::KeyPress ('m', juce::ModifierKeys::commandModifier, 0))
+    {
+        if (auto* peer = getPeer())
+            peer->setMinimised (true);
+
+        return true;
+    }
+   #endif
 
     // Escape is the way back from any panel, so nobody has to find the Done
     // button at the top of a screen they have scrolled down.
@@ -1839,6 +1856,45 @@ void MainComponent::applyPanelVisibility()
     guideViewport.setVisible (guideVisible && ! cameraVisible);
 
     mainScreen.setDoorsOpen (advancedVisible && ! cameraVisible, helpVisible && ! cameraVisible);
+
+    updateWindowMinimumWidth();
+}
+
+void MainComponent::updateWindowMinimumWidth()
+{
+    // The drawer never goes below 380px, so a window dragged down to its own
+    // 560px minimum with Settings open left the main screen 179px wide: the
+    // record button hung off its left edge and the header buttons sat on top
+    // of each other. The limit is raised for as long as a drawer is open.
+    auto* window = dynamic_cast<juce::ResizableWindow*> (getTopLevelComponent());
+    if (window == nullptr)
+        return;
+
+    auto* constrainer = window->getConstrainer();
+    if (constrainer == nullptr)
+        return;
+
+    if (windowBaseMinimumWidth < 0)
+        windowBaseMinimumWidth = constrainer->getMinimumWidth();
+
+    int minimum = windowBaseMinimumWidth;
+
+    if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
+    {
+        const int chrome = juce::jmax (0, window->getWidth() - getWidth());
+
+        // Never more than the display has room for, or a small screen could
+        // not hold the window at all; there the drawer gets what it can.
+        minimum = juce::jmax (windowBaseMinimumWidth,
+                              juce::jmin (kMainMinWidth + 380 + 1,
+                                          usableAreaForWindow (*window).getWidth()) + chrome);
+    }
+
+    // Only the limit: the constrainer is consulted on the next drag, and
+    // growWindowToFitWidth() has already widened the window itself, keeping it
+    // on the screen, which a forced resize from here would not.
+    if (constrainer->getMinimumWidth() != minimum)
+        constrainer->setMinimumWidth (minimum);
 }
 
 void MainComponent::growWindowToFitWidth (int contentWidth)

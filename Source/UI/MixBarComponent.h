@@ -18,8 +18,10 @@ public:
 
 private:
     void timerCallback() override;
+    void updateAccessibilityText();
 
     Metering* metering = nullptr;
+    int lastAccessibleLevelDb = 1;
     float currentLevelDb = Metering::kMinDb;
     float currentPeakDb = Metering::kMinDb;
     bool currentClip = false;

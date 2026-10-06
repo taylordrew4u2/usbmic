@@ -162,7 +162,17 @@ MainScreen::MainScreen()
     sessionNameEditor.setTextToShowWhenEmpty ("Session name (optional)", juce::Colours::grey);
     sessionNameEditor.setTitle ("Session name, optional");
     sessionNameEditor.setJustification (juce::Justification::centredLeft);
+    // A single-line box keeps the keyboard after Return, so "type the name,
+    // press Return, press Space to mute" typed a space into the name and left
+    // the room live. Return and Escape end the typing; so does a click away.
+    sessionNameEditor.onReturnKey = [this] { finishSessionName(); };
+    sessionNameEditor.onEscapeKey = [this] { finishSessionName(); };
     addAndMakeVisible (sessionNameEditor);
+
+    // A click on the background goes to the watcher below rather than handing
+    // the keyboard to whichever control JUCE picks as this screen's default.
+    setMouseClickGrabsKeyboardFocus (false);
+    addMouseListener (&clickAwayWatcher, true);
 
     advancedButton.onClick = [this] { if (onAdvancedClicked) onAdvancedClicked(); };
     addAndMakeVisible (advancedButton);
@@ -270,7 +280,34 @@ void MainScreen::paintBrandMark (juce::Graphics& g, juce::Rectangle<float> b) co
     g.fillPath (drop);
 }
 
-MainScreen::~MainScreen() = default;
+MainScreen::~MainScreen()
+{
+    removeMouseListener (&clickAwayWatcher);
+}
+
+void MainScreen::finishSessionName()
+{
+    if (! sessionNameEditor.hasKeyboardFocus (true))
+        return;
+
+    if (onSessionNameFinished)
+        onSessionNameFinished();
+
+    // No owner to hand it to (or it would not take it): at least let go, so
+    // the box stops swallowing keys meant for the window.
+    if (sessionNameEditor.hasKeyboardFocus (true))
+        sessionNameEditor.giveAwayKeyboardFocus();
+}
+
+void MainScreen::ClickAwayWatcher::mouseDown (const juce::MouseEvent& e)
+{
+    auto& editor = owner.sessionNameEditor;
+
+    if (e.eventComponent == &editor || editor.isParentOf (e.eventComponent))
+        return;
+
+    owner.finishSessionName();
+}
 
 void MainScreen::repaintMeters()
 {

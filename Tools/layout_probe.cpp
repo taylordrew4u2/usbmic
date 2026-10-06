@@ -90,6 +90,33 @@ int main()
     failures += returnActivated ? 0 : 1;
     failures += hintNamesBothKeys ? 0 : 1;
 
+    std::printf ("-- what VoiceOver reads for the meters and camera switches --\n");
+    {
+        // The mix meter was an unnamed group; every camera's switch read the
+        // same "Record this camera" with nothing to say which camera it was.
+        mma::MixBarComponent mix;
+        const bool mixNamed = mix.getTitle() == "Mix meter"
+                           && mix.getDescription().contains ("decibels");
+
+        mma::CameraPanel panel;
+        panel.setCameras ({ { "a", "Wide Shot", true, true, false, false, false, "A.mov", 1 },
+                            { "b", "Close Up", false, true, false, false, false, "B.mov", 1 } });
+
+        juce::StringArray switchTitles;
+        for (int i = 0; i < panel.getNumChildComponents(); ++i)
+            if (auto* t = dynamic_cast<juce::ToggleButton*> (panel.getChildComponent (i));
+                t != nullptr && t->getButtonText() == "Record this camera")
+                switchTitles.add (t->getTitle());
+
+        const bool switchesNamed = switchTitles.contains ("Record Wide Shot")
+                                && switchTitles.contains ("Record Close Up");
+
+        std::printf ("mix meter has a spoken name and level: %s\n", mixNamed ? "PASS" : "FAIL");
+        std::printf ("each camera's record switch names its camera: %s\n\n", switchesNamed ? "PASS" : "FAIL");
+        failures += mixNamed ? 0 : 1;
+        failures += switchesNamed ? 0 : 1;
+    }
+
     std::printf ("-- saved sample rate with no connected microphone --\n");
 
     mma::AdvancedPanel advancedPanel;

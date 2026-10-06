@@ -911,6 +911,53 @@ private:
             }
         }, [this] { auto* ms = find<MainScreen>(); return ms != nullptr && ms->getSessionName() == "UI walk"; });
 
+        // Type the name, press Return, press Space to mute: the box kept the
+        // keyboard after Return, so the space went into the take's name and
+        // the room stayed live.
+        add ("Return in the name box hands the keyboard back to the window", [this]
+        {
+            pressKeyThroughWindow (juce::KeyPress::returnKey);
+        }, [this]
+        {
+            auto* editor = find<juce::TextEditor>();
+            return editor != nullptr && ! editor->hasKeyboardFocus (true);
+        });
+        add ("so the space bar then mutes the room, not types into the name",
+             [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this]
+             {
+                 auto* ms = find<MainScreen>();
+                 return muted() && busMuted() && ms != nullptr && ms->getSessionName() == "UI walk";
+             });
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { return ! muted() && ! busMuted(); });
+        // The same after a click on something that does not take the keyboard
+        // itself: JUCE left the focus in the box.
+        add ("a click on a heading also ends typing in the name box", [this]
+        {
+            if (auto* editor = find<juce::TextEditor>())
+                editor->grabKeyboardFocus();
+
+            for (auto* c : showing())
+                if (auto* l = dynamic_cast<juce::Label*> (c); l != nullptr && l->getText() == "M I C R O P H O N E S")
+                {
+                    clickWithMouse (*l);
+                    break;
+                }
+        }, [this]
+        {
+            auto* editor = find<juce::TextEditor>();
+            return editor != nullptr && ! editor->hasKeyboardFocus (true);
+        });
+        add ("  and the space bar mutes", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this]
+             {
+                 auto* ms = find<MainScreen>();
+                 return muted() && busMuted() && ms != nullptr && ms->getSessionName() == "UI walk";
+             });
+        add ("  (and unmutes it)", [this] { pressKeyThroughWindow (juce::KeyPress::spaceKey); },
+             [this] { return ! muted() && ! busMuted(); });
+
         // Rename microphone 1, and check the name reaches its file later.
         add ("clicking a microphone's name asks for a new one", [this]
         {
@@ -1036,6 +1083,27 @@ private:
                 if (auto* window = mc->getTopLevelComponent())
                     window->setBounds (windowBoundsBefore);
         }, [this] { return overlaysCoverWindow(); });
+        // The window's own minimum is 560px and the drawer never goes below
+        // 380, so dragging the window narrow with Settings open squeezed the
+        // main screen to ~180px: record button off its edge, header buttons
+        // on top of each other. The limit rises while a drawer is open.
+        add ("with Settings open, the window cannot be dragged narrower than the main screen needs", [this]
+        {
+            if (auto* window = mainWindow())
+            {
+                windowBoundsBefore = window->getBounds();
+                window->setBoundsConstrained (windowBoundsBefore.withWidth (560));
+            }
+        }, [this]
+        {
+            auto* ms = find<MainScreen>();
+            return ms != nullptr && ms->getWidth() >= 600;
+        });
+        add ("  (window size put back)", [this]
+        {
+            if (auto* window = mainWindow())
+                window->setBounds (windowBoundsBefore);
+        }, [this] { auto* window = mainWindow(); return window != nullptr && window->getBounds() == windowBoundsBefore; });
         // §4: the trim rows were rebuilt only when the NUMBER of microphones
         // changed, so a rename left the old name on its row -- and a swap left
         // a slider labelled for one microphone driving another.
@@ -1069,6 +1137,12 @@ private:
              [this] { return isUp<AdvancedPanel>(); });
         add ("Settings' Close closes it", [this] { click<AdvancedPanel> ("Close"); },
              [this] { return ! isUp<AdvancedPanel>(); });
+        check ("and the window can be made narrow again once it is closed", [this]
+        {
+            auto* window = mainWindow();
+            auto* constrainer = window != nullptr ? window->getConstrainer() : nullptr;
+            return constrainer != nullptr && constrainer->getMinimumWidth() == 560;
+        });
         add ("Escape closes Settings too", [this] { click<MainScreen> ("Settings"); },
              [this] { return isUp<AdvancedPanel>(); });
         add ("  (Escape)", [this] { pressKey (juce::KeyPress::escapeKey); }, [this] { return ! isUp<AdvancedPanel>(); });

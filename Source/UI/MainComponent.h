@@ -120,6 +120,11 @@ private:
     /// Widens the window (never narrows it) so the drawer and a usable main
     /// screen fit side by side.
     void growWindowToFitWidth (int contentWidth);
+    /// While a drawer is open the window may not be dragged narrower than the
+    /// drawer plus a usable main screen; closed, the window's own minimum is
+    /// back. -1 until the window's own minimum has been read.
+    void updateWindowMinimumWidth();
+    int windowBaseMinimumWidth = -1;
     /// One place that decides which viewports show, from the three flags.
     void applyPanelVisibility();
     int lastMicCount = -1;

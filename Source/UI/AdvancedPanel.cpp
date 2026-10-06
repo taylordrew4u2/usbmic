@@ -302,7 +302,17 @@ AdvancedPanel::AdvancedPanel()
     // recording from.
     addAndMakeVisible (aggregateNameLabel);
     aggregateNameEditor.setTextToShowWhenEmpty ("SobStage", juce::Colours::grey);
-    aggregateNameEditor.onReturnKey = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
+    aggregateNameEditor.onReturnKey = [this]
+    {
+        if (onAggregateNameChanged)
+            onAggregateNameChanged (aggregateNameEditor.getText());
+
+        // Return is "done". The box kept the keyboard, so the next Space --
+        // the room's mute, live beside this drawer -- typed into the name
+        // instead. The window passes the focus on to the screen that mutes.
+        if (auto* window = getTopLevelComponent(); window != nullptr && window != this)
+            window->grabKeyboardFocus();
+    };
     aggregateNameEditor.onFocusLost = [this] { if (onAggregateNameChanged) onAggregateNameChanged (aggregateNameEditor.getText()); };
     addAndMakeVisible (aggregateNameEditor);
     aggregateStatusLabel.setJustificationType (juce::Justification::centredLeft);
