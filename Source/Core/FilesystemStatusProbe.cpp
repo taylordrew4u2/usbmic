@@ -1,4 +1,5 @@
 #include "FilesystemStatusProbe.h"
+#include "TakeCompleteness.h"
 #include "Utf8Path.h"
 
 #include <algorithm>
@@ -286,7 +287,9 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
                     break;
                 }
 
-                if (isRegularFile)
+                // Finder's .DS_Store and an ExFAT card's "._MIX.wav" twins
+                // are not part of the take; see isSystemClutterFile.
+                if (isRegularFile && ! isSystemClutterFile (utf8FromPath (entry.path().filename())))
                 {
                     const auto size = entry.file_size (entryError);
                     if (entryError)

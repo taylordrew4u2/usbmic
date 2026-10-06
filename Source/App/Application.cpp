@@ -3353,6 +3353,12 @@ std::vector<Application::SavedFile> Application::listSessionFiles (const juce::S
     for (const auto& entry : juce::RangedDirectoryIterator (dir, false, "*", juce::File::findFiles))
     {
         const auto file = entry.getFile();
+
+        // Finder's .DS_Store and an ExFAT card's "._MIX.wav" twins are not
+        // files of this take, and the card would list and count them as such.
+        if (isSystemClutterFile (file.getFileName().toStdString()))
+            continue;
+
         files.push_back ({ file.getFileName(), file.getSize() });
     }
 
@@ -6943,6 +6949,12 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         {
             if (wasCancelled())
                 return result;
+
+            // "._01_Alice.wav" on an ExFAT card is macOS's AppleDouble twin of
+            // the stem, not a recording: it has no RIFF header, so it came back
+            // as an "empty file left alone" -- one phantom lost track per stem.
+            if (isSystemClutterFile (entry.getFile().getFileName().toStdString()))
+                continue;
 
             session.files.push_back (SessionRecovery::repairWavFile (
                 entry.getFile().getFullPathName().toStdString()));

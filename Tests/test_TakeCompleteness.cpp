@@ -133,3 +133,25 @@ TEST_CASE (TakeCompleteness_AudioThatArrivedAndWasNotWrittenIsThisAppsFault)
     // never invent a fault out of a number nobody took.
     REQUIRE (judgeTakeAudio (fullLength, 0.0f, -1.0f) == TakeAudioVerdict::OnlySilence);
 }
+
+// Finder's .DS_Store (the folder was opened to watch it grow) and an ExFAT
+// card's AppleDouble "._" twins are kilobytes each. Counted as audio they
+// pushed a headers-only take past the "nothing written" bar, and it was
+// reported as a silent recording instead.
+TEST_CASE (TakeCompleteness_FindersOwnFilesDoNotCountAsAudio)
+{
+    REQUIRE (isSystemClutterFile (".DS_Store"));
+    REQUIRE (isSystemClutterFile ("._MIX.wav"));
+    REQUIRE_FALSE (isSystemClutterFile ("MIX.wav"));
+    REQUIRE_FALSE (isSystemClutterFile ("01_Alice.wav"));
+
+    const std::vector<TakeFile> files { { "MIX.wav", 666 },
+                                        { "01_Alice.wav", 666 },
+                                        { ".DS_Store", 6148 },
+                                        { "._MIX.wav", 4096 },
+                                        { "._01_Alice.wav", 4096 },
+                                        { "session.json", 900 } };
+
+    REQUIRE (takeHoldsNoAudio (files));
+    REQUIRE (judgeTakeAudio (files, 0.0f) == TakeAudioVerdict::NothingWritten);
+}
