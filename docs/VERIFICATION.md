@@ -225,7 +225,7 @@ v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a
 first-frame enqueue, but that run did not verify a visibly non-black SobStage
 preview or a completed recording. The simulator drives the
 `CameraDevice::openDevice` boundary, including failures and a hot-plug reorder;
-the v1.13.20 AVFoundation/DirectShow viewer and `startRecordingToFile`
+the v1.13.21 AVFoundation/DirectShow viewer and `startRecordingToFile`
 paths still need the physical macOS and Windows matrix. See *Not yet validated
 against hardware*.
 
@@ -314,7 +314,7 @@ the matrix. In particular:
   during open, and the no-false-recovery policy for a mid-take unplug/replug.
   Separately, an older v1.11.0 build opened `USB2 Video` and AVFoundation logged
   a first-frame enqueue; that did not verify a visible non-black preview or a
-  completed recording, and the v1.13.20 artifacts remain untested with a
+  completed recording, and the v1.13.21 artifacts remain untested with a
   physical capture card.
   Outstanding on real hardware:
   what resolution `openDevice` actually settles on, what the recorded file

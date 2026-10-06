@@ -119,7 +119,7 @@ Every constant and behavior traces to the build specification in
 
 ## Project status
 
-The current source is the **v1.13.20 release candidate**. The engine, the
+The current source is the **v1.13.21 release candidate**. The engine, the
 simulated backends and the end-to-end app runs pass in CI on all three
 platforms. Real-driver timing and a completed take from physical microphones
 are still release gates: a PUPGSIS T12S interface has been detected on a real

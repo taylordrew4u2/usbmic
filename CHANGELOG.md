@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.13.21 -- 2026-10-06 (release candidate)
+
+Mac fixes.
+
+### Fixed
+
+- **Mac: cameras no longer leak memory each time they close.** Unplugging,
+  switching a camera off and on, or changing its quality used to keep the
+  whole old capture session (and its last frame) in memory.
+- **Mac: a mic that blinks out and straight back** (a USB hub re-settling)
+  now carries on recording instead of staying silent for the rest of the take.
+- **Mac: a mic unplugged while its sample rate was changing** now says it
+  disconnected, instead of "This interface is running at 0 kHz".
+- **Mac: Cmd-, opens Settings**, like every other Mac app.
+- **Quitting right after a take asks first** while the podcast copy or the
+  combined video is still being made: Quit When Done, Quit Now or Don't Quit.
+  It used to cancel them without a word.
+- **The podcast copy no longer competes with the next take for the card**,
+  and a copy cut short by a full card is never left looking finished.
+- **Show names in any language** (Japanese, Greek, Cyrillic...) can be saved,
+  and the show just saved is selected in the list straight away.
+
 ## v1.13.20 -- 2026-10-06 (release candidate)
 
 Mac fixes.
