@@ -264,14 +264,14 @@ int getPendingRecordingStartCount()
 {
     return static_cast<int> (pendingRecordingStarts().size());
 }
-void completePendingRecordingStarts()
+void completePendingRecordingStarts (double firstFrameMs)
 {
     auto pending = std::move (pendingRecordingStarts());
     pendingRecordingStarts().clear();
 
     for (const auto& item : pending)
         if (item.device != nullptr && item.device->onRecordingStarted)
-            item.device->onRecordingStarted (item.file);
+            item.device->onRecordingStarted (item.file, firstFrameMs);
 }
 void setFinalizationMode (FinalizationMode mode) { finalizationMode() = mode; }
 int getPendingFinalizationCount() { return static_cast<int> (pendingFinalizations().size()); }
@@ -466,7 +466,7 @@ void CameraDevice::startRecordingToFile (const File& file, int)
     file.replaceWithText ("fake camera recording");
 
     if (fakecamera::autoConfirmRecordingStart() && onRecordingStarted)
-        onRecordingStarted (file);
+        onRecordingStarted (file, 0.0);
     else if (! fakecamera::autoConfirmRecordingStart())
         fakecamera::pendingRecordingStarts().push_back ({ this, file });
 }

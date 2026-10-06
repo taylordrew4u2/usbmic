@@ -246,6 +246,11 @@ private:
     std::vector<CameraView> cameraViews;
     bool previewsHidden = false;
 
+    /// The caption's words and colour from the view's name, take state and
+    /// signal text. Text only: it never touches the native preview.
+    void refreshCameraCaption (CameraView& view);
+    static juce::String placeholderTextFor (const juce::String& signalStatusText);
+
     int cameraScale = 1;
 
     /// The viewport height the owner last reported; 0 until it does.
