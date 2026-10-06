@@ -239,3 +239,23 @@ TEST_CASE (PreflightThroughputTest_APrivacyRefusalIsNotReportedAsACardFault)
     REQUIRE (PreflightThroughputTest::writeFailureReason (ENOSPC).find ("full") != std::string::npos);
     REQUIRE (PreflightThroughputTest::writeFailureReason (0).find ("plugged in") != std::string::npos);
 }
+
+TEST_CASE (PreflightThroughputTest_AReadOnlyWindowsDriveIsNotCalledALockedCard)
+{
+    // macOS mounts NTFS read-only. "Slide its lock switch off" sent people
+    // looking for a switch an external SSD does not have.
+    using Kind = PreflightThroughputTest::FilesystemKind;
+    const auto ntfs = PreflightThroughputTest::writeFailureReason (EROFS, Kind::NTFS);
+    REQUIRE (ntfs.find ("NTFS") != std::string::npos);
+    REQUIRE (ntfs.find ("lock switch") == std::string::npos);
+
+    // A locked SD card is still a locked SD card.
+    REQUIRE (PreflightThroughputTest::writeFailureReason (EROFS, Kind::ExFAT).find ("lock switch")
+             != std::string::npos);
+    REQUIRE (PreflightThroughputTest::writeFailureReason (EROFS, Kind::FAT32).find ("lock switch")
+             != std::string::npos);
+
+    // Other refusals on an NTFS drive keep their own wording.
+    REQUIRE (PreflightThroughputTest::writeFailureReason (ENOSPC, Kind::NTFS).find ("full")
+             != std::string::npos);
+}

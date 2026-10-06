@@ -3853,9 +3853,18 @@ int Application::probeWriteErrno (const juce::File& folder)
 std::string Application::filesystemTypeName (const juce::File& folder)
 {
    #if JUCE_MAC
-    struct statfs info {};
-    if (::statfs (folder.getFullPathName().toRawUTF8(), &info) == 0)
-        return info.f_fstypename;
+    // The nearest folder that exists. On a read-only drive the RECORDINGS
+    // folder could not be made, so asking about it failed and the format came
+    // back unknown -- exactly when it decides what the user is told to do.
+    for (auto candidate = folder;; candidate = candidate.getParentDirectory())
+    {
+        struct statfs info {};
+        if (::statfs (candidate.getFullPathName().toRawUTF8(), &info) == 0)
+            return info.f_fstypename;
+
+        if (errno != ENOENT || candidate.getParentDirectory() == candidate)
+            break;
+    }
    #else
     juce::ignoreUnused (folder);
    #endif
@@ -4000,17 +4009,21 @@ Application::PreflightBackgroundResult Application::runPreflight (
     result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
                                                 sampleRate, bytesPerSample);
 
+    // The format, read here on the worker: a statfs on a card that has stopped
+    // answering must not stall the message thread. Read before the refusal is
+    // worded, because a read-only NTFS drive needs different advice from a
+    // locked card.
+    const auto filesystemKind =
+        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder));
+
     if (couldNotWrite)
     {
         result.passed = false;
         result.couldNotWrite = true;
-        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno);
+        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno, filesystemKind);
     }
 
-    // The format, read here on the worker: a statfs on a card that has stopped
-    // answering must not stall the message thread.
-    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (
-        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder)));
+    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (filesystemKind);
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
