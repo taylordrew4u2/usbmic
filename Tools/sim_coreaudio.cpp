@@ -460,6 +460,35 @@ void aMicrophoneThatVanishedSaysSo()
            "and says the microphone is gone, not that some rate is wrong");
 }
 
+/// Pulled while the open waited for its rate change to settle. The rate read
+/// then fails and comes back as 0, and the refusal used to read "This interface
+/// is running at 0 kHz ... Set the recording to 0 kHz in Settings".
+void aMicUnpluggedWhileItsRateSettlesSaysItDisconnected()
+{
+    std::printf ("\nA mic unplugged while its sample rate is being changed\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Pulled Mic", "uid-pulled", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    spec.currentRate = 44100.0;
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    spec.unpluggedDuringRateChange = true;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (! backend.openInputStream ("uid-pulled", 48000.0, 256, capture.callback()),
+           "the open is refused");
+
+    const auto reason = backend.getLastOpenError();
+    std::printf ("  reason: %s\n", reason.c_str());
+
+    check (reason.find ("0 kHz") == std::string::npos,
+           "and never tells the user to set anything to 0 kHz");
+    check (reason.find ("disconnected") != std::string::npos,
+           "but says the interface disconnected");
+}
+
 /// §5.4: the monitor path is exclusive or it is nothing. Reporting success
 /// without hog mode handed the user a shared output while the app believed
 /// otherwise.
@@ -917,6 +946,48 @@ void aDeviceAliveChangeIsReportedImmediately()
     fakeca::setDeviceAlive (id, false);
     check (backend.takeStreamFailures().size() == 1,
            "a second genuine death after recovery is reported again");
+    backend.closeAllStreams();
+}
+
+/// A USB hub re-settling can drop DeviceIsAlive to 0 and back to 1 on the same
+/// AudioObjectID. The app silences the mic's channel on the "no longer
+/// available" report, and mid-take only a `resumed` report gives it back --
+/// which only the five-second watchdog used to arm, so a mic whose alive flag
+/// dipped recorded silence for the rest of the take while its audio arrived.
+void aMicWhoseAliveFlagDipsAndReturnsIsReportedAsResumed()
+{
+    std::printf ("\nA mic whose alive flag dips and comes back on the same AudioObject\n");
+    fakeca::reset();
+
+    const auto id = fakeca::addDevice (microphone ("Hub Mic", "uid-hub", 1,
+                                                   fakeca::BufferShape::oneChannelPerBuffer));
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+    check (backend.openInputStream ("uid-hub", 48000.0, 256, capture.callback()),
+           "the stream opens");
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+
+    fakeca::setDeviceAlive (id, false);
+    const auto dead = backend.takeStreamFailures();
+    check (dead.size() == 1 && dead.front().kind == mma::StreamFailureKind::deviceUnavailable,
+           "the dip is reported as the device becoming unavailable");
+
+    fakeca::setDeviceAlive (id, true);
+    check (backend.takeStreamFailures().empty(),
+           "coming back alive alone is not yet proof that audio is arriving");
+
+    // Strictly after the report on the backend's clock.
+    std::this_thread::sleep_for (std::chrono::milliseconds (2));
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+
+    const auto resumed = backend.takeStreamFailures();
+    check (resumed.size() == 1 && resumed.front().kind == mma::StreamFailureKind::resumed
+               && resumed.front().deviceId == "uid-hub",
+           "audio arriving after the dip is reported as the mic resuming");
+
+    fakeca::pumpInput (id, { std::vector<float> (256, 0.25f) });
+    check (backend.takeStreamFailures().empty(), "and the resume is reported once");
     backend.closeAllStreams();
 }
 
@@ -2120,6 +2191,7 @@ int main()
     aRateChangeThatNeverSettlesTimesOut();
     aDeviceThatCannotReachTheRateIsRefused();
     aMicrophoneThatVanishedSaysSo();
+    aMicUnpluggedWhileItsRateSettlesSaysItDisconnected();
     aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();
@@ -2133,6 +2205,7 @@ int main()
     hotplugArrivesThroughTheOsListener();
     aLiveSampleRateChangeIsReportedAndReenumerated();
     aDeviceAliveChangeIsReportedImmediately();
+    aMicWhoseAliveFlagDipsAndReturnsIsReportedAsResumed();
     processorOverloadsAreCountedOnTheRightPath();
     processorOverloadNotificationIsThreadSafe();
     aDeviceThatRefusesSafetyListenersSaysSo();

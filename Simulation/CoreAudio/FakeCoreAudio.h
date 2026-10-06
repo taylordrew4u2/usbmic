@@ -64,6 +64,11 @@ struct DeviceSpec
     /// within the backend's bounded confirmation window.
     int rateChangeDelayReads = 0;
 
+    /// Models a cable pulled while the backend waits for a rate change to
+    /// settle: the rate write is accepted, then the device stops being alive
+    /// and its nominal rate can no longer be read.
+    bool unpluggedDuringRateChange = false;
+
     /// §2.3: the depths this device's stream will actually deliver, as
     /// CoreAudio would report them through the stream's available physical
     /// formats. A Blue Yeti (§14.1) is { 16 }; an interface is typically
