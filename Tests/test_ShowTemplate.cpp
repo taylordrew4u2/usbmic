@@ -258,17 +258,24 @@ TEST_CASE (ShowTemplate_fileNamesAreSanitized)
     REQUIRE (ShowTemplate::fileNameFor ("   ").empty());
     REQUIRE (ShowTemplate::fileNameFor ("!!!").empty());
 
-    // A name in another script is still a name: it is kept in a plain file and
-    // found again by the name stored inside it.
+    // A name in another script is still a name, and now names its own file.
     const std::string japanese ("\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"); // 日本語
     const std::string greek ("\xce\x96\xcf\x89\xce\xbd"); // Ζων
-    REQUIRE (ShowTemplate::fileNameFor (japanese) == std::string ("Show.json"));
-    REQUIRE (ShowTemplate::fileNameForSaving (japanese, {}) == std::string ("Show.json"));
+    REQUIRE (ShowTemplate::fileNameFor (japanese) == japanese + ".json");
+    REQUIRE (ShowTemplate::fileNameForSaving (japanese, {}) == japanese + ".json");
+    REQUIRE (ShowTemplate::fileNameFor (greek) == greek + ".json");
 
+    // A show an earlier version kept in "Show.json" is still found by the name
+    // inside it and saved back over its own file, not duplicated.
     const std::vector<ShowTemplate::StoredFile> saved { { "Show.json", japanese } };
-    REQUIRE (ShowTemplate::fileNameForSaving (greek, saved) == std::string ("Show-2.json"));
     REQUIRE (ShowTemplate::fileNameForSaving (japanese, saved) == std::string ("Show.json"));
     REQUIRE (ShowTemplate::findFileFor (japanese, saved) == std::string ("Show.json"));
+    REQUIRE (ShowTemplate::fileNameForSaving (greek, saved) == greek + ".json");
+
+    // Case-insensitive volumes treat "Ü.json" and "ü.json" as one file, so a
+    // different show must not be saved over it.
+    const std::vector<ShowTemplate::StoredFile> umlaut { { "\xC3\x9C" ".json", "\xC3\x9C" } }; // Ü
+    REQUIRE (ShowTemplate::fileNameForSaving ("\xC3\xBC", umlaut) == std::string ("\xC3\xBC" "-2.json")); // ü
 }
 
 TEST_CASE (ShowTemplate_namesAreTidiedButKept)
