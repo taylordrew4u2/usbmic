@@ -1625,6 +1625,33 @@ void Application::rescanDevices()
     // The combined device other apps see tracks the rig -- §2: on the OS
     // notification, never a timer. Before the output is chosen, because the
     // combined device IS the headphone output when everyone hears everyone.
+    //
+    // First, whether it is still there at all. coreaudiod restarting (or the
+    // device being deleted in Audio MIDI Setup) takes it away without the rig
+    // changing, and the "nothing changed" guard below then never made it
+    // again. Forgetting what was published sends it back through the normal
+    // path, mid-take rules included.
+    if (systemAggregate != nullptr && systemAggregate->forgetIfLost())
+    {
+        publishedUids.clear();
+        publishedMaster.clear();
+        publishedNameStd.clear();
+
+        // publishAggregateDevice() holds the re-create until Stop when the
+        // take's headphone mix was playing through it.
+        const bool waitsForStop = capture != nullptr && capture->isRecording()
+                               && isMonitoringThroughCombinedDevice();
+
+        noteActivity (ActivityLevel::Warning, "Combined device",
+                      waitsForStop
+                          ? juce::String ("macOS removed the combined device other apps record from "
+                                          "(its audio service restarted, or it was deleted). It will be "
+                                          "made again when this take stops.")
+                          : juce::String ("macOS removed the combined device other apps record from "
+                                          "(its audio service restarted, or it was deleted). Making it "
+                                          "again."));
+    }
+
     publishAggregateDevice();
 
     // A device change can add or remove an output too, so §5.3 is re-run here
@@ -2019,8 +2046,12 @@ void Application::reselectOutputDevice()
 
     // The previous pick is passed in so a moved system default alone does not
     // move the monitor; arrivals, the jack and an explicit choice still do.
-    auto selection = OutputDeviceSelector::select (candidates, rememberedOutputDeviceId,
-                                                   selectedOutputDeviceId);
+    // Not when it was a headphone jack that has just been unplugged without
+    // leaving the list (an Intel Mac's built-in output, back on its speakers).
+    auto selection = OutputDeviceSelector::select (
+        candidates, rememberedOutputDeviceId,
+        OutputDeviceSelector::currentIdToKeep (candidates, selectedOutputDeviceId,
+                                               selectedOutputWasHeadphoneJack));
 
     if (! combinedLabel.empty() && monitorThroughCombinedDevice)
     {
@@ -2031,6 +2062,12 @@ void Application::reselectOutputDevice()
     }
 
     selectedOutputDeviceId = selection.id;
+    selectedOutputWasHeadphoneJack = std::any_of (
+        candidates.begin(), candidates.end(),
+        [&selection] (const OutputDeviceCandidate& c)
+        {
+            return c.id == selection.id && c.hasPhysicalHeadphoneJack;
+        });
     selectedOutputDeviceName.clear();
 
     for (const auto& [label, id] : outputDeviceIdByLabel)
