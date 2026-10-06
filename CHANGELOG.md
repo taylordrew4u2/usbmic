@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.13.23 -- 2026-10-06 (release candidate)
+
+Mac fixes.
+
+### Fixed
+
+- **Mac: renaming or moving the take folder in Finder mid-take no longer
+  ends the recording**, warns that the files stopped growing, or loses
+  session.json and the activity log.
+- **Mac: free space counts what macOS can free on demand** (APFS purgeable
+  space, iCloud "Optimize Mac storage"), so a drive Finder shows as roomy is
+  no longer called full.
+- **Mac: Finder's own files** (.DS_Store, ._ files on ExFAT cards) are no
+  longer counted as part of a take or recovered take.
+- **Mac: a Windows-formatted (NTFS) drive** is explained as read-only on Mac,
+  not as a card with its lock switch on.
+- **Names keep accents and non-Latin letters** ("Müller" stays "Müller").
+- **Space mutes again after typing a name** and pressing Return or clicking
+  away; it used to type into the name.
+- **The main screen can't be crushed** beside an open Settings or Help drawer,
+  and pop-up cards can't be squashed by a short window.
+- **Less battery drain:** the meters stop redrawing while the window is
+  minimised, covered or on another Space. Alarms keep sounding.
+- **VoiceOver** reads the mix meter's level and names each camera's switch.
+- **Cmd-M minimises the window.** The window can now fill very wide displays.
+- **Exporting diagnostics** falls back to your home folder when the Desktop
+  is blocked, instead of failing.
+- **Permission messages** no longer say to reopen the app (it picks up the
+  change by itself), and say when an administrator has blocked access.
+- **The log stays small** even if the app is left open for days.
+
 ## v1.13.22 -- 2026-10-06 (release candidate)
 
 Mac fixes.
