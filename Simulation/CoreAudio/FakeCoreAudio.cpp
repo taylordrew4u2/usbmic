@@ -41,6 +41,7 @@ struct Device
     bool rateChangePending = false;
     double pendingRate = 0.0;
     int rateReadsRemaining = 0;
+    bool rateUnreadable = false;
 
     int subDeviceReadsUntilActive = 0;
 };
@@ -428,6 +429,9 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
 
         case kAudioDevicePropertyNominalSampleRate:
         {
+            if (device->rateUnreadable)
+                return kAudioHardwareBadObjectError;
+
             if (device->rateChangePending)
             {
                 if (device->rateReadsRemaining > 0)
@@ -511,6 +515,13 @@ OSStatus AudioObjectSetPropertyData (AudioObjectID object,
 
             if (! supported)
                 return kAudioHardwareUnspecifiedError;
+
+            if (device->spec.unpluggedDuringRateChange)
+            {
+                device->spec.isAlive = false;
+                device->rateUnreadable = true;
+                return noErr;
+            }
 
             if (device->spec.rateChangeDelayReads > 0)
             {

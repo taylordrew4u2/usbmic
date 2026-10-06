@@ -460,6 +460,35 @@ void aMicrophoneThatVanishedSaysSo()
            "and says the microphone is gone, not that some rate is wrong");
 }
 
+/// Pulled while the open waited for its rate change to settle. The rate read
+/// then fails and comes back as 0, and the refusal used to read "This interface
+/// is running at 0 kHz ... Set the recording to 0 kHz in Settings".
+void aMicUnpluggedWhileItsRateSettlesSaysItDisconnected()
+{
+    std::printf ("\nA mic unplugged while its sample rate is being changed\n");
+    fakeca::reset();
+
+    auto spec = microphone ("Pulled Mic", "uid-pulled", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    spec.currentRate = 44100.0;
+    spec.rateRanges = { { 44100.0, 44100.0 }, { 48000.0, 48000.0 } };
+    spec.unpluggedDuringRateChange = true;
+    fakeca::addDevice (spec);
+
+    mma::CoreAudioBackend backend;
+    Capture capture;
+
+    check (! backend.openInputStream ("uid-pulled", 48000.0, 256, capture.callback()),
+           "the open is refused");
+
+    const auto reason = backend.getLastOpenError();
+    std::printf ("  reason: %s\n", reason.c_str());
+
+    check (reason.find ("0 kHz") == std::string::npos,
+           "and never tells the user to set anything to 0 kHz");
+    check (reason.find ("disconnected") != std::string::npos,
+           "but says the interface disconnected");
+}
+
 /// §5.4: the monitor path is exclusive or it is nothing. Reporting success
 /// without hog mode handed the user a shared output while the app believed
 /// otherwise.
@@ -2162,6 +2191,7 @@ int main()
     aRateChangeThatNeverSettlesTimesOut();
     aDeviceThatCannotReachTheRateIsRefused();
     aMicrophoneThatVanishedSaysSo();
+    aMicUnpluggedWhileItsRateSettlesSaysItDisconnected();
     aDeviceAt44100ReportsThatAsItsCurrentRate();
     hogModeRefusalFailsTheOpenAndExplainsItself();
     hogModeIsTakenAndReleased();

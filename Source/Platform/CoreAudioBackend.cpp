@@ -1262,6 +1262,18 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
     if (! setNominalSampleRate (device, sampleRate))
     {
         const double actual = getNominalSampleRate (device);
+
+        // Unplugged during the settle wait: the rate read now fails and comes
+        // back as 0, and the advice below became "Set the recording to 0 kHz".
+        if (actual <= 0.0 || ! readDeviceIsAlive (device))
+        {
+            return { false,
+                     isOutput
+                        ? "That sound output disconnected while SobStage was opening it. Choose another one."
+                        : "This interface disconnected while SobStage was opening it. Plug it back in, "
+                          "then try again." };
+        }
+
         return { false,
                  "This interface is running at " + formatRate (actual)
                     + " and won't change to the " + formatRate (sampleRate)
