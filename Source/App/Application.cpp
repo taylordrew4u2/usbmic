@@ -609,6 +609,18 @@ void Application::pollUpdateCheck()
 
 void Application::startUpdateCheck()
 {
+   #if JUCE_LINUX && ! JUCE_USE_CURL
+    // Built without curl, JUCE's Linux HTTP client speaks plain http:// only,
+    // and the releases API is https://. Every check failed before a byte was
+    // sent and was reported as "Couldn't reach GitHub just now. Try again
+    // later." -- every day, on a network that was working, with no later at
+    // which it would. Say what is actually true instead.
+    updateCheckSucceeded = false;
+    updateCheckProblem = "This Linux build can't check for updates by itself. The newest "
+                         "version is on the Releases page.";
+    return;
+   #endif
+
     updateCheckRunning->store (true);
     updateCheckProblem.clear();
 
@@ -5985,15 +5997,64 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
         if (logFile.existsAsFile())
             builder.addFile (logFile, 9, "log.txt");
 
-        bool saved = false;
+        // Built in memory first, so the same bytes can go to a second place:
+        // the builder's sources are read once and are spent afterwards. A
+        // bundle is the log (capped) plus a few small JSON files.
+        juce::MemoryOutputStream zipped;
+        const bool built = builder.writeToStream (zipped, nullptr);
+
+        const auto writeZipTo = [&zipped] (const juce::File& target)
         {
-            juce::FileOutputStream out (destinationZip);
-            saved = out.openedOk() && builder.writeToStream (out, nullptr);
+            bool ok = false;
+            {
+                juce::FileOutputStream out (target);
+                ok = out.openedOk() && out.write (zipped.getData(), zipped.getDataSize());
+                if (ok)
+                {
+                    out.flush();
+                    ok = out.getStatus().wasOk();
+                }
+            }
+
+            // Only ever a name getNonexistentChildFile picked, so whatever is
+            // there is this attempt's own partial file.
+            if (! ok)
+                target.deleteFile();
+
+            return ok;
+        };
+
+        // The Desktop is the place people look, but on macOS it is a protected
+        // folder: the first export raises a "would like to access files in
+        // your Desktop folder" prompt, and once that is answered Don't Allow
+        // (or a managed Mac forbids it) every export failed, with advice to
+        // "try somewhere else" and no way to choose anywhere. A Linux account
+        // with no ~/Desktop failed the same way. The home folder itself is
+        // never protected, so the bundle goes there instead and the message
+        // says where.
+        juce::File savedTo;
+        if (built)
+        {
+            if (writeZipTo (destinationZip))
+            {
+                savedTo = destinationZip;
+            }
+            else
+            {
+                const auto fallback = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                          .getNonexistentChildFile (destinationZip.getFileNameWithoutExtension(),
+                                                                    destinationZip.getFileExtension());
+                if (fallback.getParentDirectory() != destinationZip.getParentDirectory()
+                    && writeZipTo (fallback))
+                    savedTo = fallback;
+            }
         }
+
+        const bool saved = savedTo != juce::File();
 
         running->store (false);
 
-        juce::MessageManager::callAsync ([this, alive, inventoryWritten, saved, destinationZip]
+        juce::MessageManager::callAsync ([this, alive, inventoryWritten, saved, savedTo, destinationZip]
         {
             if (alive.lock() == nullptr)
                 return;
@@ -6010,16 +6071,19 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
                 // advice line, so a successful export looked identical to
                 // nothing happening and the path to the file was never shown.
                 noteActivity (ActivityLevel::Stopped, "Diagnostics",
-                              "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".",
+                              "Saved a diagnostics file to " + savedTo.getFullPathName() + ".",
                               true);
             }
             else
             {
                 // A failed export must not look like a successful one right up
-                // until the user goes to attach it to an email.
+                // until the user goes to attach it to an email. There is no
+                // picker to "try somewhere else" with, so it says what was tried.
                 noteActivity (ActivityLevel::Failed, "Diagnostics",
                               "Couldn't write the diagnostics file to "
-                              + destinationZip.getFullPathName() + ". Try somewhere else.");
+                              + destinationZip.getParentDirectory().getFullPathName()
+                              + " or to your home folder. Check that there is free space on "
+                                "this computer's disk.");
             }
         });
     }).detach();
