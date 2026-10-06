@@ -69,6 +69,7 @@ add_library(mma_core STATIC
     Source/Core/CardRemovalNotice.cpp
     Source/Core/QuitGate.cpp
     Source/Core/FailedOpenRetry.cpp
+    Source/Core/BatteryRecordingNotice.cpp
     Source/Core/PreflightThroughputTest.cpp
     Source/Core/PortIdentity.cpp
     Source/Core/DeviceManager.cpp

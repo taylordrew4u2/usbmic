@@ -2,12 +2,16 @@
 
 #include <memory>
 
+#include "../Core/BatteryRecordingNotice.h"
+
 namespace mma {
 
 /// §6.6: a laptop that idles to sleep mid-take ends the take. While a take is
-/// recording this holds macOS power assertions that stop idle display sleep
-/// and idle system sleep (IOPMAssertionCreateWithName, released with
-/// IOPMAssertionRelease). Elsewhere it is a no-op.
+/// recording this holds macOS power assertions that stop idle display sleep,
+/// idle system sleep and -- on AC power, on most Macs -- the sleep a closed
+/// lid would otherwise cause (IOPMAssertionCreateWithName, released with
+/// IOPMAssertionRelease). On battery macOS sleeps on lid close regardless;
+/// BatteryRecordingNotice tells the performer. Elsewhere it is a no-op.
 ///
 /// setHeld() is idempotent and the destructor releases, so the owner can
 /// simply mirror "is a take recording?" into it from any tick and still never
@@ -29,6 +33,10 @@ public:
     /// The platform's backend: IOKit power assertions on macOS, a no-op
     /// (acquire() returns false) anywhere else.
     static std::unique_ptr<Backend> createPlatformBackend();
+
+    /// What is powering the computer now (IOPSGetProvidingPowerSourceType on
+    /// macOS). Unknown anywhere else, and whenever the OS gives no answer.
+    static PowerSource queryPowerSource();
 
     SleepInhibitor();
     explicit SleepInhibitor (std::unique_ptr<Backend> backend);

@@ -104,6 +104,14 @@ struct DeviceSpec
     /// false models a broken driver retaining property-listener clientData even
     /// after the application asks to remove it.
     bool allowPropertyListenerRemoval = true;
+
+    /// For an aggregate device: the UIDs of its sub-devices. Those present are
+    /// what kAudioAggregateDevicePropertyActiveSubDeviceList reports.
+    std::vector<std::string> subDeviceUids;
+
+    /// Reads of that list that still come back empty, as a just-created
+    /// aggregate's does while the HAL builds it. Each size query is one read.
+    int subDeviceActivationDelayReads = 0;
 };
 
 /// Clears every device, listener and IOProc. Call between scenarios.

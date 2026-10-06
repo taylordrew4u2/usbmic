@@ -5,6 +5,8 @@
 #if defined(__APPLE__)
  // Plain C API: no Objective-C needed, so this stays a .cpp file.
  #include <IOKit/pwr_mgt/IOPMLib.h>
+ #include <IOKit/ps/IOPowerSources.h>
+ #include <IOKit/ps/IOPSKeys.h>
  // NSProcessInfo through the runtime, the way SystemPermissions.cpp reaches
  // AVCaptureDevice, rather than turning this file into Objective-C++.
  #include <objc/message.h>
@@ -105,6 +107,18 @@ public:
         displayAssertion = display;
         systemAssertion = system;
 
+        // The two above are about IDLE sleep. Closing the lid is not idle, and
+        // a performer who shuts the laptop to get it out of the way mid-take
+        // ended the take. This one holds the system up on AC power, lid closed
+        // included on most Macs; on battery macOS sleeps on lid close whatever
+        // is asked, which is why the app warns then instead. Best effort, so a
+        // Mac that refuses it is still kept from idling as before.
+        IOPMAssertionID lid = kNoAssertion;
+        if (IOPMAssertionCreateWithName (kIOPMAssertionTypePreventSystemSleep,
+                                         kIOPMAssertionLevelOn, name, &lid)
+            == kIOReturnSuccess)
+            preventSleepAssertion = lid;
+
         // Best effort: a Mac that will not grant it still records, as before.
         appNapActivity = beginRecordingActivity();
         return true;
@@ -116,9 +130,12 @@ public:
             IOPMAssertionRelease (displayAssertion);
         if (systemAssertion != kNoAssertion)
             IOPMAssertionRelease (systemAssertion);
+        if (preventSleepAssertion != kNoAssertion)
+            IOPMAssertionRelease (preventSleepAssertion);
 
         displayAssertion = kNoAssertion;
         systemAssertion = kNoAssertion;
+        preventSleepAssertion = kNoAssertion;
 
         endRecordingActivity (appNapActivity);
         appNapActivity = nil;
@@ -127,6 +144,7 @@ public:
 private:
     IOPMAssertionID displayAssertion = kNoAssertion;
     IOPMAssertionID systemAssertion = kNoAssertion;
+    IOPMAssertionID preventSleepAssertion = kNoAssertion;
     id appNapActivity = nil;
 };
 
@@ -149,6 +167,31 @@ std::unique_ptr<SleepInhibitor::Backend> SleepInhibitor::createPlatformBackend()
     return std::make_unique<MacPowerAssertions>();
 #else
     return std::make_unique<NoSleepInhibition>();
+#endif
+}
+
+PowerSource SleepInhibitor::queryPowerSource()
+{
+#if defined(__APPLE__)
+    const CFTypeRef info = IOPSCopyPowerSourcesInfo();
+    if (info == nullptr)
+        return PowerSource::Unknown;
+
+    auto source = PowerSource::Unknown;
+
+    // Not owned: the string lives inside `info`, so it is read before release.
+    if (const CFStringRef type = IOPSGetProvidingPowerSourceType (info); type != nullptr)
+    {
+        if (CFStringCompare (type, CFSTR (kIOPMBatteryPowerKey), 0) == kCFCompareEqualTo)
+            source = PowerSource::Battery;
+        else if (CFStringCompare (type, CFSTR (kIOPMACPowerKey), 0) == kCFCompareEqualTo)
+            source = PowerSource::AC;
+    }
+
+    CFRelease (info);
+    return source;
+#else
+    return PowerSource::Unknown;
 #endif
 }
 

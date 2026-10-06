@@ -1258,6 +1258,21 @@ bool Application::publishAggregateDevice()
         return false;
     }
 
+    // publish() waits briefly for the new device to list its microphones, so
+    // the output choice that follows can see their headphone jacks. One that
+    // is slower still would leave monitoring on another output until some
+    // later device-list change; look once more shortly, through the same pass
+    // a hot-plug takes, so the combined device is picked up when it is ready.
+    if (! uids.empty() && ! combinedLayoutIsComplete (systemAggregate->getOutputLayout(), uids))
+    {
+        const auto alive = getAliveToken();
+        juce::Timer::callAfterDelay (750, [this, alive]
+        {
+            if (alive.lock() != nullptr)
+                onDeviceListChanged();
+        });
+    }
+
     publishedUids = std::move (uids);
     publishedMaster = std::move (master);
     publishedNameStd = name;
@@ -1456,8 +1471,16 @@ void Application::onDeviceListChanged()
         return;
 
     // A device-list change is also when a TCC answer tends to land. The
-    // restart a new grant needs is the one this function ends with anyway.
+    // restart a new grant needs is the one rescanDevices() ends with anyway.
     (void) refreshMicrophonePermission();
+
+    rescanDevices();
+}
+
+void Application::rescanDevices()
+{
+    if (audioBackend == nullptr)
+        return;
 
     auto inputDevices = audioBackend->enumerateInputDevices();
 
@@ -2579,7 +2602,7 @@ void Application::toggleRecording()
         // 2 s poll: a grant that has just landed reopens the streams here, so
         // the take starts on live inputs, and a fresh revoke blocks the gate.
         if (refreshMicrophonePermission())
-            onDeviceListChanged();
+            rescanDevices(); // the permission was just read; not again
 
         if (const auto blocked = getRecordDisabledReason(); blocked.isNotEmpty())
         {
@@ -4805,6 +4828,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
 
+    // The assertion above holds a plugged-in Mac up with its lid shut; on
+    // battery nothing can, so the performer hears it while the lid is open.
+    if (batteryRecordingNotice.tick (isRecording(), sinceLastCallSeconds, &SleepInhibitor::queryPowerSource))
+        noteActivity (ActivityLevel::Warning, "Recording", BatteryRecordingNotice::kMessage, true);
+
     // Podcast-ready copies finished since the last tick. Reported here, on
     // the message thread, because the worker that made them may not touch the
     // journal -- and up here, above every early return, so a warning holding
@@ -4822,8 +4850,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         // Access just arrived: re-enumerate (a Mac lists no microphones while
         // access is missing) and reopen the streams once. Mid-take the reopen
-        // is deferred to the stop, as for any other device change.
-        onDeviceListChanged();
+        // is deferred to the stop, as for any other device change. The
+        // permission was read a moment ago, so it is not read again.
+        rescanDevices();
     }
 
     // Record says "The microphones aren't open: ..." and tells the user what

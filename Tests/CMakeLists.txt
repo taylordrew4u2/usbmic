@@ -53,6 +53,7 @@ add_executable(mma_core_tests
     test_QuitGate.cpp
     test_WriteSafetyActions.cpp
     test_FailedOpenRetry.cpp
+    test_BatteryRecordingNotice.cpp
     test_UpdateCheck.cpp
 )
 
