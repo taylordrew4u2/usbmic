@@ -33,6 +33,11 @@ public:
     /// identical mics can see which strip is which person.
     void setHighlighted (bool shouldHighlight);
 
+    /// While the window cannot be seen (minimised, covered, another Space) the
+    /// level keeps being followed -- clip latch, ballistics, the spoken value
+    /// -- but nothing is repainted for nobody. The owner repaints on resume.
+    void setRepaintPaused (bool paused) noexcept { repaintPaused = paused; }
+
     /// Fired on click when there is no clip latch to acknowledge -- the rename
     /// affordance. Clearing a clip stays the first click's job (§9.1).
     std::function<void()> onNameClicked;
@@ -72,6 +77,7 @@ private:
     juce::String micName, deviceName;
     bool noSignal = true;
     bool highlighted = false;
+    bool repaintPaused = false;
 
     float currentLevelDb = Metering::kMinDb;
     float currentPeakDb = Metering::kMinDb;

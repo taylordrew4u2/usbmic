@@ -56,7 +56,8 @@ void ChannelMeterComponent::timerCallback()
         updateAccessibilityText();
     }
 
-    repaint();
+    if (! repaintPaused)
+        repaint();
 }
 
 void ChannelMeterComponent::mouseUp (const juce::MouseEvent&)
