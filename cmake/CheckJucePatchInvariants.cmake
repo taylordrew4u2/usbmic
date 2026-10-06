@@ -36,7 +36,12 @@ set(required_added_lines
     # MAC-CAM-4: didStart reports the movie's first-frame estimate on the
     # host clock, not just its own arrival.
     "+                const CMTime recorded = [output recordedDuration];"
-    "+            withOwner (self, [&] (Pimpl& owner) { owner.recordingStarted (file, firstFrameMs); });")
+    "+            withOwner (self, [&] (Pimpl& owner) { owner.recordingStarted (file, firstFrameMs); });"
+    # MAC-CAM-5: the preview view is allocated (+1) and setView retains it, so
+    # the viewer must drop the allocation reference or every closed camera
+    # leaks its NSView, preview layer and capture session.
+    "+        [view release];"
+    "+       #if ! __has_feature (objc_arc)")
 
 set(failed FALSE)
 foreach (line IN LISTS required_added_lines)
