@@ -114,7 +114,13 @@ public:
     /// A macOS privacy refusal ("Don't Allow" on files on a removable volume,
     /// Documents, Desktop) arrives as EPERM/EACCES and used to be reported as
     /// a card fault -- someone re-seated a card that was fine.
-    static std::string writeFailureReason (int errnoValue);
+    ///
+    /// `kind` is the drive's format where it is known. A read-only refusal on
+    /// an NTFS drive is not a locked card: macOS mounts Windows-formatted disks
+    /// read-only, and "slide its lock switch off" sent people hunting for a
+    /// switch an external SSD does not have.
+    static std::string writeFailureReason (int errnoValue,
+                                           FilesystemKind kind = FilesystemKind::Unknown);
 };
 
 } // namespace mma

@@ -13,6 +13,8 @@
  #include <windows.h>
 #else
  #include <fcntl.h>
+ #include <sys/param.h>
+ #include <sys/stat.h>
  #include <unistd.h>
 #endif
 
@@ -75,10 +77,21 @@ bool SessionWriter::open (const std::string& basePath, double sampleRateIn, int 
     return openNewFile (0);
 }
 
+void SessionWriter::closeSyncDescriptor() noexcept
+{
+#if ! defined (_WIN32)
+    if (syncDescriptor >= 0)
+        ::close (syncDescriptor);
+#endif
+    syncDescriptor = -1;
+}
+
 bool SessionWriter::openNewFile (int index)
 {
     if (file.is_open())
         file.close();
+
+    closeSyncDescriptor();
 
     currentFilePath = makePathForSplit (index);
     // UTF-8 on the way in; see Utf8Path.h for what a narrow open does on Windows.
@@ -132,6 +145,15 @@ bool SessionWriter::openNewFile (int index)
 
         return false;
     }
+
+#if ! defined (_WIN32)
+    // Opened now, while the path is certainly this file's, and kept: see the
+    // member's comment. CLOEXEC because this process starts ffmpeg, which has
+    // no business inheriting a handle on a take that is still being written.
+    // A refusal here is not fatal -- the sync falls back to the path, which is
+    // what it always did.
+    syncDescriptor = ::open (currentFilePath.c_str(), O_RDWR | O_CLOEXEC);
+#endif
 
     return true;
 }
@@ -408,7 +430,12 @@ bool SessionWriter::syncCurrentFileToStorage()
     CloseHandle (handle);
     return ok;
 #else
-    const int descriptor = ::open (currentFilePath.c_str(), O_RDWR);
+    // The descriptor held since the file was created, so the sync reaches this
+    // file even when its folder has since been renamed or moved. The path is
+    // only a fallback for a descriptor that could not be opened.
+    const bool ownsDescriptor = syncDescriptor < 0;
+    const int descriptor = ownsDescriptor ? ::open (currentFilePath.c_str(), O_RDWR | O_CLOEXEC)
+                                          : syncDescriptor;
     if (descriptor < 0)
         return false;
 
@@ -420,8 +447,44 @@ bool SessionWriter::syncCurrentFileToStorage()
  #else
     ok = ::fsync (descriptor) == 0;
  #endif
-    ::close (descriptor);
+    if (ownsDescriptor)
+        ::close (descriptor);
     return ok;
+#endif
+}
+
+std::string SessionWriter::resolveCurrentFilePath() const
+{
+#if defined (__APPLE__) && defined (F_GETPATH)
+    if (syncDescriptor < 0)
+        return {};
+
+    char buffer[MAXPATHLEN] = {};
+    if (::fcntl (syncDescriptor, F_GETPATH, buffer) != 0)
+        return {};
+
+    return std::string (buffer);
+#elif defined (__linux__)
+    if (syncDescriptor < 0)
+        return {};
+
+    const auto link = "/proc/self/fd/" + std::to_string (syncDescriptor);
+    char buffer[4096] = {};
+    const auto length = ::readlink (link.c_str(), buffer, sizeof (buffer) - 1);
+    if (length <= 0)
+        return {};
+
+    std::string path (buffer, static_cast<size_t> (length));
+
+    // The kernel's way of saying the file has no name any more.
+    const std::string deleted = " (deleted)";
+    if (path.size() >= deleted.size()
+        && path.compare (path.size() - deleted.size(), deleted.size(), deleted) == 0)
+        return {};
+
+    return path;
+#else
+    return {};
 #endif
 }
 
@@ -439,7 +502,10 @@ bool SessionWriter::tick (double dtSeconds)
 bool SessionWriter::close()
 {
     if (! file.is_open())
+    {
+        closeSyncDescriptor();
         return false;
+    }
 
     // Taken before close(), because closing clears the stream state that says
     // whether the final header actually landed. The pad goes first so the
@@ -450,9 +516,12 @@ bool SessionWriter::close()
     file.close();
 
     if (headerLanded)
+    {
+        closeSyncDescriptor();
         // file.good() is false after a successful close on some
         // implementations, so the close itself is judged by fail(), not good().
         return ! file.fail();
+    }
 
     // The take's own stream could not be patched, and on a full card that is
     // the normal outcome rather than a rare one: seeking to the header first
@@ -467,18 +536,37 @@ bool SessionWriter::close()
     // about 2.4 seconds each and both declared themselves empty.
     //
     // A fresh handle has no failed state and nothing pending, so it can do
-    // what this stream no longer can. Done after close() so there is only ever
-    // one handle on the file and the size on disk is final.
-    return patchHeaderThroughFreshHandle();
+    // what this stream no longer can. Done after close() so the size on disk
+    // is final.
+    const bool patched = patchHeaderThroughFreshHandle();
+    closeSyncDescriptor();
+    return patched;
 }
 
 bool SessionWriter::patchHeaderThroughFreshHandle()
 {
-    std::error_code ec;
-    const auto onDisk = std::filesystem::file_size (pathFromUtf8 (currentFilePath), ec);
+    uint64_t onDisk = 0;
 
-    if (ec)
-        return false;
+#if ! defined (_WIN32)
+    // Through the held descriptor when there is one, for the same reason the
+    // sync uses it: the take's folder may have been renamed since it began.
+    if (syncDescriptor >= 0)
+    {
+        struct stat info {};
+        if (::fstat (syncDescriptor, &info) != 0)
+            return false;
+
+        onDisk = static_cast<uint64_t> (info.st_size);
+    }
+    else
+#endif
+    {
+        std::error_code ec;
+        onDisk = static_cast<uint64_t> (std::filesystem::file_size (pathFromUtf8 (currentFilePath), ec));
+
+        if (ec)
+            return false;
+    }
 
     // Where the audio starts: the data size field, then the four bytes of the
     // field itself.
@@ -513,6 +601,22 @@ bool SessionWriter::patchHeaderThroughFreshHandle()
     const auto describedEnd = dataStart + wholeFrameBytes;
     const auto riffSize = static_cast<uint32_t> (
         std::min<uint64_t> (describedEnd >= 8 ? describedEnd - 8 : 0, 0xFFFFFFFFull));
+
+#if ! defined (_WIN32)
+    if (syncDescriptor >= 0)
+    {
+        const auto putU32 = [this] (std::streampos at, uint32_t v)
+        {
+            const unsigned char b[4] = { static_cast<unsigned char> (v & 0xFF),
+                                         static_cast<unsigned char> ((v >> 8) & 0xFF),
+                                         static_cast<unsigned char> ((v >> 16) & 0xFF),
+                                         static_cast<unsigned char> ((v >> 24) & 0xFF) };
+            return ::pwrite (syncDescriptor, b, 4, static_cast<off_t> (at)) == 4;
+        };
+
+        return putU32 (riffSizeFieldPos, riffSize) && putU32 (dataSizeFieldPos, dataSize);
+    }
+#endif
 
     std::fstream patch (pathFromUtf8 (currentFilePath), std::ios::in | std::ios::out | std::ios::binary);
 

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <vector>
 #include <cstdlib>
+#include <filesystem>
 
 using namespace mma;
 
@@ -367,3 +368,42 @@ TEST_CASE (SessionWriter_AnEvenDataChunkIsNotPadded)
     f.close();
     std::remove (writer.getCurrentFilePath().c_str());
 }
+
+#if ! defined (_WIN32)
+// Renaming the take folder mid-take (in Finder, say, to the guest's name) must
+// not end the recording. The 5-second header sync reopened the file by its
+// path, which no longer existed, so the sync "failed", tick() returned false,
+// and the take was stopped as though the card had been pulled.
+TEST_CASE (SessionWriter_RenamingTheTakeFolderMidTakeDoesNotFailTheWriter)
+{
+    namespace fs = std::filesystem;
+    const fs::path before = tempBasePath ("mma_test_rename_before");
+    const fs::path after = tempBasePath ("mma_test_rename_after");
+    std::error_code ec;
+    fs::remove_all (before, ec);
+    fs::remove_all (after, ec);
+    REQUIRE (fs::create_directory (before));
+
+    SessionWriter writer;
+    REQUIRE (writer.open ((before / "01_Guest").string(), 48000.0, 1, 16, "2026-10-06T19:30:00Z"));
+
+    std::vector<float> frames (1000, 0.2f);
+    REQUIRE (writer.writeInterleaved (frames.data(), frames.size()));
+    REQUIRE (writer.tick (5.5));
+
+    fs::rename (before, after, ec);
+    REQUIRE (! ec);
+
+    REQUIRE (writer.writeInterleaved (frames.data(), frames.size()));
+    REQUIRE (writer.tick (5.5)); // the header sync still lands
+    REQUIRE (writer.close());    // and so does the final one
+
+    std::ifstream f ((after / "01_Guest.wav").string(), std::ios::binary);
+    REQUIRE (f.is_open());
+    const std::streampos dataSizePos = 12 + (8 + 16) + (8 + 602) + 4;
+    REQUIRE (readU32LE (f, dataSizePos) == 4000u); // 2000 frames * 2 bytes
+    f.close();
+
+    fs::remove_all (after, ec);
+}
+#endif

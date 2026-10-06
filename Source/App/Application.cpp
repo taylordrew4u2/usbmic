@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
+#include "../Platform/VolumeCapacity.h"
 #include "../Core/PreflightScratchFile.h"
 #if JUCE_MAC
  #include <sys/mount.h>
@@ -2536,7 +2537,12 @@ std::vector<Application::StorageVolume> Application::scanStorageVolumes()
 
         seen.add (full);
 
-        const auto freeBytes = root.getBytesFreeOnVolume();
+        // The space a recording can claim: on APFS that includes purgeable
+        // space, which getBytesFreeOnVolume leaves out.
+        const auto available = availableBytesForRecording (full.toStdString());
+        const auto freeBytes = available.has_value()
+            ? static_cast<juce::int64> (std::min<uint64_t> (*available, static_cast<uint64_t> (INT64_MAX)))
+            : root.getBytesFreeOnVolume();
         const bool removable = forceRemovable || root.isOnRemovableDrive();
 
         auto name = root.getVolumeLabel();
@@ -2705,7 +2711,16 @@ void Application::toggleRecording()
             mirrorPolicy.reset();
             {
                 const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-                mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
+
+                // Purgeable space counted: on a Mac with iCloud "Optimize Mac
+                // storage" on, the plain free figure can be a small fraction
+                // of what a write can actually claim, and the backup copy was
+                // refused for want of room the disk had.
+                const auto homeFree = availableBytesForRecording (home.getFullPathName().toStdString());
+                const auto freeBytes = homeFree.has_value()
+                    ? static_cast<int64_t> (std::min<uint64_t> (*homeFree, static_cast<uint64_t> (INT64_MAX)))
+                    : static_cast<int64_t> (home.getBytesFreeOnVolume());
+                mirrorPolicy.evaluateAtArm (freeBytes, projectedSessionBytes());
             }
 
             // §6: this is what actually opens the stem files and starts the
@@ -2913,6 +2928,10 @@ void Application::toggleRecording()
         if (capture != nullptr)
         {
             capture->stopRecording();
+
+            // Where the files were finished, which is where session.json, the
+            // activity log and the saved-take card must look.
+            followRenamedTakeFolder();
 
             // Bounded inside the coordinator; said here, because a Stop that
             // could not finish the files must not read like a clean one.
@@ -3376,6 +3395,12 @@ std::vector<Application::SavedFile> Application::listSessionFiles (const juce::S
     for (const auto& entry : juce::RangedDirectoryIterator (dir, false, "*", juce::File::findFiles))
     {
         const auto file = entry.getFile();
+
+        // Finder's .DS_Store and an ExFAT card's "._MIX.wav" twins are not
+        // files of this take, and the card would list and count them as such.
+        if (isSystemClutterFile (file.getFileName().toStdString()))
+            continue;
+
         files.push_back ({ file.getFileName(), file.getSize() });
     }
 
@@ -3871,9 +3896,18 @@ int Application::probeWriteErrno (const juce::File& folder)
 std::string Application::filesystemTypeName (const juce::File& folder)
 {
    #if JUCE_MAC
-    struct statfs info {};
-    if (::statfs (folder.getFullPathName().toRawUTF8(), &info) == 0)
-        return info.f_fstypename;
+    // The nearest folder that exists. On a read-only drive the RECORDINGS
+    // folder could not be made, so asking about it failed and the format came
+    // back unknown -- exactly when it decides what the user is told to do.
+    for (auto candidate = folder;; candidate = candidate.getParentDirectory())
+    {
+        struct statfs info {};
+        if (::statfs (candidate.getFullPathName().toRawUTF8(), &info) == 0)
+            return info.f_fstypename;
+
+        if (errno != ENOENT || candidate.getParentDirectory() == candidate)
+            break;
+    }
    #else
     juce::ignoreUnused (folder);
    #endif
@@ -4018,17 +4052,21 @@ Application::PreflightBackgroundResult Application::runPreflight (
     result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
                                                 sampleRate, bytesPerSample);
 
+    // The format, read here on the worker: a statfs on a card that has stopped
+    // answering must not stall the message thread. Read before the refusal is
+    // worded, because a read-only NTFS drive needs different advice from a
+    // locked card.
+    const auto filesystemKind =
+        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder));
+
     if (couldNotWrite)
     {
         result.passed = false;
         result.couldNotWrite = true;
-        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno);
+        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno, filesystemKind);
     }
 
-    // The format, read here on the worker: a statfs on a card that has stopped
-    // answering must not stall the message thread.
-    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (
-        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder)));
+    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (filesystemKind);
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
@@ -4631,6 +4669,23 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         writeActivityLog (juce::File (currentMirrorFolder));
 }
 
+void Application::followRenamedTakeFolder()
+{
+    if (capture == nullptr || currentSessionFolder.isEmpty())
+        return;
+
+    const auto live = juce::String (capture->getLiveSessionFolder());
+
+    if (live.isEmpty() || live == currentSessionFolder)
+        return;
+
+    currentSessionFolder = live;
+
+    noteActivity (ActivityLevel::Warning, "Recording",
+                  "This take's folder was renamed or moved. It is still recording, into "
+                  + live + ".");
+}
+
 bool Application::isOnCard (const juce::File& file) const
 {
     // Path arithmetic only: asking the filesystem would be the very call that
@@ -4899,6 +4954,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // a full disk, a pulled card): mirror the take state into the sleep
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
+
+    // Before anything reads the take's files: a folder renamed in Finder
+    // mid-take is followed here, well inside the growth check's six seconds.
+    if (isRecording())
+        followRenamedTakeFolder();
 
     // The assertion above holds a plugged-in Mac up with its lid shut; on
     // battery nothing can, so the performer hears it while the lid is open.
@@ -7019,6 +7079,12 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         {
             if (wasCancelled())
                 return result;
+
+            // "._01_Alice.wav" on an ExFAT card is macOS's AppleDouble twin of
+            // the stem, not a recording: it has no RIFF header, so it came back
+            // as an "empty file left alone" -- one phantom lost track per stem.
+            if (isSystemClutterFile (entry.getFile().getFileName().toStdString()))
+                continue;
 
             session.files.push_back (SessionRecovery::repairWavFile (
                 entry.getFile().getFullPathName().toStdString()));

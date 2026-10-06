@@ -102,6 +102,7 @@ add_library(mma_core STATIC
     Source/Core/LogSizeBudget.cpp
     Source/Platform/SystemPermissions.cpp
     Source/Platform/SleepInhibitor.cpp
+    Source/Platform/VolumeCapacity.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )

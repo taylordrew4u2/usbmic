@@ -13,6 +13,19 @@ struct TakeFile
     int64_t sizeBytes = 0;
 };
 
+/// True for a file the operating system, not this app, put in a take folder:
+/// any name starting with '.'.
+///
+/// macOS leaves these beside a take as a matter of course. Finder writes
+/// .DS_Store into any folder it shows, and on an ExFAT or FAT32 card every
+/// file that carries an extended attribute gets an AppleDouble twin -- so
+/// "MIX.wav" arrives with "._MIX.wav", a 4 KB file that ends in .wav and is
+/// not audio. Counted as part of the take they were listed among its files on
+/// the saved-take card, padded a headers-only take past the "nothing written"
+/// bar, and turned up in an interrupted take's recovery as extra empty tracks.
+/// The app never writes a dot-file into a take folder itself.
+bool isSystemClutterFile (const std::string& fileName);
+
 /// True when a finished take produced files but no audio worth the name.
 ///
 /// A WAV header alone is 44 bytes plus the BWF chunk, so anything under a

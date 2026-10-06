@@ -103,8 +103,13 @@ PreflightThroughputTest::filesystemKindFromTypeName (const std::string& typeName
     return FilesystemKind::Other;
 }
 
-std::string PreflightThroughputTest::writeFailureReason (int errnoValue)
+std::string PreflightThroughputTest::writeFailureReason (int errnoValue, FilesystemKind kind)
 {
+    if (errnoValue == EROFS && kind == FilesystemKind::NTFS)
+        return "This drive is formatted for Windows (NTFS), which macOS can read but not write, so "
+               "takes can't be saved here. Choose a different place to save, or reformat the drive "
+               "as ExFAT in Disk Utility (this erases it).";
+
     if (errnoValue == EPERM || errnoValue == EACCES)
         return "SobStage isn't allowed to save here. If macOS asked about files on a removable volume "
                "or in this folder, allow it in System Settings > Privacy & Security > Files and Folders "
