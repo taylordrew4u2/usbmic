@@ -315,12 +315,13 @@ std::string ShowTemplate::fileNameFor (const std::string& name)
     if (! stem.empty())
         return stem + ".json";
 
-    // §6.2's sanitizing keeps ASCII letters and digits only, so a name written
-    // wholly in another script -- "日本語ライブ", "Ζωντανά" -- leaves nothing,
-    // and was refused as having "no letter or number in it". The file name is
-    // only where the show is kept; it is listed, loaded and deleted by the
-    // name stored inside, so such a name gets a plain file of its own
-    // (fileNameForSaving adds "-2"... when that one is taken).
+    // §6.2's sanitizing now keeps letters in every script, so "日本語ライブ"
+    // gets a file of that name. What can still leave nothing is a name made
+    // only of characters no file name may carry; and shows saved by earlier
+    // versions, which kept ASCII only, are already in "Show.json", "Show-2.json"
+    // ... The file name is only where the show is kept -- it is listed, loaded
+    // and deleted by the name stored inside -- so such a name gets a plain file
+    // of its own (fileNameForSaving adds "-2"... when that one is taken).
     const bool hasNonAscii = std::any_of (clean.begin(), clean.end(),
                                           [] (char c) { return static_cast<unsigned char> (c) >= 0x80; });
 
@@ -329,16 +330,12 @@ std::string ShowTemplate::fileNameFor (const std::string& name)
 
 namespace {
 
-std::string lowerAscii (std::string s)
-{
-    std::transform (s.begin(), s.end(), s.begin(),
-                    [] (char c) { return static_cast<char> (std::tolower (static_cast<unsigned char> (c))); });
-    return s;
-}
-
 bool sameFileName (const std::string& a, const std::string& b)
 {
-    return lowerAscii (a) == lowerAscii (b);
+    // Beyond ASCII too, now that file names keep other scripts: "Ü.json" and
+    // "ü.json" are one file on a Mac, and saving one must not replace the other.
+    return SessionFolderNaming::foldCaseForComparison (a)
+        == SessionFolderNaming::foldCaseForComparison (b);
 }
 
 std::string stemOf (const std::string& fileName)

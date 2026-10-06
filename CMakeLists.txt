@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.22 LANGUAGES CXX)
+project(SobStage VERSION 1.13.23 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -99,8 +99,10 @@ add_library(mma_core STATIC
     Source/Core/LoudnessMeter.cpp
     Source/Core/StreamingTargets.cpp
     Source/Core/UpdateCheck.cpp
+    Source/Core/LogSizeBudget.cpp
     Source/Platform/SystemPermissions.cpp
     Source/Platform/SleepInhibitor.cpp
+    Source/Platform/VolumeCapacity.cpp
     Source/Platform/AlsaInputPolicy.cpp
     Source/Platform/AlsaBackend.cpp
 )
@@ -272,6 +274,14 @@ if (MMA_BUILD_APP)
         target_compile_definitions(SobStage PRIVATE MMA_NATIVE_MOVIE_COMBINER=1)
         target_link_libraries(SobStage PRIVATE
             "-framework AVFoundation" "-framework CoreMedia" "-framework Foundation")
+
+        # Whether the window can be seen at all (covered, another Space), so
+        # the meters stop repainting for nobody. Elsewhere the header's inline
+        # stub reports "visible".
+        target_sources(SobStage PRIVATE Source/Platform/WindowOcclusion.mm)
+        set_source_files_properties(Source/Platform/WindowOcclusion.mm
+                                    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(SobStage PRIVATE "-framework AppKit")
 
         add_executable(mac_movie_combiner_check
             Tools/mac_movie_combiner_check.mm

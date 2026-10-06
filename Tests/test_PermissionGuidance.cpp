@@ -191,3 +191,36 @@ TEST_CASE (PermissionRefresh_PlatformWithoutConsentNeverRestarts)
     REQUIRE (r.changed);
     REQUIRE_FALSE (r.restartCapture);
 }
+
+TEST_CASE (PermissionGuidance_DeniedMessagesDoNotAskForARelaunch)
+{
+    // The 2 s poll picks a grant up live; "reopen the app" sent people to quit
+    // for nothing.
+    for (bool restricted : { false, true })
+    {
+        const auto mic = PermissionGuidance::microphoneDeniedMessage (restricted);
+        const auto cam = PermissionGuidance::cameraDeniedMessage (restricted);
+        REQUIRE (mic.find ("reopen") == std::string::npos);
+        REQUIRE (cam.find ("reopen") == std::string::npos);
+        REQUIRE (mic.find ("by itself") != std::string::npos);
+    }
+}
+
+TEST_CASE (PermissionGuidance_RestrictedMicrophoneNamesTheAdministrator)
+{
+    // A managed Mac's user cannot flip the switch; send them to whoever can.
+    // Only the wording changes: it still blocks recording.
+    const auto restricted = PermissionGuidance::evaluate (PermissionState::Denied,
+                                                          PermissionState::Granted, false, true);
+    REQUIRE (restricted.size() == 1);
+    REQUIRE (restricted[0].blocksRecording);
+    REQUIRE (restricted[0].message.find ("administrator") != std::string::npos);
+
+    const auto denied = PermissionGuidance::evaluate (PermissionState::Denied,
+                                                      PermissionState::Granted, false, false);
+    REQUIRE (denied.size() == 1);
+    REQUIRE (denied[0].message.find ("administrator") == std::string::npos);
+
+    REQUIRE (PermissionGuidance::cameraDeniedMessage (true).find ("administrator") != std::string::npos);
+    REQUIRE (PermissionGuidance::cameraDeniedMessage (false).find ("administrator") == std::string::npos);
+}

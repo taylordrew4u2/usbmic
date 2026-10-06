@@ -14,12 +14,18 @@ public:
 
     void setMetering (Metering* meteringSource) { metering = meteringSource; }
 
+    /// See ChannelMeterComponent::setRepaintPaused.
+    void setRepaintPaused (bool paused) noexcept { repaintPaused = paused; }
+
     void paint (juce::Graphics& g) override;
 
 private:
     void timerCallback() override;
+    void updateAccessibilityText();
 
     Metering* metering = nullptr;
+    int lastAccessibleLevelDb = 1;
+    bool repaintPaused = false;
     float currentLevelDb = Metering::kMinDb;
     float currentPeakDb = Metering::kMinDb;
     bool currentClip = false;

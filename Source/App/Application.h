@@ -980,6 +980,9 @@ private:
     // revoked while running), the destination answer whenever the save
     // location changes.
     PermissionState microphonePermission = PermissionState::NotApplicable;
+    // macOS Restricted (an administrator's policy) rather than the user's own
+    // refusal. Read alongside microphonePermission; only the wording differs.
+    bool microphoneRestricted = false;
     PermissionState destinationWritePermission = PermissionState::NotApplicable;
     /// Latched so the journal entry is written once, not on every poll.
     bool journalledPermissionProblems = false;
@@ -1167,6 +1170,13 @@ private:
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
+
+    /// Points currentSessionFolder at wherever the take's open files now are,
+    /// when the folder was renamed or moved in Finder mid-take. Without it the
+    /// file-growth check watched a folder that no longer existed ("the files
+    /// have stopped growing") and session.json and activity.log went to the
+    /// old path at Stop and failed.
+    void followRenamedTakeFolder();
     /// The figures session.json reports, read from the live take now.
     TakeFigures liveTakeFigures (bool sessionHasStopped) const;
     /// Writes a take's text file with a deadline, skipping the card once it

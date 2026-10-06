@@ -8,7 +8,7 @@ Downloads, checksum verification, per-platform installation, what each platform 
 [`CHANGELOG.md`](../CHANGELOG.md) lists what changed in each one and what is still
 missing.
 
-The source currently describes the **v1.13.22 release candidate**. It is not a
+The source currently describes the **v1.13.23 release candidate**. It is not a
 general-release claim: signing, artifact inspection and physical-hardware gates
 are tracked in [`RELEASE_CHECKLIST.md`](../RELEASE_CHECKLIST.md). For help, see
 [`SUPPORT.md`](../SUPPORT.md); data handling is documented in
@@ -20,7 +20,8 @@ Builds for macOS, Windows and Linux are produced by the
 - **macOS** — `SobStage-macOS.dmg`, a normal drag-to-install disk
   image: mount it and drag the app onto the Applications alias beside it.
   `SobStage-macOS.zip` carries the same `.app` for anyone who would
-  rather not mount an image.
+  rather not mount an image. Needs macOS 13 (Ventura) or later; one universal
+  app runs natively on Apple silicon and Intel Macs.
 - **Windows and Linux** — `SobStage-Windows.zip` and
   `-Linux.zip`.
 - **Tagged releases** — all of the above are attached to the
@@ -93,15 +94,15 @@ Step-by-step setup is in [Installing](#installing) below.
 
 ## What to expect on your platform
 
-This is the **v1.13.22 release candidate**. The recording engine is covered by
-752 unit tests plus capture and platform harnesses. What differs by platform is
+This is the **v1.13.23 release candidate**. The recording engine is covered by
+771 unit tests plus capture and platform harnesses. What differs by platform is
 how much of the *device* layer has been run against a live audio system and
 physical hardware.
 
 | Platform | Status | What this means for you |
 |---|---|---|
 | **Linux** | External-only policy and real ALSA API exercised; physical hardware unverified | The production build lists kernel ALSA cards only when sysfs proves they are removable. A separately compiled test binary admits file-backed virtual microphones so capture and hot-plug can run through ALSA in CI. Multi-input hardware, driver timing and real USB devices still require bench validation. Linux is an early-use build, not a v1 production target. |
-| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.22 candidate. |
+| **macOS** | App launched on hardware; CoreAudio simulated; completed physical take outstanding | A PUPGSIS T12S was detected on a real Mac at 44.1 kHz and exposed the fixed-rate negotiation failure. An input HAL open now stops holding the UI after five seconds and quarantines late cleanup so a wedged USB interface cannot freeze launch or quit; the simulator also covers buffer layouts, rate ranges, hog-mode refusal, hot-plug and the external-only input policy. A successful physical-microphone take, latency loopback and hostile-event matrix are still owed. An older v1.11.0 build opened a USB HDMI capture device and AVFoundation logged a first-frame enqueue, but no visible non-black preview or completed camera recording has been verified for the v1.13.23 candidate. |
 | **Windows** | WASAPI and external-only policy simulated; physical hardware unverified | Enumeration follows each endpoint into the Plug and Play device tree, requires an eligible wired branch plus positive removable capability and removal-policy evidence on the same node, and fails closed otherwise. Fixed/internal USB, known phone, Bluetooth, software and unknown sources are omitted in simulation. Exclusive-mode format negotiation, 16/24/32-bit conversion and the worker-thread handshake execute in CI. A real microphone, output device, driver timing and camera capture have not completed the hardware matrix. |
 
 The automated environment can exercise ALSA through virtual PCMs and the other
@@ -174,6 +175,15 @@ Applications, point the command at wherever it actually is.
 This workaround is for an ad-hoc signed build, which is what every release so
 far is. Once the workflow has Developer ID credentials it signs, notarizes and
 staples the app and this step goes away.
+
+**macOS asks for microphone or camera permission again after an update.**
+
+Expected with the current ad-hoc signed builds: macOS ties the permission to
+the exact signed copy of the app, and every update is a new one. Click
+**Allow** again. If no prompt appears and SobStage says it isn't allowed, open
+System Settings → Privacy & Security → Microphone (or Camera) and switch
+SobStage off and back on; SobStage picks up the change by itself. A Developer
+ID signed build keeps the permission across updates.
 
 ### Windows
 
@@ -251,5 +261,10 @@ staples the app and this step goes away.
 ## Uninstalling
 
 Delete the app. The only things it leaves behind are your recordings
-(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above —
-remove those too if you want nothing left.
+(`RECORDINGS`, `RECORDINGS-MIRROR`) and the log-and-settings folder above (which
+also holds your saved shows) — remove those too if you want nothing left.
+
+On a Mac, SobStage removes its combined **SobStage** input device when it
+quits and on its next launch. If it was force-quit or the Mac lost power and
+you then deleted the app, that device can still be listed: remove it in
+**Audio MIDI Setup** (select it and press the minus button).

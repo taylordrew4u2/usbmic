@@ -26,6 +26,11 @@ bool isMetadata (const std::string& name)
 
 } // namespace
 
+bool isSystemClutterFile (const std::string& fileName)
+{
+    return ! fileName.empty() && fileName.front() == '.';
+}
+
 namespace {
 
 /// -90 dBFS. Chosen well below any real microphone path's noise floor: a 24-bit
@@ -56,7 +61,7 @@ TakeAudioVerdict judgeTakeAudio (const std::vector<TakeFile>& files, float peakA
 
     for (const auto& f : files)
     {
-        if (isMetadata (f.name))
+        if (isMetadata (f.name) || isSystemClutterFile (f.name))
             continue;
 
         audioBytes += f.sizeBytes;
@@ -87,7 +92,7 @@ bool takeHoldsNoAudio (const std::vector<TakeFile>& files)
 
     for (const auto& f : files)
     {
-        if (isMetadata (f.name))
+        if (isMetadata (f.name) || isSystemClutterFile (f.name))
             continue;
 
         audioBytes += f.sizeBytes;

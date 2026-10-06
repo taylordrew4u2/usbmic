@@ -119,8 +119,13 @@ public:
     /// never recovers on its own. With a probe set, no camera opens until it
     /// reads Granted or NotApplicable: "not yet asked" calls `request` once,
     /// and the cameras open on the first poll after the user clicks Allow.
+    ///
+    /// `restricted`, when set, says whether a Denied answer is really macOS's
+    /// Restricted (an administrator's policy). It changes only the wording of
+    /// the problem line; the cameras are held back exactly as for Denied.
     void setCameraPermission (std::function<PermissionState()> probe,
-                              std::function<void()> request);
+                              std::function<void()> request,
+                              std::function<bool()> restricted = nullptr);
 
     /// The user switched one camera on or off in the Cameras panel. Switching
     /// a camera on is the explicit retry the crash-loop guard waits for: it is
@@ -311,6 +316,7 @@ private:
     // macOS camera privacy (setCameraPermission).
     std::function<PermissionState()> cameraPermissionProbe;
     std::function<void()> requestCameraPermission;
+    std::function<bool()> cameraAccessRestrictedProbe;
     bool cameraPermissionRequested = false;
     bool waitingForCameraPermission = false;
     std::map<std::string, uint64_t> viewerRevisions;

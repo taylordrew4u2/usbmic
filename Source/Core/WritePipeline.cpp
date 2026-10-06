@@ -69,6 +69,13 @@ bool WritePipeline::start (const std::string& sessionFolder,
     numChannels = static_cast<int> (channels.size());
     sampleRate = rate;
 
+    {
+        const std::lock_guard<std::mutex> lock (liveFolderLock);
+        liveSessionFolder = sessionFolder;
+    }
+    openedSessionFolder = sessionFolder;
+    secondsSinceFolderCheck = 0.0;
+
     // §6.3: 30 seconds at the current channel count and rate, minimum 64 MB.
     ring.reset (RingBuffer::minimumCapacitySamples (rate, numChannels));
 
@@ -573,6 +580,15 @@ void WritePipeline::drainOnce (bool finalFlush)
                 mirrorWriteFailed.store (true, std::memory_order_release);
         }
 
+        // About once a second of audio: has the take's folder moved? Cheap
+        // (one fcntl), and on the writer thread, which owns the descriptor.
+        secondsSinceFolderCheck += elapsed;
+        if (secondsSinceFolderCheck >= 1.0)
+        {
+            secondsSinceFolderCheck = 0.0;
+            refreshLiveSessionFolder();
+        }
+
         // §6.3: a mirror that has failed stops for the rest of the take, the
         // same way one that ran out of room does. The card write is untouched:
         // the mirror must never take the recording down with it.
@@ -587,6 +603,37 @@ void WritePipeline::drainOnce (bool finalFlush)
         if (! finalFlush && frames < framesCapacity)
             return;
     }
+}
+
+void WritePipeline::refreshLiveSessionFolder()
+{
+    if (mixWriter == nullptr)
+        return;
+
+    const auto filePath = mixWriter->resolveCurrentFilePath();
+    if (filePath.empty())
+        return;
+
+    const auto resolved = pathFromUtf8 (filePath).parent_path();
+    if (resolved.empty())
+        return;
+
+    // The system answers with the resolved path, so a folder reached through
+    // a symlink (/tmp on a Mac is /private/tmp) would read as moved when it
+    // has not. Still the same folder: keep the spelling the take was given.
+    std::error_code ec;
+    const bool unmoved = std::filesystem::equivalent (pathFromUtf8 (openedSessionFolder), resolved, ec)
+                      && ! ec;
+    const auto folder = unmoved ? openedSessionFolder : utf8FromPath (resolved);
+
+    const std::lock_guard<std::mutex> lock (liveFolderLock);
+    liveSessionFolder = folder;
+}
+
+std::string WritePipeline::getLiveSessionFolder() const
+{
+    const std::lock_guard<std::mutex> lock (liveFolderLock);
+    return liveSessionFolder;
 }
 
 double WritePipeline::getIntegratedLufs() const
@@ -654,6 +701,10 @@ void WritePipeline::stop()
     // account lives. Without this the sentence exists only while the take is
     // running and is gone by the time anyone asks what went wrong.
     cardWriteProblemAtStop = getCardWriteProblem();
+
+    // The last word on where the take's folder is, while its files are still
+    // open to be asked: the stop-time session.json goes there.
+    refreshLiveSessionFolder();
 
     bool cardFinalizeFailed = false;
 

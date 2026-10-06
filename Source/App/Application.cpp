@@ -1,6 +1,7 @@
 #include "Application.h"
 #include "../Platform/ReducedMotion.h"
 #include "../Platform/SystemPermissions.h"
+#include "../Platform/VolumeCapacity.h"
 #include "../Core/PreflightScratchFile.h"
 #if JUCE_MAC
  #include <sys/mount.h>
@@ -323,6 +324,7 @@ void Application::initialise()
     // with a microphone plugged in to "plug in a USB microphone" -- advice for
     // a problem they did not have, about the one thing they had already done.
     microphonePermission = queryMicrophonePermission();
+    microphoneRestricted = isMicrophoneAccessRestricted();
 
     // Still "not yet asked": ask through AVFoundation now, so the prompt (if
     // one is due) appears at launch and the status the Record gate reads gets
@@ -415,7 +417,8 @@ void Application::initialise()
     cameraController.setStartupGuardFile (getSupportFolder().getChildFile ("camera-starting.txt"));
 #if JUCE_MAC
     cameraController.setCameraPermission ([] { return queryCameraPermission(); },
-                                          [] { requestCameraAccess(); });
+                                          [] { requestCameraAccess(); },
+                                          [] { return isCameraAccessRestricted(); });
 #endif
 
     // Enumeration only. Nothing is opened here, so a rig with no camera
@@ -609,6 +612,18 @@ void Application::pollUpdateCheck()
 
 void Application::startUpdateCheck()
 {
+   #if JUCE_LINUX && ! JUCE_USE_CURL
+    // Built without curl, JUCE's Linux HTTP client speaks plain http:// only,
+    // and the releases API is https://. Every check failed before a byte was
+    // sent and was reported as "Couldn't reach GitHub just now. Try again
+    // later." -- every day, on a network that was working, with no later at
+    // which it would. Say what is actually true instead.
+    updateCheckSucceeded = false;
+    updateCheckProblem = "This Linux build can't check for updates by itself. The newest "
+                         "version is on the Releases page.";
+    return;
+   #endif
+
     updateCheckRunning->store (true);
     updateCheckProblem.clear();
 
@@ -1444,6 +1459,15 @@ bool Application::refreshMicrophonePermission()
 
     const auto current = queryMicrophonePermission();
     const auto refresh = PermissionRefresh::decide (microphonePermission, current);
+
+    // Restricted and Denied are the same state to everything but the wording,
+    // so a move between them (a profile installed or removed) is not a
+    // permission change; it only re-journals the sentence.
+    if (const bool restricted = isMicrophoneAccessRestricted(); restricted != microphoneRestricted)
+    {
+        microphoneRestricted = restricted;
+        journalledPermissionProblems = false;
+    }
 
     if (! refresh.changed)
         return false;
@@ -2513,7 +2537,12 @@ std::vector<Application::StorageVolume> Application::scanStorageVolumes()
 
         seen.add (full);
 
-        const auto freeBytes = root.getBytesFreeOnVolume();
+        // The space a recording can claim: on APFS that includes purgeable
+        // space, which getBytesFreeOnVolume leaves out.
+        const auto available = availableBytesForRecording (full.toStdString());
+        const auto freeBytes = available.has_value()
+            ? static_cast<juce::int64> (std::min<uint64_t> (*available, static_cast<uint64_t> (INT64_MAX)))
+            : root.getBytesFreeOnVolume();
         const bool removable = forceRemovable || root.isOnRemovableDrive();
 
         auto name = root.getVolumeLabel();
@@ -2682,7 +2711,16 @@ void Application::toggleRecording()
             mirrorPolicy.reset();
             {
                 const auto home = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
-                mirrorPolicy.evaluateAtArm (home.getBytesFreeOnVolume(), projectedSessionBytes());
+
+                // Purgeable space counted: on a Mac with iCloud "Optimize Mac
+                // storage" on, the plain free figure can be a small fraction
+                // of what a write can actually claim, and the backup copy was
+                // refused for want of room the disk had.
+                const auto homeFree = availableBytesForRecording (home.getFullPathName().toStdString());
+                const auto freeBytes = homeFree.has_value()
+                    ? static_cast<int64_t> (std::min<uint64_t> (*homeFree, static_cast<uint64_t> (INT64_MAX)))
+                    : static_cast<int64_t> (home.getBytesFreeOnVolume());
+                mirrorPolicy.evaluateAtArm (freeBytes, projectedSessionBytes());
             }
 
             // §6: this is what actually opens the stem files and starts the
@@ -2890,6 +2928,10 @@ void Application::toggleRecording()
         if (capture != nullptr)
         {
             capture->stopRecording();
+
+            // Where the files were finished, which is where session.json, the
+            // activity log and the saved-take card must look.
+            followRenamedTakeFolder();
 
             // Bounded inside the coordinator; said here, because a Stop that
             // could not finish the files must not read like a clean one.
@@ -3353,6 +3395,12 @@ std::vector<Application::SavedFile> Application::listSessionFiles (const juce::S
     for (const auto& entry : juce::RangedDirectoryIterator (dir, false, "*", juce::File::findFiles))
     {
         const auto file = entry.getFile();
+
+        // Finder's .DS_Store and an ExFAT card's "._MIX.wav" twins are not
+        // files of this take, and the card would list and count them as such.
+        if (isSystemClutterFile (file.getFileName().toStdString()))
+            continue;
+
         files.push_back ({ file.getFileName(), file.getSize() });
     }
 
@@ -3572,7 +3620,8 @@ juce::String Application::getRecordDisabledReason() const
     // would be with nothing plugged in, and the two need different fixes.
     for (const auto& problem : PermissionGuidance::evaluate (microphonePermission,
                                                              destinationWritePermission,
-                                                             ! destinationFolder.empty()))
+                                                             ! destinationFolder.empty(),
+                                                             microphoneRestricted))
         if (problem.blocksRecording)
             return juce::String (problem.message);
 
@@ -3847,9 +3896,18 @@ int Application::probeWriteErrno (const juce::File& folder)
 std::string Application::filesystemTypeName (const juce::File& folder)
 {
    #if JUCE_MAC
-    struct statfs info {};
-    if (::statfs (folder.getFullPathName().toRawUTF8(), &info) == 0)
-        return info.f_fstypename;
+    // The nearest folder that exists. On a read-only drive the RECORDINGS
+    // folder could not be made, so asking about it failed and the format came
+    // back unknown -- exactly when it decides what the user is told to do.
+    for (auto candidate = folder;; candidate = candidate.getParentDirectory())
+    {
+        struct statfs info {};
+        if (::statfs (candidate.getFullPathName().toRawUTF8(), &info) == 0)
+            return info.f_fstypename;
+
+        if (errno != ENOENT || candidate.getParentDirectory() == candidate)
+            break;
+    }
    #else
     juce::ignoreUnused (folder);
    #endif
@@ -3994,17 +4052,21 @@ Application::PreflightBackgroundResult Application::runPreflight (
     result = PreflightThroughputTest::evaluate (rollingWindows, channelCount,
                                                 sampleRate, bytesPerSample);
 
+    // The format, read here on the worker: a statfs on a card that has stopped
+    // answering must not stall the message thread. Read before the refusal is
+    // worded, because a read-only NTFS drive needs different advice from a
+    // locked card.
+    const auto filesystemKind =
+        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder));
+
     if (couldNotWrite)
     {
         result.passed = false;
         result.couldNotWrite = true;
-        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno);
+        result.reason = PreflightThroughputTest::writeFailureReason (writeErrno, filesystemKind);
     }
 
-    // The format, read here on the worker: a statfs on a card that has stopped
-    // answering must not stall the message thread.
-    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (
-        PreflightThroughputTest::filesystemKindFromTypeName (filesystemTypeName (folder)));
+    result.limitedTo4GiBFiles = PreflightThroughputTest::needsReformat (filesystemKind);
 
     completed.result = std::move (result);
     completed.couldNotWrite = couldNotWrite;
@@ -4607,6 +4669,23 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
         writeActivityLog (juce::File (currentMirrorFolder));
 }
 
+void Application::followRenamedTakeFolder()
+{
+    if (capture == nullptr || currentSessionFolder.isEmpty())
+        return;
+
+    const auto live = juce::String (capture->getLiveSessionFolder());
+
+    if (live.isEmpty() || live == currentSessionFolder)
+        return;
+
+    currentSessionFolder = live;
+
+    noteActivity (ActivityLevel::Warning, "Recording",
+                  "This take's folder was renamed or moved. It is still recording, into "
+                  + live + ".");
+}
+
 bool Application::isOnCard (const juce::File& file) const
 {
     // Path arithmetic only: asking the filesystem would be the very call that
@@ -4876,6 +4955,11 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
 
+    // Before anything reads the take's files: a folder renamed in Finder
+    // mid-take is followed here, well inside the growth check's six seconds.
+    if (isRecording())
+        followRenamedTakeFolder();
+
     // The assertion above holds a plugged-in Mac up with its lid shut; on
     // battery nothing can, so the performer hears it while the lid is open.
     if (batteryRecordingNotice.tick (isRecording(), sinceLastCallSeconds, &SleepInhibitor::queryPowerSource))
@@ -4939,7 +5023,7 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         const auto permissionProblems =
             PermissionGuidance::evaluate (microphonePermission, destinationWritePermission,
-                                          ! destinationFolder.empty());
+                                          ! destinationFolder.empty(), microphoneRestricted);
 
         journalledPermissionProblems = true;
 
@@ -5985,15 +6069,64 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
         if (logFile.existsAsFile())
             builder.addFile (logFile, 9, "log.txt");
 
-        bool saved = false;
+        // Built in memory first, so the same bytes can go to a second place:
+        // the builder's sources are read once and are spent afterwards. A
+        // bundle is the log (capped) plus a few small JSON files.
+        juce::MemoryOutputStream zipped;
+        const bool built = builder.writeToStream (zipped, nullptr);
+
+        const auto writeZipTo = [&zipped] (const juce::File& target)
         {
-            juce::FileOutputStream out (destinationZip);
-            saved = out.openedOk() && builder.writeToStream (out, nullptr);
+            bool ok = false;
+            {
+                juce::FileOutputStream out (target);
+                ok = out.openedOk() && out.write (zipped.getData(), zipped.getDataSize());
+                if (ok)
+                {
+                    out.flush();
+                    ok = out.getStatus().wasOk();
+                }
+            }
+
+            // Only ever a name getNonexistentChildFile picked, so whatever is
+            // there is this attempt's own partial file.
+            if (! ok)
+                target.deleteFile();
+
+            return ok;
+        };
+
+        // The Desktop is the place people look, but on macOS it is a protected
+        // folder: the first export raises a "would like to access files in
+        // your Desktop folder" prompt, and once that is answered Don't Allow
+        // (or a managed Mac forbids it) every export failed, with advice to
+        // "try somewhere else" and no way to choose anywhere. A Linux account
+        // with no ~/Desktop failed the same way. The home folder itself is
+        // never protected, so the bundle goes there instead and the message
+        // says where.
+        juce::File savedTo;
+        if (built)
+        {
+            if (writeZipTo (destinationZip))
+            {
+                savedTo = destinationZip;
+            }
+            else
+            {
+                const auto fallback = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                                          .getNonexistentChildFile (destinationZip.getFileNameWithoutExtension(),
+                                                                    destinationZip.getFileExtension());
+                if (fallback.getParentDirectory() != destinationZip.getParentDirectory()
+                    && writeZipTo (fallback))
+                    savedTo = fallback;
+            }
         }
+
+        const bool saved = savedTo != juce::File();
 
         running->store (false);
 
-        juce::MessageManager::callAsync ([this, alive, inventoryWritten, saved, destinationZip]
+        juce::MessageManager::callAsync ([this, alive, inventoryWritten, saved, savedTo, destinationZip]
         {
             if (alive.lock() == nullptr)
                 return;
@@ -6010,16 +6143,19 @@ void Application::exportDiagnostics (const juce::File& destinationZip)
                 // advice line, so a successful export looked identical to
                 // nothing happening and the path to the file was never shown.
                 noteActivity (ActivityLevel::Stopped, "Diagnostics",
-                              "Saved a diagnostics file to " + destinationZip.getFullPathName() + ".",
+                              "Saved a diagnostics file to " + savedTo.getFullPathName() + ".",
                               true);
             }
             else
             {
                 // A failed export must not look like a successful one right up
-                // until the user goes to attach it to an email.
+                // until the user goes to attach it to an email. There is no
+                // picker to "try somewhere else" with, so it says what was tried.
                 noteActivity (ActivityLevel::Failed, "Diagnostics",
                               "Couldn't write the diagnostics file to "
-                              + destinationZip.getFullPathName() + ". Try somewhere else.");
+                              + destinationZip.getParentDirectory().getFullPathName()
+                              + " or to your home folder. Check that there is free space on "
+                                "this computer's disk.");
             }
         });
     }).detach();
@@ -6943,6 +7079,12 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         {
             if (wasCancelled())
                 return result;
+
+            // "._01_Alice.wav" on an ExFAT card is macOS's AppleDouble twin of
+            // the stem, not a recording: it has no RIFF header, so it came back
+            // as an "empty file left alone" -- one phantom lost track per stem.
+            if (isSystemClutterFile (entry.getFile().getFileName().toStdString()))
+                continue;
 
             session.files.push_back (SessionRecovery::repairWavFile (
                 entry.getFile().getFullPathName().toStdString()));

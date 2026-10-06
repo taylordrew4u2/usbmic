@@ -63,6 +63,11 @@ public:
     /// Repaints only the meters, so status-label updates don't redraw the whole screen.
     void repaintMeters();
 
+    /// Nobody can see the window: the meters keep measuring but stop
+    /// repainting, and repaintMeters() does nothing. See MainComponent.
+    void setMetersPaused (bool paused);
+    bool areMetersPaused() const noexcept { return metersPaused; }
+
     void setRecording (bool isRecording);
     void setElapsedTimeText (const juce::String& text) { elapsedLabel.setText (text, juce::dontSendNotification); }
     void setRemainingTimeText (const juce::String& text) { remainingLabel.setText (text, juce::dontSendNotification); }
@@ -201,12 +206,32 @@ public:
     std::function<void()> onMuteToggled;
     std::function<void (int)> onMicNameClicked; // meter index
 
+    /// Typing in the session name is over: Return, Escape, or a click anywhere
+    /// else on the screen. The owner takes the keyboard back, so the next
+    /// Space mutes the room instead of putting a space in the take's name.
+    std::function<void()> onSessionNameFinished;
+
     /// getRequiredHeight() has changed for a reason the owner cannot see -- the
     /// reason row under the record button, the no-microphones message, the
     /// strip count, or a longer monitor problem. The owner re-fits the screen.
     std::function<void()> onRequiredHeightChanged;
 
 private:
+    /// Clicks anywhere on the screen, children included. JUCE leaves the
+    /// keyboard in a focused text box when the click lands on something that
+    /// does not take focus itself -- the background, a label, a meter strip --
+    /// so without this the name box kept every later Space.
+    struct ClickAwayWatcher final : juce::MouseListener
+    {
+        explicit ClickAwayWatcher (MainScreen& o) : owner (o) {}
+        void mouseDown (const juce::MouseEvent& e) override;
+        MainScreen& owner;
+    };
+
+    ClickAwayWatcher clickAwayWatcher { *this };
+    bool metersPaused = false;
+    void finishSessionName();
+
     // The masthead. A window with no name in it is a window you have to
     // remember the name of, and the tagline is the one place the app gets to
     // say what it is for before anyone presses anything.

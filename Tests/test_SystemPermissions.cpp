@@ -46,6 +46,21 @@ TEST_CASE (SystemPermissions_DeniedAndRestrictedBothBlock)
     }
 }
 
+TEST_CASE (SystemPermissions_OnlyRestrictedReadsAsRestricted)
+{
+    // Restricted changes only the wording (ask the administrator), so it must
+    // be told apart from the user's own refusal and from everything else.
+    REQUIRE (permissions::isRestrictedAVAuthorizationStatus (1));
+    for (long status : { 0L, 2L, 3L, 4L, -1L })
+        REQUIRE_FALSE (permissions::isRestrictedAVAuthorizationStatus (status));
+
+    // Off the Mac there is no administrator policy to report.
+   #if ! defined (__APPLE__)
+    REQUIRE_FALSE (isMicrophoneAccessRestricted());
+    REQUIRE_FALSE (isCameraAccessRestricted());
+   #endif
+}
+
 TEST_CASE (SystemPermissions_AnUnknownStatusIsSilentNotBlocking)
 {
     // A future enumerator we cannot interpret is not evidence of a denial.

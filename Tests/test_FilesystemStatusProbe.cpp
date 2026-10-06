@@ -216,6 +216,26 @@ TEST_CASE (FilesystemStatusProbe_SamplesSpaceAndFilesOnItsWorker)
     REQUIRE (snapshot.files[1].sizeBytes == 123);
 }
 
+// macOS puts .DS_Store in any folder Finder shows, and an ExFAT card gives a
+// file with extended attributes an AppleDouble twin ("._MIX.wav"). Neither is
+// part of the take, and the live file list must not show or count them.
+TEST_CASE (FilesystemStatusProbe_LeavesFindersOwnFilesOutOfTheTake)
+{
+    TemporaryFolder folder;
+    writeBytes (folder.path / "MIX.wav", 456);
+    writeBytes (folder.path / ".DS_Store", 6148);
+    writeBytes (folder.path / "._MIX.wav", 4096);
+
+    FilesystemStatusProbe probe (std::chrono::milliseconds (20));
+    probe.setRequest ({ {}, folder.path.string(), {}, 0.0 });
+
+    FilesystemStatusProbe::Snapshot snapshot;
+    REQUIRE (probe.waitForRevisionAfter (0, snapshot, std::chrono::seconds (2)));
+    REQUIRE (snapshot.filesObservationReady);
+    REQUIRE (snapshot.files.size() == 1);
+    REQUIRE (snapshot.files[0].name == std::string ("MIX.wav"));
+}
+
 TEST_CASE (FilesystemStatusProbe_DoesNotCallACompletedFilesystemErrorAnEmptyFolder)
 {
     TemporaryFolder folder;

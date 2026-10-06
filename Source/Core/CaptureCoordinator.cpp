@@ -838,6 +838,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     // Same reasoning as the counter above: without this, the figures from the
     // previous take would stand as this one's until enough blocks had gone by.
     lastTakeCardWriteProblem.clear();
+    lastTakeLiveSessionFolder.clear();
     lastTakeCardWriteFailed = false;
     lastTakeMirrorWriteFailed = false;
     lastTakeLufs = LoudnessMeter::kSilenceLufs;
@@ -884,6 +885,7 @@ void CaptureCoordinator::stopRecording()
     struct StopResult
     {
         std::string cardWriteProblem;
+        std::string liveSessionFolder;
         bool cardWriteFailed = false;
         bool mirrorWriteFailed = false;
         double lufs = LoudnessMeter::kSilenceLufs;
@@ -905,6 +907,7 @@ void CaptureCoordinator::stopRecording()
     // Read here too, for the timed-out path below: the counter is atomic and
     // the audio thread has let go, so this is every drop but the final drain's.
     lastTakeFramesDropped = pipeline->getFramesDropped();
+    lastTakeLiveSessionFolder = pipeline->getLiveSessionFolder();
     std::shared_ptr<WritePipeline> p (std::move (pipeline));
     auto stall = filesystemStallForTesting;
 
@@ -923,6 +926,7 @@ void CaptureCoordinator::stopRecording()
         // the object that noticed it.
         StopResult r;
         r.cardWriteProblem = p->getCardWriteProblem();
+        r.liveSessionFolder = p->getLiveSessionFolder();
         r.cardWriteFailed = p->hasCardWriteFailed();
         r.mirrorWriteFailed = p->hasMirrorWriteFailed();
         r.lufs = p->getIntegratedLufs();
@@ -1000,6 +1004,8 @@ void CaptureCoordinator::stopRecording()
     }
 
     lastTakeCardWriteProblem = state->result.cardWriteProblem;
+    if (! state->result.liveSessionFolder.empty())
+        lastTakeLiveSessionFolder = state->result.liveSessionFolder;
     lastTakeCardWriteFailed = state->result.cardWriteFailed;
     lastTakeMirrorWriteFailed = state->result.mirrorWriteFailed;
     lastTakeLufs = state->result.lufs;

@@ -1,6 +1,6 @@
 # SobStage support
 
-SobStage v1.13.22 is a release candidate. Before reporting a problem, check the
+SobStage v1.13.23 is a release candidate. Before reporting a problem, check the
 in-app **Help** screen and the known release gates in
 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
@@ -25,7 +25,10 @@ currently offered.
 ## Export diagnostics
 
 Choose **Settings → Export diagnostics** (or the same button in Help). SobStage
-creates `SobStage-diagnostics*.zip` on the Desktop. The zip can contain:
+creates `SobStage-diagnostics*.zip` on the Desktop, or in your home folder if
+it may not write to the Desktop (on a Mac, if you answered **Don't Allow** when
+macOS asked about the Desktop folder). The message after the export shows the
+exact path. The zip can contain:
 
 - the application log;
 - up to five recent `session.json` files from the selected destination;

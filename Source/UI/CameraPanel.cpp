@@ -258,6 +258,10 @@ void CameraPanel::rebuildRows (const std::vector<CameraRow>& cameras)
         row.id = camera.id;
 
         row.enabledToggle = std::make_unique<juce::ToggleButton> ("Record this camera");
+        // Every row's box says "Record this camera", which is all VoiceOver
+        // read out -- the same words for each camera, with nothing to say
+        // which one would be switched. The name is in the spoken title.
+        row.enabledToggle->setTitle ("Record " + camera.displayName);
         row.enabledToggle->setToggleState (camera.enabled, juce::dontSendNotification);
         row.enabledToggle->setEnabled (! recording);
         row.enabledToggle->onClick = [this, id = camera.id, button = row.enabledToggle.get()] {

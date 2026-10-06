@@ -3,6 +3,7 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#include "../App/CappedFileLogger.h"
 #include "../Core/QuitGate.h"
 #if defined (MMA_STALL_METER)
  #include "MessageThreadStallMeter.h"
@@ -30,7 +31,10 @@ public:
         setResizable (true, false);
         // Small enough for a laptop half-screen, never small enough to crush
         // the meters into unreadability.
-        setResizeLimits (560, 420, 4096, 4096);
+        // No practical ceiling: at 4096 the window could not be dragged or
+        // zoomed to fill a 5120-point-wide ultrawide, or a display arrangement
+        // wider than that. 16384 is past any single display in use.
+        setResizeLimits (560, 420, 16384, 16384);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
     }
@@ -94,10 +98,11 @@ public:
         // §11: the diagnostics bundle promises a log, so one has to exist
         // before the first thing that can go wrong. The path comes from
         // Application so the bundle and the logger cannot disagree about where
-        // it is, and it is capped so a bundle a user emails stays small.
+        // it is, and it is capped so a bundle a user emails stays small --
+        // through the whole session, not only at launch (CappedFileLogger).
         constexpr int kMaxLogBytes = 256 * 1024;
 
-        logger = std::make_unique<juce::FileLogger> (
+        logger = std::make_unique<CappedFileLogger> (
             Application::getLogFile(),
             "SobStage " + getApplicationVersion(),
             kMaxLogBytes);
@@ -322,7 +327,7 @@ public:
     }
 
 private:
-    std::unique_ptr<juce::FileLogger> logger;
+    std::unique_ptr<CappedFileLogger> logger;
     std::unique_ptr<Application> application;
     // Declared before mainWindow, so it is destroyed after it. Members are
     // destroyed in reverse declaration order, and JUCE asserts if a component

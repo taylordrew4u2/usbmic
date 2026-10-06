@@ -13,17 +13,44 @@ const juce::Colour MixBarComponent::kBone            { palette::bone };
 const juce::Colour MixBarComponent::kSecondaryText   { palette::secondary };
 const juce::Colour MixBarComponent::kOutline         { palette::outline };
 
-MixBarComponent::MixBarComponent() { startTimerHz (60); }
+MixBarComponent::MixBarComponent()
+{
+    // Every channel strip has a spoken name and level; the mix had neither,
+    // so VoiceOver announced an unnamed "group" in the row of meters and the
+    // one level that is the room's sum could not be read at all.
+    setTitle ("Mix meter");
+    updateAccessibilityText();
+    startTimerHz (60);
+}
+
 MixBarComponent::~MixBarComponent() { stopTimer(); }
 
 void MixBarComponent::timerCallback()
 {
     if (metering == nullptr)
         return;
+    const bool wasClipped = currentClip;
     currentLevelDb = metering->tick (1.0 / 60.0);
     currentPeakDb = metering->getPeakHoldDb();
     currentClip = metering->isClipped();
-    repaint();
+
+    // Whole decibels, like the strips: what a sighted user can read, without
+    // a 60 Hz stream of value changes for a screen reader.
+    const int accessibleLevel = juce::roundToInt (currentLevelDb);
+    if (accessibleLevel != lastAccessibleLevelDb || currentClip != wasClipped)
+    {
+        lastAccessibleLevelDb = accessibleLevel;
+        updateAccessibilityText();
+    }
+
+    if (! repaintPaused)
+        repaint();
+}
+
+void MixBarComponent::updateAccessibilityText()
+{
+    setDescription (juce::String (currentLevelDb, 0) + " decibels"
+                    + (currentClip ? ". Clipping." : "."));
 }
 
 void MixBarComponent::paint (juce::Graphics& g)
