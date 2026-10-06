@@ -453,6 +453,14 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    // Cmd-, is where every Mac app keeps its settings; people press it before
+    // they go looking for the button. A second press closes them again.
+    if (key == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0))
+    {
+        toggleAdvanced();
+        return true;
+    }
+
     // Escape is the way back from any panel, so nobody has to find the Done
     // button at the top of a screen they have scrolled down.
     if (key == juce::KeyPress::escapeKey)
