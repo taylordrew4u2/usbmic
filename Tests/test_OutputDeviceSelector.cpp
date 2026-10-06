@@ -543,3 +543,35 @@ TEST_CASE (OutputDeviceSelector_ADefaultOutputChangeDoesNotMoveTheMonitorMidShow
     const auto notUnticked = OutputDeviceSelector::select ({ speakers, unticked }, "", "usb-amp");
     REQUIRE (notUnticked.id == "speakers");
 }
+
+TEST_CASE (OutputDeviceSelector_AnIntelJackUnpluggedIsNotKeptAsTheCurrentOutput)
+{
+    // An Intel Mac's "Built-in Output" is one device whether its data source
+    // is the speakers or the headphone jack.
+    auto amp = makeDevice ("usb-amp");
+    amp.isSystemDefault = true;
+    auto builtIn = makeDevice ("built-in");
+    builtIn.isBuiltIn = true;
+    builtIn.hasPhysicalHeadphoneJack = true;
+
+    const auto plugged = OutputDeviceSelector::select ({ amp, builtIn }, "", "usb-amp");
+    REQUIRE (plugged.id == "built-in");
+    REQUIRE (plugged.reason == OutputSelectionReason::PhysicalHeadphoneJack);
+
+    // Unplugged: back on the speakers. Kept as "current" it would stay there.
+    builtIn.hasPhysicalHeadphoneJack = false;
+    const std::vector<OutputDeviceCandidate> unplugged { amp, builtIn };
+    REQUIRE (OutputDeviceSelector::currentIdToKeep (unplugged, "built-in", true).empty());
+
+    const auto after = OutputDeviceSelector::select (
+        unplugged, "", OutputDeviceSelector::currentIdToKeep (unplugged, "built-in", true));
+    REQUIRE (after.id == "usb-amp");
+    REQUIRE (after.reason == OutputSelectionReason::SystemDefault);
+
+    // Everything else is kept exactly as before: an output that was never a
+    // jack, one that still is, and one that has left the list.
+    REQUIRE (OutputDeviceSelector::currentIdToKeep (unplugged, "built-in", false) == "built-in");
+    builtIn.hasPhysicalHeadphoneJack = true;
+    REQUIRE (OutputDeviceSelector::currentIdToKeep ({ amp, builtIn }, "built-in", true) == "built-in");
+    REQUIRE (OutputDeviceSelector::currentIdToKeep ({ amp }, "built-in", true) == "built-in");
+}

@@ -15,10 +15,83 @@
 
 namespace {
 
-struct FakeString
+/// Every CoreFoundation object the shim hands out. Reference-counted the way
+/// CF is: created at one, CFRelease drops one, a container retains what it
+/// holds. A constant (CFSTR) string is immortal.
+struct FakeCFObject
 {
+    virtual ~FakeCFObject() = default;
+    int retainCount = 1;
+    bool immortal = false;
+};
+
+struct FakeString : FakeCFObject
+{
+    explicit FakeString (std::string v) : value (std::move (v)) {}
     std::string value;
 };
+
+void releaseObject (FakeCFObject* object)
+{
+    if (object != nullptr && ! object->immortal && --object->retainCount == 0)
+        delete object;
+}
+
+/// Every opaque CF handle in the shim is a FakeCFObject*, cast through the
+/// base so the pointer value is the same whichever handle type carries it.
+template <typename Ref>
+Ref toRef (FakeCFObject* object) { return reinterpret_cast<Ref> (object); }
+
+const FakeCFObject* fromRef (const void* ref) { return static_cast<const FakeCFObject*> (ref); }
+
+FakeCFObject* retainObject (const void* ref)
+{
+    auto* object = const_cast<FakeCFObject*> (fromRef (ref));
+    if (object != nullptr)
+        ++object->retainCount;
+    return object;
+}
+
+struct FakeArray : FakeCFObject
+{
+    ~FakeArray() override
+    {
+        for (auto* value : values)
+            releaseObject (value);
+    }
+
+    std::vector<FakeCFObject*> values;
+};
+
+struct FakeDictionary : FakeCFObject
+{
+    ~FakeDictionary() override
+    {
+        for (auto& entry : entries)
+            releaseObject (entry.second);
+    }
+
+    const FakeCFObject* find (const std::string& key) const
+    {
+        for (const auto& entry : entries)
+            if (entry.first == key)
+                return entry.second;
+        return nullptr;
+    }
+
+    std::vector<std::pair<std::string, FakeCFObject*>> entries;
+};
+
+struct FakeNumber : FakeCFObject
+{
+    int value = 0;
+};
+
+std::string stringValue (const FakeCFObject* object)
+{
+    const auto* s = dynamic_cast<const FakeString*> (object);
+    return s == nullptr ? std::string() : s->value;
+}
 
 struct IoProcRegistration
 {
@@ -44,6 +117,10 @@ struct Device
     bool rateUnreadable = false;
 
     int subDeviceReadsUntilActive = 0;
+
+    /// Made through AudioHardwareCreateAggregateDevice: gone after a
+    /// coreaudiod restart.
+    bool createdAggregate = false;
 };
 
 struct Listener
@@ -63,6 +140,7 @@ struct State
     AudioObjectID defaultOutput = kAudioObjectUnknown;
     bool allowPropertyListeners = true;
     bool allowSystemPropertyListenerRemoval = true;
+    int aggregatesCreated = 0;
 };
 
 State& state()
@@ -167,10 +245,11 @@ void fireDeviceListListeners()
             l.proc (kAudioObjectSystemObject, 1, &address, l.clientData);
 }
 
-void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector selector)
+void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector selector,
+                            AudioObjectPropertyScope scope = kAudioObjectPropertyScopeGlobal)
 {
     AudioObjectPropertyAddress address { selector,
-                                         kAudioObjectPropertyScopeGlobal,
+                                         scope,
                                          kAudioObjectPropertyElementMain };
 
     // A listener may remove itself while it runs, so traverse a snapshot just
@@ -194,21 +273,101 @@ void firePropertyListeners (AudioObjectID object, AudioObjectPropertySelector se
 
 // --- CoreFoundation ---------------------------------------------------------
 
+const CFArrayCallBacks kCFTypeArrayCallBacks { 0 };
+const CFDictionaryKeyCallBacks kCFTypeDictionaryKeyCallBacks { 0 };
+const CFDictionaryValueCallBacks kCFTypeDictionaryValueCallBacks { 0 };
+
 Boolean CFStringGetCString (CFStringRef value, char* buffer, long bufferSize, CFStringEncoding)
 {
     if (value == nullptr || buffer == nullptr || bufferSize <= 0)
         return 0;
 
-    const auto* s = reinterpret_cast<const FakeString*> (value);
+    const auto* s = dynamic_cast<const FakeString*> (fromRef (value));
+    if (s == nullptr)
+        return 0;
+
     const auto length = std::min (s->value.size(), static_cast<size_t> (bufferSize - 1));
     std::memcpy (buffer, s->value.data(), length);
     buffer[length] = '\0';
     return 1;
 }
 
-void CFRelease (CFStringRef value)
+CFStringRef CFStringCreateWithCString (CFAllocatorRef, const char* text, CFStringEncoding)
 {
-    delete reinterpret_cast<const FakeString*> (value);
+    if (text == nullptr)
+        return nullptr;
+
+    return toRef<CFStringRef> (new FakeString (text));
+}
+
+CFStringRef mmaFakeConstantString (const char* text)
+{
+    // Interned and never released, like a real CFSTR constant. Owned here so
+    // a leak checker sees them freed at exit rather than lost.
+    static std::map<std::string, std::unique_ptr<FakeString>> constants;
+
+    auto& slot = constants[text];
+    if (slot == nullptr)
+    {
+        slot = std::make_unique<FakeString> (text);
+        slot->immortal = true;
+    }
+
+    return toRef<CFStringRef> (slot.get());
+}
+
+CFMutableArrayRef CFArrayCreateMutable (CFAllocatorRef, CFIndex, const CFArrayCallBacks*)
+{
+    return toRef<CFMutableArrayRef> (new FakeArray());
+}
+
+void CFArrayAppendValue (CFMutableArrayRef array, const void* value)
+{
+    auto* a = dynamic_cast<FakeArray*> (const_cast<FakeCFObject*> (fromRef (array)));
+    if (a != nullptr && value != nullptr)
+        a->values.push_back (retainObject (value));
+}
+
+CFMutableDictionaryRef CFDictionaryCreateMutable (CFAllocatorRef, CFIndex,
+                                                  const CFDictionaryKeyCallBacks*,
+                                                  const CFDictionaryValueCallBacks*)
+{
+    return toRef<CFMutableDictionaryRef> (new FakeDictionary());
+}
+
+void CFDictionarySetValue (CFMutableDictionaryRef dictionary, const void* key, const void* value)
+{
+    auto* d = dynamic_cast<FakeDictionary*> (const_cast<FakeCFObject*> (fromRef (dictionary)));
+    if (d == nullptr || key == nullptr || value == nullptr)
+        return;
+
+    const auto name = stringValue (fromRef (key));
+    auto* retained = retainObject (value);
+
+    for (auto& entry : d->entries)
+        if (entry.first == name)
+        {
+            releaseObject (entry.second);
+            entry.second = retained;
+            return;
+        }
+
+    d->entries.emplace_back (name, retained);
+}
+
+CFNumberRef CFNumberCreate (CFAllocatorRef, CFNumberType type, const void* valuePtr)
+{
+    if (type != kCFNumberIntType || valuePtr == nullptr)
+        return nullptr;
+
+    auto* n = new FakeNumber();
+    std::memcpy (&n->value, valuePtr, sizeof (int));
+    return toRef<CFNumberRef> (n);
+}
+
+void CFRelease (CFTypeRef value)
+{
+    releaseObject (const_cast<FakeCFObject*> (fromRef (value)));
 }
 
 // --- Properties -------------------------------------------------------------
@@ -360,6 +519,16 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
             return deliver (&source, sizeof (source), ioSize, outData);
         }
 
+        case kAudioDevicePropertyJackIsConnected:
+        {
+            if (address->mScope != kAudioObjectPropertyScopeOutput
+                || device->spec.jackConnected < 0)
+                return kAudioHardwareUnknownPropertyError;
+
+            const UInt32 connected = device->spec.jackConnected > 0 ? 1u : 0u;
+            return deliver (&connected, sizeof (connected), ioSize, outData);
+        }
+
         case kAudioObjectPropertyName:
         case kAudioDevicePropertyDeviceUID:
         {
@@ -370,9 +539,9 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
                     device->spec.uidReadDelayMilliseconds));
             }
 
-            auto* handle = new FakeString { address->mSelector == kAudioObjectPropertyName
-                                                ? device->spec.name : device->spec.uid };
-            auto ref = reinterpret_cast<CFStringRef> (handle);
+            auto* handle = new FakeString (address->mSelector == kAudioObjectPropertyName
+                                               ? device->spec.name : device->spec.uid);
+            auto ref = toRef<CFStringRef> (handle);
             const auto status = deliver (&ref, sizeof (ref), ioSize, outData);
 
             if (outData == nullptr || status != noErr)
@@ -576,6 +745,40 @@ OSStatus AudioObjectSetPropertyData (AudioObjectID object,
     }
 }
 
+Boolean AudioObjectHasProperty (AudioObjectID object, const AudioObjectPropertyAddress* address)
+{
+    if (address == nullptr)
+        return 0;
+
+    if (object == kAudioObjectSystemObject)
+        return (address->mSelector == kAudioHardwarePropertyDevices
+                || address->mSelector == kAudioHardwarePropertyDefaultOutputDevice
+                || address->mSelector == kAudioHardwarePropertyServiceRestarted) ? 1 : 0;
+
+    auto* device = find (object);
+    if (device == nullptr)
+        return 0;
+
+    // The two route properties exist only where the device reports them, and
+    // only on the output scope -- the case the backend has to tell apart.
+    switch (address->mSelector)
+    {
+        case kAudioDevicePropertyDataSource:
+            return (address->mScope == kAudioObjectPropertyScopeOutput
+                    && device->spec.outputDataSource != 0) ? 1 : 0;
+
+        case kAudioDevicePropertyJackIsConnected:
+            return (address->mScope == kAudioObjectPropertyScopeOutput
+                    && device->spec.jackConnected >= 0) ? 1 : 0;
+
+        default:
+        {
+            UInt32 size = 0;
+            return AudioObjectGetPropertyDataSize (object, address, 0, nullptr, &size) == noErr ? 1 : 0;
+        }
+    }
+}
+
 OSStatus AudioObjectAddPropertyListener (AudioObjectID object,
                                          const AudioObjectPropertyAddress* address,
                                          AudioObjectPropertyListenerProc listener,
@@ -714,6 +917,61 @@ OSStatus AudioDeviceStop (AudioObjectID device, AudioDeviceIOProcID procId)
     return noErr;
 }
 
+// --- Aggregate devices ------------------------------------------------------
+
+OSStatus AudioHardwareCreateAggregateDevice (CFDictionaryRef description, AudioObjectID* outDevice)
+{
+    const auto* d = dynamic_cast<const FakeDictionary*> (fromRef (description));
+    if (d == nullptr || outDevice == nullptr)
+        return kAudioHardwareUnspecifiedError;
+
+    fakeca::DeviceSpec spec;
+    spec.uid = stringValue (d->find (kAudioAggregateDeviceUIDKey));
+    spec.name = stringValue (d->find (kAudioAggregateDeviceNameKey));
+    spec.transportType = kAudioDeviceTransportTypeAggregate;
+
+    if (spec.uid.empty())
+        return kAudioHardwareUnspecifiedError;
+
+    // A device already holding the UID refuses the create -- what a leftover
+    // from a crashed run, or one a restarted coreaudiod kept, looks like.
+    for (const auto& entry : state().devices)
+        if (entry.second.spec.uid == spec.uid)
+            return kAudioHardwareUnspecifiedError;
+
+    if (const auto* subs = dynamic_cast<const FakeArray*> (d->find (kAudioAggregateDeviceSubDeviceListKey)))
+        for (const auto* sub : subs->values)
+            if (const auto* subDict = dynamic_cast<const FakeDictionary*> (sub))
+                spec.subDeviceUids.push_back (stringValue (subDict->find (kAudioSubDeviceUIDKey)));
+
+    // Channels are the present sub-devices' channels, in order.
+    for (const auto& uid : spec.subDeviceUids)
+        for (const auto& entry : state().devices)
+            if (entry.second.spec.uid == uid)
+            {
+                spec.inputChannels += entry.second.spec.inputChannels;
+                spec.outputChannels += entry.second.spec.outputChannels;
+            }
+
+    const AudioObjectID id = fakeca::addDevice (spec);
+    state().devices.at (id).createdAggregate = true;
+    ++state().aggregatesCreated;
+    *outDevice = id;
+    return noErr;
+}
+
+OSStatus AudioHardwareDestroyAggregateDevice (AudioObjectID device)
+{
+    // Any aggregate: one restored by a restarted coreaudiod, or left by an
+    // earlier run, was not made through this process's create.
+    auto* d = find (device);
+    if (d == nullptr || d->spec.transportType != kAudioDeviceTransportTypeAggregate)
+        return kAudioHardwareBadObjectError;
+
+    fakeca::removeDevice (device);
+    return noErr;
+}
+
 // --- Harness control --------------------------------------------------------
 
 namespace fakeca {
@@ -727,6 +985,7 @@ void reset()
     state().defaultOutput = kAudioObjectUnknown;
     state().allowPropertyListeners = true;
     state().allowSystemPropertyListenerRemoval = true;
+    state().aggregatesCreated = 0;
 }
 
 void setPropertyListenersAllowed (bool allowed)
@@ -799,6 +1058,69 @@ bool setDeviceAlive (AudioObjectID device, bool alive)
     d->spec.isAlive = alive;
     firePropertyListeners (device, kAudioDevicePropertyDeviceIsAlive);
     return true;
+}
+
+bool setOutputDataSource (AudioObjectID device, UInt32 dataSource)
+{
+    auto* d = find (device);
+    if (d == nullptr)
+        return false;
+
+    d->spec.outputDataSource = dataSource;
+    firePropertyListeners (device, kAudioDevicePropertyDataSource, kAudioObjectPropertyScopeOutput);
+    return true;
+}
+
+bool setJackConnected (AudioObjectID device, bool connected)
+{
+    auto* d = find (device);
+    if (d == nullptr)
+        return false;
+
+    d->spec.jackConnected = connected ? 1 : 0;
+    firePropertyListeners (device, kAudioDevicePropertyJackIsConnected, kAudioObjectPropertyScopeOutput);
+    return true;
+}
+
+void restartService()
+{
+    std::vector<AudioObjectID> aggregates;
+    for (const auto& entry : state().devices)
+        if (entry.second.createdAggregate)
+            aggregates.push_back (entry.first);
+
+    for (const auto id : aggregates)
+    {
+        state().devices.erase (id);
+        auto& order = state().order;
+        order.erase (std::remove (order.begin(), order.end(), id), order.end());
+    }
+
+    // Listeners registered on devices with the old service are not carried
+    // over, even for a device that kept its AudioObjectID. System-object
+    // listeners are what tell the client the restart happened.
+    auto& listeners = state().listeners;
+    listeners.erase (std::remove_if (listeners.begin(), listeners.end(),
+                                     [] (const Listener& l) { return l.object != kAudioObjectSystemObject; }),
+                     listeners.end());
+
+    firePropertyListeners (kAudioObjectSystemObject, kAudioHardwarePropertyServiceRestarted);
+}
+
+int serviceRestartListenerCount()
+{
+    return static_cast<int> (std::count_if (
+        state().listeners.begin(), state().listeners.end(),
+        [] (const Listener& listener)
+        {
+            return listener.object == kAudioObjectSystemObject
+                && listener.address.mSelector == kAudioHardwarePropertyServiceRestarted;
+        }));
+}
+
+int aggregatesCreated()
+{
+    return state().aggregatesCreated;
 }
 
 bool fireProcessorOverload (AudioObjectID device)

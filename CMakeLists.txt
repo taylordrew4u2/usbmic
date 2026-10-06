@@ -672,6 +672,8 @@ if (MMA_BUILD_TOOLS)
     add_executable(sim_coreaudio
         Tools/sim_coreaudio.cpp
         Source/Platform/CoreAudioBackend.cpp
+        Source/Platform/MacSystemAggregateDevice.cpp
+        Source/Core/OutputDeviceSelector.cpp
         Simulation/CoreAudio/FakeCoreAudio.cpp)
     target_compile_definitions(sim_coreaudio PRIVATE MMA_SIMULATE_MAC=1)
     target_include_directories(sim_coreaudio PRIVATE Simulation/CoreAudio Source)

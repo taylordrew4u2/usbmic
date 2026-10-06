@@ -225,6 +225,20 @@ OutputSelection OutputDeviceSelector::select (const std::vector<OutputDeviceCand
     return result;
 }
 
+std::string OutputDeviceSelector::currentIdToKeep (const std::vector<OutputDeviceCandidate>& candidates,
+                                                   const std::string& currentId,
+                                                   bool currentWasHeadphoneJack)
+{
+    if (! currentWasHeadphoneJack || currentId.empty())
+        return currentId;
+
+    for (const auto& c : candidates)
+        if (c.id == currentId && ! c.hasPhysicalHeadphoneJack)
+            return {};
+
+    return currentId;
+}
+
 OutputDeviceCandidate OutputDeviceSelector::candidateFromDescriptor (
     const AudioDeviceDescriptor& d,
     uint32_t recordingRate,

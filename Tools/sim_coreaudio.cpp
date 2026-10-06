@@ -6,13 +6,16 @@
 
 #include "../Simulation/CoreAudio/FakeCoreAudio.h"
 #include "../Source/Core/HeadphoneRouting.h"
+#include "../Source/Core/OutputDeviceSelector.h"
 #include "../Source/Core/SampleFormat.h"
 #include "../Source/Platform/CoreAudioBackend.h"
 #include "../Source/Platform/MacCoreAudioQueries.h"
 #include "../Source/Platform/SystemAggregateDevice.h"
 
+#include <algorithm>
 #include <chrono>
 #include <atomic>
+#include <memory>
 #include <cmath>
 #include <cstdio>
 #include <unistd.h>
@@ -2174,6 +2177,271 @@ void outputsCarryWhatSection53NeedsToFindTheHeadphones()
            "an input descriptor never carries the output default or jack flags");
 }
 
+/// What Application::reselectOutputDevice does with the backend's outputs, kept
+/// across passes the way the app keeps it: the tracker, the last pick, and
+/// whether that pick was a headphone jack.
+struct MonitorPicker
+{
+    mma::OutputDeviceTracker tracker;
+    std::string current;
+    bool currentWasJack = false;
+
+    mma::OutputSelection pick (mma::CoreAudioBackend& backend)
+    {
+        std::vector<mma::OutputDeviceCandidate> snapshot;
+        for (const auto& d : backend.enumerateOutputDevices())
+            snapshot.push_back (mma::OutputDeviceSelector::candidateFromDescriptor (d, 48000, {}));
+
+        const auto candidates = tracker.observe (std::move (snapshot));
+        const auto selection = mma::OutputDeviceSelector::select (
+            candidates, {}, mma::OutputDeviceSelector::currentIdToKeep (candidates, current, currentWasJack));
+
+        current = selection.id;
+        currentWasJack = std::any_of (candidates.begin(), candidates.end(),
+                                      [&selection] (const mma::OutputDeviceCandidate& c)
+                                      { return c.id == selection.id && c.hasPhysicalHeadphoneJack; });
+        return selection;
+    }
+};
+
+/// An Intel Mac's headphone jack. Plugging in moves "Built-in Output" from its
+/// speakers ('ispk') to headphones ('hdpn') and changes no device list, so the
+/// device-list listener alone never heard it: the monitor stayed where it was
+/// until some unrelated device came or went.
+void headphonesInAnIntelJackMoveTheMonitorWithoutADeviceListChange()
+{
+    std::printf ("\nHeadphones plugged into an Intel Mac's built-in jack\n");
+    fakeca::reset();
+
+    const UInt32 speakersSource = mmaFourCC ('i', 's', 'p', 'k');
+    const UInt32 headphonesSource = mmaFourCC ('h', 'd', 'p', 'n');
+
+    // The macOS default is a USB amp; the built-in output is on its speakers.
+    const auto ampId = fakeca::addDevice (headphones ("USB Headphone Amp", "usb-amp", 2,
+                                                      fakeca::BufferShape::oneChannelPerBuffer));
+    fakeca::setDefaultOutputDevice (ampId);
+
+    auto intel = headphones ("Built-in Output", "AppleHDAEngineOutput:1B,0,1,1:0", 2,
+                             fakeca::BufferShape::oneChannelPerBuffer);
+    intel.transportType = kAudioDeviceTransportTypeBuiltIn;
+    intel.outputDataSource = speakersSource;
+    const auto intelId = fakeca::addDevice (intel);
+
+    auto owner = std::make_shared<int> (1);
+    std::weak_ptr<int> weakOwner = owner;
+    std::atomic<int> notifications { 0 };
+    std::atomic<int> callsAfterOwnerRelease { 0 };
+
+    {
+        mma::CoreAudioBackend backend;
+        backend.setDeviceChangeCallback ([&notifications, &callsAfterOwnerRelease, weakOwner]
+        {
+            if (weakOwner.expired())
+                callsAfterOwnerRelease.fetch_add (1, std::memory_order_relaxed);
+            notifications.fetch_add (1, std::memory_order_relaxed);
+        });
+
+        MonitorPicker picker;
+        auto selection = picker.pick (backend); // the launch pass
+        check (selection.found && selection.id == "usb-amp",
+               "with the jack empty the monitor starts on the macOS default (the amp)");
+        check (fakeca::propertyListenerCount (intelId) == 1,
+               "the built-in output's data source is watched");
+        check (fakeca::propertyListenerCount (ampId) == 0,
+               "an output with no data source or jack property is not");
+
+        const auto outputsBefore = backend.enumerateOutputDevices().size();
+
+        // Plug in. Only the data source changes.
+        auto before = notifications.load();
+        fakeca::setOutputDataSource (intelId, headphonesSource);
+        check (notifications.load() > before,
+               "plugging into the jack reaches the app with no device-list change");
+        check (backend.enumerateOutputDevices().size() == outputsBefore,
+               "and the device list really is unchanged");
+
+        selection = picker.pick (backend); // what the app's re-evaluation does
+        check (selection.id == intel.uid
+                   && selection.reason == mma::OutputSelectionReason::PhysicalHeadphoneJack,
+               "the re-evaluation moves the monitor to the headphones in the built-in jack");
+
+        selection = picker.pick (backend);
+        check (selection.id == intel.uid, "and an unrelated later pass keeps it there");
+
+        // Unplug. The same device, back on its speakers.
+        before = notifications.load();
+        fakeca::setOutputDataSource (intelId, speakersSource);
+        check (notifications.load() > before, "unplugging reaches the app too");
+
+        selection = picker.pick (backend);
+        check (selection.id == "usb-amp"
+                   && selection.reason == mma::OutputSelectionReason::SystemDefault,
+               "unplugged, the monitor goes back to the macOS default, not the room speakers");
+
+        // coreaudiod restarts: the route listener went with the old service,
+        // though the built-in output kept its AudioObjectID.
+        before = notifications.load();
+        fakeca::restartService();
+        check (notifications.load() > before && fakeca::propertyListenerCount (intelId) == 0,
+               "a coreaudiod restart is heard, and the old route listener is gone");
+        (void) picker.pick (backend); // the rescan the restart causes
+        check (fakeca::propertyListenerCount (intelId) == 1,
+               "the rescan after the restart watches the jack again");
+        before = notifications.load();
+        fakeca::setOutputDataSource (intelId, headphonesSource);
+        check (notifications.load() > before && picker.pick (backend).id == intel.uid,
+               "and the jack moves the monitor after the restart too");
+        fakeca::setOutputDataSource (intelId, speakersSource);
+        (void) picker.pick (backend);
+
+        // A Mac that also reports the jack itself.
+        auto jackMac = headphones ("Built-in Line Output", "builtin-line", 2,
+                                   fakeca::BufferShape::oneChannelPerBuffer);
+        jackMac.transportType = kAudioDeviceTransportTypeBuiltIn;
+        jackMac.outputDataSource = speakersSource;
+        jackMac.jackConnected = 0;
+        const auto jackMacId = fakeca::addDevice (jackMac);
+        (void) picker.pick (backend); // the rescan the arrival causes
+
+        check (fakeca::propertyListenerCount (jackMacId) == 2,
+               "an output hot-plugged later is watched for its data source and its jack");
+
+        before = notifications.load();
+        fakeca::setJackConnected (jackMacId, true);
+        check (notifications.load() > before, "a JackIsConnected change reaches the app as well");
+
+        // Gone: its registration is dropped on the next rescan. (The HAL
+        // refuses the remove for an object that no longer exists, which the
+        // backend must tolerate.)
+        fakeca::removeDevice (jackMacId);
+        check (! backend.enumerateOutputDevices().empty(),
+               "a rescan after a watched output left still works");
+
+        // Stopping the watch removes the route listeners before the state goes.
+        backend.setDeviceChangeCallback (nullptr);
+        check (fakeca::propertyListenerCount (intelId) == 0,
+               "removing the callback removes the route listeners");
+
+        before = notifications.load();
+        fakeca::setOutputDataSource (intelId, headphonesSource);
+        check (notifications.load() == before, "and a later jack change calls nobody");
+
+        // Watching again, then destroying the backend with it in place.
+        backend.setDeviceChangeCallback ([&notifications, &callsAfterOwnerRelease, weakOwner]
+        {
+            if (weakOwner.expired())
+                callsAfterOwnerRelease.fetch_add (1, std::memory_order_relaxed);
+            notifications.fetch_add (1, std::memory_order_relaxed);
+        });
+        check (fakeca::propertyListenerCount (intelId) == 1,
+               "a new callback watches the outputs again straight away");
+    }
+
+    check (fakeca::propertyListenerCount (intelId) == 0,
+           "destroying the backend removes its route listeners");
+
+    owner.reset();
+    fakeca::setOutputDataSource (intelId, speakersSource);
+    check (callsAfterOwnerRelease.load() == 0,
+           "a jack change after the backend is gone reaches nothing");
+}
+
+/// `sudo killall coreaudiod`, or the combined device deleted in Audio MIDI
+/// Setup. The app went on believing it existed, and the "nothing changed"
+/// guard never made it again until the rig changed.
+void aCombinedDeviceTakenAwayOutsideTheAppIsMadeAgain()
+{
+    std::printf ("\nThe combined device removed outside the app\n");
+    fakeca::reset();
+    namespace q = mma::macaudio;
+
+    auto micA = microphone ("Mic A", "mic-a", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    micA.outputChannels = 2;
+    auto micB = microphone ("Mic B", "mic-b", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    micB.outputChannels = 2;
+    fakeca::addDevice (micA);
+    fakeca::addDevice (micB);
+
+    mma::CoreAudioBackend backend;
+    std::atomic<int> notifications { 0 };
+    backend.setDeviceChangeCallback ([&notifications] { notifications.fetch_add (1); });
+    check (fakeca::serviceRestartListenerCount() == 1, "coreaudiod restarts are watched");
+
+    auto aggregate = mma::createSystemAggregateDevice();
+    const std::vector<std::string> uids { "mic-a", "mic-b" };
+
+    // Application::rescanDevices on every notification: forget a lost device,
+    // then publish only when what would be published differs.
+    std::vector<std::string> published;
+    const auto rescan = [&]
+    {
+        if (aggregate->forgetIfLost())
+            published.clear();
+
+        if (uids != published && aggregate->publish ("SobStage", uids, {}))
+            published = uids;
+    };
+
+    rescan();
+    const auto first = q::findDeviceByUID (mma::kOurAggregateUid);
+    check (first != kAudioObjectUnknown && fakeca::aggregatesCreated() == 1,
+           "the combined device is published");
+
+    rescan();
+    check (fakeca::aggregatesCreated() == 1 && ! aggregate->forgetIfLost(),
+           "while it is there, nothing is re-made");
+
+    // Deleted outside the app: the device-list listener fires.
+    auto before = notifications.load();
+    fakeca::removeDevice (first);
+    check (notifications.load() > before, "its removal reaches the app");
+    rescan();
+    check (fakeca::aggregatesCreated() == 2 && aggregate->isPublished()
+               && q::findDeviceByUID (mma::kOurAggregateUid) != kAudioObjectUnknown,
+           "the app forgets it and makes it again");
+    check (mma::combinedLayoutIsComplete (aggregate->getOutputLayout(), uids),
+           "with every microphone's headphone jack in it");
+
+    // coreaudiod restarts, and that notification is the only one.
+    before = notifications.load();
+    fakeca::restartService();
+    check (notifications.load() > before,
+           "a coreaudiod restart alone reaches the app, with no device-list change");
+    check (q::findDeviceByUID (mma::kOurAggregateUid) == kAudioObjectUnknown,
+           "and the combined device is gone");
+    rescan();
+    check (fakeca::aggregatesCreated() == 3 && aggregate->isPublished()
+               && q::findDeviceByUID (mma::kOurAggregateUid) != kAudioObjectUnknown,
+           "the app makes it again after the restart");
+
+    // A restart that brings ours back under a new AudioObjectID: the ID held
+    // is stale, and the one now there would refuse a create with our UID.
+    fakeca::removeDevice (q::findDeviceByUID (mma::kOurAggregateUid));
+    fakeca::DeviceSpec restored;
+    restored.name = "SobStage";
+    restored.uid = mma::kOurAggregateUid;
+    restored.transportType = kAudioDeviceTransportTypeAggregate;
+    restored.subDeviceUids = uids;
+    fakeca::addDevice (restored);
+    rescan();
+    check (fakeca::aggregatesCreated() == 4 && aggregate->isPublished(),
+           "one restored under a new ID is cleared and made afresh");
+
+    int ours = 0;
+    for (const auto& d : backend.enumerateOutputDevices())
+        if (d.usbLocationId == mma::kOurAggregateUid)
+            ++ours;
+    check (ours == 0, "and the backend still never lists it as an output");
+
+    aggregate.reset();
+    check (q::findDeviceByUID (mma::kOurAggregateUid) == kAudioObjectUnknown,
+           "the combined device is taken away at quit");
+
+    backend.setDeviceChangeCallback (nullptr);
+    check (fakeca::serviceRestartListenerCount() == 0,
+           "the restart listener is removed with the device-list listener");
+}
+
 int main()
 {
     std::printf ("CoreAudio backend, driven against a virtual HAL\n");
@@ -2228,6 +2496,8 @@ int main()
     anOversizedBufferKeepsItsPhysicalChannelSlots();
     bitDepthFollowsWhatTheDeviceCanActuallyDeliver();
     eightMicrophonesEachKeepTheirOwnAudio();
+    headphonesInAnIntelJackMoveTheMonitorWithoutADeviceListChange();
+    aCombinedDeviceTakenAwayOutsideTheAppIsMadeAgain();
 
     // Tear the last scenario down so a leak check sees only what the
     // backend failed to release, not what the harness never cleaned up.

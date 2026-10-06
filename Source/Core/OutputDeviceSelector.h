@@ -134,6 +134,18 @@ public:
                                    const std::string& rememberedId,
                                    const std::string& currentId = {});
 
+    /// The id to pass select() as currentId. Normally the output the last pass
+    /// chose. Not when that output was chosen as a headphone jack and is one no
+    /// longer: an Intel Mac's "Built-in Output" stays the same device when
+    /// headphones come out of its jack, it just goes back to the speakers. On
+    /// Apple Silicon the headphone device leaves the list instead and the
+    /// monitor moves on by policy; keeping the Intel one as "current" would
+    /// put the mix into the room speakers. Empty in that case, so the same
+    /// policy applies on both.
+    static std::string currentIdToKeep (const std::vector<OutputDeviceCandidate>& candidates,
+                                        const std::string& currentId,
+                                        bool currentWasHeadphoneJack);
+
     /// A backend's advertised ranges can lag the nominal rate it is already
     /// running successfully. Either positive fact makes an output compatible;
     /// an empty capability list remains unknown/eligible.
