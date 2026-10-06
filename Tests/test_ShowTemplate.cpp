@@ -257,6 +257,18 @@ TEST_CASE (ShowTemplate_fileNamesAreSanitized)
     REQUIRE (ShowTemplate::fileNameFor ("").empty());
     REQUIRE (ShowTemplate::fileNameFor ("   ").empty());
     REQUIRE (ShowTemplate::fileNameFor ("!!!").empty());
+
+    // A name in another script is still a name: it is kept in a plain file and
+    // found again by the name stored inside it.
+    const std::string japanese ("\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"); // 日本語
+    const std::string greek ("\xce\x96\xcf\x89\xce\xbd"); // Ζων
+    REQUIRE (ShowTemplate::fileNameFor (japanese) == std::string ("Show.json"));
+    REQUIRE (ShowTemplate::fileNameForSaving (japanese, {}) == std::string ("Show.json"));
+
+    const std::vector<ShowTemplate::StoredFile> saved { { "Show.json", japanese } };
+    REQUIRE (ShowTemplate::fileNameForSaving (greek, saved) == std::string ("Show-2.json"));
+    REQUIRE (ShowTemplate::fileNameForSaving (japanese, saved) == std::string ("Show.json"));
+    REQUIRE (ShowTemplate::findFileFor (japanese, saved) == std::string ("Show.json"));
 }
 
 TEST_CASE (ShowTemplate_namesAreTidiedButKept)

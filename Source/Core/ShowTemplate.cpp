@@ -309,8 +309,22 @@ std::string ShowTemplate::cleanName (const std::string& rawName)
 
 std::string ShowTemplate::fileNameFor (const std::string& name)
 {
-    const auto stem = SessionFolderNaming::sanitizeNameOrEmpty (cleanName (name));
-    return stem.empty() ? std::string() : stem + ".json";
+    const auto clean = cleanName (name);
+    const auto stem = SessionFolderNaming::sanitizeNameOrEmpty (clean);
+
+    if (! stem.empty())
+        return stem + ".json";
+
+    // §6.2's sanitizing keeps ASCII letters and digits only, so a name written
+    // wholly in another script -- "日本語ライブ", "Ζωντανά" -- leaves nothing,
+    // and was refused as having "no letter or number in it". The file name is
+    // only where the show is kept; it is listed, loaded and deleted by the
+    // name stored inside, so such a name gets a plain file of its own
+    // (fileNameForSaving adds "-2"... when that one is taken).
+    const bool hasNonAscii = std::any_of (clean.begin(), clean.end(),
+                                          [] (char c) { return static_cast<unsigned char> (c) >= 0x80; });
+
+    return hasNonAscii ? std::string ("Show.json") : std::string();
 }
 
 namespace {

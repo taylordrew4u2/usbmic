@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
+#include "../Core/ShowTemplate.h"
 #include <set>
 
 namespace mma {
@@ -947,8 +948,12 @@ void MainComponent::promptSaveShow()
             {
                 const auto name = window->getTextEditorContents ("name").trim();
 
+                // Selected by the name it is listed under, which is the
+                // tidied one: a name past 60 characters, or with a line break
+                // pasted in, was saved but left the picker on nothing, with
+                // Load and Delete greyed out.
                 if (application.saveTemplate (name))
-                    refreshShows (name);
+                    refreshShows (juce::String::fromUTF8 (ShowTemplate::cleanName (name.toStdString()).c_str()));
 
                 refreshAdvanced();
             }
