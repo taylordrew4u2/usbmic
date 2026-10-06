@@ -119,7 +119,7 @@ Every constant and behavior traces to the build specification in
 
 ## Project status
 
-The current source is the **v1.13.19 release candidate**. The engine, the
+The current source is the **v1.13.20 release candidate**. The engine, the
 simulated backends and the end-to-end app runs pass in CI on all three
 platforms. Real-driver timing and a completed take from physical microphones
 are still release gates: a PUPGSIS T12S interface has been detected on a real
@@ -169,7 +169,7 @@ Packaging, build options and every harness are documented in
 ctest --test-dir build --output-on-failure
 ```
 
-- **740 unit tests** covering the engine: drift loop, ring buffers, monitor
+- **751 unit tests** covering the engine: drift loop, ring buffers, monitor
   bus, metering, loudness, session writer, crash recovery and more.
 - **Platform simulators:** `sim_coreaudio`, `sim_wasapi`, `sim_camera` and
   `sim_mix_bus` run the shipping code against virtual devices; the audio
