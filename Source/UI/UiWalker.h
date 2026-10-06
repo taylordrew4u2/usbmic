@@ -268,6 +268,21 @@ private:
         return dynamic_cast<MainComponent*> (&root) != nullptr ? &root : nullptr;
     }
 
+    /// The main screen, found whether or not anything is showing.
+    MainScreen* mainScreenEvenIfHidden() const
+    {
+        std::function<MainScreen* (juce::Component&)> search = [&search] (juce::Component& c) -> MainScreen*
+        {
+            if (auto* ms = dynamic_cast<MainScreen*> (&c))
+                return ms;
+            for (auto* child : c.getChildren())
+                if (auto* ms = search (*child))
+                    return ms;
+            return nullptr;
+        };
+        return search (root);
+    }
+
     /// The app's one window, found from the root even while it is hidden.
     juce::ResizableWindow* mainWindow() const
     {
@@ -819,6 +834,75 @@ private:
             // where Return would start a new take under it.
             check ("the keyboard is on the red card's OK",
                    [this] { auto* ok = button<TakeAlertCard> ("OK"); return ok != nullptr && ok->hasKeyboardFocus (false); });
+
+            // The card lays itself out in the window's height. It grew the
+            // window as it opened, but the window could then be dragged
+            // shorter and the card's buttons were squeezed to nothing.
+            add ("with the red card up, the window cannot be dragged shorter than the card", [this]
+            {
+                if (auto* window = mainWindow())
+                {
+                    windowBoundsBefore = window->getBounds();
+                    window->setBoundsConstrained (windowBoundsBefore.withHeight (420));
+                }
+            }, [this]
+            {
+                auto* card = find<TakeAlertCard>();
+                auto* ok = button<TakeAlertCard> ("OK");
+                return card != nullptr && ok != nullptr && ok->getHeight() > 0
+                    && card->getHeight() >= card->getRequiredHeight() + 32;
+            });
+            add ("  (window size put back)", [this]
+            {
+                if (auto* window = mainWindow())
+                    window->setBounds (windowBoundsBefore);
+            }, [this] { auto* window = mainWindow(); return window != nullptr && window->getBounds() == windowBoundsBefore; });
+
+            // Nobody can see the window: the meters stop repainting, but the
+            // siren is driven by the card, not by painting, and keeps going.
+            add ("with the window out of sight, the meters stop repainting and the siren carries on", [this]
+            {
+                if (auto* window = mainWindow())
+                    window->setVisible (false);
+            }, [this]
+            {
+                auto* ms = mainScreenEvenIfHidden();
+                return ms != nullptr && ms->areMetersPaused() && application.isFaultAlarmOn();
+            });
+            add ("back in sight, the meters repaint and the red card is still up, alarming", [this]
+            {
+                if (auto* window = mainWindow())
+                {
+                    window->setVisible (true);
+                    window->toFront (true);
+                }
+
+                // Hiding the window let go of the keyboard; the card's own
+                // focus was checked above, and Return below needs it back.
+                if (auto* ok = button<TakeAlertCard> ("OK"))
+                    ok->grabKeyboardFocus();
+            }, [this]
+            {
+                auto* ms = mainScreenEvenIfHidden();
+                auto* card = find<TakeAlertCard>();
+                return ms != nullptr && ! ms->areMetersPaused() && card != nullptr && card->isAlarming()
+                    && onTop<TakeAlertCard>() && application.isFaultAlarmOn();
+            });
+            // Xvfb has no window manager to hand a re-mapped window the
+            // keyboard back, so it is asked for until the window has it.
+            add ("  (keyboard back on the red card's OK)", [] {}, [this]
+            {
+                auto* ok = button<TakeAlertCard> ("OK");
+                if (ok == nullptr)
+                    return false;
+                if (! ok->hasKeyboardFocus (false))
+                {
+                    if (auto* window = mainWindow())
+                        window->toFront (true);
+                    ok->grabKeyboardFocus();
+                }
+                return ok->hasKeyboardFocus (false);
+            }, 5000, false);
             add ("Return answers OK: the red card closes and the siren stops", [this] { pressKeyThroughWindow (juce::KeyPress::returnKey); },
                  [this] { return ! isUp<TakeAlertCard>() && ! application.isFaultAlarmOn(); });
             check ("and no new take started behind it", [this] { return ! recording(); });
@@ -827,6 +911,12 @@ private:
             add ("the saved-take card's Done goes back to a quiet main screen",
                  [this] { click<SavedTakePanel> ("Done"); },
                  [this] { return ! isUp<SavedTakePanel>() && ! isUp<TakeAlertCard>() && ! application.isFaultAlarmOn(); });
+            check ("with no card up, the window can be made short again", [this]
+            {
+                auto* window = mainWindow();
+                auto* constrainer = window != nullptr ? window->getConstrainer() : nullptr;
+                return constrainer != nullptr && constrainer->getMinimumHeight() == 420;
+            });
             return;
         }
 

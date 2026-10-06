@@ -273,6 +273,14 @@ if (MMA_BUILD_APP)
         target_link_libraries(SobStage PRIVATE
             "-framework AVFoundation" "-framework CoreMedia" "-framework Foundation")
 
+        # Whether the window can be seen at all (covered, another Space), so
+        # the meters stop repainting for nobody. Elsewhere the header's inline
+        # stub reports "visible".
+        target_sources(SobStage PRIVATE Source/Platform/WindowOcclusion.mm)
+        set_source_files_properties(Source/Platform/WindowOcclusion.mm
+                                    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(SobStage PRIVATE "-framework AppKit")
+
         add_executable(mac_movie_combiner_check
             Tools/mac_movie_combiner_check.mm
             Source/Platform/MacMovieCombiner.mm)

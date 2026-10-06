@@ -43,7 +43,8 @@ void MixBarComponent::timerCallback()
         updateAccessibilityText();
     }
 
-    repaint();
+    if (! repaintPaused)
+        repaint();
 }
 
 void MixBarComponent::updateAccessibilityText()

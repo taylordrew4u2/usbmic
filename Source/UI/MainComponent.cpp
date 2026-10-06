@@ -2,6 +2,7 @@
 #include "AppLookAndFeel.h"
 #include "../App/Application.h"
 #include "../Core/ShowTemplate.h"
+#include "../Platform/WindowOcclusion.h"
 #include <set>
 
 namespace mma {
@@ -1023,6 +1024,11 @@ void MainComponent::refreshStatus()
     // take is running, and passes on a result that arrived during one.
     application.pollUpdateCheck();
 
+    // Only painting depends on this. Everything below -- alarms, the siren,
+    // the cards, the take's status -- runs whether or not the window is seen.
+    updateWindowVisibility();
+    updateWindowMinimumSize();
+
     announceTakeTransitions();
 
     // The capture-rebuilt callback is the source of truth after construction.
@@ -1857,15 +1863,35 @@ void MainComponent::applyPanelVisibility()
 
     mainScreen.setDoorsOpen (advancedVisible && ! cameraVisible, helpVisible && ! cameraVisible);
 
-    updateWindowMinimumWidth();
+    updateWindowMinimumSize();
 }
 
-void MainComponent::updateWindowMinimumWidth()
+void MainComponent::updateWindowVisibility()
 {
-    // The drawer never goes below 380px, so a window dragged down to its own
-    // 560px minimum with Settings open left the main screen 179px wide: the
-    // record button hung off its left edge and the header buttons sat on top
-    // of each other. The limit is raised for as long as a drawer is open.
+    // Minimised (every platform, through the peer), or on macOS completely
+    // covered, on another Space or on a sleeping display: the 60 Hz meters
+    // were repainting for nobody the whole time, at real battery cost on a
+    // laptop running a long show.
+    bool visible = isShowing();
+
+    if (visible)
+        if (auto* peer = getPeer())
+            visible = ! peer->isMinimised() && isNativeWindowVisible (peer->getNativeHandle());
+
+    if (visible == windowVisible)
+        return;
+
+    windowVisible = visible;
+    mainScreen.setMetersPaused (! visible);
+
+    // Back in view: the whole window at once, so the meters, and a flashing
+    // card or banner in its current phase, are there in the first frame.
+    if (visible)
+        repaint();
+}
+
+void MainComponent::updateWindowMinimumSize()
+{
     auto* window = dynamic_cast<juce::ResizableWindow*> (getTopLevelComponent());
     if (window == nullptr)
         return;
@@ -1875,9 +1901,18 @@ void MainComponent::updateWindowMinimumWidth()
         return;
 
     if (windowBaseMinimumWidth < 0)
+    {
         windowBaseMinimumWidth = constrainer->getMinimumWidth();
+        windowBaseMinimumHeight = constrainer->getMinimumHeight();
+    }
 
-    int minimum = windowBaseMinimumWidth;
+    const auto usable = usableAreaForWindow (*window);
+
+    // The drawer never goes below 380px, so a window dragged down to its own
+    // 560px minimum with Settings open left the main screen 179px wide: the
+    // record button hung off its left edge and the header buttons sat on top
+    // of each other. The limit is raised for as long as a drawer is open.
+    int minimumWidth = windowBaseMinimumWidth;
 
     if ((advancedVisible || helpVisible || guideVisible) && ! cameraVisible)
     {
@@ -1885,16 +1920,39 @@ void MainComponent::updateWindowMinimumWidth()
 
         // Never more than the display has room for, or a small screen could
         // not hold the window at all; there the drawer gets what it can.
-        minimum = juce::jmax (windowBaseMinimumWidth,
-                              juce::jmin (kMainMinWidth + 380 + 1,
-                                          usableAreaForWindow (*window).getWidth()) + chrome);
+        minimumWidth = juce::jmax (windowBaseMinimumWidth,
+                                   juce::jmin (kMainMinWidth + 380 + 1, usable.getWidth()) + chrome);
     }
 
-    // Only the limit: the constrainer is consulted on the next drag, and
-    // growWindowToFitWidth() has already widened the window itself, keeping it
-    // on the screen, which a forced resize from here would not.
-    if (constrainer->getMinimumWidth() != minimum)
-        constrainer->setMinimumWidth (minimum);
+    // A full-window card lays itself out in the window's height less 32px.
+    // Each grows the window as it opens, but the window could then be dragged
+    // shorter, and the card's last rows -- its buttons, Start and Stop among
+    // them -- were squeezed to nothing. While one is up, it sets the floor.
+    int cardHeight = 0;
+
+    for (auto* card : std::initializer_list<const ModalCard*> { &saveLocationPrompt, &savedTakePanel,
+                                                                &recoveredTakesPanel, &takeAlertCard })
+        if (card->isVisible())
+            cardHeight = juce::jmax (cardHeight, card->getRequiredHeight() + 32);
+
+    int minimumHeight = windowBaseMinimumHeight;
+
+    if (cardHeight > 0)
+    {
+        const int chrome = juce::jmax (0, window->getHeight() - getHeight());
+        minimumHeight = juce::jmax (windowBaseMinimumHeight,
+                                    juce::jmin (cardHeight, usable.getHeight()) + chrome);
+    }
+
+    // Only the limits: the constrainer is consulted on the next drag. The
+    // window itself was already grown, kept on the screen, by
+    // growWindowToFitWidth()/growWindowToFit(), which a forced resize from
+    // here would not do.
+    if (constrainer->getMinimumWidth() != minimumWidth)
+        constrainer->setMinimumWidth (minimumWidth);
+
+    if (constrainer->getMinimumHeight() != minimumHeight)
+        constrainer->setMinimumHeight (minimumHeight);
 }
 
 void MainComponent::growWindowToFitWidth (int contentWidth)

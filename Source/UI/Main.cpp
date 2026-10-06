@@ -30,7 +30,10 @@ public:
         setResizable (true, false);
         // Small enough for a laptop half-screen, never small enough to crush
         // the meters into unreadability.
-        setResizeLimits (560, 420, 4096, 4096);
+        // No practical ceiling: at 4096 the window could not be dragged or
+        // zoomed to fill a 5120-point-wide ultrawide, or a display arrangement
+        // wider than that. 16384 is past any single display in use.
+        setResizeLimits (560, 420, 16384, 16384);
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
     }

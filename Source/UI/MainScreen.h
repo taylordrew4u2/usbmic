@@ -63,6 +63,11 @@ public:
     /// Repaints only the meters, so status-label updates don't redraw the whole screen.
     void repaintMeters();
 
+    /// Nobody can see the window: the meters keep measuring but stop
+    /// repainting, and repaintMeters() does nothing. See MainComponent.
+    void setMetersPaused (bool paused);
+    bool areMetersPaused() const noexcept { return metersPaused; }
+
     void setRecording (bool isRecording);
     void setElapsedTimeText (const juce::String& text) { elapsedLabel.setText (text, juce::dontSendNotification); }
     void setRemainingTimeText (const juce::String& text) { remainingLabel.setText (text, juce::dontSendNotification); }
@@ -224,6 +229,7 @@ private:
     };
 
     ClickAwayWatcher clickAwayWatcher { *this };
+    bool metersPaused = false;
     void finishSessionName();
 
     // The masthead. A window with no name in it is a window you have to

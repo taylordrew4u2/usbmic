@@ -309,8 +309,21 @@ void MainScreen::ClickAwayWatcher::mouseDown (const juce::MouseEvent& e)
     owner.finishSessionName();
 }
 
+void MainScreen::setMetersPaused (bool paused)
+{
+    metersPaused = paused;
+
+    for (auto* meter : channelMeters)
+        meter->setRepaintPaused (paused);
+
+    mixBar.setRepaintPaused (paused);
+}
+
 void MainScreen::repaintMeters()
 {
+    if (metersPaused)
+        return;
+
     for (auto* meter : channelMeters)
         meter->repaint();
 
@@ -327,6 +340,7 @@ void MainScreen::setMicCount (int count)
         // A hand over the strip: the name is clickable, and nothing on the
         // strip itself said so.
         meter->setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        meter->setRepaintPaused (metersPaused);
         addAndMakeVisible (meter);
         channelMeters.add (meter);
     }
