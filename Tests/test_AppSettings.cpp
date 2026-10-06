@@ -464,3 +464,68 @@ TEST_CASE (AppSettings_SetupGuideOpensOnlyOnATrueFirstLaunch)
     REQUIRE (unreadable.wasUnreadable);
     REQUIRE (unreadable.setupGuideDone);
 }
+
+TEST_CASE (AppSettings_SettingsANewerVersionWroteSurviveARoundTrip)
+{
+    // A newer SobStage wrote a setting this version has never heard of, at the
+    // top level and inside a microphone's and a camera's entry. The older copy
+    // still in the DMG is opened once and saves. The newer copy must find its
+    // settings where it left them.
+    const std::string newer =
+        "{\"masterVolume\": 55, \"futureLoudnessMode\": \"broadcast\","
+        " \"futureList\": [1, 2],"
+        " \"ports\": [{\"key\": \"usb-1\", \"assignedName\": \"Drums\", \"futurePhantom\": true}],"
+        " \"cameras\": [{\"id\": \"FaceTime HD\", \"enabled\": true, \"futureZoom\": 2}]}";
+
+    const auto read = AppSettings::fromJsonString (newer);
+    REQUIRE_FALSE (read.wasUnreadable);
+    REQUIRE (read.masterVolume == 55.0);
+
+    const auto saved = JsonValue::parse (read.toJsonString());
+    REQUIRE (saved.find ("futureLoudnessMode") != nullptr);
+    REQUIRE (saved.find ("futureLoudnessMode")->asString() == std::string ("broadcast"));
+    REQUIRE (saved.find ("futureList") != nullptr);
+    REQUIRE (saved.find ("futureList")->asArray().size() == 2u);
+    REQUIRE (saved.find ("ports")->asArray().size() == 1u);
+    REQUIRE (saved.find ("ports")->asArray().front().find ("futurePhantom") != nullptr);
+    REQUIRE (saved.find ("cameras")->asArray().size() == 1u);
+    REQUIRE (saved.find ("cameras")->asArray().front().find ("futureZoom") != nullptr);
+}
+
+TEST_CASE (AppSettings_TheAppLayersRebuiltSettingsKeepWhatANewerVersionWrote)
+{
+    // Application::saveSettings() does not edit the settings it read; it
+    // builds a fresh AppSettings from the live rig. That rebuild is where the
+    // newer version's settings were actually lost.
+    const auto read = AppSettings::fromJsonString (
+        "{\"masterVolume\": 55, \"futureLoudnessMode\": \"broadcast\","
+        " \"ports\": [{\"key\": \"usb-1\", \"assignedName\": \"Drums\", \"futurePhantom\": true}],"
+        " \"cameras\": [{\"id\": \"FaceTime HD\", \"enabled\": true, \"futureZoom\": 2}]}");
+
+    AppSettings rebuilt;
+    rebuilt.keepUnknownFieldsFrom (read);
+    rebuilt.masterVolume = 60.0;
+    rebuilt.ports.push_back ({ "usb-1", read.findPort ("usb-1")->settings });
+    rebuilt.cameras.push_back (*read.findCamera ("FaceTime HD"));
+
+    const auto saved = JsonValue::parse (rebuilt.toJsonString());
+    REQUIRE (saved.find ("masterVolume")->asDouble() == 60.0);
+    REQUIRE (saved.find ("futureLoudnessMode") != nullptr);
+    REQUIRE (saved.find ("ports")->asArray().front().find ("futurePhantom")->asBool());
+    REQUIRE (saved.find ("cameras")->asArray().front().find ("futureZoom")->asDouble() == 2.0);
+
+    // A value this version owns is never overruled by a stale copy of it.
+    REQUIRE (JsonValue::parse (rebuilt.toJsonString()).getMembers().size()
+             == JsonValue::parse (AppSettings{}.toJsonString()).getMembers().size() + 1);
+}
+
+TEST_CASE (AppSettings_AKnownSettingIsNeverMistakenForAnUnknownOne)
+{
+    // Every member this version writes is its own: none comes back as an
+    // "unknown" one to be written twice.
+    const auto read = AppSettings::fromJsonString (populated().toJsonString());
+
+    REQUIRE (read.unknownFields.empty());
+    REQUIRE (read.unknownPortFields.empty());
+    REQUIRE (read.unknownCameraFields.empty());
+}
