@@ -452,10 +452,19 @@ private:
         uint64_t requested = 0;
         uint64_t completed = 0;
         juce::StringArray pendingDeviceNames;
+        /// Parallel to pendingDeviceNames: the platform's per-device ids
+        /// (macOS uniqueID), empty where it has none.
+        juce::StringArray pendingDeviceIds;
     };
 
     static void runDiscoveryWorker (std::shared_ptr<DiscoveryState> state);
-    void applyDeviceNames (const juce::StringArray& names);
+    /// `ids` is parallel to `names`. A non-empty id is the camera's identity
+    /// (settings follow the physical device); an empty one falls back to the
+    /// name, "Name #2" and on for cameras sharing a name, by OS order.
+    void applyDeviceNames (const juce::StringArray& names, const juce::StringArray& ids);
+    /// Selection ids that are the platform's per-device ids, so an opened
+    /// device can be checked to be that very device and not a same-name twin.
+    std::set<std::string> perDeviceIds;
 
     // Camera enumeration can remain inside AVFoundation/DirectShow forever.
     // The detached worker owns only this shared mailbox, never the controller,
@@ -470,6 +479,7 @@ private:
     // stop restores a camera which already reconnected without waiting for a
     // second asynchronous scan before the next Record click.
     juce::StringArray lastAppliedDeviceNames;
+    juce::StringArray lastAppliedDeviceIds;
 #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CameraController)

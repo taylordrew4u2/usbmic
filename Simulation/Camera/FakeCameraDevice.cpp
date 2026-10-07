@@ -23,6 +23,7 @@ struct EnumerationControl
     std::mutex mutex;
     std::condition_variable condition;
     juce::StringArray devices;
+    juce::StringArray identifiers; // parallel to devices; empty: none
     std::thread::id lastThread;
     int pausesRemaining = 0;
     int releasePermits = 0;
@@ -38,9 +39,18 @@ EnumerationControl& enumerationControl()
 
 void setDevices (const juce::StringArray& names)
 {
+    setDevices (names, {});
+}
+
+void setDevices (const juce::StringArray& names, const juce::StringArray& identifiers)
+{
     auto& control = enumerationControl();
     const std::lock_guard<std::mutex> guard (control.mutex);
     control.devices = names;
+    control.identifiers.clear();
+
+    for (int i = 0; i < names.size(); ++i)
+        control.identifiers.add (i < identifiers.size() ? identifiers[i] : juce::String());
 }
 
 void pauseNextEnumerations (int count)
@@ -357,8 +367,8 @@ bool wasLastEnumerationOnThisThread()
 
 namespace juce {
 
-CameraDevice::CameraDevice (String deviceName)
-    : name (std::move (deviceName))
+CameraDevice::CameraDevice (String deviceName, String deviceIdentifier)
+    : name (std::move (deviceName)), identifier (std::move (deviceIdentifier))
 {
     ++fakecamera::liveDeviceCount();
     fakecamera::liveDevices().push_back (this);
@@ -383,10 +393,25 @@ CameraDevice::~CameraDevice()
 
 StringArray CameraDevice::getAvailableDevices()
 {
+    StringArray names, identifiers;
+    getAvailableDevicesWithIds (names, identifiers);
+    return names;
+}
+
+StringArray CameraDevice::getAvailableDeviceIds()
+{
+    StringArray names, identifiers;
+    getAvailableDevicesWithIds (names, identifiers);
+    return identifiers;
+}
+
+void CameraDevice::getAvailableDevicesWithIds (StringArray& names, StringArray& identifiers)
+{
     auto& control = fakecamera::enumerationControl();
     std::unique_lock<std::mutex> lock (control.mutex);
     control.lastThread = std::this_thread::get_id();
-    auto devices = control.devices;
+    names = control.devices;
+    identifiers = control.identifiers;
 
     if (control.pausesRemaining > 0)
     {
@@ -399,8 +424,6 @@ StringArray CameraDevice::getAvailableDevices()
         --control.pausedActive;
         control.condition.notify_all();
     }
-
-    return devices;
 }
 
 CameraDevice* CameraDevice::openDevice (int index, int, int, int, int maxHeight, bool)
@@ -409,20 +432,21 @@ CameraDevice* CameraDevice::openDevice (int index, int, int, int, int maxHeight,
     fakecamera::lastOpenMaxHeight() = maxHeight;
     fakecamera::openedDeviceIndices().push_back (index);
 
-    juce::String selectedDevice;
+    juce::String selectedDevice, selectedIdentifier;
     {
         auto& control = fakecamera::enumerationControl();
         const std::lock_guard<std::mutex> guard (control.mutex);
         if (! juce::isPositiveAndBelow (index, control.devices.size()))
             return nullptr;
         selectedDevice = control.devices[index];
+        selectedIdentifier = control.identifiers[index];
     }
 
     if (! fakecamera::openSucceeds())
         return nullptr;
 
     fakecamera::lastOpenedDeviceName() = selectedDevice;
-    return new CameraDevice (selectedDevice);
+    return new CameraDevice (selectedDevice, selectedIdentifier);
 }
 
 Component* CameraDevice::createViewerComponent()

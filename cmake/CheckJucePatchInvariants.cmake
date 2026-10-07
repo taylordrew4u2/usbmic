@@ -41,7 +41,13 @@ set(required_added_lines
     # the viewer must drop the allocation reference or every closed camera
     # leaks its NSView, preview layer and capture session.
     "+        [view release];"
-    "+       #if ! __has_feature (objc_arc)")
+    "+       #if ! __has_feature (objc_arc)"
+    # MAC-CAM-6: cameras are told apart by AVCaptureDevice.uniqueID, listed
+    # in the same enumeration (and so the same order) as their names, and an
+    # opened device reports the id of the device it actually opened.
+    "+    static void getAvailableDevicesWithIds (StringArray& names, StringArray& identifiers);"
+    "+        Pimpl::getAvailableDevicesWithIds (names, identifiers);"
+    "+    return pimpl->getDeviceIdentifier();")
 
 set(failed FALSE)
 foreach (line IN LISTS required_added_lines)
@@ -91,6 +97,19 @@ string(SUBSTRING "${after_raised}" 0 ${catch_len} catch_body)
 string(FIND "${catch_body}" "+            recordingFinished (file, \"Recording could not start: \"" reported_at)
 if (reported_at EQUAL -1)
     message(FATAL_ERROR "B5 a raised movie start is swallowed instead of reported through recordingFinished")
+endif()
+
+# MAC-CAM-6: a name and its id come from the same device in the same pass.
+# Two enumerations (or two loops) could pair one twin's name with the other's
+# id, which is the very swap the ids exist to prevent.
+set(pair_lf "+            names.add (nsStringToJuce ([device localizedName]));\n+            identifiers.add (nsStringToJuce ([device uniqueID]));")
+string(REPLACE "\n" "\r\n" pair_crlf "${pair_lf}")
+string(FIND "${patch_text}" "${pair_crlf}" pair_at)
+if (pair_at EQUAL -1)
+    string(FIND "${patch_text}" "${pair_lf}" pair_at)
+endif()
+if (pair_at EQUAL -1)
+    message(FATAL_ERROR "MAC-CAM-6 camera names and uniqueIDs are not listed together, device by device")
 endif()
 
 message(STATUS "JUCE camera patch keeps the guarded, self-rescheduling heartbeat")

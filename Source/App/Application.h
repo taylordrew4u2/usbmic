@@ -519,7 +519,7 @@ public:
     /// re-listing rather than from a device notification, because neither
     /// macOS nor Windows offers one for cameras -- the OS simply stops listing
     /// a camera that has gone.
-    void announceCameraChanges() const;
+    void announceCameraChanges();
 
     /// The same for the things the user listens on. Plugging headphones in is
     /// as much a change to the rig as plugging a microphone in, and it was
