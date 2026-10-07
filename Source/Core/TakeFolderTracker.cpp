@@ -6,6 +6,7 @@
 
 #if defined (__APPLE__) || defined (__linux__)
  #include <fcntl.h>
+ #include <sys/stat.h>
  #include <unistd.h>
 #endif
 
@@ -65,6 +66,13 @@ std::string TakeFolderTracker::currentSystemPath() const
 #if defined (__APPLE__) && defined (F_GETPATH)
     char buffer[MAXPATHLEN] = {};
     if (::fcntl (descriptor, F_GETPATH, buffer) != 0)
+        return {};
+
+    // macOS keeps answering with the last name a deleted folder had, so the
+    // answer only counts while that name still leads to this very folder.
+    struct stat held {}, named {};
+    if (::fstat (descriptor, &held) != 0 || ::stat (buffer, &named) != 0
+        || held.st_dev != named.st_dev || held.st_ino != named.st_ino)
         return {};
 
     return std::string (buffer);
