@@ -186,6 +186,27 @@ int main()
         check (o.videoTracks == 1 && o.audioTracks == 1, "the result has one picture and one sound");
         check (std::abs (o.videoSeconds - 2.0) < 0.1, "the picture is whole");
         check (std::abs (o.audioSeconds - 2.0) < 0.1, "the sound is trimmed to the picture");
+        check (! [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:(dir + "/.V01_Cam_with-sound.mov").c_str()]],
+               "no working file is left beside the finished one");
+    }
+
+    // A camera unplugged mid-take can leave a movie with no index: the bytes
+    // are there, the moov atom is not. Reported, never a crash, a hang or a
+    // file that claims to be the combined take.
+    {
+        NSData* whole = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:movie.c_str()]];
+        const auto cut = dir + "/V02_Cut.mov";
+        const auto cutOut = dir + "/V02_Cut_with-sound.mov";
+        const bool wrote = whole != nil && whole.length > 64
+            && [[whole subdataWithRange:NSMakeRange (0, whole.length / 2)]
+                   writeToFile:[NSString stringWithUTF8String:cut.c_str()] atomically:NO];
+        check (wrote, "made a movie cut off before its index");
+
+        const auto problem = mma::combineMovieWithSound (cut, { mix }, cutOut, 0.0, notCancelled);
+        check (! problem.empty(), "a movie with no index is reported");
+        check (! [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:cutOut.c_str()]]
+               && ! [[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:(dir + "/.V02_Cut_with-sound.mov").c_str()]],
+               "and leaves no combined or working file behind");
     }
 
     // A long take's mix split into parts, with the lead crossing into the second.
