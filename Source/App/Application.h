@@ -1128,6 +1128,9 @@ private:
     /// failures, and matching the sentence left the second one unreported.
     juce::uint64 reportedCombineRun = 0;
 
+    /// The last combine run whose finished files have been announced.
+    juce::uint64 announcedCombineRun = 0;
+
     // §5.1 listening level. Owned here, not on the bus, because the coordinator
     // that owns the bus is rebuilt on a rate or buffer change.
     double masterVolume = MonitorBus::kDefaultMonitorVolume;

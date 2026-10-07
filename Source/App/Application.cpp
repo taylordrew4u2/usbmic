@@ -3007,56 +3007,6 @@ void Application::toggleRecording()
         // cleared, or every timestamp inside it would read as zero.
         writeSessionMetadata (true);
 
-        // The combined file, if it was asked for. Started only once every input
-        // is closed and complete, and run on its own thread: copying a
-        // four-hour picture is minutes of work, and none of it may happen on
-        // the thread drawing the meters.
-        //
-        // Nothing here can cost anyone the take. The inputs are finished files
-        // that this only reads, and a failure leaves the folder exactly as it
-        // was -- separate, complete, and playable.
-        if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
-        {
-            // The take's own bit depth goes with it, so the combined file's
-            // audio is written at the depth it was recorded at rather than
-            // being quietly narrowed on the way out.
-            const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
-                                                     cameraController.getCombinedTakeInputs(),
-                                                     "MIX.wav",
-                                                     takeBitDepth);
-
-            if (plan.hasWork() && takeCardUnresponsive)
-            {
-                // A card that stopped answering is not asked to be read again
-                // -- the podcast copy below already held to that. The combine
-                // did not: its worker hung listing the folder, so it never
-                // finished, every later take's combine queued behind it and
-                // silently never ran, and quitting asked to wait for it.
-                noteActivity (ActivityLevel::Warning, "Combined video",
-                              "No combined video was made: the card stopped answering. "
-                              "Whatever reached the card is still in its separate files.");
-            }
-            else if (plan.hasWork())
-            {
-                takeCombiner.start (juce::File (currentSessionFolder), plan);
-            }
-            else if (! plan.problem.empty())
-            {
-                // The user asked for one file with the sound on it and is not
-                // getting one. buildCombinedTakePlan has always written a
-                // plain-language reason -- "None of the cameras wrote a file,
-                // so there is nothing to combine." -- and nothing in Source/
-                // ever read it, so the plan was dropped in silence and the
-                // user went looking for a file that was never attempted.
-                //
-                // TakeCombiner's own failures were already surfaced; this was
-                // the remaining hole in that chain, and it is the half that
-                // fires when the cameras failed rather than ffmpeg.
-                noteActivity (ActivityLevel::Warning, "Combined video",
-                              juce::String (plan.problem));
-            }
-        }
-
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
         // read without becoming furniture.
         lastSessionFolder = currentSessionFolder;
@@ -3106,6 +3056,61 @@ void Application::toggleRecording()
             lastTakeHeldNoAudio = lastTakeVerdict == TakeAudioVerdict::NothingWritten
                                || lastTakeVerdict == TakeAudioVerdict::OnlySilence
                                || lastTakeVerdict == TakeAudioVerdict::DroppedByApp;
+        }
+
+        // The combined file, if it was asked for. Started only once every input
+        // is closed and complete, and run on its own thread: copying a
+        // four-hour picture is minutes of work, and none of it may happen on
+        // the thread drawing the meters.
+        //
+        // After the bounded listing above, not before it: that listing is the
+        // first post-take question the card is asked, and a card that fails
+        // it is not given a combine to hang on.
+        //
+        // Nothing here can cost anyone the take. The inputs are finished files
+        // that this only reads, and a failure leaves the folder exactly as it
+        // was -- separate, complete, and playable.
+        if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
+        {
+            // The take's own bit depth goes with it, so the combined file's
+            // audio is written at the depth it was recorded at rather than
+            // being quietly narrowed on the way out.
+            const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
+                                                     cameraController.getCombinedTakeInputs(),
+                                                     "MIX.wav",
+                                                     takeBitDepth);
+
+            if (plan.hasWork() && takeCardUnresponsive)
+            {
+                // A card that stopped answering -- at Stop, or to the listing
+                // just above -- is not asked to be read again, as with the
+                // podcast copy below. The combine used to be: its worker hung
+                // listing the folder, so it never finished, every later take's
+                // combine queued behind it and silently never ran, and
+                // quitting asked to wait for it.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              "No combined video was made: the card stopped answering. "
+                              "Whatever reached the card is still in its separate files.");
+            }
+            else if (plan.hasWork())
+            {
+                takeCombiner.start (juce::File (currentSessionFolder), plan);
+            }
+            else if (! plan.problem.empty())
+            {
+                // The user asked for one file with the sound on it and is not
+                // getting one. buildCombinedTakePlan has always written a
+                // plain-language reason -- "None of the cameras wrote a file,
+                // so there is nothing to combine." -- and nothing in Source/
+                // ever read it, so the plan was dropped in silence and the
+                // user went looking for a file that was never attempted.
+                //
+                // TakeCombiner's own failures were already surfaced; this was
+                // the remaining hole in that chain, and it is the half that
+                // fires when the cameras failed rather than ffmpeg.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              juce::String (plan.problem));
+            }
         }
 
         // A copy of the mix set to the delivery target's loudness, when one is
@@ -5123,6 +5128,27 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     for (const auto& exported : podcastExporter.collectFinished())
         noteActivity (exported.written ? ActivityLevel::Stopped : ActivityLevel::Warning,
                       "Podcast copy", exported.message, exported.written);
+
+    // The combined videos, likewise, once their run has finished. Failures
+    // have their own line further down; this is the news that the file the
+    // user asked for is there, which used to go unsaid -- the saved-take card
+    // is listed at Stop, minutes before the combine is done, so nothing ever
+    // named the file. Once per run, naming every file it wrote.
+    {
+        const auto combine = takeCombiner.getStatus();
+
+        if (! combine.running && combine.run != 0 && combine.run != announcedCombineRun)
+        {
+            announcedCombineRun = combine.run;
+
+            if (! combine.written.isEmpty())
+                noteActivity (ActivityLevel::Stopped, "Combined video",
+                              (combine.written.size() == 1 ? "Combined video saved: "
+                                                           : "Combined videos saved: ")
+                                  + combine.written.joinIntoString (", ") + ".",
+                              true);
+        }
+    }
 
     // The microphone answer read at launch goes stale the moment the user
     // answers the first-run prompt or revokes access in System Settings. Kept
