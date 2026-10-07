@@ -21,24 +21,45 @@ TakeFolderTracker::~TakeFolderTracker()
     close();
 }
 
-bool TakeFolderTracker::open (const std::string& folder)
+int TakeFolderTracker::openDescriptor (const std::string& folder)
 {
-    close();
-
     if (folder.empty())
-        return false;
+        return -1;
 
 #if defined (__APPLE__)
     // Event-only: the descriptor exists to be asked where the folder is, and
     // must never be the thing that stops a card from ejecting.
-    descriptor = ::open (folder.c_str(), O_EVTONLY | O_DIRECTORY | O_CLOEXEC);
+    return ::open (folder.c_str(), O_EVTONLY | O_DIRECTORY | O_CLOEXEC);
 #elif defined (__linux__)
-    descriptor = ::open (folder.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+    return ::open (folder.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+#else
+    return -1;
 #endif
+}
 
-    if (descriptor < 0)
+void TakeFolderTracker::closeDescriptor (int fd)
+{
+#if defined (__APPLE__) || defined (__linux__)
+    if (fd >= 0)
+        ::close (fd);
+#else
+    (void) fd;
+#endif
+}
+
+bool TakeFolderTracker::open (const std::string& folder)
+{
+    return adopt (openDescriptor (folder), folder);
+}
+
+bool TakeFolderTracker::adopt (int fd, const std::string& folder)
+{
+    close();
+
+    if (fd < 0)
         return false;
 
+    descriptor = fd;
     openedPath = folder;
     lastSystemPath.clear();
     lastResolved.clear();
@@ -47,10 +68,7 @@ bool TakeFolderTracker::open (const std::string& folder)
 
 void TakeFolderTracker::close()
 {
-#if defined (__APPLE__) || defined (__linux__)
-    if (descriptor >= 0)
-        ::close (descriptor);
-#endif
+    closeDescriptor (descriptor);
 
     descriptor = -1;
     openedPath.clear();

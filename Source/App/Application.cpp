@@ -2791,7 +2791,25 @@ void Application::toggleRecording()
                 // Held until the take's last movie has finished, so a rename
                 // after the audio stops is still followed. See
                 // followTakeFolderMovedAfterAudioStopped().
-                takeFolderTracker.open (folder.toStdString());
+                // Opened on a disposable worker: the folder is on the card, and
+                // a card that stops answering just after the folder was made
+                // must not hold the window here.
+                {
+                    const auto path = folder.toStdString();
+                    auto abandoned = std::make_shared<std::atomic<bool>> (false);
+                    const auto descriptor = runWithDeadline<int> ([path, abandoned]
+                    {
+                        const int fd = TakeFolderTracker::openDescriptor (path);
+                        if (abandoned->load() && fd >= 0)
+                            TakeFolderTracker::closeDescriptor (fd);
+                        return fd;
+                    }, std::chrono::milliseconds (1500));
+
+                    if (descriptor.has_value())
+                        takeFolderTracker.adopt (*descriptor, path);
+                    else
+                        abandoned->store (true);
+                }
 
                 // What this take's files were opened with, fixed here. The
                 // Settings pickers stay live during a take and move
@@ -3634,8 +3652,29 @@ bool Application::backupWouldShareDestinationDisk() const
     if (keepSameDiskBackupForTesting())
         return false;
 
-    return mirrorplacement::sharesDisk (volumeIdentityOf (destinationFolder),
-                                        volumeIdentityOf (backupRootFolder().getFullPathName().toStdString()));
+    // The background probe has usually answered already; asking it costs the
+    // message thread nothing.
+    const auto request = currentFilesystemProbeRequest();
+    filesystemStatusProbe.setRequest (request);
+    const auto snapshot = filesystemStatusProbe.getSnapshot();
+
+    if (snapshot.ready && snapshot.request.destinationPath == request.destinationPath
+        && snapshot.request.backupRootPath == request.backupRootPath
+        && snapshot.backupSharesDisk >= 0)
+        return snapshot.backupSharesDisk == 1;
+
+    // Otherwise ask on a disposable worker: the destination is often a card,
+    // and a card that stops answering as Record is pressed would hold the
+    // window for as long as it hangs. Unknown keeps the backup, as a disk that
+    // cannot be identified does.
+    const std::string destination = destinationFolder;
+    const std::string backup = backupRootFolder().getFullPathName().toStdString();
+    const auto shares = runWithDeadline<bool> ([destination, backup]
+    {
+        return mirrorplacement::sharesDisk (volumeIdentityOf (destination), volumeIdentityOf (backup));
+    }, std::chrono::milliseconds (1500));
+
+    return shares.value_or (false);
 }
 
 int64_t Application::getMirrorFreeBytes() const

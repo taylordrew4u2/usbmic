@@ -32,6 +32,14 @@ public:
     /// when it could not be held, in which case resolve() answers nothing.
     bool open (const std::string& folder);
     void close();
+
+    /// The two halves of open(), for a caller that must do the filesystem
+    /// call on a thread it can walk away from: openDescriptor() there (-1 on
+    /// failure), adopt() back on the owning thread. adopt() takes ownership of
+    /// the descriptor, and of nothing when it is -1.
+    static int openDescriptor (const std::string& folder);
+    static void closeDescriptor (int fd);
+    bool adopt (int fd, const std::string& folder);
     bool isOpen() const noexcept { return descriptor >= 0; }
 
     /// Where the folder is now. The spelling it was opened with while it has
