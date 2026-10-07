@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.13.24 -- 2026-10-07 (release candidate)
+
+Mac fixes.
+
+### Fixed
+
+- **Mac: no more lost audio when an interface runs a bigger buffer than
+  asked for.** Common on Macs; up to half a mic's audio could drop from the
+  recording and the headphones.
+- **Mac: mics on different interfaces line up exactly** in the recording.
+  Each interface's own input delay is now measured and evened out, and the
+  headphone delay shown includes it.
+- **Mac: two identical cameras keep their own settings** (on/off, name,
+  quality) across reboots and replugs, and unplugging one no longer hands its
+  settings to the other.
+- **A full disk can no longer wipe your settings** (mic names, trims, save
+  folder), a take's session.json or a saved show.
+- **Opening an older copy of SobStage no longer erases newer settings.**
+- **No pointless backup on the same disk:** when recordings already go to
+  the internal disk, the backup copy is skipped and the reason is shown.
+- **Renaming the take folder after Stop** no longer sends the video, the
+  saved-take file list or the combined video to the old place.
+- **The start/stop chirp** can no longer be cut off by a race, and a take no
+  longer loses a few samples at the very start.
+
 ## v1.13.23 -- 2026-10-06 (release candidate)
 
 Mac fixes.
