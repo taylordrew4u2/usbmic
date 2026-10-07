@@ -820,6 +820,11 @@ int main()
 
     mma::CoreAudioBackend latencyBackend;
 
+    // The harness is the only clock here, so the streams' between-callback
+    // fill estimate must not read the wall clock: on a busy CI runner it made
+    // the drift loops steer the two stems a sample or two apart.
+    mma::DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; });
+
     mma::CaptureCoordinator aligned (latencyBackend, rate, block);
     aligned.setSoftwareClockEnabled (false); // the harness is the clock: deterministic pulls
 
@@ -865,6 +870,7 @@ int main()
 
     aligned.stopRecording();
     aligned.stopMonitoring();
+    mma::DeviceInputStream::setClockForTesting (nullptr);
 
     const auto loudestFrame = [] (const std::string& path)
     {
