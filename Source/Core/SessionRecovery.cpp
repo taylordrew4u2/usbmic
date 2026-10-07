@@ -307,6 +307,7 @@ RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session)
     row.playableFileCount = session.playableFileCount();
     row.emptyFileCount = session.emptyFileCount();
     row.longestSeconds = session.longestSeconds();
+    row.movieCount = session.movieCount;
     return row;
 }
 
@@ -350,6 +351,20 @@ std::string recoveredTakeDetail (const RecoveredTakeRow& take)
                 + (take.emptyFileCount == 1 ? " empty file left alone"
                                             : " empty files left alone");
 
+    // The card said only what happened to the sound, and the camera movies in
+    // the same folder were not mentioned at all -- so the first anyone heard
+    // of a movie cut short was opening it. Nothing here repairs a movie:
+    // AVFoundation writes one fragment every ten seconds, so an interrupted
+    // movie plays up to its last fragment, and one shorter than that may not
+    // open at all.
+    if (take.movieCount > 0)
+    {
+        detail += "; " + std::to_string (take.movieCount)
+                + (take.movieCount == 1 ? " camera movie" : " camera movies");
+        detail += take.longestSeconds < 10.0 ? ", which may not open"
+                                             : ", which may end up to 10 s early";
+    }
+
     return detail;
 }
 
@@ -361,9 +376,18 @@ RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
     {
         const auto name = folderName (session.folder);
         const auto existing = std::find_if (list.shown.begin(), list.shown.end(),
-                                            [&name] (const RecoveredSession& candidate)
+                                            [&] (const RecoveredSession& candidate)
                                             {
-                                                return folderName (candidate.folder) == name;
+                                                if (folderName (candidate.folder) == name)
+                                                    return true;
+
+                                                // The card copy names its backup. A backup
+                                                // folder that had to take a "_2" was shown as
+                                                // a second interrupted take beside the first.
+                                                const auto& primary = scanIsPrimaryCopy ? session : candidate;
+                                                const auto& backup = scanIsPrimaryCopy ? candidate : session;
+                                                return ! primary.mirrorFolder.empty()
+                                                    && primary.mirrorFolder == backup.folder;
                                             });
 
         if (existing == list.shown.end())
@@ -382,6 +406,15 @@ RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
             list.hiddenFolders.push_back (std::move (session.folder));
         }
     }
+
+    // Newest first. The card's button is "Open the newest" and opens the first
+    // entry, which was simply whichever root's scan was merged first -- the
+    // backup folder's take from last week over the one interrupted today.
+    std::stable_sort (list.shown.begin(), list.shown.end(),
+                      [] (const RecoveredSession& a, const RecoveredSession& b)
+                      {
+                          return a.modifiedMs > b.modifiedMs;
+                      });
 
     return list;
 }

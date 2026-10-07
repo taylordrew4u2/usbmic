@@ -5,6 +5,7 @@ namespace mma {
 
 namespace {
     constexpr int kRowPitch = 38;
+    constexpr int kSecondDetailLine = 16;
     constexpr int kMaxListedTakes = 5;
 }
 
@@ -57,6 +58,7 @@ void RecoveredTakesPanel::setTakes (const std::vector<TakeRow>& takes)
         row.detail->setText (juce::String::fromUTF8 (recoveredTakeDetail (take).c_str()),
                              juce::dontSendNotification);
         addAndMakeVisible (*row.detail);
+        row.twoLineDetail = take.movieCount > 0;
 
         rows.push_back (std::move (row));
     }
@@ -81,7 +83,12 @@ bool RecoveredTakesPanel::keyPressed (const juce::KeyPress& key)
 
 int RecoveredTakesPanel::getContentHeight() const
 {
-    return 52 + 12 + (int) rows.size() * kRowPitch + 18 + kButtonHeight;
+    int rowsHeight = 0;
+
+    for (const auto& row : rows)
+        rowsHeight += kRowPitch + (row.twoLineDetail ? kSecondDetailLine : 0);
+
+    return 52 + 12 + rowsHeight + 18 + kButtonHeight;
 }
 
 void RecoveredTakesPanel::layOutContent (juce::Rectangle<int> area)
@@ -91,7 +98,7 @@ void RecoveredTakesPanel::layOutContent (juce::Rectangle<int> area)
 
     for (auto& row : rows)
     {
-        auto line = area.removeFromTop (kRowPitch);
+        auto line = area.removeFromTop (kRowPitch + (row.twoLineDetail ? kSecondDetailLine : 0));
         row.name->setBounds (line.removeFromTop (18));
         row.detail->setBounds (line);
     }
