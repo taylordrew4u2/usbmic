@@ -89,6 +89,17 @@ struct DeviceSpec
     int bufferFrameSize = 256;
     bool allowBufferSizeChange = true;
 
+    /// Input-scope kAudioDevicePropertyLatency and kAudioDevicePropertySafetyOffset,
+    /// in frames: how long before the IOProc a captured sample was at the mic.
+    /// Output scope reports neither, as before.
+    int inputLatencyFrames = 0;
+    int inputSafetyOffsetFrames = 0;
+
+    /// kAudioStreamPropertyLatency of the device's one stream. This fake
+    /// presents a single stream to both scopes, so a duplex device reports it
+    /// on its output side too; zero leaves every existing figure alone.
+    int streamLatencyFrames = 0;
+
     /// kAudioDevicePropertyDeviceIsAlive. A false value means the object still
     /// exists long enough to notify clients but is no longer usable.
     bool isAlive = true;

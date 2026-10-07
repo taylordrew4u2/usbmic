@@ -249,14 +249,16 @@ TEST_CASE (DeviceInputStream_UnderrunAfterStartingIsCountedNotFaked)
     DeviceInputStream s (48000.0);
     s.prepare (48000.0, 64);
 
-    // Get past pre-roll, then starve it.
-    std::vector<float> in (256, 0.5f);
-    s.pushBlock (in.data(), 256);
+    // Get past pre-roll -- two of the pull, which is what a 256-frame
+    // output has to have buffered -- then starve it.
+    std::vector<float> in (512, 0.5f);
+    s.pushBlock (in.data(), 512);
 
     std::vector<float> out (256, 0.0f);
     s.pull (out.data(), 256);
     REQUIRE (s.hasStarted());
 
+    s.pull (out.data(), 256);
     s.pull (out.data(), 256);
     s.pull (out.data(), 256);
 
@@ -423,10 +425,13 @@ TEST_CASE (DeviceInputStream_CountsALossEventPerBlockNotPerSample)
     REQUIRE (s.getLossEvents() >= 1);
     REQUIRE (s.getLossEvents() <= 2);
 
-    // A push that finds the ring full is one event too.
+    // A push that finds the ring full is one event too. Delivered in the
+    // device's own blocks: one push of seventeen blocks' worth is a device
+    // whose IO size is that, and the ring makes room for sixteen of those.
+    // (The 128 above already gives it room for sixteen of 128.)
     const auto before = s.getLossEvents();
-    std::vector<float> flood (static_cast<size_t> (DeviceInputStream::kRingBlocks + 1) * 64, 0.25f);
-    s.pushBlock (flood.data(), static_cast<int> (flood.size()));
+    for (int i = 0; i <= 2 * DeviceInputStream::kRingBlocks && s.getOverrunSamples() == 0; ++i)
+        s.pushBlock (in.data(), 64);
     REQUIRE (s.getOverrunSamples() > 0);
     REQUIRE (s.getLossEvents() == before + 1);
 }
@@ -827,7 +832,11 @@ constexpr int64_t kBlockNs64 = 64 * 1000000000LL / 48000;
 void primeAtTarget (DeviceInputStream& s, RampSource& src, std::vector<float>& out)
 {
     simulatedNs = 1'000'000'000; // zero is what the clock hook reads as "nothing delivered yet"
-    src.push (s, 64 + 64 + 32 + 1);
+    // In two deliveries, so the one the pull lands right after is the short
+    // one: playout starts on the de-quantized level, which discounts the
+    // newest delivery's whole block at the instant it lands.
+    src.push (s, 64 + 64);
+    src.push (s, 32 + 1);
     s.pull (out.data(), 64);
 }
 
@@ -1020,9 +1029,14 @@ TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
         simulatedNs += blockNs - blockNs / 2;
 
         // Continuous: the ramp carries on from where the last block left it,
-        // give or take one held sample, and never steps to zero.
-        REQUIRE (out[0] - last <= 2.0f);
-        REQUIRE (out[0] - last >= 0.0f);
+        // give or take one held sample, and never steps to zero. (The first
+        // block is where playout starts, trimmed to the target, so it has no
+        // earlier block to continue.)
+        if (i > 0)
+        {
+            REQUIRE (out[0] - last <= 2.0f);
+            REQUIRE (out[0] - last >= 0.0f);
+        }
         for (int k = 1; k < 128; ++k)
             REQUIRE (out[k] - out[k - 1] >= 0.0f);
         last = out[127];
@@ -1146,4 +1160,238 @@ TEST_CASE (DeviceInputStream_MutedChannelDoesNotCountOverruns)
     REQUIRE (sawFresh);
     REQUIRE (s.getOverrunSamples() == 0);
     REQUIRE (s.getLossEvents() == 0);
+}
+
+namespace {
+
+struct UnequalBlocksResult
+{
+    uint64_t underruns = 0;
+    uint64_t overruns = 0;
+    double loopPpm = 0.0;
+};
+
+/// A device delivering `inBlock` frames at a time and an output pulling
+/// `outBlock` at a time, each on its own timeline, against a stream prepared
+/// for `nominal`. This is a Mac rig whose device runs at an IO size other than
+/// the one asked for: CoreAudio leaves a device at its own size whenever it
+/// refuses the request, and sizes its scratch for callbacks up to 4096.
+UnequalBlocksResult runUnequalBlocks (int nominal, int inBlock, int outBlock,
+                                      double seconds, double devicePpm,
+                                      double switchAtSeconds = -1.0, int laterOutBlock = 0,
+                                      uint64_t* underrunsAfterSettling = nullptr)
+{
+    ScopedSimulatedClock clock;
+    constexpr double rate = 48000.0;
+    DeviceInputStream s (rate);
+    s.prepare (rate, nominal);
+
+    std::vector<float> in (static_cast<size_t> (inBlock), 0.25f);
+    std::vector<float> out (static_cast<size_t> (std::max (outBlock, laterOutBlock)), 0.0f);
+
+    const double devicePeriod = inBlock / (rate * (1.0 + devicePpm * 1.0e-6));
+    double nextIn = 0.0;
+    double nextOut = 0.0005;
+    uint64_t underrunsAtSettle = 0;
+    bool settled = false;
+
+    while (nextIn < seconds || nextOut < seconds)
+    {
+        if (nextIn <= nextOut)
+        {
+            simulatedNs = static_cast<int64_t> (nextIn * 1.0e9) + 1;
+            s.pushBlock (in.data(), inBlock);
+            nextIn += devicePeriod;
+        }
+        else
+        {
+            simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            const bool switched = switchAtSeconds >= 0.0 && nextOut >= switchAtSeconds;
+            const int block = switched ? laterOutBlock : outBlock;
+            s.pull (out.data(), block);
+            nextOut += block / rate;
+
+            // A second after the switch, whatever the switch itself cost is
+            // over; nothing after that may be lost.
+            if (switched && ! settled && nextOut >= switchAtSeconds + 1.0)
+            {
+                settled = true;
+                underrunsAtSettle = s.getUnderrunSamples();
+            }
+        }
+    }
+
+    if (underrunsAfterSettling != nullptr)
+        *underrunsAfterSettling = s.getUnderrunSamples() - underrunsAtSettle;
+
+    return { s.getUnderrunSamples(), s.getOverrunSamples(), s.getDriftPpm() };
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_ADeviceRunningAtALargerBlockThanAskedForLosesNothing)
+{
+    // Asked for 64, running at 1156: a ring of sixteen nominal blocks (1024)
+    // cannot hold one delivery, and half of every block was thrown away.
+    const auto r = runUnequalBlocks (64, 1156, 64, 20.0, 0.0);
+    REQUIRE (r.overruns == 0u);
+
+    // Not even at the start. Playout used to begin on the raw level just
+    // after the first 1156-frame delivery, a whole device period before the
+    // next one, and ran dry a few dozen samples short of it: a counted
+    // dropout at the top of every stream on such a device.
+    REQUIRE (r.underruns == 0u);
+
+    // CoreAudio's own scratch bound.
+    const auto large = runUnequalBlocks (64, 4096, 64, 20.0, 0.0);
+    REQUIRE (large.overruns == 0u);
+    REQUIRE (large.underruns == 0u);
+}
+
+TEST_CASE (DeviceInputStream_AnOddDeviceBlockStartsWithoutADropout)
+{
+    // 471 frames, the kind of IO size CoreAudio hands a device whose driver
+    // aligns the request to its own period.
+    const auto r = runUnequalBlocks (64, 471, 64, 10.0, 0.0);
+    REQUIRE (r.underruns == 0u);
+    REQUIRE (r.overruns == 0u);
+}
+
+TEST_CASE (DeviceInputStream_AnOutputPullingALargerBlockThanAskedForLosesNothing)
+{
+    // Asked for 64, the output runs at 1024. Held at two nominal blocks (128
+    // samples) a 1024-sample pull ran the ring dry in every callback.
+    const auto r = runUnequalBlocks (64, 64, 1024, 60.0, 0.0);
+    REQUIRE (r.underruns == 0u);
+    REQUIRE (r.overruns == 0u);
+
+    // And with a real clock offset, which the loop still has room to follow
+    // rather than sitting at its clamp.
+    const auto fast = runUnequalBlocks (64, 64, 1024, 120.0, 120.0);
+    REQUIRE (fast.underruns == 0u);
+    REQUIRE (fast.overruns == 0u);
+    REQUIRE (std::abs (fast.loopPpm) < DriftCompensator::kMaxRatioDeviationPpm);
+}
+
+TEST_CASE (DeviceInputStream_AnOutputThatGrowsItsBlockMidStreamRebuffersOnce)
+{
+    // The software clock pulls at the nominal 64 until the output's first
+    // callback arrives -- at 1024. The ring is held at 128 by then; left to
+    // the loop, the level a 1024-frame pull needs had to be built at 200 PPM,
+    // so the loop sat at its clamp for minutes and a microphone 100 PPM slow
+    // ran dry callback after callback. One counted gap to buffer up to the
+    // new target, then nothing.
+    uint64_t afterSettling = 0;
+    const auto r = runUnequalBlocks (64, 64, 64, 90.0, -100.0, 5.0, 1024, &afterSettling);
+
+    REQUIRE (r.overruns == 0u);
+    REQUIRE (afterSettling == 0u);
+
+    // The gap is counted -- §0.1 -- and is about one new target's worth, not
+    // a stream of dry callbacks.
+    REQUIRE (r.underruns > 0u);
+    REQUIRE (r.underruns <= 3u * 1024u);
+}
+
+TEST_CASE (DeviceInputStream_ACallbackOneFrameLongerDoesNotOpenAGap)
+{
+    // A variable-size output that runs one frame long now and then raises the
+    // target by two samples. That is the loop's to follow, not a reason to
+    // stop playing.
+    uint64_t afterSettling = 0;
+    const auto r = runUnequalBlocks (512, 512, 512, 20.0, 0.0, 5.0, 513, &afterSettling);
+
+    REQUIRE (r.underruns == 0u);
+    REQUIRE (r.overruns == 0u);
+}
+
+TEST_CASE (DeviceInputStream_TheRingStillOverflowsAtSixteenOfItsOwnBlocks)
+{
+    // Storage for the largest block a device may deliver is not permission to
+    // buffer that much: a stalled consumer at the size that was asked for
+    // still overflows where it always did, so a channel never falls further
+    // behind than sixteen of its blocks.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+
+    std::vector<float> block (64, 0.5f);
+    for (int i = 0; i < DeviceInputStream::kRingBlocks + 4; ++i)
+        s.pushBlock (block.data(), 64);
+
+    REQUIRE (s.getOverrunSamples() > 0u);
+    REQUIRE (s.getOverrunSamples() <= 5u * 64u);
+}
+
+namespace {
+
+/// Two streams fed the same ramp in step; `delayed` gets an alignment delay
+/// of `delay` samples, set before playout (blocksBeforeDelay < 0) or that many
+/// blocks in. Returns how many samples later `delayed` plays the same source
+/// sample.
+double alignmentOffset (int delay, int blocksBeforeDelay, uint64_t* underruns = nullptr)
+{
+    ScopedSimulatedClock clock;
+    DeviceInputStream plain (48000.0), delayed (48000.0);
+    plain.prepare (48000.0, 64);
+    delayed.prepare (48000.0, 64);
+
+    if (blocksBeforeDelay < 0)
+        delayed.setAlignmentDelay (delay);
+
+    RampSource a (64), b (64);
+    std::vector<float> outA (64, 0.0f), outB (64, 0.0f);
+    simulatedNs = 1'000'000'000;
+
+    for (int i = 0; i < 3000; ++i)
+    {
+        if (i == blocksBeforeDelay)
+            delayed.setAlignmentDelay (delay);
+
+        a.push (plain, 64);
+        b.push (delayed, 64);
+        simulatedNs += kBlockNs64 / 2;
+        plain.pull (outA.data(), 64);
+        delayed.pull (outB.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+    }
+
+    if (underruns != nullptr)
+        *underruns = plain.getUnderrunSamples() + delayed.getUnderrunSamples();
+
+    return static_cast<double> (outA[32]) - static_cast<double> (outB[32]);
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_AnAlignmentDelayHoldsTheStreamBackBySoManySamples)
+{
+    // Two interfaces with different input latency hand the same instant over
+    // that far apart; the earlier one is held back by the difference.
+    uint64_t underruns = 0;
+    REQUIRE_NEAR (alignmentOffset (0, -1), 0.0, 1.0);
+    REQUIRE_NEAR (alignmentOffset (57, -1, &underruns), 57.0, 1.0);
+    REQUIRE (underruns == 0u);
+    REQUIRE_NEAR (alignmentOffset (1000, -1), 1000.0, 1.0);
+}
+
+TEST_CASE (DeviceInputStream_AnAlignmentDelaySetOnARunningStreamIsExactAndNotALoss)
+{
+    // The coordinator learns an input's latency only once the device is open,
+    // by when the output may already be pulling. The delay is opened with
+    // silence written once, not counted as lost audio, and holds from then on.
+    uint64_t underruns = 0;
+    REQUIRE_NEAR (alignmentOffset (57, 200, &underruns), 57.0, 1.0);
+    REQUIRE (underruns == 0u);
+    REQUIRE_NEAR (alignmentOffset (777, 200, &underruns), 777.0, 1.0);
+    REQUIRE (underruns == 0u);
+}
+
+TEST_CASE (DeviceInputStream_AnAlignmentDelayIsBounded)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    s.setAlignmentDelay (10'000'000);
+    REQUIRE (s.getAlignmentDelay() == DeviceInputStream::kMaxAlignmentDelaySamples);
+    s.setAlignmentDelay (-5);
+    REQUIRE (s.getAlignmentDelay() == 0);
 }

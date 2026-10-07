@@ -121,6 +121,11 @@ public:
     /// headphones at all.
     double getMonitoringLatencyMs() const noexcept { return monitoringLatencyMs; }
 
+    /// The slowest open input's own latency, in frames, which every channel
+    /// is aligned to (and so every channel's headphone feed carries). Zero on
+    /// a backend that does not report input latency.
+    int getAlignedInputLatencyFrames() const noexcept { return alignedInputLatencyFrames; }
+
     /// Devices that refused to open when monitoring started, by id.
     ///
     /// Their channels are live-false and write silence. §0.1: the take's record
@@ -594,6 +599,7 @@ private:
     bool monitoring = false;
     std::string monitorProblem;
     double monitoringLatencyMs = 0.0;
+    int alignedInputLatencyFrames = 0;
     std::vector<std::string> devicesThatFailedToOpen;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
@@ -640,7 +646,7 @@ private:
     // Per-device pulled audio and the pointer table the writer wants, both
     // sized at startMonitoring(). The output callback fills these every block
     // and §11 forbids it allocating them there.
-    std::vector<float> deviceScratch;      // channelCount * bufferSize, contiguous per channel
+    std::vector<float> deviceScratch;      // channelCount * max (2 * bufferSize, 4096), contiguous per channel
     std::vector<const float*> devicePointers;
 
     // Written by the audio thread, read by the UI. Relaxed because a stale

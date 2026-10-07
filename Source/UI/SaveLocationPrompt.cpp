@@ -97,7 +97,8 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
                                   const juce::String& mirrorFolder,
                                   const juce::StringArray& fileNames,
                                   int armedCameraCount,
-                                  int readyCameraCount)
+                                  int readyCameraCount,
+                                  const juce::String& mirrorNote)
 {
     folderValue.setText (parentFolder, juce::dontSendNotification);
     folderNameValue.setText (folderName, juce::dontSendNotification);
@@ -141,8 +142,12 @@ void SaveLocationPrompt::setPlan (const juce::String& parentFolder,
                            juce::dontSendNotification);
 
     // §6.3: a second copy nobody knows about is a second copy nobody finds.
-    mirrorValue.setVisible (mirrorFolder.isNotEmpty());
-    mirrorValue.setText ("A backup copy also goes to " + mirrorFolder, juce::dontSendNotification);
+    // And a backup that will not be made for a reason the user can act on
+    // (it would share the recording's disk) is said in the same place.
+    mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty());
+    mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A backup copy also goes to " + mirrorFolder
+                                                   : mirrorNote,
+                         juce::dontSendNotification);
 
     resized();
 }

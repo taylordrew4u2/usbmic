@@ -43,3 +43,29 @@ TEST_CASE (VolumeCapacity_OffTheMacItIsExactlyTheFilesystemFigure)
     REQUIRE_FALSE (availableBytesForRecording (
         (here / "sobstage-no-such-folder" / "deeper").string()).has_value());
 }
+
+// The backup folder is judged before it exists, so a path that is not there
+// yet must answer for the folder it will be made in.
+TEST_CASE (VolumeCapacity_AFolderNotYetMadeIsOnItsParentsDisk)
+{
+    const auto here = std::filesystem::temp_directory_path();
+    const auto existing = volumeIdentityOf (here.string());
+    const auto notYet = volumeIdentityOf ((here / "sobstage-not-made-yet" / "RECORDINGS-MIRROR").string());
+
+    REQUIRE_FALSE (existing.device.empty());
+    REQUIRE (notYet.device == existing.device);
+    REQUIRE (mirrorplacement::sharesDisk (existing, notYet));
+}
+
+#if defined (__linux__)
+// /proc is its own filesystem on every Linux, so it is a dependable "some
+// other volume" for the negative case.
+TEST_CASE (VolumeCapacity_TwoFilesystemsAreTwoDisks)
+{
+    const auto temp = volumeIdentityOf (std::filesystem::temp_directory_path().string());
+    const auto proc = volumeIdentityOf ("/proc");
+
+    REQUIRE_FALSE (proc.device.empty());
+    REQUIRE_FALSE (mirrorplacement::sharesDisk (temp, proc));
+}
+#endif

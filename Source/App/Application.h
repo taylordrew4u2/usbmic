@@ -36,6 +36,7 @@
 #include "../Core/BufferLadder.h"
 #include "../Core/CpuPressureMonitor.h"
 #include "../Core/MirrorPolicy.h"
+#include "../Core/TakeFolderTracker.h"
 #include "../Core/SampleFormat.h"
 #include "../Core/SetupAdvisor.h"
 #include "../Core/CaptureCoordinator.h"
@@ -239,6 +240,7 @@ public:
         juce::String folderName;     // "2026-08-31_1432_Kitchen"
         juce::String fullPath;       // the two joined
         juce::String mirrorFolder;   // §6.3 second copy, empty when none will run
+        juce::String mirrorNote;     // why there is no second copy, when that is known
         juce::StringArray fileNames; // "MIX.wav", "01_Alice.wav", ..., "session.json"
     };
     PlannedSave planSave (const juce::String& proposedSessionName) const;
@@ -293,6 +295,9 @@ public:
     {
         juce::String folder;
         juce::String mirrorFolder;
+        /// Why this take has no second copy, when the reason is one the user
+        /// should hear (it would have shared the recording's disk).
+        juce::String mirrorNote;
         std::vector<SavedFile> files;
 
         /// Decided by the engine, not by the panel. The panel can see file
@@ -514,7 +519,7 @@ public:
     /// re-listing rather than from a device notification, because neither
     /// macOS nor Windows offers one for cameras -- the OS simply stops listing
     /// a camera that has gone.
-    void announceCameraChanges() const;
+    void announceCameraChanges();
 
     /// The same for the things the user listens on. Plugging headphones in is
     /// as much a change to the rig as plugging a microphone in, and it was
@@ -1091,6 +1096,23 @@ private:
     /// The backup was stopped for space by this poll's safety step; its line is
     /// said once, at its old priority, when nothing more urgent holds the line.
     bool mirrorLowSpaceNoticePending = false;
+    /// The destination for which "no backup: same disk" has been said, so it
+    /// is said once per destination rather than at every take.
+    juce::String sameDiskBackupNoticeFor;
+    /// Whether the take just finished went without a backup for that reason,
+    /// for the saved-take card.
+    bool lastTakeBackupSkippedForSameDisk = false;
+
+    /// §6.3: whether the backup folder is on the same disk as the current
+    /// destination, asked of the system directly. Arm time only: it can block
+    /// on a disappearing card the way creating the take's folder there can.
+    bool backupWouldShareDestinationDisk() const;
+    /// The backup folder's root, ~/RECORDINGS-MIRROR.
+    static juce::File backupRootFolder();
+    /// Test builds' MMA_KEEP_SAME_DISK_BACKUP=1: keep the backup on the same
+    /// disk so the end-to-end walks, which record into one scratch home, still
+    /// exercise it. Always false in a shipping build.
+    static bool keepSameDiskBackupForTesting();
 
     /// The journal entry currently being shown on the advice line, and how much
     /// longer it stays there. This is what makes "nothing is silent" true on
@@ -1177,6 +1199,12 @@ private:
     /// have stopped growing") and session.json and activity.log went to the
     /// old path at Stop and failed.
     void followRenamedTakeFolder();
+    /// The same, after the audio has stopped: the camera movies finish later,
+    /// and everything that consumes them (the stop-time session.json, the
+    /// saved-take card's list, the combined video) runs only then. Asks the
+    /// folder itself, held open for the take by takeFolderTracker.
+    void followTakeFolderMovedAfterAudioStopped();
+    TakeFolderTracker takeFolderTracker;
     /// The figures session.json reports, read from the live take now.
     TakeFigures liveTakeFigures (bool sessionHasStopped) const;
     /// Writes a take's text file with a deadline, skipping the card once it

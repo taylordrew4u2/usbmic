@@ -23,6 +23,7 @@ struct EnumerationControl
     std::mutex mutex;
     std::condition_variable condition;
     juce::StringArray devices;
+    juce::StringArray identifiers; // parallel to devices; empty: none
     std::thread::id lastThread;
     int pausesRemaining = 0;
     int releasePermits = 0;
@@ -38,9 +39,18 @@ EnumerationControl& enumerationControl()
 
 void setDevices (const juce::StringArray& names)
 {
+    setDevices (names, {});
+}
+
+void setDevices (const juce::StringArray& names, const juce::StringArray& identifiers)
+{
     auto& control = enumerationControl();
     const std::lock_guard<std::mutex> guard (control.mutex);
     control.devices = names;
+    control.identifiers.clear();
+
+    for (int i = 0; i < names.size(); ++i)
+        control.identifiers.add (i < identifiers.size() ? identifiers[i] : juce::String());
 }
 
 void pauseNextEnumerations (int count)
@@ -214,6 +224,20 @@ juce::String& lastOpenedDeviceName()
     return name;
 }
 
+juce::File& reportedRecordingFolder()
+{
+    static juce::File folder;
+    return folder;
+}
+
+juce::File reportedFile (const juce::File& started)
+{
+    const auto& folder = reportedRecordingFolder();
+    return folder == juce::File() ? started : folder.getChildFile (started.getFileName());
+}
+
+void setReportedRecordingFolder (const juce::File& folder) { reportedRecordingFolder() = folder; }
+
 void setOpenSucceeds (bool shouldSucceed) { openSucceeds() = shouldSucceed; }
 void setViewerSucceeds (bool shouldSucceed) { viewerSucceeds() = shouldSucceed; }
 void setAutoFrameOnListener (bool shouldDeliver) { autoFrameOnListener() = shouldDeliver; }
@@ -248,6 +272,7 @@ void resetRecordingCallCounts()
     pendingRecordingStarts().clear();
     pendingFinalizations().clear();
     finalizationMode() = FinalizationMode::ImmediateSuccess;
+    reportedRecordingFolder() = juce::File();
 }
 int getStartRecordingCallCount() { return startRecordingCallCount(); }
 int getStopRecordingCallCount() { return stopRecordingCallCount(); }
@@ -271,7 +296,7 @@ void completePendingRecordingStarts (double firstFrameMs)
 
     for (const auto& item : pending)
         if (item.device != nullptr && item.device->onRecordingStarted)
-            item.device->onRecordingStarted (item.file, firstFrameMs);
+            item.device->onRecordingStarted (reportedFile (item.file), firstFrameMs);
 }
 void setFinalizationMode (FinalizationMode mode) { finalizationMode() = mode; }
 int getPendingFinalizationCount() { return static_cast<int> (pendingFinalizations().size()); }
@@ -284,7 +309,7 @@ void completePendingFinalizations()
 
     for (const auto& item : pending)
         if (item.deliverable && item.device != nullptr && item.device->onRecordingFinished)
-            item.device->onRecordingFinished (item.file, {});
+            item.device->onRecordingFinished (reportedFile (item.file), {});
         else if (! item.deliverable)
             pendingFinalizations().push_back (item);
 }
@@ -342,8 +367,8 @@ bool wasLastEnumerationOnThisThread()
 
 namespace juce {
 
-CameraDevice::CameraDevice (String deviceName)
-    : name (std::move (deviceName))
+CameraDevice::CameraDevice (String deviceName, String deviceIdentifier)
+    : name (std::move (deviceName)), identifier (std::move (deviceIdentifier))
 {
     ++fakecamera::liveDeviceCount();
     fakecamera::liveDevices().push_back (this);
@@ -368,10 +393,25 @@ CameraDevice::~CameraDevice()
 
 StringArray CameraDevice::getAvailableDevices()
 {
+    StringArray names, identifiers;
+    getAvailableDevicesWithIds (names, identifiers);
+    return names;
+}
+
+StringArray CameraDevice::getAvailableDeviceIds()
+{
+    StringArray names, identifiers;
+    getAvailableDevicesWithIds (names, identifiers);
+    return identifiers;
+}
+
+void CameraDevice::getAvailableDevicesWithIds (StringArray& names, StringArray& identifiers)
+{
     auto& control = fakecamera::enumerationControl();
     std::unique_lock<std::mutex> lock (control.mutex);
     control.lastThread = std::this_thread::get_id();
-    auto devices = control.devices;
+    names = control.devices;
+    identifiers = control.identifiers;
 
     if (control.pausesRemaining > 0)
     {
@@ -384,8 +424,6 @@ StringArray CameraDevice::getAvailableDevices()
         --control.pausedActive;
         control.condition.notify_all();
     }
-
-    return devices;
 }
 
 CameraDevice* CameraDevice::openDevice (int index, int, int, int, int maxHeight, bool)
@@ -394,20 +432,21 @@ CameraDevice* CameraDevice::openDevice (int index, int, int, int, int maxHeight,
     fakecamera::lastOpenMaxHeight() = maxHeight;
     fakecamera::openedDeviceIndices().push_back (index);
 
-    juce::String selectedDevice;
+    juce::String selectedDevice, selectedIdentifier;
     {
         auto& control = fakecamera::enumerationControl();
         const std::lock_guard<std::mutex> guard (control.mutex);
         if (! juce::isPositiveAndBelow (index, control.devices.size()))
             return nullptr;
         selectedDevice = control.devices[index];
+        selectedIdentifier = control.identifiers[index];
     }
 
     if (! fakecamera::openSucceeds())
         return nullptr;
 
     fakecamera::lastOpenedDeviceName() = selectedDevice;
-    return new CameraDevice (selectedDevice);
+    return new CameraDevice (selectedDevice, selectedIdentifier);
 }
 
 Component* CameraDevice::createViewerComponent()
@@ -466,7 +505,7 @@ void CameraDevice::startRecordingToFile (const File& file, int)
     file.replaceWithText ("fake camera recording");
 
     if (fakecamera::autoConfirmRecordingStart() && onRecordingStarted)
-        onRecordingStarted (file, 0.0);
+        onRecordingStarted (fakecamera::reportedFile (file), 0.0);
     else if (! fakecamera::autoConfirmRecordingStart())
         fakecamera::pendingRecordingStarts().push_back ({ this, file });
 }
@@ -489,7 +528,7 @@ void CameraDevice::stopRecording()
     {
         case fakecamera::FinalizationMode::ImmediateSuccess:
             if (onRecordingFinished)
-                onRecordingFinished (recordingFile, {});
+                onRecordingFinished (fakecamera::reportedFile (recordingFile), {});
             break;
 
         case fakecamera::FinalizationMode::DelayedSuccess:

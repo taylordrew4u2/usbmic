@@ -14,6 +14,13 @@ struct CameraDeviceInfo
 {
     std::string id;          // stable for as long as the camera is connected
     std::string displayName; // "Logitech C920"
+
+    /// Only for a camera whose `id` is the platform's own per-device identifier
+    /// (macOS's uniqueID): the id it had before those were used -- its name,
+    /// or "Name #2" and on by OS order among cameras with the same name. Used
+    /// once, to carry over choices remembered under that old id. Empty when
+    /// `id` already is the name-based id.
+    std::string legacyId;
 };
 
 /// The live view and the recorded file answer two different questions.
@@ -88,8 +95,24 @@ public:
     /// Replaces the list of connected cameras, keeping every choice already
     /// made about a camera that is still there. A camera that comes back after
     /// being unplugged comes back switched on if that is how it was left.
+    ///
+    /// A camera seen for the first time under a per-device id, with choices
+    /// still remembered under the old name-based ids for its name, takes them
+    /// over: the only one there is, or -- when there are several, which is
+    /// exactly the case name-based ids could not tell apart -- the one its OS
+    /// order gives it (`legacyId`), as before. From then on its choices follow
+    /// the device, not its place in the list.
     void setAvailableCameras (std::vector<CameraDeviceInfo> cameras);
     const std::vector<CameraDeviceInfo>& getAvailableCameras() const { return available; }
+
+    /// The id now holding the choices once remembered under `id`: `id` itself,
+    /// or, for an old name-based id carried over to a per-device one, that
+    /// device's id. For a show template written before the change.
+    std::string resolveId (const std::string& id) const;
+
+    /// True once after setAvailableCameras() carried old choices over, so the
+    /// caller can save them under their new ids.
+    bool takeAdoptedLegacyChoices() noexcept;
 
     /// Remembered, enabled cameras which the OS is not currently listing.
     /// These remain visible in the Cameras panel so an unplugged capture card
@@ -151,6 +174,10 @@ private:
 
     std::vector<CameraDeviceInfo> available;
     std::map<std::string, Choice> choices; // by id, so unplugging forgets nothing
+    std::map<std::string, std::string> adoptedFrom; // old name-based id -> per-device id
+    bool adoptedSinceAsked = false;
+
+    void adoptLegacyChoice (const CameraDeviceInfo& camera);
 };
 
 } // namespace mma

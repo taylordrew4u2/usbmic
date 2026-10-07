@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "Core/CaptureCoordinator.h"
+#include <map>
 #include <set>
 #include "Core/StreamingTargets.h"
 #include "Core/PolarPatternDetector.h"
@@ -71,6 +72,13 @@ public:
     int getGrantedOutputBufferFrames() const override { return grantedOutputBufferFrames; }
     int outputPresentationLatencyFrames = 0;
     int getOutputPresentationLatencyFrames() const override { return outputPresentationLatencyFrames; }
+    /// Input latency per device id, as CoreAudio reports it.
+    std::map<std::string, int> inputLatencyFrames;
+    int getInputLatencyFrames (const std::string& deviceId) const override
+    {
+        const auto found = inputLatencyFrames.find (deviceId);
+        return found != inputLatencyFrames.end() ? found->second : 0;
+    }
     std::vector<AudioDeviceDescriptor> enumerateInputDevices() override { return {}; }
     std::vector<AudioDeviceDescriptor> enumerateOutputDevices() override { return {}; }
     void setDeviceChangeCallback (DeviceChangeCallback) override {}
@@ -409,6 +417,154 @@ TEST_CASE (CaptureCoordinator_ASliceOverTwiceTheNominalBufferIsStillRecorded)
              > c.getChannelMetering (1)->getDisplayedLevelDb() + 6.0f);
     REQUIRE (out.back() != 0.0f);
     REQUIRE (c.getFramesMissedByLayout() == 0u);
+}
+
+namespace {
+int64_t largeCallbackNs = 0;
+int64_t largeCallbackClock() { return largeCallbackNs; }
+
+// Back to the zero clock Tests/main.cpp installs for every other test, which
+// keeps the bit-for-bit comparisons elsewhere in this file deterministic.
+struct LargeCallbackClockScope
+{
+    LargeCallbackClockScope() { largeCallbackNs = 1; DeviceInputStream::setClockForTesting (largeCallbackClock); }
+    ~LargeCallbackClockScope() { DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; }); }
+};
+} // namespace
+
+TEST_CASE (CaptureCoordinator_AnOutputRunningAtItsOwnLargerBufferKeepsTheLoopFree)
+{
+    // CoreAudio leaves a device at its own IO size when it refuses the one
+    // asked for, and an output then calls back with, say, 1024 frames against
+    // a nominal 64. Pulled from each ring 128 frames at a time, each ring was
+    // held at two slices -- far less than the callback takes at once -- and
+    // every drift loop sat at its 200 PPM clamp just to keep up at matched
+    // clocks, with nothing left over for a microphone's real drift.
+    LargeCallbackClockScope clock;
+
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (backend.inputCallbacks.size() == 2);
+
+    constexpr int inFrames = 64, outFrames = 1024;
+    std::vector<float> a (inFrames, 0.1f), b (inFrames, 0.2f);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    std::vector<float> out (outFrames, 0.0f);
+    float* outs[] = { out.data() };
+
+    double nextIn = 0.0, nextOut = 0.0005;
+    while (nextIn < 60.0)
+    {
+        if (nextIn <= nextOut)
+        {
+            largeCallbackNs = static_cast<int64_t> (nextIn * 1.0e9) + 1;
+            backend.inputCallbacks[0] (aIn, 1, nullptr, 0, inFrames);
+            backend.inputCallbacks[1] (bIn, 1, nullptr, 0, inFrames);
+            nextIn += inFrames / 48000.0;
+        }
+        else
+        {
+            largeCallbackNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            c.pullOutputBlock (outs, 1, outFrames);
+            nextOut += outFrames / 48000.0;
+        }
+    }
+
+    const double loop0 = c.getChannelRawDriftPpm (0);
+    const double loop1 = c.getChannelRawDriftPpm (1);
+    const auto underruns = c.getUnderrunSamples();
+    c.stopMonitoring();
+
+    REQUIRE (underruns == 0u);
+    REQUIRE (std::abs (loop0) < 50.0);
+    REQUIRE (std::abs (loop1) < 50.0);
+}
+
+namespace {
+
+/// Index of the loudest sample of a 16-bit mono stem.
+long long loudestSampleIn (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+
+    long long best = -1;
+    int bestMagnitude = 0;
+
+    for (uint32_t i = 0; i < bytes / 2; ++i)
+    {
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        const auto v = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+        if (std::abs (static_cast<int> (v)) > bestMagnitude)
+        {
+            bestMagnitude = std::abs (static_cast<int> (v));
+            best = static_cast<long long> (i);
+        }
+    }
+
+    return best;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheFiles)
+{
+    // One clap, heard by two microphones at the same instant. The second
+    // interface reports 37 frames more input latency (device latency, safety
+    // offset and stream latency, as CoreAudio gives them), so its callback
+    // hands the clap over 37 samples later than the first's does. Without
+    // compensation the two stems carried it 37 samples apart.
+    const auto dir = tempDir();
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = 12;
+    backend.inputLatencyFrames["dev-b"] = 12 + 37;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // The headphones hear the slower device's latency as well.
+    REQUIRE (c.getAlignedInputLatencyFrames() == 49);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 49) / 48000.0 * 1000.0, 1e-9);
+
+    REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
+
+    constexpr long long clapAt = 20000; // in device A's delivered samples
+    std::vector<float> a (64), b (64), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    for (long long block = 0; block < 600; ++block)
+    {
+        for (int i = 0; i < 64; ++i)
+        {
+            const long long n = block * 64 + i;
+            a[static_cast<size_t> (i)] = n == clapAt ? 0.9f : 0.0f;
+            b[static_cast<size_t> (i)] = n == clapAt + 37 ? 0.9f : 0.0f;
+        }
+
+        backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 64);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    c.stopRecording();
+    c.stopMonitoring();
+
+    const auto kitchen = loudestSampleIn (dir + "/01_Kitchen.wav");
+    const auto couch = loudestSampleIn (dir + "/02_Couch.wav");
+    REQUIRE (kitchen > 0);
+    REQUIRE (couch > 0);
+    REQUIRE (std::llabs (kitchen - couch) <= 1);
 }
 
 TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)

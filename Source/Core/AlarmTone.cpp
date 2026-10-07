@@ -18,9 +18,12 @@ int64_t AlarmTone::nowNs() noexcept
 void AlarmTone::trigger (Kind newKind) noexcept
 {
     triggeredAtNs.store (nowNs(), std::memory_order_relaxed);
-    patternFinished.store (false, std::memory_order_relaxed);
-    kind.store (static_cast<int> (newKind), std::memory_order_release);
-    generation.fetch_add (1, std::memory_order_acq_rel);
+
+    // One publish for kind and generation together. Only the message thread
+    // writes this, so the read-modify-write cannot race another writer.
+    const auto previous = state.load (std::memory_order_relaxed);
+    state.store (((generationOf (previous) + 1) << 8) | static_cast<uint64_t> (newKind),
+                 std::memory_order_release);
 }
 
 void AlarmTone::setFault (bool on) noexcept
@@ -42,7 +45,8 @@ bool AlarmTone::isSounding() const noexcept
         case Kind::Started:
         case Kind::Stopped:
         {
-            if (patternFinished.load (std::memory_order_relaxed))
+            if (finishedGeneration.load (std::memory_order_acquire)
+                == generationOf (state.load (std::memory_order_acquire)))
                 return false;
 
             const auto elapsed = static_cast<double> (nowNs() - triggeredAtNs.load (std::memory_order_relaxed)) * 1.0e-9;
@@ -97,8 +101,9 @@ float AlarmTone::frequencyAt (Kind kind, double seconds, bool& sounding) noexcep
 
 void AlarmTone::render (float* inOut, int numSamples, double sampleRate) noexcept
 {
-    const auto currentKind = getKind();
-    const auto currentGeneration = generation.load (std::memory_order_acquire);
+    const auto packed = state.load (std::memory_order_acquire);
+    const auto currentKind = kindOf (packed);
+    const auto currentGeneration = generationOf (packed);
 
     if (currentGeneration != renderedGeneration)
     {
@@ -146,7 +151,7 @@ void AlarmTone::render (float* inOut, int numSamples, double sampleRate) noexcep
     }
 
     if (currentKind != Kind::Fault && positionSeconds >= kChirpSeconds)
-        patternFinished.store (true, std::memory_order_relaxed);
+        finishedGeneration.store (currentGeneration, std::memory_order_release);
 
     if (rendered > 0)
         samplesRendered.fetch_add (rendered, std::memory_order_relaxed);

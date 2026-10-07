@@ -1,6 +1,9 @@
 #include "TestFramework.h"
 #include "Core/AlarmTone.h"
 #include <cmath>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 using namespace mma;
@@ -153,4 +156,44 @@ TEST_CASE (AlarmTone_ClearingFromAChirpDoesNotSound)
     REQUIRE_FALSE (tone.isSounding());
     const auto out = renderSeconds (tone, 0.2);
     REQUIRE (peakBetween (out, 0.0, 0.2) == 0.0f);
+}
+
+TEST_CASE (AlarmTone_AChirpTriggeredWhileTheLastOneIsFinishingStillSounds)
+{
+    // The audio thread renders continuously, as the monitor callback does.
+    // The type of sound and the trigger that restarts it used to be published
+    // as two separate stores, with a finished flag the audio thread kept
+    // re-setting for the pattern it had just ended: a trigger landing between
+    // them gave a fresh chirp that reported itself over before it began --
+    // and MainComponent then let a re-asserted fault siren cut it off.
+    AlarmTone tone;
+    std::atomic<bool> running { true };
+
+    std::thread audio ([&]
+    {
+        std::vector<float> block (64, 0.0f);
+        while (running.load (std::memory_order_relaxed))
+            tone.render (block.data(), 64, kRate);
+    });
+
+    int reportedOverAtOnce = 0;
+
+    for (int i = 0; i < 2000; ++i)
+    {
+        tone.trigger (i % 2 == 0 ? AlarmTone::Kind::Started : AlarmTone::Kind::Stopped);
+
+        if (! tone.isSounding())
+            ++reportedOverAtOnce;
+
+        // Let the audio thread render this chirp to its end, so the next
+        // trigger lands while it is re-rendering a finished pattern.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds (2);
+        while (tone.isSounding() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+    }
+
+    running.store (false);
+    audio.join();
+
+    REQUIRE (reportedOverAtOnce == 0);
 }

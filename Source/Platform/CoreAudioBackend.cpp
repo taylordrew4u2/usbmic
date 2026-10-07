@@ -30,6 +30,11 @@ struct CoreAudioStream
     bool isOutput = false;
     bool ownsHogMode = false;
 
+    /// The device's input-side latency, read once inside the bounded open
+    /// (a HAL property read can wedge like any other) and kept for the
+    /// message thread. See readInputLatencyFrames().
+    int inputLatencyFrames = 0;
+
     // Channel pointer scratch, sized once at open time. §11 forbids allocation
     // inside the callback, so the IOProc only ever fills these.
     static constexpr int kMaxChannels = 64;
@@ -866,6 +871,54 @@ int getBufferFrameSize (AudioObjectID device)
     return static_cast<int> (value);
 }
 
+UInt32 readInputUInt32 (AudioObjectID object, AudioObjectPropertySelector selector)
+{
+    AudioObjectPropertyAddress address { selector, kAudioObjectPropertyScopeInput,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 value = 0;
+    UInt32 size = sizeof (value);
+
+    if (AudioObjectGetPropertyData (object, &address, 0, nullptr, &size, &value) != noErr)
+        return 0;
+
+    return value;
+}
+
+// The input-side mirror of the output figure below: how long before the
+// IOProc a captured sample was actually at the microphone, in frames -- the
+// device's input latency, its input safety offset and its first input
+// stream's latency. A device with no inputs, or a read that fails, counts as
+// nothing.
+int readInputLatencyFrames (AudioObjectID device)
+{
+    uint64_t frames = static_cast<uint64_t> (readInputUInt32 (device, kAudioDevicePropertyLatency))
+                    + readInputUInt32 (device, kAudioDevicePropertySafetyOffset);
+
+    AudioObjectPropertyAddress address { kAudioDevicePropertyStreams, kAudioObjectPropertyScopeInput,
+                                         kAudioObjectPropertyElementMain };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize (device, &address, 0, nullptr, &size) == noErr
+        && size >= sizeof (AudioObjectID))
+    {
+        std::vector<AudioObjectID> streams (size / sizeof (AudioObjectID));
+        if (AudioObjectGetPropertyData (device, &address, 0, nullptr, &size, streams.data()) == noErr
+            && ! streams.empty())
+        {
+            AudioObjectPropertyAddress latency { kAudioStreamPropertyLatency,
+                                                 kAudioObjectPropertyScopeGlobal,
+                                                 kAudioObjectPropertyElementMain };
+            UInt32 value = 0;
+            UInt32 valueSize = sizeof (value);
+            if (AudioObjectGetPropertyData (streams.front(), &latency, 0, nullptr, &valueSize, &value) == noErr)
+                frames += value;
+        }
+    }
+
+    // Same ceiling as the output side: a confused driver's figure must not
+    // delay every other microphone by minutes.
+    return static_cast<int> (std::min<uint64_t> (frames, 192000));
+}
+
 // What the device adds after our buffers, in frames: its own latency, its
 // safety offset and its first output stream's latency. Any read that fails
 // counts as nothing -- an under-estimate, never an invented figure.
@@ -1337,6 +1390,10 @@ CoreAudioOpenResult prepareAndStartStream (CoreAudioStream& stream,
     }
 
     const bool bufferSizeRefused = ! setBufferFrameSize (device, bufferSizeSamples);
+
+    // Read here, inside the bounded open, rather than on the message thread
+    // later. A duplex output carries microphones too, so it is read for both.
+    stream.inputLatencyFrames = readInputLatencyFrames (device);
 
     stream.uid = deviceUid;
     stream.expectedSampleRate = sampleRate;
@@ -2145,6 +2202,15 @@ int CoreAudioBackend::getGrantedOutputBufferFrames() const
         if (stream != nullptr && stream->isOutput && stream->deviceId != kAudioObjectUnknown)
             if (const int granted = getBufferFrameSize (stream->deviceId); granted > 0)
                 return granted;
+
+    return 0;
+}
+
+int CoreAudioBackend::getInputLatencyFrames (const std::string& deviceId) const
+{
+    for (const auto& stream : openStreams)
+        if (stream != nullptr && stream->uid == deviceId)
+            return stream->inputLatencyFrames;
 
     return 0;
 }

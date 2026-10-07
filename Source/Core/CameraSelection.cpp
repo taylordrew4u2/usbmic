@@ -2,8 +2,79 @@
 #include "SessionFolderNaming.h"
 #include <algorithm>
 #include <string>
+#include <utility>
 
 namespace mma {
+
+namespace {
+
+/// "Name" or "Name #n" (n >= 2): the ids cameras called `name` had before
+/// per-device ids.
+bool isNameBasedIdFor (const std::string& key, const std::string& name)
+{
+    if (key == name)
+        return true;
+
+    const auto prefix = name + " #";
+    if (key.size() <= prefix.size() || key.compare (0, prefix.size(), prefix) != 0)
+        return false;
+
+    const auto digits = key.substr (prefix.size());
+    return digits.find_first_not_of ("0123456789") == std::string::npos
+        && digits != "0" && digits != "1" && digits.front() != '0';
+}
+
+} // namespace
+
+void CameraSelection::adoptLegacyChoice (const CameraDeviceInfo& camera)
+{
+    if (camera.legacyId.empty() || camera.legacyId == camera.id || choices.count (camera.id) > 0)
+        return;
+
+    // Old entries for this name that no connected camera is using as its id
+    // right now. A camera without a per-device id still goes by its name-based
+    // id, and its choices are its own.
+    std::vector<std::string> candidates;
+    for (const auto& entry : choices)
+    {
+        if (! isNameBasedIdFor (entry.first, camera.displayName))
+            continue;
+
+        const bool inUse = std::any_of (available.begin(), available.end(),
+                                        [&entry] (const CameraDeviceInfo& c) { return c.id == entry.first; });
+        if (! inUse)
+            candidates.push_back (entry.first);
+    }
+
+    std::string adopted;
+
+    if (candidates.size() == 1)
+        adopted = candidates.front();
+    else if (std::find (candidates.begin(), candidates.end(), camera.legacyId) != candidates.end())
+        adopted = camera.legacyId; // several: OS order decides, as it always did
+
+    if (adopted.empty())
+        return;
+
+    choices[camera.id] = choices[adopted];
+    choices.erase (adopted);
+    adoptedFrom[adopted] = camera.id;
+    adoptedSinceAsked = true;
+}
+
+std::string CameraSelection::resolveId (const std::string& id) const
+{
+    if (choices.count (id) > 0)
+        return id;
+
+    const auto adopted = adoptedFrom.find (id);
+    return adopted != adoptedFrom.end() ? adopted->second : id;
+}
+
+bool CameraSelection::takeAdoptedLegacyChoices() noexcept
+{
+    return std::exchange (adoptedSinceAsked, false);
+}
 
 void CameraSelection::setAvailableCameras (std::vector<CameraDeviceInfo> cameras)
 {
@@ -13,6 +84,8 @@ void CameraSelection::setAvailableCameras (std::vector<CameraDeviceInfo> cameras
     // and unplugging it does not turn it back on when it returns.
     for (const auto& camera : available)
     {
+        adoptLegacyChoice (camera);
+
         const bool newlySeen = choices.count (camera.id) == 0;
         auto& choice = choices[camera.id];
         choice.lastDisplayName = camera.displayName;

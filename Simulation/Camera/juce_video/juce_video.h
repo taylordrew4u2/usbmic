@@ -32,10 +32,14 @@ public:
         virtual void imageReceived (const Image& image) = 0;
     };
 
-    explicit CameraDevice (String deviceName = {});
+    explicit CameraDevice (String deviceName = {}, String deviceIdentifier = {});
     virtual ~CameraDevice();
 
     static StringArray getAvailableDevices();
+    /// SobStage's patch: parallel to getAvailableDevices(); macOS gives each
+    /// AVCaptureDevice's uniqueID, other platforms an empty string per device.
+    static StringArray getAvailableDeviceIds();
+    static void getAvailableDevicesWithIds (StringArray& names, StringArray& identifiers);
 
     static CameraDevice* openDevice (int deviceIndex,
                                      int minWidth = 128, int minHeight = 64,
@@ -43,6 +47,7 @@ public:
                                      bool highQuality = true);
 
     const String& getName() const noexcept { return name; }
+    String getDeviceIdentifier() const { return identifier; }
 
     std::function<void (const String&)> onErrorOccurred;
     /// The second argument is the backend's estimate of the movie's first
@@ -63,6 +68,7 @@ public:
 
 private:
     String name;
+    String identifier;
     File recordingFile;
     bool recording = false;
 };
@@ -80,8 +86,12 @@ enum class FinalizationMode
     ImmediateError
 };
 
-/// What CameraDevice::getAvailableDevices() will report from now on.
+/// What CameraDevice::getAvailableDevices() will report from now on. The
+/// devices have no stable identifiers, as on Windows.
 void setDevices (const juce::StringArray& names);
+/// The same, with a stable identifier per device (macOS's uniqueID),
+/// index for index. An empty identifier means that device has none.
+void setDevices (const juce::StringArray& names, const juce::StringArray& identifiers);
 /// Pauses the next `count` discovery calls after each has captured its device
 /// snapshot. These controls make a permanently slow platform enumerator
 /// deterministic without changing CameraController's production source.
@@ -128,6 +138,12 @@ void completePendingRecordingStarts (double firstFrameMs = 0.0);
 void setFinalizationMode (FinalizationMode mode);
 int getPendingFinalizationCount();
 void completePendingFinalizations();
+/// From now on the start/finish callbacks name the movie inside `folder`
+/// rather than where it was started -- a backend reporting where the file is
+/// after its take folder was renamed or moved mid-take. A default-constructed
+/// File restores the path the recording was started with.
+/// resetRecordingCallCounts() also restores it.
+void setReportedRecordingFolder (const juce::File& folder);
 std::vector<int> getOpenedDeviceIndices();
 
 } // namespace fakecamera
