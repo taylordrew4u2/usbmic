@@ -35,6 +35,12 @@ public:
         int total = 0;
         juce::String problem;   ///< empty unless something went wrong
         juce::StringArray written; ///< file names of the combined files that exist
+
+        /// Which start() this is the outcome of: different for every take
+        /// started on its own (takes queued behind one share its run). A
+        /// problem is reported once per run -- not once per wording, which
+        /// silenced the second take that failed for the same reason.
+        juce::uint64 run = 0;
     };
 
     /// Starts combining. Returns immediately; poll getStatus().
@@ -86,6 +92,7 @@ private:
     juce::String resolvedFfmpeg;
     bool haveMissed = false;
     juce::uint32 lastMissMs = 0;
+    juce::uint64 lastRun = 0;
 
     juce::String probeFfmpeg();
 

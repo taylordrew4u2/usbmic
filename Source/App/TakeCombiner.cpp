@@ -135,6 +135,7 @@ bool TakeCombiner::start (const juce::File& sessionFolder, const CombinedTakePla
     {
         const std::lock_guard<std::mutex> lock (next->statusLock);
         next->status.total = static_cast<int> (plan.jobs.size());
+        next->status.run = ++lastRun;
     }
 
     if (ffmpeg.isEmpty())

@@ -285,6 +285,26 @@ int main (int argc, char** argv)
     if (root.getChildFile ("failed-output.mov").exists())
         return fail ("a non-zero ffmpeg exit left its partial output behind");
 
+    // The next take failing the same way is a second failure, not the first
+    // one again. The app used to remember the problem's wording and announce
+    // only a new one, so a second take whose combine failed for the same
+    // reason said nothing at all.
+    {
+        if (! failingCombiner.start (root, failingPlan))
+            return fail ("the second failing simulated combine did not start");
+
+        const auto again = std::chrono::steady_clock::now() + std::chrono::seconds (2);
+        while (failingCombiner.isRunning() && std::chrono::steady_clock::now() < again)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        const auto secondFailure = failingCombiner.getStatus();
+        if (failingCombiner.isRunning() || secondFailure.problem != failedStatus.problem)
+            return fail ("the second failing simulated combine did not fail the same way");
+
+        if (secondFailure.run == 0 || secondFailure.run == failedStatus.run)
+            return fail ("two takes' failed combines could not be told apart");
+    }
+
     const auto successfulVideo = root.getChildFile ("success-input.mov");
     if (! successfulVideo.replaceWithText ("video"))
         return fail ("could not make the successful fake input");
@@ -437,6 +457,6 @@ int main (int argc, char** argv)
     if (checkSplitMixReachesTheCombinedFile (root) != 0)
         return 1;
 
-    std::printf ("ALL CHECKS PASSED (24 checks, 0 failing)\n");
+    std::printf ("ALL CHECKS PASSED (26 checks, 0 failing)\n");
     return 0;
 }

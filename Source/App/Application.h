@@ -1123,8 +1123,10 @@ private:
     double activityLineSeconds = 0.0;
 
     /// The last take's combine outcome that has already been reported, so a
-    /// finished combine is announced once.
-    juce::String reportedCombineProblem;
+    /// finished combine is announced once. Kept by run, not by wording: two
+    /// takes in a row whose combine failed for the same reason are two
+    /// failures, and matching the sentence left the second one unreported.
+    juce::uint64 reportedCombineRun = 0;
 
     // §5.1 listening level. Owned here, not on the bus, because the coordinator
     // that owns the bus is rebuilt on a rate or buffer change.
