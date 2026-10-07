@@ -219,6 +219,7 @@ int main()
         const auto o = open (outSplit);
         check (o.videoTracks == 1 && o.audioTracks == 1, "the split result has one picture and one sound");
         check (std::abs (o.audioSeconds - 1.8) < 0.1, "the lead is skipped across the part boundary");
+        check (std::abs (o.videoSeconds - 1.8) < 0.1, "the picture ends with the sound, as ffmpeg's -shortest does");
     }
 
     // A missing picture is reported, not a crash or an empty file.

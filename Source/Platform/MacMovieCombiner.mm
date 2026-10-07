@@ -109,6 +109,13 @@ std::string combineMovieWithSound (const std::string& videoPath,
         if (CMTimeCompare (cursor, kCMTimeZero) <= 0)
             return "The sound ended before the picture began.";
 
+        // Ends where the shorter stream does, as the ffmpeg combine does
+        // (-shortest). The cameras stop after the sound, so the picture used
+        // to run on past the end of the sound -- a silent tail on the Mac's
+        // combined file that the Windows one never had.
+        if (CMTimeCompare (cursor, videoDuration) < 0)
+            [pictureOut removeTimeRange:CMTimeRangeMake (cursor, CMTimeSubtract (videoDuration, cursor))];
+
         AVAssetExportSession* exporter =
             [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetPassthrough];
 
