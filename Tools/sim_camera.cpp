@@ -1541,6 +1541,187 @@ void aTakeFolderRenamedMidTakeStillFinishesItsMovie()
     fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
 }
 
+/// Two cameras of one model. Settings were keyed "Name" / "Name #2" by OS
+/// order, which is not a property of the camera: it changes across reboots
+/// and replugs, and unplugging the first handed its settings to the second.
+/// Where the platform gives each device its own id (macOS uniqueID), the
+/// choices follow that, and choices remembered the old way are carried over.
+void identicalCamerasKeepTheirOwnSettings()
+{
+    std::printf ("\nTwo identical cameras, told apart by their own ids\n");
+
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::resetOpenCallCount();
+
+    struct Remembered
+    {
+        std::string id;
+        bool enabled;
+        std::string name;
+        mma::CameraQuality quality;
+    };
+
+    // What settings.json carries from one launch to the next.
+    const auto rememberAll = [] (const mma::CameraController& c)
+    {
+        std::vector<Remembered> out;
+        for (const auto& cam : c.getSelection().getKnownCameras())
+            out.push_back ({ cam.id, c.getSelection().isEnabled (cam.id),
+                             c.getSelection().getDisplayName (cam.id),
+                             c.getSelection().getQuality (cam.id) });
+        return out;
+    };
+    // How Application seeds a fresh launch before the first snapshot.
+    const auto seed = [] (mma::CameraController& c, const std::vector<Remembered>& saved)
+    {
+        for (const auto& r : saved)
+        {
+            c.getSelection().setEnabled (r.id, r.enabled);
+            c.getSelection().setQuality (r.id, r.quality);
+            c.getSelection().setAssignedName (r.id, r.name);
+        }
+    };
+
+    std::vector<Remembered> saved;
+
+    {
+        // Launch 1: Left is unit A, Right is unit B, and B is switched off.
+        fakecamera::setDevices ({ "Twin Cam", "Twin Cam" }, { "unit-A", "unit-B" });
+        mma::CameraController controller;
+        refreshNow (controller);
+        const auto cams = controller.getSelection().getAvailableCameras();
+        check (cams.size() == 2 && cams[0].id == "unit-A" && cams[1].id == "unit-B",
+               "each twin is known by its own device id");
+
+        controller.getSelection().setAssignedName ("unit-A", "Left");
+        controller.getSelection().setAssignedName ("unit-B", "Right");
+        controller.getSelection().setQuality ("unit-B", mma::CameraQuality::HD720);
+        controller.setCameraEnabledByUser ("unit-B", false);
+        controller.applySelection (true);
+        check (controller.getSignalState ("unit-A") != mma::CameraController::SignalState::NotOpen
+                   && controller.getSignalState ("unit-B") == mma::CameraController::SignalState::NotOpen,
+               "only the twin left on stays open");
+        saved = rememberAll (controller);
+    }
+
+    {
+        // Launch 2, after a reboot: the OS lists them the other way round.
+        fakecamera::setDevices ({ "Twin Cam", "Twin Cam" }, { "unit-B", "unit-A" });
+        fakecamera::resetOpenCallCount();
+        mma::CameraController controller;
+        seed (controller, saved);
+        refreshNow (controller);
+        controller.applySelection (true);
+
+        const auto& sel = controller.getSelection();
+        check (sel.getDisplayName ("unit-A") == "Left" && sel.isEnabled ("unit-A"),
+               "reordered: unit A is still Left and still on");
+        check (sel.getDisplayName ("unit-B") == "Right" && ! sel.isEnabled ("unit-B")
+                   && sel.getQuality ("unit-B") == mma::CameraQuality::HD720,
+               "reordered: unit B is still Right, off, at 720p");
+        check (fakecamera::getOpenCallCount() == 1 && fakecamera::getOpenedDeviceIndices().size() == 1
+                   && fakecamera::getOpenedDeviceIndices().front() == 1,
+               "and the camera opened is unit A, now second in the list");
+
+        // Unit A unplugged: B is now the only "Twin Cam" -- the very slot A had.
+        fakecamera::setDevices ({ "Twin Cam" }, { "unit-B" });
+        refreshNow (controller);
+        controller.applySelection (false);
+        check (sel.getDisplayName ("unit-B") == "Right" && ! sel.isEnabled ("unit-B")
+                   && sel.getQuality ("unit-B") == mma::CameraQuality::HD720,
+               "unplugging unit A hands none of its settings to unit B");
+        check (sel.getDisplayName ("unit-A") == "Left" && sel.isEnabled ("unit-A"),
+               "and unit A's are kept for when it comes back");
+    }
+
+    {
+        // Settings from before per-device ids, for two twins: ambiguous, so
+        // the OS order decides once, as it did; then the ids hold.
+        fakecamera::setDevices ({ "Twin Cam", "Twin Cam" }, { "unit-B", "unit-A" });
+        mma::CameraController controller;
+        seed (controller, { { "Twin Cam", true, "Left", mma::CameraQuality::Best },
+                            { "Twin Cam #2", false, "Right", mma::CameraQuality::HD720 } });
+        refreshNow (controller);
+        const auto& sel = controller.getSelection();
+        check (sel.getDisplayName ("unit-B") == "Left" && sel.getDisplayName ("unit-A") == "Right"
+                   && ! sel.isEnabled ("unit-A"),
+               "old name-based settings for two twins are carried over in OS order");
+        check (sel.getKnownCameras().size() == 2, "and the old entries do not linger as missing cameras");
+
+        fakecamera::setDevices ({ "Twin Cam", "Twin Cam" }, { "unit-A", "unit-B" });
+        refreshNow (controller);
+        check (sel.getDisplayName ("unit-B") == "Left" && sel.getDisplayName ("unit-A") == "Right",
+               "after which a reorder no longer swaps them");
+    }
+
+    {
+        // One remembered camera of that name: no doubt which it was.
+        fakecamera::setDevices ({ "Twin Cam" }, { "unit-B" });
+        mma::CameraController controller;
+        seed (controller, { { "Twin Cam #2", false, "Right", mma::CameraQuality::HD720 } });
+        refreshNow (controller);
+        const auto& sel = controller.getSelection();
+        check (sel.getDisplayName ("unit-B") == "Right" && ! sel.isEnabled ("unit-B"),
+               "a single old name-based entry is adopted by the camera of that name");
+    }
+
+    {
+        // No per-device ids (Windows): the old name-and-order ids, unchanged.
+        fakecamera::setDevices ({ "Twin Cam", "Twin Cam" });
+        mma::CameraController controller;
+        refreshNow (controller);
+        const auto cams = controller.getSelection().getAvailableCameras();
+        check (cams.size() == 2 && cams[0].id == "Twin Cam" && cams[1].id == "Twin Cam #2",
+               "without device ids, twins are still told apart by order");
+    }
+
+    fakecamera::setDevices ({});
+}
+
+/// A twin opened by index must be the twin asked for. A hot-plug between the
+/// background snapshot and the open can shift the index onto the other unit;
+/// the names match, so only the device id can catch it.
+void anIndexThatNowPointsAtTheOtherTwinIsNotUsed()
+{
+    std::printf ("\nA twin's index shifted onto the other twin before it opened\n");
+
+    fakecamera::setOpenSucceeds (true);
+    fakecamera::setViewerSucceeds (true);
+    fakecamera::setAutoFrameOnListener (true);
+    fakecamera::setDevices ({ "Twin Cam", "Twin Cam" }, { "unit-A", "unit-B" });
+
+    mma::CameraController controller;
+    controller.getSelection().setEnabled ("unit-A", false);
+    controller.getSelection().setEnabled ("unit-B", true);
+
+    // Held shut through the first snapshot, so the open below is the one
+    // that meets the reordered list.
+    fakecamera::setOpenSucceeds (false);
+    refreshNow (controller);
+    fakecamera::setOpenSucceeds (true);
+
+    // The OS reorders after the snapshot the controller is using.
+    fakecamera::setDevices ({ "Twin Cam", "Twin Cam" }, { "unit-B", "unit-A" });
+    fakecamera::resetOpenCallCount();
+    controller.applySelection (true);
+
+    check (fakecamera::getOpenCallCount() == 1, "the stale index is tried once");
+    check (controller.getSignalState ("unit-B") == mma::CameraController::SignalState::NotOpen,
+           "but unit A's picture is not attached to unit B");
+
+    // The fresh snapshot the mismatch asked for opens the right unit.
+    check (controller.waitForCameraRefresh (2000), "a fresh camera list is requested and arrives");
+    controller.applyPendingCameraList();
+    controller.applySelection (false);
+    check (controller.getSignalState ("unit-B") != mma::CameraController::SignalState::NotOpen
+               && fakecamera::getOpenedDeviceIndices().back() == 0,
+           "and unit B then opens at its new index");
+
+    fakecamera::setDevices ({});
+}
+
 /// MAC-CAM-2: a camera unplugged right AFTER Stop, while AVFoundation still
 /// owes its didFinish for the movie, must not be destroyed. Destroying it drops
 /// the completion callback, so the take waited 15 s and then reported a movie
@@ -1981,6 +2162,8 @@ int main()
     startOffsetUsesTheBackendsFirstFrameTime();
     delayedFinalizationBlocksClaimsAndTheNextTake();
     aTakeFolderRenamedMidTakeStillFinishesItsMovie();
+    identicalCamerasKeepTheirOwnSettings();
+    anIndexThatNowPointsAtTheOtherTwinIsNotUsed();
     anUnplugAfterStopStillReceivesItsFinalization();
     finishWithoutStartIsAStartFailure();
     aSynchronousWriterStartFailureNeverClaimsAFile();

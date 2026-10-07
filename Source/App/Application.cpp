@@ -4930,8 +4930,14 @@ void Application::announceOutputChanges (const std::map<std::string, std::string
     announceArrivalsAndDepartures (outputsOnly, knownOutputNames, haveAnnouncedOutputsOnce, {});
 }
 
-void Application::announceCameraChanges() const
+void Application::announceCameraChanges()
 {
+    // Choices remembered under the old name-based ids were just carried over
+    // to cameras' own per-device ids: save them under those now, so the next
+    // launch reads them directly rather than matching names again.
+    if (! applyingRememberedSettings && cameraController.getSelection().takeAdoptedLegacyChoices())
+        saveSettings();
+
     std::map<std::string, std::string> current;
 
     for (const auto& cam : cameraController.getSelection().getAvailableCameras())
@@ -6684,8 +6690,13 @@ bool Application::applyTemplate (const juce::String& name)
     // Only the cameras the show names, and only where the answer differs:
     // switching one on through the user's path also clears a crash guard, and
     // that is not something to do to a camera the show never mentioned.
-    for (const auto& camera : loaded->cameras)
+    for (const auto& saved : loaded->cameras)
     {
+        // A show saved before cameras had per-device ids names them the old
+        // way; follow those choices to the device that took them over.
+        auto camera = saved;
+        camera.id = cameraController.getSelection().resolveId (saved.id);
+
         if (cameraController.getSelection().isEnabled (camera.id) != camera.enabled)
             cameraController.setCameraEnabledByUser (camera.id, camera.enabled);
 

@@ -143,6 +143,7 @@ CameraController::~CameraController()
         const std::lock_guard<std::mutex> guard (discovery->mutex);
         discovery->cancelled = true;
         discovery->pendingDeviceNames.clear();
+        discovery->pendingDeviceIds.clear();
     }
     discovery->condition.notify_all();
 
@@ -308,7 +309,7 @@ bool CameraController::applyPendingCameraList()
     bool finalizationStateChanged = applyRecordingFinalizationTimeout();
     finalizationStateChanged = finishRecordingFinalizationIfReady()
                             || finalizationStateChanged;
-    juce::StringArray names;
+    juce::StringArray names, ids;
     bool hasNewDeviceList = false;
     const auto discovery = discoveryState;
     {
@@ -316,6 +317,7 @@ bool CameraController::applyPendingCameraList()
         if (! discovery->cancelled && discovery->completed > discoveryApplied)
         {
             names = discovery->pendingDeviceNames;
+            ids = discovery->pendingDeviceIds;
             discoveryApplied = discovery->completed;
             hasNewDeviceList = true;
         }
@@ -324,7 +326,7 @@ bool CameraController::applyPendingCameraList()
     if (hasNewDeviceList)
     {
         hasAppliedDeviceList = true;
-        applyDeviceNames (names);
+        applyDeviceNames (names, ids);
     }
 
     // The user answered the camera prompt (or allowed SobStage in System
@@ -796,11 +798,13 @@ void CameraController::runDiscoveryWorker (std::shared_ptr<DiscoveryState> disco
             requested = discovery->requested;
         }
 
-        juce::StringArray names;
+        juce::StringArray names, ids;
         bool succeeded = false;
         try
         {
-            names = juce::CameraDevice::getAvailableDevices();
+            // One enumeration for both, so ids[i] is the device names[i] is,
+            // at the index openDevice() will be given.
+            juce::CameraDevice::getAvailableDevicesWithIds (names, ids);
             succeeded = true;
         }
         catch (...)
@@ -824,6 +828,7 @@ void CameraController::runDiscoveryWorker (std::shared_ptr<DiscoveryState> disco
                 // If another refresh arrived while the OS was blocked, this
                 // snapshot is stale and the loop immediately enumerates again.
                 discovery->pendingDeviceNames = std::move (names);
+                discovery->pendingDeviceIds = std::move (ids);
                 discovery->completed = requested;
                 discovery->workerRunning = false;
                 finished = true;
@@ -842,17 +847,33 @@ void CameraController::runDiscoveryWorker (std::shared_ptr<DiscoveryState> disco
    #endif
 }
 
-void CameraController::applyDeviceNames (const juce::StringArray& names)
+void CameraController::applyDeviceNames (const juce::StringArray& names, const juce::StringArray& ids)
 {
     // Keep the raw OS answer, not the take-filtered Selection produced below.
     // It is message-thread state and can be replayed synchronously when the
     // take ends so a camera which already reconnected is eligible immediately.
     lastAppliedDeviceNames = names;
+    lastAppliedDeviceIds = ids;
+
+    const auto deviceIdAt = [&ids] (int index)
+    {
+        return juce::isPositiveAndBelow (index, ids.size()) ? ids[index].toStdString() : std::string();
+    };
 
     std::vector<CameraDeviceInfo> cameras;
     std::map<std::string, int> currentDeviceNameCounts;
-    for (const auto& name : names)
-        ++currentDeviceNameCounts[name.toStdString()];
+    // Names every listed device of which carries its own per-device id. Their
+    // count changing says nothing about which unit is which: each still has
+    // its own identity, so none of the same-name ambiguity below applies.
+    std::map<std::string, bool> nameHasPerDeviceIds;
+    for (int i = 0; i < names.size(); ++i)
+    {
+        const auto name = names[i].toStdString();
+        ++currentDeviceNameCounts[name];
+        const bool hasId = ! deviceIdAt (i).empty();
+        const auto known = nameHasPerDeviceIds.find (name);
+        nameHasPerDeviceIds[name] = (known == nameHasPerDeviceIds.end() || known->second) && hasId;
+    }
 
     if (takeActive)
     {
@@ -866,7 +887,10 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
             const auto current = currentDeviceNameCounts.find (name);
             const int currentCount = current != currentDeviceNameCounts.end() ? current->second : 0;
 
-            if (currentCount != baselineCount && (baselineCount > 1 || currentCount > 1))
+            const auto stable = nameHasPerDeviceIds.find (name);
+            const bool identifiable = stable != nameHasPerDeviceIds.end() && stable->second;
+
+            if (! identifiable && currentCount != baselineCount && (baselineCount > 1 || currentCount > 1))
                 ambiguousTakeDeviceNames.insert (name);
 
             // Below the take's own count, a camera that began the take has
@@ -881,6 +905,7 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
     for (const auto& camera : selection.getAvailableCameras())
         previousIds.insert (camera.id);
     osIndexById.clear();
+    perDeviceIds.clear();
 
     // These failures mean only that JUCE's index-to-device mapping changed
     // between discovery and open. The result being applied was requested after
@@ -902,9 +927,14 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
         const int occurrence = ++seen[name];
 
         // Two cameras of the same model enumerate with the same product string,
-        // exactly as §14.6's four identical microphones do. The occurrence
-        // keeps their choices apart for as long as they stay connected.
-        const auto id = (occurrence == 1 ? name : name + " #" + juce::String (occurrence)).toStdString();
+        // exactly as §14.6's four identical microphones do. Where the platform
+        // gives each device its own id (macOS's uniqueID) that is the camera's
+        // identity, so its choices stay with it across a replug, a reboot, or
+        // its twin being unplugged. Otherwise the occurrence keeps them apart
+        // for as long as they stay connected in the same order.
+        const auto nameBasedId = (occurrence == 1 ? name : name + " #" + juce::String (occurrence)).toStdString();
+        const auto deviceId = deviceIdAt (i);
+        const auto id = deviceId.empty() ? nameBasedId : deviceId;
 
         // A camera whose writer was interrupted cannot be joined back onto the
         // same movie by JUCE. Keep it out of the live list until this take is
@@ -916,7 +946,10 @@ void CameraController::applyDeviceNames (const juce::StringArray& names)
             continue;
 
         osIndexById[id] = i;
-        cameras.push_back ({ id, name.toStdString() });
+        cameras.push_back ({ id, name.toStdString(), deviceId.empty() ? std::string() : nameBasedId });
+
+        if (! deviceId.empty())
+            perDeviceIds.insert (id);
 
         // Reconnecting is a fresh opportunity to open the camera. A failure
         // belonging to the prior connection must not suppress that one.
@@ -1145,7 +1178,10 @@ void CameraController::openCamera (const std::string& id, int osIndex,
     // the same integer refer to a different camera. Never attach that picture to
     // the selected camera's id/name (or record it under that filename): discard
     // it, request a fresh mapping, and retry only after that mapping arrives.
-    if (device->getName() != expectedDeviceName)
+    // Same for twins: two cameras of one model share a name, so only the
+    // per-device id shows that the index now points at the other one.
+    if (device->getName() != expectedDeviceName
+        || (perDeviceIds.count (id) > 0 && device->getDeviceIdentifier().toStdString() != id))
     {
         device.reset();
         openFailures[id] = "The camera list changed while opening "
@@ -1720,7 +1756,7 @@ void CameraController::reconcileAfterTake()
     // applyDeviceNames deliberately hid absent-at-start or interrupted cameras
     // from the running take. Restore the latest unfiltered OS list only after
     // every movie is complete, so a reconnect cannot reuse its writer early.
-    applyDeviceNames (lastAppliedDeviceNames);
+    applyDeviceNames (lastAppliedDeviceNames, lastAppliedDeviceIds);
 
     for (const auto& id : deferred)
     {

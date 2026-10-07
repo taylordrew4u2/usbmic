@@ -205,3 +205,142 @@ TEST_CASE (CameraSelection_previewSizeNeverDrivesCaptureSize)
                      < CameraSelection::previewSettingsFor (PreviewQuality::Full).maxViewHeight);
     REQUIRE (CameraSelection::previewSettingsFor (PreviewQuality::Low).maxViewHeight > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Per-device ids (macOS uniqueID) and the choices remembered before them,
+// under "Name" and "Name #2" by OS order.
+
+namespace {
+
+/// Seeds a choice the way the app does from settings.json at launch.
+void remember (CameraSelection& selection, const std::string& id, bool enabled,
+               const std::string& name = {}, CameraQuality quality = CameraQuality::Best)
+{
+    selection.setEnabled (id, enabled);
+    selection.setQuality (id, quality);
+    if (! name.empty())
+        selection.setAssignedName (id, name);
+}
+
+} // namespace
+
+TEST_CASE (CameraSelection_aSingleOldChoiceForTheNameIsTakenOverByItsCamera)
+{
+    CameraSelection selection;
+    remember (selection, "Logitech C920", false, "Wide", CameraQuality::HD720);
+
+    selection.setAvailableCameras ({ { "0x1420000046d0825", "Logitech C920", "Logitech C920" } });
+
+    REQUIRE_FALSE (selection.isEnabled ("0x1420000046d0825"));
+    REQUIRE (selection.getDisplayName ("0x1420000046d0825") == "Wide");
+    REQUIRE (selection.getQuality ("0x1420000046d0825") == CameraQuality::HD720);
+    REQUIRE (selection.takeAdoptedLegacyChoices());
+    REQUIRE_FALSE (selection.takeAdoptedLegacyChoices());
+
+    // The old entry is gone, not left behind as a phantom missing camera.
+    REQUIRE (selection.getKnownCameras().size() == 1);
+    REQUIRE (selection.resolveId ("Logitech C920") == "0x1420000046d0825");
+}
+
+TEST_CASE (CameraSelection_aSingleOldChoiceIsTakenEvenIfItWasTheSecondTwin)
+{
+    // Only "#2" was remembered. Exactly one match: it belongs to the camera
+    // of that name now connected.
+    CameraSelection selection;
+    remember (selection, "Twin Cam #2", false, "Left");
+
+    selection.setAvailableCameras ({ { "id-a", "Twin Cam", "Twin Cam" } });
+
+    REQUIRE_FALSE (selection.isEnabled ("id-a"));
+    REQUIRE (selection.getDisplayName ("id-a") == "Left");
+}
+
+TEST_CASE (CameraSelection_ambiguousOldChoicesFallBackToOsOrderOnce)
+{
+    // Two remembered twins: the old ids cannot say which unit was which, so
+    // the OS order decides this once, exactly as it always did...
+    CameraSelection selection;
+    remember (selection, "Twin Cam", true, "Left");
+    remember (selection, "Twin Cam #2", false, "Right");
+
+    selection.setAvailableCameras ({ { "id-b", "Twin Cam", "Twin Cam" },
+                                     { "id-a", "Twin Cam", "Twin Cam #2" } });
+
+    REQUIRE (selection.getDisplayName ("id-b") == "Left");
+    REQUIRE (selection.isEnabled ("id-b"));
+    REQUIRE (selection.getDisplayName ("id-a") == "Right");
+    REQUIRE_FALSE (selection.isEnabled ("id-a"));
+
+    // ...and from then on the choices follow the device, whatever the order.
+    selection.setAvailableCameras ({ { "id-a", "Twin Cam", "Twin Cam" },
+                                     { "id-b", "Twin Cam", "Twin Cam #2" } });
+    REQUIRE (selection.getDisplayName ("id-b") == "Left");
+    REQUIRE (selection.getDisplayName ("id-a") == "Right");
+    REQUIRE_FALSE (selection.isEnabled ("id-a"));
+}
+
+TEST_CASE (CameraSelection_ambiguousOldChoicesWithOneTwinPluggedInKeepTheOldMapping)
+{
+    CameraSelection selection;
+    remember (selection, "Twin Cam", true, "Left");
+    remember (selection, "Twin Cam #2", false, "Right");
+
+    // One twin, first in the list: it gets what "Twin Cam" always gave it,
+    // and "#2" waits for the other unit.
+    selection.setAvailableCameras ({ { "id-a", "Twin Cam", "Twin Cam" } });
+    REQUIRE (selection.getDisplayName ("id-a") == "Left");
+
+    selection.setAvailableCameras ({ { "id-a", "Twin Cam", "Twin Cam" },
+                                     { "id-b", "Twin Cam", "Twin Cam #2" } });
+    REQUIRE (selection.getDisplayName ("id-b") == "Right");
+    REQUIRE_FALSE (selection.isEnabled ("id-b"));
+}
+
+TEST_CASE (CameraSelection_unpluggingOneTwinHandsNothingToTheOther)
+{
+    CameraSelection selection;
+    selection.setAvailableCameras ({ { "id-a", "Twin Cam", "Twin Cam" },
+                                     { "id-b", "Twin Cam", "Twin Cam #2" } });
+    selection.setEnabled ("id-a", false);
+    selection.setAssignedName ("id-a", "Left");
+    selection.setQuality ("id-a", CameraQuality::HD720);
+    selection.setAssignedName ("id-b", "Right");
+
+    // id-a unplugged: id-b is now first in the list, the old "Twin Cam".
+    selection.setAvailableCameras ({ { "id-b", "Twin Cam", "Twin Cam" } });
+
+    REQUIRE (selection.isEnabled ("id-b"));
+    REQUIRE (selection.getDisplayName ("id-b") == "Right");
+    REQUIRE (selection.getQuality ("id-b") == CameraQuality::Best);
+    REQUIRE_FALSE (selection.takeAdoptedLegacyChoices());
+}
+
+TEST_CASE (CameraSelection_aCameraWithoutItsOwnIdKeepsItsNameBasedChoices)
+{
+    // A camera that still goes by its name keeps its entry; a twin with a
+    // per-device id cannot take it from under it.
+    CameraSelection selection;
+    remember (selection, "Twin Cam", false, "Old");
+
+    selection.setAvailableCameras ({ { "Twin Cam", "Twin Cam" },
+                                     { "id-b", "Twin Cam", "Twin Cam #2" } });
+
+    REQUIRE_FALSE (selection.isEnabled ("Twin Cam"));
+    REQUIRE (selection.getDisplayName ("Twin Cam") == "Old");
+    REQUIRE (selection.isEnabled ("id-b"));
+    REQUIRE (selection.getDisplayName ("id-b") == "Twin Cam");
+}
+
+TEST_CASE (CameraSelection_otherNamesAreNeverTakenOver)
+{
+    CameraSelection selection;
+    remember (selection, "Twin Cam Pro", false);
+    remember (selection, "Twin Cam #02", false);
+    remember (selection, "Twin Cam #1", false);
+
+    selection.setAvailableCameras ({ { "id-a", "Twin Cam", "Twin Cam" } });
+
+    REQUIRE (selection.isEnabled ("id-a")); // fresh: seen for the first time
+    REQUIRE_FALSE (selection.takeAdoptedLegacyChoices());
+    REQUIRE (selection.resolveId ("Twin Cam Pro") == "Twin Cam Pro");
+}
