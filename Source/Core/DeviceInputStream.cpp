@@ -389,9 +389,16 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // Pre-roll. The output clock starts before any device has delivered, so
     // consuming here would emit a click at the top of every take and count
     // audio as lost that had simply not arrived yet.
+    //
+    // Judged on the de-quantized level the loop steers, not the raw one. Just
+    // after a 1156-frame delivery the raw level is the whole block, far past a
+    // 128-sample target, but the device's next block is a whole period away:
+    // starting there ran the ring dry a few dozen samples before it landed --
+    // a counted dropout at the top of every stream on such a device -- and
+    // left the loop starting a full block below its target.
     if (! started.load (std::memory_order_relaxed))
     {
-        if (ring.availableForRead() < targetFillSamples)
+        if (virtualFillNow (ring.availableForRead()) < static_cast<double> (targetFillSamples))
         {
             std::fill (destination, destination + numSamples, 0.0f);
             return;

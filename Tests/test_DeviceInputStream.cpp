@@ -832,7 +832,11 @@ constexpr int64_t kBlockNs64 = 64 * 1000000000LL / 48000;
 void primeAtTarget (DeviceInputStream& s, RampSource& src, std::vector<float>& out)
 {
     simulatedNs = 1'000'000'000; // zero is what the clock hook reads as "nothing delivered yet"
-    src.push (s, 64 + 64 + 32 + 1);
+    // In two deliveries, so the one the pull lands right after is the short
+    // one: playout starts on the de-quantized level, which discounts the
+    // newest delivery's whole block at the instant it lands.
+    src.push (s, 64 + 64);
+    src.push (s, 32 + 1);
     s.pull (out.data(), 64);
 }
 
@@ -1227,14 +1231,25 @@ TEST_CASE (DeviceInputStream_ADeviceRunningAtALargerBlockThanAskedForLosesNothin
     const auto r = runUnequalBlocks (64, 1156, 64, 20.0, 0.0);
     REQUIRE (r.overruns == 0u);
 
-    // The first delivery lands with nothing in the ring; what that costs at
-    // the very start is bounded by one block, and nothing after it is lost.
-    REQUIRE (r.underruns < 1156u);
+    // Not even at the start. Playout used to begin on the raw level just
+    // after the first 1156-frame delivery, a whole device period before the
+    // next one, and ran dry a few dozen samples short of it: a counted
+    // dropout at the top of every stream on such a device.
+    REQUIRE (r.underruns == 0u);
 
     // CoreAudio's own scratch bound.
     const auto large = runUnequalBlocks (64, 4096, 64, 20.0, 0.0);
     REQUIRE (large.overruns == 0u);
-    REQUIRE (large.underruns < 4096u);
+    REQUIRE (large.underruns == 0u);
+}
+
+TEST_CASE (DeviceInputStream_AnOddDeviceBlockStartsWithoutADropout)
+{
+    // 471 frames, the kind of IO size CoreAudio hands a device whose driver
+    // aligns the request to its own period.
+    const auto r = runUnequalBlocks (64, 471, 64, 10.0, 0.0);
+    REQUIRE (r.underruns == 0u);
+    REQUIRE (r.overruns == 0u);
 }
 
 TEST_CASE (DeviceInputStream_AnOutputPullingALargerBlockThanAskedForLosesNothing)
