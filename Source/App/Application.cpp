@@ -3025,7 +3025,18 @@ void Application::toggleRecording()
                                                      "MIX.wav",
                                                      takeBitDepth);
 
-            if (plan.hasWork())
+            if (plan.hasWork() && takeCardUnresponsive)
+            {
+                // A card that stopped answering is not asked to be read again
+                // -- the podcast copy below already held to that. The combine
+                // did not: its worker hung listing the folder, so it never
+                // finished, every later take's combine queued behind it and
+                // silently never ran, and quitting asked to wait for it.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              "No combined video was made: the card stopped answering. "
+                              "Whatever reached the card is still in its separate files.");
+            }
+            else if (plan.hasWork())
             {
                 takeCombiner.start (juce::File (currentSessionFolder), plan);
             }
@@ -6075,16 +6086,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         const auto combine = takeCombiner.getStatus();
         const auto problem = juce::String (combine.problem);
 
-        if (! combine.running && problem.isNotEmpty() && problem != reportedCombineProblem)
+        if (! combine.running && problem.isNotEmpty() && combine.run != reportedCombineRun)
         {
-            reportedCombineProblem = problem;
+            reportedCombineRun = combine.run;
 
             noteActivity (ActivityLevel::Warning, "Combined video", problem);
             return problem;
         }
-
-        if (problem.isEmpty())
-            reportedCombineProblem.clear();
     }
 
     // §10.5: hardware guidance, most serious first.
