@@ -33,6 +33,18 @@ struct RecoveredSession
     std::string folder;
     std::string startedIso;
     std::vector<RecoveredFile> files;
+    /// Where this take's session.json said its local backup copy was going.
+    /// The backup folder is not always named like the card's -- one that
+    /// already existed in the backup root gets a "_2" -- so this, not the name
+    /// alone, is what ties the two copies of one take together.
+    std::string mirrorFolder;
+    /// The folder's modification time, milliseconds since 1970. Orders the
+    /// card newest first across both roots: the scans finish in either order.
+    int64_t modifiedMs = 0;
+    /// Camera movies beside the audio. Nothing repairs them: AVFoundation
+    /// writes a movie fragment every ten seconds, so a movie cut off by a crash
+    /// opens up to its last fragment -- or not at all if the take was shorter.
+    int movieCount = 0;
 
     /// Files worth putting in front of the user: those with real audio, plus
     /// those whose length could not be established because the file would not
@@ -79,6 +91,7 @@ struct RecoveredTakeRow
     int playableFileCount = 0;
     int emptyFileCount = 0;
     double longestSeconds = 0.0;
+    int movieCount = 0;
 };
 
 RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session);
@@ -118,10 +131,12 @@ public:
     /// throwing -- a folder recovered off a card can contain anything.
     static RecoveredFile repairWavFile (const std::string& path);
 
-    /// Adds one root's scan to the list. A take found under the same folder
-    /// name in both the save location and the local backup is shown once: the
+    /// Adds one root's scan to the list. A take found in both the save
+    /// location and the local backup -- under the same folder name, or as the
+    /// backup folder the card copy's session.json names -- is shown once: the
     /// save location's copy wins, and the other copy's folder is remembered in
-    /// hiddenFolders rather than forgotten.
+    /// hiddenFolders rather than forgotten. The shown list is kept newest
+    /// first, because the card's button opens the first one as "the newest".
     static RecoveredSessionList mergeScan (RecoveredSessionList list,
                                            std::vector<RecoveredSession> scanned,
                                            bool scanIsPrimaryCopy);

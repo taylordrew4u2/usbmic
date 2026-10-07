@@ -472,3 +472,99 @@ TEST_CASE (SessionRecovery_theCardDoesNotCallUnrepairedFilesPlayable)
     REQUIRE (recoveredTakesExplanation ({ good }).find ("repaired and is playable") != std::string::npos);
     REQUIRE (recoveredTakeDetail (good) == "2 files, 4s of sound");
 }
+
+TEST_CASE (SessionRecovery_aBackupFolderThatTookASuffixIsStillTheSameTake)
+{
+    // A backup folder of that name already existed -- the take restarted on a
+    // new card after the first was pulled -- so the backup went to "_2". Matched
+    // by name alone, one interrupted take was listed as two.
+    const auto take = [] (const std::string& folder, const std::string& mirror)
+    {
+        RecoveredSession s;
+        s.folder = folder;
+        s.mirrorFolder = mirror;
+        s.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false });
+        return s;
+    };
+
+    for (const bool mirrorFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        const std::vector<RecoveredSession> mirror {
+            take ("/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2", "") };
+        const std::vector<RecoveredSession> card {
+            take ("/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take",
+                  "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2") };
+
+        if (mirrorFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), mirror, false),
+                                               card, true);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), card, true),
+                                               mirror, false);
+
+        REQUIRE (list.shown.size() == 1);
+        REQUIRE (list.shown[0].folder == "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take");
+        REQUIRE (list.hiddenFolders.size() == 1);
+        REQUIRE (list.hiddenFolders[0] == "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2");
+    }
+}
+
+TEST_CASE (SessionRecovery_theCardListsTheNewestTakeFirstWhicheverScanFinishedFirst)
+{
+    // The card's button is "Open the newest" and opens the first row. The
+    // backup scan's older take used to come first just because that scan was
+    // merged first.
+    const auto take = [] (const std::string& folder, int64_t modifiedMs)
+    {
+        RecoveredSession s;
+        s.folder = folder;
+        s.modifiedMs = modifiedMs;
+        s.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false });
+        return s;
+    };
+
+    for (const bool mirrorFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        const std::vector<RecoveredSession> mirror { take ("/Users/me/RECORDINGS-MIRROR/2026-08-20_2000_Old", 1000) };
+        const std::vector<RecoveredSession> card { take ("/Volumes/CARD/RECORDINGS/2026-09-01_2000_New", 5000),
+                                                   take ("/Volumes/CARD/RECORDINGS/2026-08-01_2000_Older", 500) };
+
+        if (mirrorFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), mirror, false),
+                                               card, true);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), card, true),
+                                               mirror, false);
+
+        REQUIRE (list.shown.size() == 3);
+        REQUIRE (list.shown[0].folder == "/Volumes/CARD/RECORDINGS/2026-09-01_2000_New");
+        REQUIRE (list.shown[1].folder == "/Users/me/RECORDINGS-MIRROR/2026-08-20_2000_Old");
+        REQUIRE (list.shown[2].folder == "/Volumes/CARD/RECORDINGS/2026-08-01_2000_Older");
+    }
+}
+
+TEST_CASE (SessionRecovery_theCardSaysWhatACrashMeansForTheCameraMovies)
+{
+    // The movies beside the sound were never mentioned, and nothing repairs
+    // them: an interrupted movie ends at its last ten-second fragment.
+    RecoveredSession session;
+    session.folder = "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take";
+    session.files.push_back ({ "MIX.wav", 48000 * 64, 64.0, true, false, false });
+    session.movieCount = 2;
+
+    const auto row = recoveredTakeRow (session);
+    REQUIRE (row.movieCount == 2);
+    REQUIRE (recoveredTakeDetail (row) == "1 file, 1m 4s of sound; 2 camera movies, which may end up to 10 s early");
+
+    // Shorter than one fragment: there may be nothing in the movie to open.
+    session.files[0].seconds = 4.0;
+    session.movieCount = 1;
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
+             == "1 file, 4s of sound; 1 camera movie, which may not open");
+
+    // No camera, no mention.
+    session.movieCount = 0;
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session)) == "1 file, 4s of sound");
+}

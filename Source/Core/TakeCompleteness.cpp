@@ -31,6 +31,75 @@ bool isSystemClutterFile (const std::string& fileName)
     return ! fileName.empty() && fileName.front() == '.';
 }
 
+bool isAbandonedSafeWriteTemp (const std::string& fileName,
+                               const std::string& targetStem,
+                               const std::string& targetExtension)
+{
+    // "." + stem + "_temp" + hex [+ "_" + n, or + n] + extension. The number is
+    // juce::File::getNonexistentChildFile's, should the first name be taken.
+    if (fileName.size() < 1 + targetExtension.size() || fileName.front() != '.')
+        return false;
+
+    if (fileName.compare (fileName.size() - targetExtension.size(), targetExtension.size(),
+                          targetExtension) != 0)
+        return false;
+
+    const auto body = fileName.substr (1, fileName.size() - 1 - targetExtension.size());
+    const std::string marker = "_temp";
+
+    std::string::size_type markerAt = std::string::npos;
+
+    if (targetStem.empty())
+    {
+        markerAt = body.rfind (marker);
+
+        if (markerAt == std::string::npos || markerAt == 0)
+            return false;
+    }
+    else
+    {
+        if (body.compare (0, targetStem.size(), targetStem) != 0)
+            return false;
+
+        markerAt = targetStem.size();
+
+        if (body.compare (markerAt, marker.size(), marker) != 0)
+            return false;
+    }
+
+    const auto tail = body.substr (markerAt + marker.size());
+
+    if (tail.empty() || ! std::isxdigit (static_cast<unsigned char> (tail.front())))
+        return false;
+
+    return std::all_of (tail.begin(), tail.end(), [] (char c)
+    {
+        return std::isxdigit (static_cast<unsigned char> (c)) || c == '_';
+    });
+}
+
+bool isAbandonedTakeWorkingFile (const std::string& fileName)
+{
+    const auto endsWith = [&fileName] (const std::string& suffix)
+    {
+        return fileName.size() > suffix.size()
+            && fileName.compare (fileName.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+
+    // The combined movie, under its hidden working name. "._" is a Finder
+    // AppleDouble twin, which belongs to whatever file it shadows.
+    if (fileName.size() > 2 && fileName[0] == '.' && fileName[1] != '_')
+        for (const char* container : { "_with-sound.mov", "_with-sound.mkv", "_with-sound.mp4" })
+            if (endsWith (container) && fileName.size() > 1 + std::string (container).size())
+                return true;
+
+    // The podcast-ready copy: "<mix> - <service>.wav", written as ".part".
+    if (endsWith (".wav.part") && fileName.find (" - ") != std::string::npos && fileName.front() != '.')
+        return true;
+
+    return false;
+}
+
 namespace {
 
 /// -90 dBFS. Chosen well below any real microphone path's noise floor: a 24-bit

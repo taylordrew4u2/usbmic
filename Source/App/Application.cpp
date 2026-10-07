@@ -295,6 +295,13 @@ void Application::initialise()
     // session shares one origin.
     appStartMs = juce::Time::getMillisecondCounterHiRes();
 
+    // Before anything reads the folders they sit in. Each settings, show or
+    // camera-guard write goes to a hidden temporary file that is renamed over
+    // the real one; a crash, force-quit or power cut between the two strands
+    // the temporary file, and nothing removed them. This launch holds the
+    // single-instance lock, so none of them can be a write in progress.
+    sweepAbandonedSafeWriteTemps();
+
     // First, before anything reads a setting: the capture coordinator is built
     // with masterVolume a few lines down, and the destination is chosen below.
     loadSettings();
@@ -5111,6 +5118,10 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
 
+    // A save location that was not mounted when it was checked for an
+    // interrupted take is checked again once it is.
+    rescanDestinationIfItHasAppeared();
+
     // Before anything reads the take's files: a folder renamed in Finder
     // mid-take is followed here, well inside the growth check's six seconds.
     if (isRecording())
@@ -6597,6 +6608,27 @@ juce::File Application::getTemplatesFolder()
     return getSupportFolder().getChildFile ("Templates");
 }
 
+void Application::sweepAbandonedSafeWriteTemps()
+{
+    const auto sweep = [] (const juce::File& folder, const std::string& stem, const std::string& extension)
+    {
+        if (! folder.isDirectory())
+            return;
+
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, ".*", juce::File::findFiles))
+            if (isAbandonedSafeWriteTemp (entry.getFile().getFileName().toStdString(), stem, extension))
+                entry.getFile().deleteFile();
+    };
+
+    const auto support = getSupportFolder();
+    sweep (support, getSettingsFile().getFileNameWithoutExtension().toStdString(),
+           getSettingsFile().getFileExtension().toStdString());
+    sweep (support, "camera-starting", ".txt");
+
+    // Every show is written this way, under its own name.
+    sweep (getTemplatesFolder(), std::string(), ".json");
+}
+
 std::vector<ShowTemplate::StoredFile> Application::scanTemplateFiles()
 {
     std::vector<ShowTemplate::StoredFile> files;
@@ -6605,6 +6637,13 @@ std::vector<ShowTemplate::StoredFile> Application::scanTemplateFiles()
                                                             juce::File::findFiles))
     {
         const auto file = entry.getFile();
+
+        // A hidden file is not a show this app saved. The one that turned up
+        // here was a save's own temporary file, stranded by a crash before its
+        // rename: read back, it was offered in the show list as a second copy
+        // of the show, or under its temporary name.
+        if (isSystemClutterFile (file.getFileName().toStdString()))
+            continue;
         const auto loaded = ShowTemplate::fromJsonString (file.loadFileAsString().toStdString());
 
         // A file that is not a template is still recorded, so saving never
@@ -7058,6 +7097,7 @@ void Application::startDestinationRecoveryScan()
 
     destinationRecoveryRoot = target;
     destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    destinationRecoveryRootWasMissing = false;
 
     // If the user's destination is the mirror root itself, the existing scan
     // already establishes the same safety fact. Do not race two header repairs
@@ -7068,15 +7108,16 @@ void Application::startDestinationRecoveryScan()
         return;
 
     const auto mutationGate = recoveryMutationGate;
+    const bool sweepWorkingFiles = nothingIsWritingAfterATake();
     const bool launched = destinationRecoveryTask.start (
-        [target, mutationGate] (const std::atomic<bool>& cancelled) mutable
+        [target, mutationGate, sweepWorkingFiles] (const std::atomic<bool>& cancelled) mutable
         {
             auto mutationLease = waitForMutationLease (
                 mutationGate, { target }, cancelled);
             if (mutationLease == nullptr)
                 return RecoveryBackgroundResult { target, true, {}, {} };
 
-            auto result = Application::runRecoveryScan (target, true, cancelled);
+            auto result = Application::runRecoveryScan (target, true, sweepWorkingFiles, cancelled);
             mutationLease.reset();
             return result;
         });
@@ -7100,6 +7141,58 @@ void Application::startDestinationRecoveryScan()
         && mirrorRecoveryRoot != destinationRecoveryRoot
         && mirrorRecoveryStatus == RecoveryScanStatus::NotStarted)
         startMirrorRecoveryScan();
+}
+
+bool Application::nothingIsWritingAfterATake() const
+{
+    // A take, a combined video and a podcast-ready copy are the only things
+    // that write those working files. None of them may be running when a
+    // scan is told it may remove one.
+    return recordingEngine.getState() == RecordingState::Idle
+        && ! takeCombiner.isRunning()
+        && ! podcastExporter.isRunning()
+        && ! cameraController.isFinalizingRecording();
+}
+
+void Application::rescanDestinationIfItHasAppeared()
+{
+    publishCompletedRecoveryScans();
+
+    if (! destinationRecoveryRootWasMissing
+        || destinationRecoveryStatus != RecoveryScanStatus::Succeeded
+        || recordingEngine.getState() != RecordingState::Idle)
+        return;
+
+    // One task serves both when the destination is the backup root itself;
+    // re-running only one side of that would leave the other waiting on it.
+    if (destinationRecoveryRoot == mirrorRecoveryRoot)
+        return;
+
+    if (juce::File (juce::String (destinationFolder)).getFullPathName().toStdString()
+            != destinationRecoveryRoot)
+        return;
+
+    // Evidence from the worker that is allowed to touch the drive, never a
+    // stat on this thread: the drive check wrote its test file there, so the
+    // location exists now. It re-checks a location it could not write on its
+    // own, which is how a card that mounts late gets here.
+    //
+    // Only a verdict reached after the scan found nothing there counts. One
+    // from before -- the card was there for the drive check and gone by the
+    // scan -- proves nothing, and would rescan on every tick.
+    publishCompletedPreflight();
+    const auto verdict = preflightResults.find (destinationFolder);
+    const auto verdictAt = preflightVerdictAtMs.find (destinationFolder);
+
+    if (verdict == preflightResults.end() || verdict->second.couldNotWrite
+        || verdictAt == preflightVerdictAtMs.end()
+        || verdictAt->second <= destinationRecoveryMissingAtMs)
+        return;
+
+    destinationRecoveryRootWasMissing = false;
+    destinationRecoveryRoot.clear();
+    destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    startDestinationRecoveryScan();
 }
 
 void Application::startMirrorRecoveryScan()
@@ -7127,15 +7220,16 @@ void Application::startMirrorRecoveryScan()
         return;
 
     const auto mutationGate = recoveryMutationGate;
+    const bool sweepWorkingFiles = nothingIsWritingAfterATake();
     const bool launched = mirrorRecoveryTask.start (
-        [target, mutationGate] (const std::atomic<bool>& cancelled) mutable
+        [target, mutationGate, sweepWorkingFiles] (const std::atomic<bool>& cancelled) mutable
         {
             auto mutationLease = waitForMutationLease (
                 mutationGate, { target }, cancelled);
             if (mutationLease == nullptr)
                 return RecoveryBackgroundResult { target, false, {}, {} };
 
-            auto result = Application::runRecoveryScan (target, false, cancelled);
+            auto result = Application::runRecoveryScan (target, false, sweepWorkingFiles, cancelled);
             mutationLease.reset();
             return result;
         });
@@ -7154,7 +7248,7 @@ void Application::startMirrorRecoveryScan()
 }
 
 Application::RecoveryBackgroundResult Application::runRecoveryScan (
-    std::string rootPath, bool isDestinationCopy,
+    std::string rootPath, bool isDestinationCopy, bool sweepWorkingFiles,
     const std::atomic<bool>& cancelled)
 {
     RecoveryBackgroundResult result;
@@ -7175,7 +7269,22 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         return result;
 
     const juce::File root { juce::String (result.root) };
-    if (! root.isDirectory() || wasCancelled())
+    if (wasCancelled())
+        return result;
+
+    // Not there is not the same as checked. After a power cut or a kernel
+    // panic macOS checks a card before mounting it, and that can take minutes;
+    // a scan that ran first found nothing and called the card clear, so the
+    // take the crash interrupted was never repaired or offered, and new takes
+    // were allowed in beside it. Said, so the scan can be run again once the
+    // location really is there.
+    if (! root.isDirectory())
+    {
+        result.rootMissing = true;
+        return result;
+    }
+
+    if (wasCancelled())
         return result;
 
     // One level down and newest first. A card can hold hundreds of takes; an
@@ -7249,12 +7358,67 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
                     + " has a details file this app can't read, so what it says about "
                       "that take is gone. Its audio is still in that folder.");
 
+        // What a hard kill left of the combined movie or the podcast-ready
+        // copy being made after this take. Those are made after the take has
+        // stopped, so this folder is usually NOT an interrupted one. Only
+        // when nothing could be writing them now -- the caller decides that
+        // on the message thread -- and only by their own working names.
+        if (sweepWorkingFiles)
+        {
+            int removed = 0;
+
+            for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*", juce::File::findFiles))
+            {
+                if (wasCancelled())
+                    return result;
+
+                if (isAbandonedTakeWorkingFile (entry.getFile().getFileName().toStdString())
+                    && entry.getFile().deleteFile())
+                    ++removed;
+            }
+
+            if (removed > 0)
+                report (ActivityLevel::Warning,
+                        folder.getFileName()
+                        + ": SobStage stopped while it was still making the combined video or "
+                          "podcast-ready copy of this take, and the unfinished file has been "
+                          "removed. The take itself is untouched.");
+        }
+
         if (! SessionRecovery::sessionWasInterrupted (meta))
             continue;
 
         RecoveredSession session;
         session.folder = folder.getFullPathName().toStdString();
         session.startedIso = meta.startTimestampIso;
+        session.mirrorFolder = meta.mirrorPath;
+        session.modifiedMs = folder.getLastModificationTime().toMilliseconds();
+
+        // The hidden half-written copy a crash left mid-replace of the take's
+        // session.json or activity.log. Its target still holds the previous
+        // version, so it is never the only copy of anything -- and on a card
+        // later opened on Windows it is a stray file in the take.
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, ".*", juce::File::findFiles))
+        {
+            const auto name = entry.getFile().getFileName().toStdString();
+
+            if (isAbandonedSafeWriteTemp (name, "session", ".json")
+                || isAbandonedSafeWriteTemp (name, "activity", ".log"))
+                entry.getFile().deleteFile();
+        }
+
+        if (wasCancelled())
+            return result;
+
+        // Camera movies are not repaired -- there is nothing in them this app
+        // can fix -- but the card must not leave them out of its account.
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*.mov;*.mp4",
+                                                                juce::File::findFiles))
+            if (! isSystemClutterFile (entry.getFile().getFileName().toStdString()))
+                ++session.movieCount;
+
+        if (wasCancelled())
+            return result;
 
         for (const auto& entry : juce::RangedDirectoryIterator (
                  folder, false, "*.wav", juce::File::findFiles))
@@ -7315,6 +7479,16 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
                     folder.getFileName()
                     + " was interrupted and nothing playable survived in it. There is "
                       "nothing to recover from that folder.");
+
+            // Marked as dealt with now. Nothing is offered for it, so there is
+            // no card whose Done could do it -- and unmarked, this same failure
+            // was announced again at every launch for as long as the folder
+            // stayed among the newest. A card that refuses the write leaves it
+            // as it was, to be said again next time, which is no worse.
+            meta.stopTimestampIso = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+
+            if (! wasCancelled())
+                (void) replaceWithTextChecked (metadataFile, juce::String (meta.toJsonString()));
         }
     }
 
@@ -7360,6 +7534,12 @@ void Application::publishCompletedRecoveryScans() const
         }
 
         status = RecoveryScanStatus::Succeeded;
+
+        if (&status == &destinationRecoveryStatus)
+        {
+            destinationRecoveryRootWasMissing = completed->rootMissing;
+            destinationRecoveryMissingAtMs = juce::Time::getMillisecondCounterHiRes();
+        }
 
         for (const auto& entry : completed->activity)
             noteActivity (entry.level, juce::String (entry.subject),
