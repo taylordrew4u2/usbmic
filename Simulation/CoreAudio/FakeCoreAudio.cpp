@@ -483,6 +483,16 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
                         ioSize, outData);
     }
 
+    if (isStreamId (object) && address->mSelector == kAudioStreamPropertyLatency)
+    {
+        auto* owner = find (deviceForStream (object));
+        if (owner == nullptr)
+            return kAudioHardwareBadObjectError;
+
+        const UInt32 frames = static_cast<UInt32> (std::max (0, owner->spec.streamLatencyFrames));
+        return deliver (&frames, sizeof (frames), ioSize, outData);
+    }
+
     if (object == kAudioObjectSystemObject
         && address->mSelector == kAudioHardwarePropertyDefaultOutputDevice)
     {
@@ -517,6 +527,18 @@ OSStatus AudioObjectGetPropertyData (AudioObjectID object,
 
             const UInt32 source = device->spec.outputDataSource;
             return deliver (&source, sizeof (source), ioSize, outData);
+        }
+
+        case kAudioDevicePropertyLatency:
+        case kAudioDevicePropertySafetyOffset:
+        {
+            if (address->mScope != kAudioObjectPropertyScopeInput || device->spec.inputChannels <= 0)
+                return kAudioHardwareUnknownPropertyError;
+
+            const UInt32 frames = static_cast<UInt32> (std::max (0,
+                address->mSelector == kAudioDevicePropertyLatency ? device->spec.inputLatencyFrames
+                                                                  : device->spec.inputSafetyOffsetFrames));
+            return deliver (&frames, sizeof (frames), ioSize, outData);
         }
 
         case kAudioDevicePropertyJackIsConnected:

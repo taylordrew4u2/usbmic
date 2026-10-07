@@ -49,7 +49,21 @@ size_t DeviceInputStream::usableCapacity() const noexcept
     const size_t block = std::max ({ nominalBlockSamples,
                                      largestPushSamples.load (std::memory_order_relaxed),
                                      largestPullSamples.load (std::memory_order_relaxed) });
-    return std::min (ring.capacity(), block * static_cast<size_t> (kRingBlocks));
+    const auto delay = static_cast<size_t> (std::max (0, requestedAlignmentDelay.load (std::memory_order_relaxed)));
+    return std::min (ring.capacity(), block * static_cast<size_t> (kRingBlocks) + delay);
+}
+
+void DeviceInputStream::setAlignmentDelay (int samples) noexcept
+{
+    requestedAlignmentDelay.store (std::clamp (samples, 0, kMaxAlignmentDelaySamples),
+                                   std::memory_order_relaxed);
+}
+
+void DeviceInputStream::recomputeTarget() noexcept
+{
+    targetFillSamples = std::max (nominalBlockSamples, largestPullSamples.load (std::memory_order_relaxed))
+                          * static_cast<size_t> (kPreRollBlocks)
+                      + appliedAlignmentDelay;
 }
 
 void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
@@ -59,7 +73,11 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     // Storage for the largest block a device may actually deliver, not just
     // the one asked for; see kLargestDeviceBlock.
     ring.reset (std::max (block, static_cast<size_t> (kLargestDeviceBlock))
-                * static_cast<size_t> (kRingBlocks));
+                    * static_cast<size_t> (kRingBlocks)
+                + static_cast<size_t> (kMaxAlignmentDelaySamples));
+    requestedAlignmentDelay.store (0, std::memory_order_relaxed);
+    appliedAlignmentDelay = 0;
+    alignmentDebt = 0;
     nominalBlockSamples = block;
     largestPushSamples.store (0, std::memory_order_relaxed);
     largestPullSamples.store (0, std::memory_order_relaxed);
@@ -339,10 +357,50 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         silenceOwed = 0.0;
         pullsSinceSilence = 0;
         rebuffering = false;
+        alignmentDebt = 0; // the pre-roll ahead opens the delay itself
 
         driftPpm.store (0.0, std::memory_order_relaxed);
         excessDrift.store (false, std::memory_order_relaxed);
         driftReportingResetEpoch.fetch_add (1, std::memory_order_release);
+    }
+
+    // Input-latency alignment (setAlignmentDelay). Before playout starts a
+    // longer delay is only a longer pre-roll. On a running stream the extra
+    // is written as silence without consuming, so the ring fills by exactly
+    // that much and every later sample comes out that much later; a shorter
+    // one drops what is no longer wanted. Either way the target moves with
+    // it, so the loop holds the new level rather than steering back.
+    if (const auto wanted = static_cast<size_t> (requestedAlignmentDelay.load (std::memory_order_relaxed));
+        wanted != appliedAlignmentDelay)
+    {
+        if (started.load (std::memory_order_relaxed))
+        {
+            if (wanted > appliedAlignmentDelay)
+            {
+                alignmentDebt += wanted - appliedAlignmentDelay;
+            }
+            else
+            {
+                auto shorter = appliedAlignmentDelay - wanted;
+                const auto unpaid = std::min (alignmentDebt, shorter);
+                alignmentDebt -= unpaid;
+                shorter -= unpaid;
+
+                if (shorter > 0)
+                {
+                    ring.discard (shorter);
+                    previousSample = 0.0f;
+                    currentSample = 0.0f;
+                    phase = 0.0;
+                    primed = false;
+                }
+            }
+
+            fillAverageValid = false;
+        }
+
+        appliedAlignmentDelay = wanted;
+        recomputeTarget();
     }
 
     // The output's real callback size, which CoreAudio does not promise is
@@ -352,8 +410,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     if (static_cast<size_t> (numSamples) > largestPullSamples.load (std::memory_order_relaxed))
     {
         largestPullSamples.store (static_cast<size_t> (numSamples), std::memory_order_relaxed);
-        targetFillSamples = std::max (nominalBlockSamples, static_cast<size_t> (numSamples))
-                          * static_cast<size_t> (kPreRollBlocks);
+        recomputeTarget();
 
         // A first pull lands during pre-roll, so the target is right before
         // the stream starts. A larger one after that -- the software clock
@@ -404,7 +461,41 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             return;
         }
 
+        // Start exactly at the target, not up to a pull past it. The level at
+        // the first pull is where this channel sits in time against every
+        // other one, and the loop moves it at 5 PPM/s: starting a pull deep
+        // left a channel up to a block behind its neighbours for a minute,
+        // and an alignment delay (setAlignmentDelay) only as accurate as the
+        // pull that happened to cross the target. What is dropped is pre-roll,
+        // before anything has been played or recorded from this stream. Only
+        // the overshoot of that crossing: a surplus bigger than a pull is a
+        // device that delivered ahead, and the loop's to drain.
+        if (const auto excess = static_cast<size_t> (std::max (
+                0.0, std::floor (virtualFillNow (ring.availableForRead())
+                                 - static_cast<double> (targetFillSamples))));
+            excess > 0 && excess < static_cast<size_t> (numSamples))
+            ring.discard (excess);
+
         started.store (true, std::memory_order_relaxed);
+    }
+
+    // Silence still owed to open an alignment delay on a running stream. Not
+    // a loss -- nothing that arrived is skipped -- so it is not counted as
+    // one; the consumer's clock still ran, so the pull is.
+    if (alignmentDebt > 0)
+    {
+        const auto silent = static_cast<int> (std::min (alignmentDebt, static_cast<size_t> (numSamples)));
+        std::fill (destination, destination + silent, 0.0f);
+        alignmentDebt -= static_cast<size_t> (silent);
+
+        pulledSamples.fetch_add (static_cast<uint64_t> (silent), std::memory_order_relaxed);
+        lastPullNs.store (nowNs(), std::memory_order_release);
+
+        if (silent == numSamples)
+            return;
+
+        destination += silent;
+        numSamples -= silent;
     }
 
     // Count, then stamp: a reporter that reads the stamp sees a count at most

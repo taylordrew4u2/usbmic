@@ -145,6 +145,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // microphones still reopen input-only; monitoring failure is not recording
     // failure.
     monitoringLatencyMs = 0.0;
+    alignedInputLatencyFrames = 0;
 
     if (! outputDeviceId.empty())
     {
@@ -361,6 +362,39 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     {
         clockRunning.store (true, std::memory_order_release);
         softwareClock = std::thread ([this] { runSoftwareClock(); });
+    }
+
+    // Input latency. Each device hands its audio over some fixed time after
+    // the microphone heard it -- its own latency, its safety offset, its
+    // stream's -- and two interfaces seldom agree: a clap both microphones
+    // heard at once landed in the two stems that many samples apart, and in
+    // the mix as a smear. Every channel is held back to the slowest device's
+    // figure, so the tracks line up as the room heard them. Devices that did
+    // not open take no part; their channels are silent anyway.
+    {
+        std::vector<int> latency (channels.size(), 0);
+        int longest = 0;
+
+        for (size_t i = 0; i < channels.size(); ++i)
+        {
+            if (std::find (failedDevices.begin(), failedDevices.end(), channels[i].deviceId)
+                != failedDevices.end())
+                continue;
+
+            latency[i] = std::max (0, backend.getInputLatencyFrames (channels[i].deviceId));
+            longest = std::max (longest, latency[i]);
+        }
+
+        longest = std::min (longest, DeviceInputStream::kMaxAlignmentDelaySamples);
+        alignedInputLatencyFrames = longest;
+
+        for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
+            deviceStreams[i]->setAlignmentDelay (longest - std::min (latency[i], longest));
+
+        // The headphones hear every microphone that much later too, and the
+        // slowest input's own latency was never in the figure at all.
+        if (monitoringLatencyMs > 0.0 && sampleRate > 0.0)
+            monitoringLatencyMs += 1000.0 * static_cast<double> (longest) / sampleRate;
     }
 
     monitoring = true;
@@ -733,6 +767,7 @@ void CaptureCoordinator::stopMonitoring()
     // Nothing is monitoring, so there is no monitoring latency to report. A
     // figure left standing here would outlive the stream it describes.
     monitoringLatencyMs = 0.0;
+    alignedInputLatencyFrames = 0;
 }
 
 void CaptureCoordinator::stopMirroring()

@@ -67,6 +67,12 @@ public:
     /// keeps exactly the latency and the bound on staleness it always had.
     static constexpr int kLargestDeviceBlock = 4096;
 
+    /// The most a stream will delay its own audio to line up with a device
+    /// whose input latency is longer. A quarter of a second at 96 kHz: far
+    /// past any wired interface's figure, and a bound on what a confused
+    /// driver's report can cost every other microphone.
+    static constexpr int kMaxAlignmentDelaySamples = 24000;
+
     static_assert (kSourceBufferBlocks + kPreRollBlocks + 2 <= kRingBlocks,
                    "the ring must hold a full driver burst above its target fill, with a block "
                    "of delivery jitter and one in flight");
@@ -94,6 +100,16 @@ public:
     /// Sizes the ring and clears all loop state. Not real-time safe -- call
     /// before the streams open.
     void prepare (double sampleRate, int bufferSizeSamples);
+
+    /// Message thread: hold this stream's audio back by `samples` more than
+    /// its target fill, sample-accurately, so it lines up with a microphone
+    /// on a device whose input latency is that much longer. Clamped to
+    /// kMaxAlignmentDelaySamples. Applied on the consumer thread: before
+    /// playout starts it simply raises the pre-roll; once running, the stream
+    /// writes that much silence without consuming, once, and the ring holds
+    /// the difference from then on. Nothing is allocated (§11).
+    void setAlignmentDelay (int samples) noexcept;
+    int getAlignmentDelay() const noexcept { return requestedAlignmentDelay.load (std::memory_order_relaxed); }
 
     /// Producer: this device's audio callback. Real-time safe.
     void pushBlock (const float* samples, int numSamples) noexcept;
@@ -294,6 +310,14 @@ private:
     // after playout had started, with too little buffered to serve it. The
     // stream writes counted silence until the ring reaches the new target.
     bool rebuffering = false;
+
+    // Input-latency alignment. Requested on the message thread, applied by
+    // the consumer, which owns the target fill and the silence it still has
+    // to write to open the delay on a running stream.
+    std::atomic<int> requestedAlignmentDelay { 0 };
+    size_t appliedAlignmentDelay = 0;
+    size_t alignmentDebt = 0;
+    void recomputeTarget() noexcept;
 
     // Reporting-thread-owned. The audio threads publish counters atomically;
     // they never touch anything below.

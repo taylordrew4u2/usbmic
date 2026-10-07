@@ -61,6 +61,7 @@ public:
     uint64_t getFramesDroppedByBackend() const override;
     int getGrantedOutputBufferFrames() const override;
     int getOutputPresentationLatencyFrames() const override;
+    int getInputLatencyFrames (const std::string& deviceId) const override;
     uint64_t getOutputGlitchCount() const override;
 
 private:

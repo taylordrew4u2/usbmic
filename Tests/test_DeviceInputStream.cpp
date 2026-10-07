@@ -1029,9 +1029,14 @@ TEST_CASE (DeviceInputStream_ARingOneBlockDeepIsNotAStarvationInEveryBlock)
         simulatedNs += blockNs - blockNs / 2;
 
         // Continuous: the ramp carries on from where the last block left it,
-        // give or take one held sample, and never steps to zero.
-        REQUIRE (out[0] - last <= 2.0f);
-        REQUIRE (out[0] - last >= 0.0f);
+        // give or take one held sample, and never steps to zero. (The first
+        // block is where playout starts, trimmed to the target, so it has no
+        // earlier block to continue.)
+        if (i > 0)
+        {
+            REQUIRE (out[0] - last <= 2.0f);
+            REQUIRE (out[0] - last >= 0.0f);
+        }
         for (int k = 1; k < 128; ++k)
             REQUIRE (out[k] - out[k - 1] >= 0.0f);
         last = out[127];
@@ -1315,4 +1320,78 @@ TEST_CASE (DeviceInputStream_TheRingStillOverflowsAtSixteenOfItsOwnBlocks)
 
     REQUIRE (s.getOverrunSamples() > 0u);
     REQUIRE (s.getOverrunSamples() <= 5u * 64u);
+}
+
+namespace {
+
+/// Two streams fed the same ramp in step; `delayed` gets an alignment delay
+/// of `delay` samples, set before playout (blocksBeforeDelay < 0) or that many
+/// blocks in. Returns how many samples later `delayed` plays the same source
+/// sample.
+double alignmentOffset (int delay, int blocksBeforeDelay, uint64_t* underruns = nullptr)
+{
+    ScopedSimulatedClock clock;
+    DeviceInputStream plain (48000.0), delayed (48000.0);
+    plain.prepare (48000.0, 64);
+    delayed.prepare (48000.0, 64);
+
+    if (blocksBeforeDelay < 0)
+        delayed.setAlignmentDelay (delay);
+
+    RampSource a (64), b (64);
+    std::vector<float> outA (64, 0.0f), outB (64, 0.0f);
+    simulatedNs = 1'000'000'000;
+
+    for (int i = 0; i < 3000; ++i)
+    {
+        if (i == blocksBeforeDelay)
+            delayed.setAlignmentDelay (delay);
+
+        a.push (plain, 64);
+        b.push (delayed, 64);
+        simulatedNs += kBlockNs64 / 2;
+        plain.pull (outA.data(), 64);
+        delayed.pull (outB.data(), 64);
+        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
+    }
+
+    if (underruns != nullptr)
+        *underruns = plain.getUnderrunSamples() + delayed.getUnderrunSamples();
+
+    return static_cast<double> (outA[32]) - static_cast<double> (outB[32]);
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_AnAlignmentDelayHoldsTheStreamBackBySoManySamples)
+{
+    // Two interfaces with different input latency hand the same instant over
+    // that far apart; the earlier one is held back by the difference.
+    uint64_t underruns = 0;
+    REQUIRE_NEAR (alignmentOffset (0, -1), 0.0, 1.0);
+    REQUIRE_NEAR (alignmentOffset (57, -1, &underruns), 57.0, 1.0);
+    REQUIRE (underruns == 0u);
+    REQUIRE_NEAR (alignmentOffset (1000, -1), 1000.0, 1.0);
+}
+
+TEST_CASE (DeviceInputStream_AnAlignmentDelaySetOnARunningStreamIsExactAndNotALoss)
+{
+    // The coordinator learns an input's latency only once the device is open,
+    // by when the output may already be pulling. The delay is opened with
+    // silence written once, not counted as lost audio, and holds from then on.
+    uint64_t underruns = 0;
+    REQUIRE_NEAR (alignmentOffset (57, 200, &underruns), 57.0, 1.0);
+    REQUIRE (underruns == 0u);
+    REQUIRE_NEAR (alignmentOffset (777, 200, &underruns), 777.0, 1.0);
+    REQUIRE (underruns == 0u);
+}
+
+TEST_CASE (DeviceInputStream_AnAlignmentDelayIsBounded)
+{
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    s.setAlignmentDelay (10'000'000);
+    REQUIRE (s.getAlignmentDelay() == DeviceInputStream::kMaxAlignmentDelaySamples);
+    s.setAlignmentDelay (-5);
+    REQUIRE (s.getAlignmentDelay() == 0);
 }
