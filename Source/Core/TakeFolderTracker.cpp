@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <system_error>
+#include <thread>
 
 #if defined (__APPLE__) || defined (__linux__)
  #include <fcntl.h>
@@ -68,7 +69,11 @@ bool TakeFolderTracker::adopt (int fd, const std::string& folder)
 
 void TakeFolderTracker::close()
 {
-    closeDescriptor (descriptor);
+    // Let go on a disposable thread: the folder is usually on a card, and a
+    // close on a card that has stopped answering can wait as long as it does.
+    // Nothing is written through this descriptor, so nothing waits on it.
+    if (descriptor >= 0)
+        std::thread ([fd = descriptor] { closeDescriptor (fd); }).detach();
 
     descriptor = -1;
     openedPath.clear();
