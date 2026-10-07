@@ -78,10 +78,13 @@ SNAPSHOTS="${MMA_UI_WALK_SNAPSHOT_DIR:-/tmp/mma-ui-walk-snapshots}"
 rm -rf "$SNAPSHOTS"; mkdir -p "$SNAPSHOTS"
 
 # launch <home> <report> [extra env...]; sets APP_PID
+# MMA_KEEP_SAME_DISK_BACKUP: the walk records into a scratch home, so the take
+# and ~/RECORDINGS-MIRROR share a disk and the app would rightly skip the
+# backup. The walk exists to drive that backup, so test builds keep it.
 launch() {
   local home="$1" report="$2"; shift 2
   env HOME="$home" DISPLAY="$DISPLAY_NUM" MMA_UI_WALK_REPORT="$report" \
-    MMA_UI_WALK_SNAPSHOT_DIR="$SNAPSHOTS" \
+    MMA_UI_WALK_SNAPSHOT_DIR="$SNAPSHOTS" MMA_KEEP_SAME_DISK_BACKUP=1 \
     LD_PRELOAD="$SHIM" MMA_SIM_REALTIME=1 MMA_SIM_PPM="mma_mic1=150,mma_mic2=-150,mma_out=0" "$@" \
     "$APP" >"$report.log" 2>&1 &
   APP_PID=$!

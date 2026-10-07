@@ -234,3 +234,102 @@ TEST_CASE (MirrorPolicy_TheLowSpaceStopStillRunsAfterTheSettingIsUntickedMidTake
     p.reset();
     REQUIRE (p.evaluateAtArm (10 * kGB, 1 * kGB) == MirrorState::DisabledByUser);
 }
+
+// Recording to the computer's own disk with the backup in ~/RECORDINGS-MIRROR
+// on that same disk doubled the space a take used and protected nothing.
+TEST_CASE (MirrorPolicy_ABackupOnTheRecordingsOwnDiskIsSkipped)
+{
+    MirrorPolicy p;
+    REQUIRE (p.evaluateAtArm (500 * kGB, 1 * kGB, true) == MirrorState::SkippedSameDisk);
+    REQUIRE_FALSE (p.isMirroring());
+    REQUIRE (p.wasSkippedForSameDisk());
+
+    // Not a stop: nothing ran, so there is nothing for session.json to call short.
+    REQUIRE_FALSE (p.wasStoppedForSpace());
+    REQUIRE_FALSE (p.wasStoppedForWriteFailure());
+    REQUIRE_FALSE (p.wasStoppedByUser());
+    REQUIRE_FALSE (p.noteWriteFailure());
+    REQUIRE (p.evaluateDuringRecording (500 * kGB) == MirrorState::SkippedSameDisk);
+
+    // Another disk the next take: the backup runs again.
+    p.reset();
+    REQUIRE (p.evaluateAtArm (500 * kGB, 1 * kGB, false) == MirrorState::Active);
+}
+
+TEST_CASE (MirrorPolicy_TheSameDiskSkipIsJudgedBeforeSpaceAndAfterTheSetting)
+{
+    // No room AND the same disk: the reason given is the disk. Saying "not
+    // enough room" would send the user off to free space for a copy that would
+    // still be refused.
+    MirrorPolicy cramped;
+    REQUIRE (cramped.evaluateAtArm (1 * kGB, 1 * kGB, true) == MirrorState::SkippedSameDisk);
+
+    // Switched off: that is the answer, whatever the disk.
+    MirrorPolicy off;
+    off.setEnabledByUser (false);
+    REQUIRE (off.evaluateAtArm (500 * kGB, 1 * kGB, true) == MirrorState::DisabledByUser);
+
+    // Unticked after a same-disk skip: relabelled, like a never-started one.
+    MirrorPolicy skipped;
+    skipped.evaluateAtArm (500 * kGB, 1 * kGB, true);
+    skipped.setEnabledByUser (false);
+    REQUIRE (skipped.getState() == MirrorState::DisabledByUser);
+    REQUIRE_FALSE (skipped.wasSkippedForSameDisk());
+}
+
+TEST_CASE (MirrorPlacement_SameDeviceIsTheSameDisk)
+{
+    REQUIRE (mirrorplacement::sharesDisk ({ "dev:16777231", {} }, { "dev:16777231", {} }));
+    REQUIRE_FALSE (mirrorplacement::sharesDisk ({ "dev:16777231", {} }, { "dev:16777240", {} }));
+}
+
+TEST_CASE (MirrorPlacement_TwoApfsVolumesOfOneContainerAreOneDisk)
+{
+    // Macintosh HD - Data and a "Recordings" volume added in Disk Utility:
+    // different devices, one container, one physical disk.
+    REQUIRE (mirrorplacement::sharesDisk ({ "dev:16777231", "disk3" }, { "dev:16777234", "disk3" }));
+
+    // An external APFS drive has its own container.
+    REQUIRE_FALSE (mirrorplacement::sharesDisk ({ "dev:16777231", "disk3" }, { "dev:16777250", "disk5" }));
+}
+
+TEST_CASE (MirrorPlacement_UnknownIsNeverTheSameDisk)
+{
+    // A backup that might be on another disk is worth keeping.
+    REQUIRE_FALSE (mirrorplacement::sharesDisk ({}, {}));
+    REQUIRE_FALSE (mirrorplacement::sharesDisk ({ "dev:1", {} }, {}));
+    REQUIRE_FALSE (mirrorplacement::sharesDisk ({}, { "dev:1", {} }));
+}
+
+TEST_CASE (MirrorPlacement_ReadsTheApfsContainerOnlyWhenItIsPlain)
+{
+    using mirrorplacement::apfsContainerFromMount;
+
+    REQUIRE (apfsContainerFromMount ("apfs", "/dev/disk3s5") == "disk3");
+    REQUIRE (apfsContainerFromMount ("apfs", "/dev/disk3s1s1") == "disk3"); // sealed system snapshot
+    REQUIRE (apfsContainerFromMount ("apfs", "/dev/disk12s2") == "disk12");
+
+    // Not APFS: a card's exFAT volume, an HFS+ drive. st_dev decides those.
+    REQUIRE (apfsContainerFromMount ("exfat", "/dev/disk4s1").empty());
+    REQUIRE (apfsContainerFromMount ("hfs", "/dev/disk2s2").empty());
+
+    // Nothing that has to be guessed at.
+    REQUIRE (apfsContainerFromMount ("apfs", "/dev/disk3").empty());
+    REQUIRE (apfsContainerFromMount ("apfs", "/dev/disk3s").empty());
+    REQUIRE (apfsContainerFromMount ("apfs", "/dev/disks1").empty());
+    REQUIRE (apfsContainerFromMount ("apfs", "//user@server/share").empty());
+    REQUIRE (apfsContainerFromMount ("apfs", "").empty());
+}
+
+TEST_CASE (MirrorPlacement_ABackupOnTheSameDiskCountsAgainstRemainingTime)
+{
+    // 3.6 GB at 1 MB/s is an hour; a backup of the same rate on the same disk
+    // halves it. One on another disk leaves it alone.
+    constexpr uint64_t available = 3600ull * 1000 * 1000;
+    REQUIRE_NEAR (mirrorplacement::remainingSeconds (available, 1.0e6, 0.0, true), 3600.0, 1e-9);
+    REQUIRE_NEAR (mirrorplacement::remainingSeconds (available, 1.0e6, 1.0e6, true), 1800.0, 1e-9);
+    REQUIRE_NEAR (mirrorplacement::remainingSeconds (available, 1.0e6, 1.0e6, false), 3600.0, 1e-9);
+
+    // Nothing being written has no remaining time to give.
+    REQUIRE (mirrorplacement::remainingSeconds (available, 0.0, 0.0, true) < 0.0);
+}

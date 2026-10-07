@@ -81,6 +81,7 @@ add_library(mma_core STATIC
     Source/Core/BufferLadder.cpp
     Source/Core/CpuPressureMonitor.cpp
     Source/Core/MirrorPolicy.cpp
+    Source/Core/TakeFolderTracker.cpp
     Source/Core/WriteSafetyActions.cpp
     Source/Core/SetupAdvisor.cpp
     Source/Core/WritePipeline.cpp

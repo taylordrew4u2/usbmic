@@ -447,3 +447,61 @@ TEST_CASE (FilesystemStatusProbe_AWedgedOldSessionCannotPoisonTheNextTakeOnTheSa
     std::this_thread::sleep_for (std::chrono::milliseconds (20));
     REQUIRE (probe->getSnapshot().request == replacement);
 }
+
+// §6.3: a backup on the take's own disk spends the same free space, so the
+// remaining-time figure has to count its writes. Here both live under one
+// temporary folder, which is one disk by construction; the backup's folder
+// does not exist yet, as ~/RECORDINGS-MIRROR does not before its first take.
+TEST_CASE (FilesystemStatusProbe_CountsABackupOnTheSameDiskAgainstRemainingTime)
+{
+    TemporaryFolder folder;
+
+    FilesystemStatusProbe probe (std::chrono::milliseconds (20));
+    FilesystemStatusProbe::Request alone;
+    alone.destinationPath = folder.path.string();
+    alone.bytesPerSecond = 1000.0;
+    alone.backupRootPath = (folder.path / "RECORDINGS-MIRROR").string();
+    probe.setRequest (alone);
+
+    FilesystemStatusProbe::Snapshot first;
+    REQUIRE (probe.waitForRevisionAfter (0, first, std::chrono::seconds (2)));
+    REQUIRE (first.backupSharesDisk == 1);
+    REQUIRE (first.remainingSeconds > 0.0);
+
+    // The same take, now with a backup running beside it at the same rate.
+    auto withBackup = alone;
+    withBackup.backupBytesPerSecond = 1000.0;
+    probe.setRequest (withBackup);
+
+    FilesystemStatusProbe::Snapshot second;
+    auto seen = first.revision;
+    bool caughtUp = false;
+    for (int i = 0; i < 20 && ! caughtUp; ++i)
+    {
+        if (! probe.waitForRevisionAfter (seen, second, std::chrono::seconds (2)))
+            break;
+        seen = second.revision;
+        caughtUp = second.request == withBackup;
+    }
+    REQUIRE (caughtUp);
+    REQUIRE (second.backupSharesDisk == 1);
+
+    // Half the time, give or take what the rest of the system wrote meanwhile.
+    const double ratio = second.remainingSeconds / first.remainingSeconds;
+    REQUIRE (ratio > 0.49 && ratio < 0.51);
+}
+
+TEST_CASE (FilesystemStatusProbe_DoesNotJudgeTheBackupsDiskUnlessAsked)
+{
+    TemporaryFolder folder;
+
+    FilesystemStatusProbe probe (std::chrono::milliseconds (20));
+    FilesystemStatusProbe::Request request;
+    request.destinationPath = folder.path.string();
+    request.bytesPerSecond = 1000.0;
+    probe.setRequest (request);
+
+    FilesystemStatusProbe::Snapshot snapshot;
+    REQUIRE (probe.waitForRevisionAfter (0, snapshot, std::chrono::seconds (2)));
+    REQUIRE (snapshot.backupSharesDisk == -1);
+}

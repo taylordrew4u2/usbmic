@@ -24,13 +24,21 @@ public:
         std::string sessionFolder;
         std::string mirrorPath;
         double bytesPerSecond = 0.0;
+        /// §6.3 backup folder (it need not exist yet), compared against the
+        /// destination to say whether the two share a disk. Empty: not asked.
+        std::string backupRootPath;
+        /// What a running backup writes per second. Counted against the
+        /// destination's free space only when the backup shares its disk.
+        double backupBytesPerSecond = 0.0;
 
         bool operator== (const Request& other) const noexcept
         {
             return destinationPath == other.destinationPath
                 && sessionFolder == other.sessionFolder
                 && mirrorPath == other.mirrorPath
-                && bytesPerSecond == other.bytesPerSecond;
+                && bytesPerSecond == other.bytesPerSecond
+                && backupRootPath == other.backupRootPath
+                && backupBytesPerSecond == other.backupBytesPerSecond;
         }
         bool operator!= (const Request& other) const noexcept { return ! (*this == other); }
     };
@@ -51,6 +59,9 @@ public:
         bool filesObservationReady = false;
         double remainingSeconds = -1.0;
         int64_t mirrorFreeBytes = -1;
+        /// 1 when the backup folder is on the destination's disk, 0 when it is
+        /// known not to be, -1 when it was not asked or could not be told.
+        int backupSharesDisk = -1;
         std::vector<File> files;
         uint64_t revision = 0;
 

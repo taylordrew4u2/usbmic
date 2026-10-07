@@ -243,6 +243,17 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
     out.ready = true;
     out.sampledOnThread = std::this_thread::get_id();
 
+    if (! request.destinationPath.empty() && ! request.backupRootPath.empty())
+    {
+        const auto destination = volumeIdentityOf (request.destinationPath);
+        const auto backup = volumeIdentityOf (request.backupRootPath);
+
+        if (mirrorplacement::sharesDisk (destination, backup))
+            out.backupSharesDisk = 1;
+        else if (! destination.device.empty() && ! backup.device.empty())
+            out.backupSharesDisk = 0;
+    }
+
     if (! request.destinationPath.empty() && request.bytesPerSecond > 0.0)
     {
         std::error_code error;
@@ -250,10 +261,12 @@ FilesystemStatusProbe::Snapshot FilesystemStatusProbe::sample (const Request& re
         if (fs::is_directory (destination, error) && ! error)
         {
             // What a write can actually claim, purgeable space included on
-            // APFS -- see availableBytesForRecording.
+            // APFS -- see availableBytesForRecording. A backup written to the
+            // same disk spends the same free space, so it is counted too.
             if (const auto available = availableBytesForRecording (request.destinationPath))
-                out.remainingSeconds = static_cast<double> (*available)
-                                     / request.bytesPerSecond;
+                out.remainingSeconds = mirrorplacement::remainingSeconds (
+                    *available, request.bytesPerSecond, request.backupBytesPerSecond,
+                    out.backupSharesDisk == 1);
         }
     }
 

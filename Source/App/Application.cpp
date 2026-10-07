@@ -2707,7 +2707,13 @@ void Application::toggleRecording()
                 const auto freeBytes = homeFree.has_value()
                     ? static_cast<int64_t> (std::min<uint64_t> (*homeFree, static_cast<uint64_t> (INT64_MAX)))
                     : static_cast<int64_t> (home.getBytesFreeOnVolume());
-                mirrorPolicy.evaluateAtArm (freeBytes, projectedSessionBytes());
+
+                // A backup on the disk the take is already going to doubles
+                // the space and protects nothing: one failure takes both. The
+                // usual case is recording to the computer's own drive.
+                const bool backupSharesDisk = mirrorPolicy.isEnabledByUser()
+                                              && backupWouldShareDestinationDisk();
+                mirrorPolicy.evaluateAtArm (freeBytes, projectedSessionBytes(), backupSharesDisk);
             }
 
             // §6: this is what actually opens the stem files and starts the
@@ -2778,6 +2784,11 @@ void Application::toggleRecording()
                 currentMirrorFolder = mirror;
                 sessionStartIso = now.toISO8601 (true);
 
+                // Held until the take's last movie has finished, so a rename
+                // after the audio stops is still followed. See
+                // followTakeFolderMovedAfterAudioStopped().
+                takeFolderTracker.open (folder.toStdString());
+
                 // What this take's files were opened with, fixed here. The
                 // Settings pickers stay live during a take and move
                 // currentBitDepth / currentSampleRate for the NEXT one, and a
@@ -2843,6 +2854,22 @@ void Application::toggleRecording()
                 noteActivity (ActivityLevel::Started, "Recording",
                               "Recording started into " + juce::File (folder).getFileName()
                               + (mirror.isNotEmpty() ? ", with a backup copy." : "."));
+
+                // Said once per destination rather than every take: it is a
+                // fact about where recordings go, not about this take.
+                if (mirrorPolicy.wasSkippedForSameDisk())
+                {
+                    if (sameDiskBackupNoticeFor != juce::String (destinationFolder))
+                    {
+                        sameDiskBackupNoticeFor = juce::String (destinationFolder);
+                        noteActivity (ActivityLevel::Warning, "Local backup",
+                                      mirrorplacement::sameDiskExplanation());
+                    }
+                }
+                else
+                {
+                    sameDiskBackupNoticeFor.clear();
+                }
             }
 
             // Each take gets its own warnings; a previous one must not leave the
@@ -2948,6 +2975,11 @@ void Application::toggleRecording()
         auto completeStoppedTake = [this, takePeak, arrivedPeak]
         {
 
+        // The movies finished after the audio did, possibly seconds after. A
+        // folder renamed or moved in that gap must not send session.json, the
+        // file list and the combined video looking in the old place.
+        followTakeFolderMovedAfterAudioStopped();
+
         // Written after stopRecording() so the frame counts and buffer log it
         // records are the take's final ones -- and before recordingStartMs is
         // cleared, or every timestamp inside it would read as zero.
@@ -2996,6 +3028,7 @@ void Application::toggleRecording()
         // read without becoming furniture.
         lastSessionFolder = currentSessionFolder;
         lastMirrorFolder = currentMirrorFolder;
+        lastTakeBackupSkippedForSameDisk = mirrorPolicy.wasSkippedForSameDisk();
         savedNoticeSeconds = 10.0;
 
         // Judged here, against the files as finalized, so the status line and
@@ -3133,6 +3166,7 @@ void Application::toggleRecording()
 
         currentSessionFolder.clear();
         currentMirrorFolder.clear();
+        takeFolderTracker.close();
 
         // A destination the user chose mid-take, applied now that applying it
         // cannot move a running take's files out from under it.
@@ -3337,11 +3371,24 @@ Application::PlannedSave Application::planSave (const juce::String& proposedSess
     // second copy the user does not know about is a second copy they will not
     // find -- so this reports the path whenever the setting is on, and the
     // panel shown at stop reports what really happened.
+    //
+    // Except where it is already known that it would share the destination's
+    // disk, which arm time will refuse: then the prompt says so instead. Read
+    // from the probe's last snapshot -- this preview never asks the disk.
     if (mirrorPolicy.isEnabledByUser())
-        plan.mirrorFolder = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                                .getChildFile ("RECORDINGS-MIRROR")
-                                .getChildFile (plan.folderName)
-                                .getFullPathName();
+    {
+        const auto request = currentFilesystemProbeRequest();
+        filesystemStatusProbe.setRequest (request);
+        const auto snapshot = filesystemStatusProbe.getSnapshot();
+        const bool sharesDisk = snapshot.ready && snapshot.request.destinationPath == destinationFolder
+                             && snapshot.request.backupRootPath == request.backupRootPath
+                             && snapshot.backupSharesDisk == 1;
+
+        if (sharesDisk && ! keepSameDiskBackupForTesting())
+            plan.mirrorNote = mirrorplacement::sameDiskShortNote();
+        else
+            plan.mirrorFolder = backupRootFolder().getChildFile (plan.folderName).getFullPathName();
+    }
 
     // §6.1: one file per microphone plus the mix, exactly as WritePipeline
     // opens them, plus the §6.2 session.json.
@@ -3461,6 +3508,9 @@ bool Application::consumeSavedTake (SavedTake& out)
     savedTakePending = false;
     out.folder = lastSessionFolder;
     out.mirrorFolder = lastMirrorFolder;
+    out.mirrorNote = lastMirrorFolder.isEmpty() && lastTakeBackupSkippedForSameDisk
+                         ? juce::String (mirrorplacement::sameDiskShortNote())
+                         : juce::String();
     // Listed at stop, with a deadline. Reading the card again here would be a
     // second chance for a card pulled at that moment to freeze the window.
     out.files = lastSessionFiles;
@@ -3541,11 +3591,47 @@ FilesystemStatusProbe::Request Application::currentFilesystemProbeRequest() cons
     request.sessionFolder = isRecording ? currentSessionFolder.toStdString() : std::string {};
     request.bytesPerSecond = bytesPerSecondOfRecording();
 
-    if (capture != nullptr && capture->isMirroring())
+    const bool mirroring = capture != nullptr && capture->isMirroring();
+
+    if (mirroring)
         request.mirrorPath = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
                                  .getFullPathName().toStdString();
 
+    // §6.3: whether the backup shares the destination's disk, for the save
+    // prompt's preview -- and, for a backup that is running there anyway,
+    // the stems and mix it writes come out of the same free space.
+    if (mirroring || mirrorPolicy.isEnabledByUser())
+        request.backupRootPath = backupRootFolder().getFullPathName().toStdString();
+
+    if (mirroring)
+        request.backupBytesPerSecond = bytesPerSecondOfAudio();
+
     return request;
+}
+
+juce::File Application::backupRootFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("RECORDINGS-MIRROR");
+}
+
+bool Application::keepSameDiskBackupForTesting()
+{
+   #if defined (MMA_UI_WALK)
+    // Test builds only. The end-to-end walks record into a scratch home on one
+    // disk and still need the backup machinery to run so it can be checked.
+    if (const char* keep = std::getenv ("MMA_KEEP_SAME_DISK_BACKUP"))
+        return juce::String (keep) == "1";
+   #endif
+    return false;
+}
+
+bool Application::backupWouldShareDestinationDisk() const
+{
+    if (keepSameDiskBackupForTesting())
+        return false;
+
+    return mirrorplacement::sharesDisk (volumeIdentityOf (destinationFolder),
+                                        volumeIdentityOf (backupRootFolder().getFullPathName().toStdString()));
 }
 
 int64_t Application::getMirrorFreeBytes() const
@@ -4671,6 +4757,24 @@ void Application::followRenamedTakeFolder()
     noteActivity (ActivityLevel::Warning, "Recording",
                   "This take's folder was renamed or moved. It is still recording, into "
                   + live + ".");
+}
+
+void Application::followTakeFolderMovedAfterAudioStopped()
+{
+    // A card that has stopped answering is not asked anything more.
+    if (currentSessionFolder.isEmpty() || takeCardUnresponsive || ! takeFolderTracker.isOpen())
+        return;
+
+    const auto now = juce::String (takeFolderTracker.resolve());
+
+    if (now.isEmpty() || now == currentSessionFolder)
+        return;
+
+    currentSessionFolder = now;
+
+    noteActivity (ActivityLevel::Warning, "Recording",
+                  "This take's folder was renamed or moved while it was being finished. Its files "
+                  "are in " + now + ".");
 }
 
 bool Application::isOnCard (const juce::File& file) const

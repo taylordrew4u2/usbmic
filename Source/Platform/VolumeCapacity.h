@@ -4,6 +4,8 @@
 #include <optional>
 #include <string>
 
+#include "../Core/MirrorPolicy.h"
+
 namespace mma {
 
 namespace volumecapacity {
@@ -30,5 +32,15 @@ uint64_t choose (uint64_t basicAvailable, std::optional<int64_t> importantUsage)
 /// same way std::filesystem::space does, so callers keep it off the message
 /// thread wherever they already kept that off it.
 std::optional<uint64_t> availableBytesForRecording (const std::string& path) noexcept;
+
+/// Which disk `path` (UTF-8) is on, for mirrorplacement::sharesDisk(). A path
+/// that does not exist yet -- the backup folder before its first take -- is
+/// answered for its nearest existing parent, which is where it will be made.
+///
+/// POSIX: st_dev, and on a Mac also the APFS container from statfs, so two
+/// volumes of one container count as one disk. Windows: the drive root.
+/// Both fields empty when the system cannot say. Like the capacity query this
+/// can block on a disappearing volume.
+VolumeIdentity volumeIdentityOf (const std::string& path) noexcept;
 
 } // namespace mma

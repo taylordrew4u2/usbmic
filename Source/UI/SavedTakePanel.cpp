@@ -56,7 +56,8 @@ void SavedTakePanel::setTake (const juce::String& folder,
                               const juce::String& mirrorFolder,
                               const std::vector<FileRow>& files,
                               TakeAudioVerdict verdict,
-                              bool filesListed)
+                              bool filesListed,
+                              const juce::String& mirrorNote)
 {
     folderValue.setText (folder, juce::dontSendNotification);
 
@@ -119,8 +120,9 @@ void SavedTakePanel::setTake (const juce::String& folder,
 
     emptyWarning.setVisible (everythingWasEmpty);
 
-    mirrorValue.setVisible (mirrorFolder.isNotEmpty());
-    mirrorValue.setText ("A second copy is in " + mirrorFolder, juce::dontSendNotification);
+    mirrorValue.setVisible (mirrorFolder.isNotEmpty() || mirrorNote.isNotEmpty());
+    mirrorValue.setText (mirrorFolder.isNotEmpty() ? "A second copy is in " + mirrorFolder : mirrorNote,
+                         juce::dontSendNotification);
 
     listHeight = juce::jmin ((int) rows.size(), kMaxVisibleRows) * kRowPitch;
 
