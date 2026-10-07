@@ -793,6 +793,119 @@ int main()
     std::remove ((dir + "/01_Singer.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
 
+    // ---------------------------------------------------------------------
+    // Two interfaces with different input latency.
+    //
+    // CoreAudio says how long before the IOProc a device's input audio was at
+    // the microphone: the device's input latency, its input safety offset and
+    // its input stream's latency. Two boxes seldom agree, so one clap heard
+    // by both microphones is handed over that many samples apart -- and was
+    // written into the two stems that far apart, a smear in the mix.
+    // ---------------------------------------------------------------------
+    std::printf ("\nTwo interfaces that report different input latencies\n");
+    fakeca::reset();
+
+    auto quick = microphone ("Quick", "uid-quick", 1, fakeca::BufferShape::oneChannelPerBuffer);
+    quick.inputLatencyFrames = 8;
+    quick.inputSafetyOffsetFrames = 4;
+
+    auto laggy = microphone ("Laggy", "uid-laggy", 1, fakeca::BufferShape::interleaved);
+    laggy.inputLatencyFrames = 24;
+    laggy.inputSafetyOffsetFrames = 32;
+    laggy.streamLatencyFrames = 13;
+
+    const auto quickId = fakeca::addDevice (quick);
+    const auto laggyId = fakeca::addDevice (laggy);
+    constexpr int kLatencyGap = (24 + 32 + 13) - (8 + 4); // 57 frames
+
+    mma::CoreAudioBackend latencyBackend;
+
+    mma::CaptureCoordinator aligned (latencyBackend, rate, block);
+    aligned.setSoftwareClockEnabled (false); // the harness is the clock: deterministic pulls
+
+    std::vector<mma::CaptureChannel> latencyPair = {
+        { "uid-quick", "Quick", "01_Quick", 0.0f },
+        { "uid-laggy", "Laggy", "02_Laggy", 0.0f },
+    };
+
+    if (! aligned.startMonitoring (latencyPair, {}) || ! aligned.startRecording (dir, 24, "2026-10-07T00:00:00Z"))
+    {
+        std::printf ("  FAIL  could not start: %s\n", aligned.getMonitorProblem().c_str());
+        return 1;
+    }
+
+    check (latencyBackend.getInputLatencyFrames ("uid-quick") == 12,
+           "the quick interface's latency and safety offset are read");
+    check (latencyBackend.getInputLatencyFrames ("uid-laggy") == 69,
+           "the laggy one's, its stream's latency included");
+
+    std::vector<float> alignedOut (static_cast<size_t> (block) * 2, 0.0f);
+    float* alignedOuts[] = { alignedOut.data(), alignedOut.data() + block };
+
+    // The clap, at the same instant in the room: frame 4000 of what the
+    // quick interface hands over, kLatencyGap frames later from the laggy one.
+    constexpr long long kClap = 4000;
+    const int alignedBlocks = 48;
+
+    for (int i = 0; i < alignedBlocks; ++i)
+    {
+        std::vector<float> q (static_cast<size_t> (block), 0.0f), l (static_cast<size_t> (block), 0.0f);
+
+        for (int f = 0; f < block; ++f)
+        {
+            const long long n = static_cast<long long> (i) * block + f;
+            if (n == kClap) q[static_cast<size_t> (f)] = 0.9f;
+            if (n == kClap + kLatencyGap) l[static_cast<size_t> (f)] = 0.9f;
+        }
+
+        fakeca::pumpInput (quickId, { q });
+        fakeca::pumpInput (laggyId, { l });
+        aligned.pullOutputBlock (alignedOuts, 2, block);
+    }
+
+    aligned.stopRecording();
+    aligned.stopMonitoring();
+
+    const auto loudestFrame = [] (const std::string& path)
+    {
+        constexpr std::streamoff kDataSizeOffset = 12 + (8 + 16) + (8 + 602) + 4;
+        std::ifstream f (path, std::ios::binary);
+        f.seekg (kDataSizeOffset);
+        unsigned char b[4] {};
+        f.read (reinterpret_cast<char*> (b), 4);
+        const uint32_t frames = (static_cast<uint32_t> (b[0]) | (static_cast<uint32_t> (b[1]) << 8)
+                                 | (static_cast<uint32_t> (b[2]) << 16) | (static_cast<uint32_t> (b[3]) << 24)) / 3;
+        long long best = -1;
+        int32_t bestPeak = 0;
+        for (uint32_t i = 0; i < frames; ++i)
+        {
+            unsigned char s[3] {};
+            f.read (reinterpret_cast<char*> (s), 3);
+            int32_t v = static_cast<int32_t> (s[0]) | (static_cast<int32_t> (s[1]) << 8)
+                      | (static_cast<int32_t> (s[2]) << 16);
+            if (v & 0x800000)
+                v |= ~0xFFFFFF;
+            if (std::abs (v) > bestPeak)
+            {
+                bestPeak = std::abs (v);
+                best = static_cast<long long> (i);
+            }
+        }
+        return best;
+    };
+
+    const auto quickClap = loudestFrame (dir + "/01_Quick.wav");
+    const auto laggyClap = loudestFrame (dir + "/02_Laggy.wav");
+    std::printf ("  clap in 01_Quick.wav at frame %lld, in 02_Laggy.wav at frame %lld\n", quickClap, laggyClap);
+
+    check (quickClap >= 0 && laggyClap >= 0, "both stems carry the clap");
+    check (std::llabs (quickClap - laggyClap) <= 1,
+           "and at the same frame: the quicker interface is held back by the difference");
+
+    std::remove ((dir + "/01_Quick.wav").c_str());
+    std::remove ((dir + "/02_Laggy.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+
     std::printf ("\n%s (%d failing)\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }

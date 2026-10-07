@@ -50,6 +50,29 @@ public:
     /// the monitor path slower.
     static constexpr int kPreRollBlocks = 2;
 
+    /// The largest single delivery or pull the ring is allocated for.
+    /// CoreAudio runs a device at its own IO size whenever it refuses the one
+    /// asked for -- 512 by default, or anything the driver's range allows --
+    /// and sizes its own callback scratch for up to 4096 frames, on either
+    /// side. The ring used to be sixteen *nominal* blocks and its target fill
+    /// two of them: 1024 and 128 samples at 64. A microphone running at 1156
+    /// frames overflowed on every delivery, and an output pulling 1024 at a
+    /// time drained a ring held at 128 dry on every callback -- either way
+    /// half the audio gone, in the recording as well as the headphones.
+    ///
+    /// Storage is allocated for this many samples a block. What is *used* of
+    /// it -- the overflow limit, kRingBlocks of a block -- and the target fill
+    /// -- kPreRollBlocks of the pull -- follow the largest block actually
+    /// seen on each side, so a device running at the size it was asked for
+    /// keeps exactly the latency and the bound on staleness it always had.
+    static constexpr int kLargestDeviceBlock = 4096;
+
+    /// The most a stream will delay its own audio to line up with a device
+    /// whose input latency is longer. A quarter of a second at 96 kHz: far
+    /// past any wired interface's figure, and a bound on what a confused
+    /// driver's report can cost every other microphone.
+    static constexpr int kMaxAlignmentDelaySamples = 24000;
+
     static_assert (kSourceBufferBlocks + kPreRollBlocks + 2 <= kRingBlocks,
                    "the ring must hold a full driver burst above its target fill, with a block "
                    "of delivery jitter and one in flight");
@@ -77,6 +100,16 @@ public:
     /// Sizes the ring and clears all loop state. Not real-time safe -- call
     /// before the streams open.
     void prepare (double sampleRate, int bufferSizeSamples);
+
+    /// Message thread: hold this stream's audio back by `samples` more than
+    /// its target fill, sample-accurately, so it lines up with a microphone
+    /// on a device whose input latency is that much longer. Clamped to
+    /// kMaxAlignmentDelaySamples. Applied on the consumer thread: before
+    /// playout starts it simply raises the pre-roll; once running, the stream
+    /// writes that much silence without consuming, once, and the ring holds
+    /// the difference from then on. Nothing is allocated (§11).
+    void setAlignmentDelay (int samples) noexcept;
+    int getAlignmentDelay() const noexcept { return requestedAlignmentDelay.load (std::memory_order_relaxed); }
 
     /// Producer: this device's audio callback. Real-time safe.
     void pushBlock (const float* samples, int numSamples) noexcept;
@@ -191,7 +224,7 @@ public:
     double getMeasuredDeviceRatePpm() const noexcept { return deviceRatePpm.load (std::memory_order_relaxed); }
     double getMeasuredConsumerRatePpm() const noexcept { return consumerRatePpm.load (std::memory_order_relaxed); }
 
-    double getFillFraction() const noexcept { return ring.fillFraction(); }
+    double getFillFraction() const noexcept;
 
     /// §3.3 drift reporting runs on a slower cadence than the audio callback,
     /// so the measurement and the sustained-excess flag are advanced from
@@ -204,6 +237,15 @@ private:
     RingBuffer ring;
     DriftCompensator compensator;
     double rate = 48000.0;
+
+    // The block size prepare() was given, and the largest delivery and pull
+    // seen since. Each is written by one side and read by both: the usable
+    // part of the ring is kRingBlocks of the biggest of the three, never more
+    // than the storage behind it. See kLargestDeviceBlock.
+    size_t nominalBlockSamples = 64;
+    std::atomic<size_t> largestPushSamples { 0 };
+    std::atomic<size_t> largestPullSamples { 0 };
+    size_t usableCapacity() const noexcept;
 
     std::atomic<bool> channelLive { true };
 
@@ -263,6 +305,19 @@ private:
     // few samples ahead.
     double silenceOwed = 0.0;
     int pullsSinceSilence = 0;
+
+    // Consumer-owned: a pull bigger than any before it raised the target fill
+    // after playout had started, with too little buffered to serve it. The
+    // stream writes counted silence until the ring reaches the new target.
+    bool rebuffering = false;
+
+    // Input-latency alignment. Requested on the message thread, applied by
+    // the consumer, which owns the target fill and the silence it still has
+    // to write to open the delay on a running stream.
+    std::atomic<int> requestedAlignmentDelay { 0 };
+    size_t appliedAlignmentDelay = 0;
+    size_t alignmentDebt = 0;
+    void recomputeTarget() noexcept;
 
     // Reporting-thread-owned. The audio threads publish counters atomically;
     // they never touch anything below.

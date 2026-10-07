@@ -39,7 +39,7 @@ public:
     /// picks it up.
     void setFault (bool on) noexcept;
 
-    Kind getKind() const noexcept { return static_cast<Kind> (kind.load (std::memory_order_acquire)); }
+    Kind getKind() const noexcept { return kindOf (state.load (std::memory_order_acquire)); }
     bool isSounding() const noexcept;
 
     /// Audio thread. ADDS the tone to `inOut`, so it sits over whatever mix is
@@ -59,19 +59,30 @@ public:
     static constexpr double kSirenHalfPeriodSeconds = 0.25;
 
 private:
-    std::atomic<int> kind { static_cast<int> (Kind::None) };
-    std::atomic<uint32_t> generation { 0 };
+    /// Which pattern, and which trigger of it, in ONE word: the generation
+    /// above the low byte, the kind in it. They used to be two atomics,
+    /// stored one after the other, so the audio thread could read the new
+    /// kind with the old generation -- and render a fresh chirp from where the
+    /// previous one had ended, find it already over, and mark it finished.
+    /// The chirp then played with isSounding() false, and a fault re-asserted
+    /// on the next tick cut it off.
+    std::atomic<uint64_t> state { 0 };
+    static Kind kindOf (uint64_t packed) noexcept { return static_cast<Kind> (packed & 0xffu); }
+    static uint64_t generationOf (uint64_t packed) noexcept { return packed >> 8; }
     std::atomic<uint64_t> samplesRendered { 0 };
     /// When the current pattern was triggered, by the wall clock. A chirp is
     /// over that long after it started whether or not anything rendered it,
     /// so a rig with no output cannot leave a chirp "playing" forever.
     std::atomic<int64_t> triggeredAtNs { 0 };
-    /// Set by the audio thread once it has rendered a chirp to its end, so
+    /// The generation the audio thread last rendered a chirp to its end, so
     /// a rig whose output runs ahead of the clock reports it over as well.
-    std::atomic<bool> patternFinished { false };
+    /// A generation rather than a flag: a flag the audio thread set for the
+    /// pattern it was finishing could land after a new trigger had cleared
+    /// it, marking the new chirp over before it began.
+    std::atomic<uint64_t> finishedGeneration { ~uint64_t (0) };
 
     // Audio-thread state.
-    uint32_t renderedGeneration = 0;
+    uint64_t renderedGeneration = 0;
     double positionSeconds = 0.0;
     double phase = 0.0;
 

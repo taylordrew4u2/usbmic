@@ -48,7 +48,12 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         channelMeters.push_back (std::make_unique<Metering> (sampleRate));
 
     // Sized here so the audio callback never allocates (§11).
-    mixScratch.assign (static_cast<size_t> (std::max (1, bufferSize)) * 8, 0.0f);
+    //
+    // Floored at the largest callback CoreAudio sizes its own scratch for: an
+    // output whose IO size is not the one asked for still mixes in one pass.
+    mixScratch.assign (std::max (static_cast<size_t> (std::max (1, bufferSize)) * 8,
+                                 static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock)),
+                       0.0f);
     trimFrame.assign (std::max<size_t> (1, channels.size()), 0.0f);
 
     // §3.2: one capture path per device, each with its own ring and PI loop.
@@ -83,9 +88,19 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // this, but it is now a bound rather than an ordinary occurrence.
     constexpr int kCallbackSizeHeadroom = 2;
 
+    //
+    // And floored at the largest callback CoreAudio itself allows for, for the
+    // drift loop's sake as much as the mix's. A pull is what DeviceInputStream
+    // sizes its target fill from, so an output running at 1024 frames against
+    // a nominal 64 has to be pulled 1024 at a time: sliced into 128-frame
+    // pulls, each ring was held at two slices -- far less than the callback
+    // takes at once -- and the loop sat pinned at its clamp to keep up, with
+    // no correction left for a microphone's real drift.
     deviceScratch.assign (std::max<size_t> (1, channels.size())
-                              * static_cast<size_t> (std::max (1, bufferSize))
-                              * kCallbackSizeHeadroom, 0.0f);
+                              * std::max (static_cast<size_t> (std::max (1, bufferSize))
+                                              * kCallbackSizeHeadroom,
+                                          static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock)),
+                          0.0f);
     devicePointers.assign (std::max<size_t> (1, channels.size()), nullptr);
 
     // Precomputed so the callback never calls a dB->linear conversion per sample.
@@ -130,6 +145,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // microphones still reopen input-only; monitoring failure is not recording
     // failure.
     monitoringLatencyMs = 0.0;
+    alignedInputLatencyFrames = 0;
 
     if (! outputDeviceId.empty())
     {
@@ -346,6 +362,39 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     {
         clockRunning.store (true, std::memory_order_release);
         softwareClock = std::thread ([this] { runSoftwareClock(); });
+    }
+
+    // Input latency. Each device hands its audio over some fixed time after
+    // the microphone heard it -- its own latency, its safety offset, its
+    // stream's -- and two interfaces seldom agree: a clap both microphones
+    // heard at once landed in the two stems that many samples apart, and in
+    // the mix as a smear. Every channel is held back to the slowest device's
+    // figure, so the tracks line up as the room heard them. Devices that did
+    // not open take no part; their channels are silent anyway.
+    {
+        std::vector<int> latency (channels.size(), 0);
+        int longest = 0;
+
+        for (size_t i = 0; i < channels.size(); ++i)
+        {
+            if (std::find (failedDevices.begin(), failedDevices.end(), channels[i].deviceId)
+                != failedDevices.end())
+                continue;
+
+            latency[i] = std::max (0, backend.getInputLatencyFrames (channels[i].deviceId));
+            longest = std::max (longest, latency[i]);
+        }
+
+        longest = std::min (longest, DeviceInputStream::kMaxAlignmentDelaySamples);
+        alignedInputLatencyFrames = longest;
+
+        for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
+            deviceStreams[i]->setAlignmentDelay (longest - std::min (latency[i], longest));
+
+        // The headphones hear every microphone that much later too, and the
+        // slowest input's own latency was never in the figure at all.
+        if (monitoringLatencyMs > 0.0 && sampleRate > 0.0)
+            monitoringLatencyMs += 1000.0 * static_cast<double> (longest) / sampleRate;
     }
 
     monitoring = true;
@@ -718,6 +767,7 @@ void CaptureCoordinator::stopMonitoring()
     // Nothing is monitoring, so there is no monitoring latency to report. A
     // figure left standing here would outlive the stream it describes.
     monitoringLatencyMs = 0.0;
+    alignedInputLatencyFrames = 0;
 }
 
 void CaptureCoordinator::stopMirroring()
@@ -1424,12 +1474,21 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
 
     // §5.1: one mix, containing every microphone including the listener's own,
     // summed at unity with no attenuation for channel count.
-    if (mixScratch.size() < static_cast<size_t> (numSamples))
-        return; // sized at startMonitoring(); never grow here (§11)
-
-    if (static_cast<int> (trimFrame.size()) < channelCount
+    // Sized at startMonitoring(); never grow here (§11). Should either guard
+    // ever trip, the headphones get silence rather than whatever the output
+    // buffer last held: CoreAudioBackend hands an interleaved device its own
+    // repack scratch, so an unwritten block replays the previous one -- a
+    // buzz at the callback rate for as long as the condition lasts.
+    if (mixScratch.size() < static_cast<size_t> (numSamples)
+        || static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
-        return; // sized at startMonitoring(); never grow here (§11)
+    {
+        for (int ch = 0; ch < numOutputs; ++ch)
+            if (outputs[ch] != nullptr)
+                std::fill (outputs[ch] + outputFrameOffset,
+                           outputs[ch] + outputFrameOffset + numSamples, 0.0f);
+        return;
+    }
 
     // trimFrame is sized to the channel list, but a block can carry fewer
     // channels than that -- processAudioBlock takes min(numInputs, channels).
