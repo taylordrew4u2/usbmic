@@ -28,6 +28,8 @@
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/ActivityJournal.h"
+#include "../Core/BackgroundRecordWriter.h"
+#include "../Core/SessionRecordSchedule.h"
 #include "../Core/CapacityMonitor.h"
 #include "../Core/TakeWatchdog.h"
 #include "../Core/RecordingProof.h"
@@ -1192,6 +1194,19 @@ private:
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
+    std::string buildSessionMetadataJson (bool sessionHasStopped);
+
+    /// §6.2's record refreshed during the take -- every 30 s, and soon after a
+    /// dropout, a camera starting, the backup stopping, a loss or a buffer
+    /// step (SessionRecordSchedule) -- on workers, so a crash leaves an
+    /// accurate session.json and the message thread never waits on the card
+    /// for it.
+    std::unique_ptr<BackgroundRecordWriter> sessionRecordCard, sessionRecordMirror;
+    SessionRecordSchedule sessionRecordSchedule;
+    std::string sessionRecordEventSignature() const;
+    void startSessionRecordRefreshes();
+    void refreshSessionRecordIfDue();
+    void retireSessionRecordRefreshes();
 
     /// Points currentSessionFolder at wherever the take's open files now are,
     /// when the folder was renamed or moved in Finder mid-take. Without it the

@@ -12,6 +12,7 @@ add_executable(mma_core_tests
     test_AppSettings.cpp
     test_ShowTemplate.cpp
     test_SessionRecovery.cpp
+    test_BackgroundRecordWriter.cpp
     test_ActivityJournal.cpp
     test_CardRemovalNotice.cpp
     test_PreflightThroughputTest.cpp

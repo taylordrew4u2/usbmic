@@ -1081,6 +1081,15 @@ void aRecordedCameraThatReconnectsWaitsForTheNextTake()
     check (controller.startRecording (takeFolder), "the camera starts recording");
     check (controller.getTakeVideoRecords().empty(),
            "session metadata cannot claim the movie before its writer finalizes");
+
+    // The record refreshed mid-take is what a crash leaves behind, and the
+    // movie being written is in the folder beside the sound.
+    {
+        const auto soFar = controller.getTakeVideoRecordsSoFar();
+        check (soFar.size() == 1 && ! soFar.front().fileName.empty()
+                   && ! juce::String (soFar.front().fileName).containsAnyOf ("/\\"),
+               "the mid-take record names the movie being written, by file name");
+    }
     check (fakecamera::getStartRecordingCallCount() == 1
                && fakecamera::getActiveRecordingCount() == 1,
            "one camera writer is active");
@@ -1102,6 +1111,9 @@ void aRecordedCameraThatReconnectsWaitsForTheNextTake()
     const auto partialInputs = controller.getCombinedTakeInputs();
     check (partialInputs.size() == 1 && ! partialInputs.front().videoFile.empty(),
            "the finalized partial movie remains available to the combiner");
+    check (controller.getTakeVideoRecordsSoFar().size() == 1
+               && controller.getTakeVideoRecordsSoFar().front().fileName == partialInputs.front().videoFile,
+           "and the mid-take record goes on naming it after the unplug");
 
     fakecamera::setDevices ({ "Recording Camera" });
     refreshNow (controller);
@@ -1340,6 +1352,8 @@ void recordingTruthWaitsForTheStartCallback()
            "submitted but unconfirmed video reads STARTING, never REC");
     check (fakecamera::getPendingRecordingStartCount() == 1,
            "the simulator retains the delayed didStart fact");
+    check (controller.getTakeVideoRecordsSoFar().empty(),
+           "nor does the mid-take record name a movie no writer has confirmed");
 
     fakecamera::completePendingRecordingStarts();
     controller.applyPendingCameraList();
@@ -1347,6 +1361,8 @@ void recordingTruthWaitsForTheStartCallback()
     check (controller.isRecording() && states.size() == 1
                && ! states.front().starting && states.front().recording,
            "only didStart promotes the matching take generation to REC");
+    check (controller.getTakeVideoRecordsSoFar().size() == 1,
+           "and from didStart the mid-take record names its movie");
 
     controller.stopRecording();
     const auto inputs = controller.getCombinedTakeInputs();
@@ -1904,6 +1920,8 @@ void anImmediateFinalizationErrorIsReadyBeforeTheStopReturns()
            "and it tells the user not to trust the movie");
     check (controller.getTakeVideoRecords().empty(),
            "and no movie is claimed for the take");
+    check (controller.getTakeVideoRecordsSoFar().empty(),
+           "not even by the mid-take record: a failed writer is no more usable after a crash");
 
     takeFolder.deleteRecursively();
     fakecamera::setFinalizationMode (fakecamera::FinalizationMode::ImmediateSuccess);
@@ -1944,7 +1962,8 @@ void aNeverFinishingWriterFailsClosedAndDoesNotAutoReopen()
                == mma::CameraController::RecordingFinalizationState::Failed,
            "the 15-second deadline ends in an explicit failed state");
     check (controller.getRecordingFinalizationProblem().containsIgnoreCase ("did not finish")
-               && controller.getTakeVideoRecords().empty(),
+               && controller.getTakeVideoRecords().empty()
+               && controller.getTakeVideoRecordsSoFar().empty(),
            "the audio-safe/video-unsafe outcome is reported without a movie claim");
     check (fakecamera::getOpenCallCount() == 1 && fakecamera::getLiveDeviceCount() == 0,
            "the timed-out platform device is closed and not immediately reopened");

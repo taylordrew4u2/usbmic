@@ -2875,10 +2875,22 @@ void Application::toggleRecording()
                     noteActivity (ActivityLevel::Failed, "Cameras", cameraProblem);
                 }
 
+                // This take's record starts with none of the last one's
+                // unplugs in it. The list is reset for the take further down,
+                // after this write -- so the start-time session.json, which is
+                // what a crash in the take's first half-minute leaves behind,
+                // carried the previous take's dropouts as this one's.
+                midTakeDropouts.clear();
+
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
                 // stop to add the stop time and everything logged since.
                 writeSessionMetadata (false);
+
+                // And kept current in between, so a crash part way through
+                // leaves an account of the take up to then: the unplugs, the
+                // cameras, the backup -- not just its first instant.
+                startSessionRecordRefreshes();
 
                 noteActivity (ActivityLevel::Started, "Recording",
                               "Recording started into " + juce::File (folder).getFileName()
@@ -4611,11 +4623,8 @@ TakeFigures Application::liveTakeFigures (bool sessionHasStopped) const
     return f;
 }
 
-void Application::writeSessionMetadata (bool sessionHasStopped)
+std::string Application::buildSessionMetadataJson (bool sessionHasStopped)
 {
-    if (currentSessionFolder.isEmpty())
-        return;
-
     // Every figure below that describes the moment the take ended comes from
     // here -- see TakeStopSnapshot.
     const auto figures = takeStopSnapshot.resolve (sessionHasStopped, liveTakeFigures (sessionHasStopped));
@@ -4670,8 +4679,11 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // Only camera writers which actually started belong in session.json. The
     // watchdog separately keeps the complete intended roster so it can report
     // a missing capture card, but inventing that card's movie filename here
-    // would make an editor look for a file which never existed.
-    for (const auto& video : cameraController.getTakeVideoRecords())
+    // would make an editor look for a file which never existed. At Stop, only
+    // the movies that finished; before it -- the record a crash leaves -- the
+    // ones being written as well, which are in the folder either way.
+    for (const auto& video : sessionHasStopped ? cameraController.getTakeVideoRecords()
+                                               : cameraController.getTakeVideoRecordsSoFar())
         meta.videos.push_back ({ video.displayName, video.fileName, false });
 
     meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
@@ -4761,8 +4773,22 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                        + " frames before recording: the sound hardware delivered "
                                          "more audio than it could hand over." });
 
+    return meta.toJsonString();
+}
+
+void Application::writeSessionMetadata (bool sessionHasStopped)
+{
+    if (currentSessionFolder.isEmpty())
+        return;
+
+    // The Stop boundary for the mid-take refreshes: none of them may land
+    // after the record written here, or a finished take's session.json would
+    // go back to having no stop time and be offered as interrupted.
+    if (sessionHasStopped)
+        retireSessionRecordRefreshes();
+
     // Written to the card copy and the mirror alike, so either one stands alone.
-    const auto json = meta.toJsonString();
+    const auto json = buildSessionMetadataJson (sessionHasStopped);
 
     // The result is checked. session.json is the durable record of everything
     // above -- every dropout, every buffer change, why the backup stopped --
@@ -4790,6 +4816,103 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
 
     if (currentMirrorFolder.isNotEmpty())
         writeActivityLog (juce::File (currentMirrorFolder));
+}
+
+std::string Application::sessionRecordEventSignature() const
+{
+    // What a crash would otherwise take with it: each of these changes the
+    // record in a way someone reading it afterwards needs, and none of them
+    // changes often. The figures that move all the time -- the length, drift,
+    // how much was dropped -- are carried by the periodic refresh, with only
+    // the first loss counted here: the one that makes the take a lossy one.
+    const auto figures = liveTakeFigures (false);
+    const bool lossCounted = figures.framesDropped > 0 || figures.overrunSamples > 0
+                          || figures.underrunSamples > 0 || figures.framesMissedByLayout > 0
+                          || figures.backendFramesDropped > 0;
+
+    return std::to_string (midTakeDropouts.size())
+         + "|" + std::to_string (cameraController.getTakeVideoRecordsSoFar().size())
+         + "|" + (capture != nullptr && capture->isMirroring() ? "1" : "0")
+         + "|" + (mirrorPolicy.wasStoppedForSpace() ? "1" : "0")
+         + "|" + (mirrorPolicy.wasStoppedForWriteFailure() ? "1" : "0")
+         + "|" + (capacityMonitor.getDegradationSamplePosition() >= 0 ? "1" : "0")
+         + "|" + std::to_string (bufferLadder.getChangeLog().size())
+         + "|" + (lossCounted ? "1" : "0");
+}
+
+void Application::refreshSessionRecordIfDue()
+{
+    if (! isRecording() || currentSessionFolder.isEmpty() || sessionRecordCard == nullptr)
+        return;
+
+    const auto nowSeconds = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    auto signature = sessionRecordEventSignature();
+
+    if (! sessionRecordSchedule.isDue (nowSeconds, signature))
+        return;
+
+    sessionRecordSchedule.written (nowSeconds, std::move (signature));
+
+    // Built here, written elsewhere: the message thread assembles a few
+    // hundred bytes from state it already owns and hands them over. The write
+    // is the same checked temp-then-rename every record uses, on a worker
+    // that may wait on the card for as long as the card likes -- and a card
+    // already known to have stopped answering is not asked again.
+    const auto json = buildSessionMetadataJson (false);
+
+    if (! takeCardUnresponsive)
+        sessionRecordCard->submit (juce::File (currentSessionFolder).getChildFile ("session.json")
+                                       .getFullPathName().toStdString(), json);
+
+    if (currentMirrorFolder.isNotEmpty() && sessionRecordMirror != nullptr)
+        sessionRecordMirror->submit (juce::File (currentMirrorFolder).getChildFile ("session.json")
+                                         .getFullPathName().toStdString(), json);
+}
+
+void Application::startSessionRecordRefreshes()
+{
+    // A free function and two strings: the worker never reaches back into
+    // Application, so one still stuck on a dead card when the app quits holds
+    // nothing that is going away.
+    const auto write = [] (const std::string& path, const std::string& text)
+    {
+        return replaceWithTextChecked (juce::File (juce::String::fromUTF8 (path.data(), (int) path.size())),
+                                       juce::String::fromUTF8 (text.data(), (int) text.size()));
+    };
+
+    sessionRecordCard = std::make_unique<BackgroundRecordWriter> (write);
+    sessionRecordMirror = std::make_unique<BackgroundRecordWriter> (write);
+
+    // What writeSessionMetadata (false) has just put on disk, so the first
+    // refresh comes with the first change -- the microphones that would not
+    // open, a camera's start confirmed -- or in thirty seconds.
+    sessionRecordSchedule.written (juce::Time::getMillisecondCounterHiRes() / 1000.0,
+                                   sessionRecordEventSignature());
+}
+
+void Application::retireSessionRecordRefreshes()
+{
+    sessionRecordSchedule.stop();
+
+    // No refresh may land after the stop-time record, or a finished take's
+    // session.json goes back to having no stop time and is offered as
+    // interrupted at the next launch. One still inside the card is waited for
+    // within the same deadline as every other card step, and a card that does
+    // not answer in it is treated as every other step treats it: gone, for the
+    // rest of the take, so the steps after this one do not wait again. A card
+    // already known to be gone is not waited on at all.
+    if (sessionRecordCard != nullptr
+        && ! sessionRecordCard->retire (takeCardUnresponsive ? std::chrono::milliseconds (0)
+                                                             : kRemovableVolumeDeadline))
+        takeCardUnresponsive = true;
+
+    // The backup is on this computer: waited for within the same bound, and the
+    // stop-time record is written either way.
+    if (sessionRecordMirror != nullptr)
+        (void) sessionRecordMirror->retire (kRemovableVolumeDeadline);
+
+    sessionRecordCard.reset();
+    sessionRecordMirror.reset();
 }
 
 void Application::followRenamedTakeFolder()
@@ -5110,6 +5233,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // mid-take is followed here, well inside the growth check's six seconds.
     if (isRecording())
         followRenamedTakeFolder();
+
+    // Every 30 s, and soon after anything worth recording happens.
+    refreshSessionRecordIfDue();
 
     // The assertion above holds a plugged-in Mac up with its lid shut; on
     // battery nothing can, so the performer hears it while the lid is open.
@@ -7359,6 +7485,11 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         session.startedIso = meta.startTimestampIso;
         session.mirrorFolder = meta.mirrorPath;
         session.modifiedMs = folder.getLastModificationTime().toMilliseconds();
+        // The backup was on and had stopped being written by the time the
+        // record was last refreshed: that copy ends early, so it is never
+        // offered in place of a card copy that could not be repaired.
+        session.backupCopyCutShort = meta.mirrorEnabled && ! meta.mirrorActive
+                                  && ! meta.mirrorPath.empty();
 
         // The hidden half-written copy a crash left mid-replace of the take's
         // session.json or activity.log. Its target still holds the previous
@@ -7514,11 +7645,27 @@ void Application::publishCompletedRecoveryScans() const
         // A take mirrored to the local backup is found twice. It is shown
         // once, and the hidden copy's folder is kept so that dismissing the
         // card stamps it too -- otherwise it came back at every launch.
+        std::set<std::string> standingInBefore;
+        for (const auto& session : recoveredSessions)
+            if (session.shownBecauseCardCopyUnrepairable)
+                standingInBefore.insert (session.folder);
+
         auto merged = SessionRecovery::mergeScan (
             { std::move (recoveredSessions), std::move (hiddenRecoveredFolders) },
             std::move (completed->sessions), completed->isDestinationCopy);
         recoveredSessions = std::move (merged.shown);
         hiddenRecoveredFolders = std::move (merged.hiddenFolders);
+
+        // The card offers the backup copy of a take whose card copy the card
+        // would not let be repaired. Said in the log as well as on the card,
+        // with where it is: the card is gone once dismissed, and the log is
+        // what someone helping reads afterwards.
+        for (const auto& session : recoveredSessions)
+            if (session.shownBecauseCardCopyUnrepairable && standingInBefore.count (session.folder) == 0)
+                noteActivity (ActivityLevel::Warning, "Interrupted take",
+                              juce::File (juce::String (session.folder)).getFileName()
+                              + ": the card's copy couldn't be repaired, so the local backup copy is "
+                                "the one offered -- it is in " + juce::String (session.folder) + ".");
     };
 
     publish (mirrorRecoveryTask, mirrorRecoveryRoot, mirrorRecoveryStatus,

@@ -46,10 +46,12 @@ private:
     {
         std::unique_ptr<juce::Label> name;
         std::unique_ptr<juce::Label> detail;
-        /// Room for a second line under the name: the camera-movie note does
-        /// not fit on one beside the sound's, and a one-line label cut it off.
-        bool twoLineDetail = false;
     };
+
+    /// The name, and the detail under it on as many lines as it takes at
+    /// `width`: the camera-movie and backup-copy notes do not fit on one
+    /// beside the sound's, and a one-line label cut them off.
+    static int rowHeight (const Row& row, int width);
 
     juce::Label explanation;
     std::vector<Row> rows;

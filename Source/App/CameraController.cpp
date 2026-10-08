@@ -1659,6 +1659,26 @@ std::vector<CameraController::TakeVideoRecord> CameraController::getTakeVideoRec
     return videos;
 }
 
+std::vector<CameraController::TakeVideoRecord> CameraController::getTakeVideoRecordsSoFar() const
+{
+    std::vector<TakeVideoRecord> videos;
+
+#if JUCE_USE_CAMERA
+    videos.reserve (takeRecordings.size());
+
+    // didStart is the proof a file exists, as above. Not waiting for didFinish
+    // is the whole difference: a movie still being written is listed, and one
+    // whose writer has already reported a failure is not -- it is no more
+    // usable after a crash than after a clean stop.
+    for (const auto& takeRecording : takeRecordings)
+        if (takeRecording.started && takeRecording.finalizationError.isEmpty())
+            videos.push_back ({ takeRecording.displayName,
+                                takeRecording.file.getFileName().toStdString() });
+#endif
+
+    return videos;
+}
+
 std::vector<CameraController::TakeCameraState> CameraController::getTakeCameraStates() const
 {
     std::vector<TakeCameraState> states;
