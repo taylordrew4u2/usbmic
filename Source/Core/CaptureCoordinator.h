@@ -119,12 +119,35 @@ public:
     /// latency, it is an impossible one -- and this is the number someone
     /// singing to a click reads to decide whether they can work through the
     /// headphones at all.
-    double getMonitoringLatencyMs() const noexcept { return monitoringLatencyMs; }
+    ///
+    /// Includes what lining the rig up costs once it is running: a device at
+    /// a larger IO block than the rest holds every channel back by the
+    /// difference (alignChannels), which the figure worked out when the
+    /// streams opened cannot have known.
+    double getMonitoringLatencyMs() const noexcept;
 
     /// The slowest open input's own latency, in frames, which every channel
     /// is aligned to (and so every channel's headphone feed carries). Zero on
     /// a backend that does not report input latency.
     int getAlignedInputLatencyFrames() const noexcept { return alignedInputLatencyFrames; }
+
+    /// For the take's record (session.json), per device: the input latency
+    /// the backend reported (-1 when the device did not open or monitoring is
+    /// not up), the largest IO block it has delivered, and how far its
+    /// channels are held back on top of both so they line up with the rest
+    /// of the rig. Message thread; reads atomics only.
+    int getDeviceInputLatencyFrames (const std::string& deviceId) const noexcept;
+    int getDeviceIoBlockFrames (const std::string& deviceId) const noexcept;
+    int getDeviceAlignmentDelayFrames (const std::string& deviceId) const noexcept;
+
+    /// Silence written into this device's stems since the current take began
+    /// to keep it in step with the rest of the rig: another device's IO block
+    /// grew, so every channel moved later by the difference. Not lost audio
+    /// -- nothing that arrived was skipped, and none of it is in the underrun
+    /// figures -- but a gap in the file, so the take's record says where the
+    /// time went. A device whose own ring ran dry has that counted as an
+    /// underrun instead.
+    int getDeviceAlignmentSilenceFramesThisTake (const std::string& deviceId) const noexcept;
 
     /// Devices that refused to open when monitoring started, by id.
     ///
@@ -600,6 +623,24 @@ private:
     std::string monitorProblem;
     double monitoringLatencyMs = 0.0;
     int alignedInputLatencyFrames = 0;
+
+    // Per channel: the device's input latency (-1 for a device that did not
+    // open), filled in once the streams are open and published by
+    // latenciesReady; and, consumer-owned, the device block each channel was
+    // last aligned for. See alignChannels().
+    std::vector<int> channelInputLatency;
+    std::atomic<bool> latenciesReady { false };
+    std::vector<size_t> alignedBlocks;
+    bool alignmentApplied = false;
+
+    // What the alignment adds to the headphone latency beyond the figure
+    // worked out at startMonitoring(): the largest latency-plus-block across
+    // the rig, less the slowest latency and one nominal block. Written by
+    // alignChannels() on the consumer, read by getMonitoringLatencyMs().
+    std::atomic<int> alignedBlockExtraFrames { 0 };
+    void alignChannels() noexcept;
+    int channelIndexForDevice (const std::string& deviceId) const noexcept;
+
     std::vector<std::string> devicesThatFailedToOpen;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
@@ -635,6 +676,10 @@ private:
     /// Per-stream overrun totals when the take began, so the worst channel can
     /// be measured against its own starting point rather than the rig's.
     std::vector<uint64_t> overrunBaselinePerStream;
+
+    /// Per-stream alignment silence when the take began; see
+    /// getDeviceAlignmentSilenceFramesThisTake().
+    std::vector<uint64_t> alignmentSilenceBaselinePerStream;
 
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a

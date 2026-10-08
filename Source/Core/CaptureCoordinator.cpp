@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -46,6 +47,14 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     channelMeters.clear();
     for (size_t i = 0; i < channels.size(); ++i)
         channelMeters.push_back (std::make_unique<Metering> (sampleRate));
+
+    // Alignment state, sized here while no stream is open: the consumer reads
+    // the latencies only once latenciesReady says they are filled in.
+    latenciesReady.store (false, std::memory_order_relaxed);
+    channelInputLatency.assign (chans.size(), 0);
+    alignedBlocks.assign (chans.size(), 0);
+    alignmentApplied = false;
+    alignedBlockExtraFrames.store (0, std::memory_order_relaxed);
 
     // Sized here so the audio callback never allocates (§11).
     //
@@ -388,8 +397,18 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
         longest = std::min (longest, DeviceInputStream::kMaxAlignmentDelaySamples);
         alignedInputLatencyFrames = longest;
 
-        for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
-            deviceStreams[i]->setAlignmentDelay (longest - std::min (latency[i], longest));
+        // Handed to the consumer rather than applied here: what each stream
+        // is held back by also depends on its device's IO size, which is
+        // only known once the device delivers, and can change while it runs
+        // (alignChannels). A device that did not open takes no part.
+        for (size_t i = 0; i < channels.size() && i < channelInputLatency.size(); ++i)
+        {
+            const bool failed = std::find (failedDevices.begin(), failedDevices.end(), channels[i].deviceId)
+                                != failedDevices.end();
+            channelInputLatency[i] = failed ? -1 : std::min (latency[i], longest);
+        }
+
+        latenciesReady.store (true, std::memory_order_release);
 
         // The headphones hear every microphone that much later too, and the
         // slowest input's own latency was never in the figure at all.
@@ -763,6 +782,8 @@ void CaptureCoordinator::stopMonitoring()
     stopSoftwareClock();
     backend.closeAllStreams();
     monitoring = false;
+    latenciesReady.store (false, std::memory_order_relaxed);
+    alignedBlockExtraFrames.store (0, std::memory_order_relaxed);
 
     // Nothing is monitoring, so there is no monitoring latency to report. A
     // figure left standing here would outlive the stream it describes.
@@ -901,6 +922,12 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 
     for (const auto& stream : deviceStreams)
         overrunBaselinePerStream.push_back (stream->getOverrunSamples());
+
+    alignmentSilenceBaselinePerStream.clear();
+    alignmentSilenceBaselinePerStream.reserve (deviceStreams.size());
+
+    for (const auto& stream : deviceStreams)
+        alignmentSilenceBaselinePerStream.push_back (stream->getAlignmentSilenceSamples());
 
     pipeline = std::move (p);
     activePipeline.store (pipeline.get(), std::memory_order_release);
@@ -1349,6 +1376,9 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
         return noteCallbackLoad (callbackStart, numSamples);
     }
 
+    // Every channel onto one place in time before any of them is pulled.
+    alignChannels();
+
     // The scratch has bounded, pre-allocated headroom. CoreAudio can legally
     // deliver a callback larger than that bound, so consume it in slices that
     // fit rather than returning and silently losing the entire callback. This
@@ -1380,6 +1410,130 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
     }
 
     noteCallbackLoad (callbackStart, numSamples);
+}
+
+void CaptureCoordinator::alignChannels() noexcept
+{
+    // A sample reaches its ring up to one device block after it was captured,
+    // on top of the device's own input latency, so a channel's place in time
+    // is its latency plus its block plus what its ring holds. Every channel
+    // is given the same total -- the largest latency-plus-block across the
+    // rig -- and each stream holds whatever of it its own device does not
+    // already take (DeviceInputStream::setLatencyBudget).
+    //
+    // Recomputed here, on the one thread that pulls every stream, whenever a
+    // device's IO size moves. That is a device changing its block mid-session
+    // -- macOS does when another app asks for a different one -- and it moves
+    // that channel later by the difference whatever happens. Applied on the
+    // spot, every other channel moves with it, in the same callback, rather
+    // than the rig running out of step until a message-thread tick. Nothing
+    // allocates or locks (§11): the vectors were sized at startMonitoring().
+    if (! latenciesReady.load (std::memory_order_acquire))
+        return;
+
+    const size_t count = deviceStreams.size();
+    if (channelInputLatency.size() < count || alignedBlocks.size() < count)
+        return;
+
+    const auto nominal = static_cast<size_t> (std::max (1, bufferSize));
+    bool changed = ! alignmentApplied;
+
+    for (size_t i = 0; i < count && ! changed; ++i)
+        changed = std::max (deviceStreams[i]->getDeviceBlockSamples(), nominal) != alignedBlocks[i];
+
+    if (! changed)
+        return;
+
+    size_t longest = 0;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        alignedBlocks[i] = std::max (deviceStreams[i]->getDeviceBlockSamples(), nominal);
+
+        if (channelInputLatency[i] >= 0)
+            longest = std::max (longest, static_cast<size_t> (channelInputLatency[i]) + alignedBlocks[i]);
+    }
+
+    for (size_t i = 0; i < count; ++i)
+        if (channelInputLatency[i] >= 0)
+            deviceStreams[i]->setLatencyBudget (static_cast<int> (longest - static_cast<size_t> (channelInputLatency[i])));
+
+    // The headphones hear all of it: a device at 1156 frames among ones at
+    // 64 puts every microphone 1092 samples later than the figure worked out
+    // when the streams opened.
+    const size_t expected = static_cast<size_t> (std::max (0, alignedInputLatencyFrames)) + nominal;
+    alignedBlockExtraFrames.store (longest > expected ? static_cast<int> (longest - expected) : 0,
+                                   std::memory_order_relaxed);
+
+    alignmentApplied = true;
+}
+
+double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
+{
+    const int extra = alignedBlockExtraFrames.load (std::memory_order_relaxed);
+
+    // Zero means nothing is monitoring, and stays zero.
+    if (monitoringLatencyMs <= 0.0 || extra <= 0 || sampleRate <= 0.0)
+        return monitoringLatencyMs;
+
+    return monitoringLatencyMs + 1000.0 * static_cast<double> (extra) / sampleRate;
+}
+
+int CaptureCoordinator::channelIndexForDevice (const std::string& deviceId) const noexcept
+{
+    for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
+        if (channels[i].deviceId == deviceId)
+            return static_cast<int> (i);
+
+    return -1;
+}
+
+int CaptureCoordinator::getDeviceInputLatencyFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0 || ! latenciesReady.load (std::memory_order_acquire)
+        || static_cast<size_t> (i) >= channelInputLatency.size())
+        return -1;
+
+    return channelInputLatency[static_cast<size_t> (i)];
+}
+
+int CaptureCoordinator::getDeviceIoBlockFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+    return i < 0 ? 0 : static_cast<int> (deviceStreams[static_cast<size_t> (i)]->getDeviceBlockSamples());
+}
+
+int CaptureCoordinator::getDeviceAlignmentDelayFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0 || getDeviceInputLatencyFrames (deviceId) < 0)
+        return 0;
+
+    // What the stream holds beyond the device's own block: the budget less
+    // the block, as DeviceInputStream::heldLatency counts it.
+    const auto& stream = *deviceStreams[static_cast<size_t> (i)];
+    const auto delivered = stream.getDeviceBlockSamples();
+    const auto block = static_cast<int> (delivered > 0 ? delivered : static_cast<size_t> (std::max (1, bufferSize)));
+    return std::max (0, stream.getLatencyBudget() - block) + stream.getAlignmentDelay();
+}
+
+int CaptureCoordinator::getDeviceAlignmentSilenceFramesThisTake (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    // A stream rebuilt since the take began counts from zero; all of it is
+    // then this take's.
+    const auto index = static_cast<size_t> (i);
+    const auto total = deviceStreams[index]->getAlignmentSilenceSamples();
+    const auto base = index < alignmentSilenceBaselinePerStream.size() ? alignmentSilenceBaselinePerStream[index] : 0;
+    const auto sinceStart = total >= base ? total - base : total;
+    return static_cast<int> (std::min<uint64_t> (sinceStart, static_cast<uint64_t> (std::numeric_limits<int>::max())));
 }
 
 void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numInputs,

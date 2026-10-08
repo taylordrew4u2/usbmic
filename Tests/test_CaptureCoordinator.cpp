@@ -567,6 +567,153 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     REQUIRE (std::llabs (kitchen - couch) <= 1);
 }
 
+namespace {
+
+int64_t ioSizeClockNs = 0;
+int64_t ioSizeClock() { return ioSizeClockNs; }
+
+struct IoSizeTakeResult
+{
+    long long kitchenClap = -1, couchClap = -1;
+    uint64_t kitchenUnderruns = 0, couchUnderruns = 0;
+    int couchBlock = 0, kitchenAlignment = 0, couchAlignment = 0;
+    int kitchenShift = 0, couchShift = 0; // alignment silence written this take
+    double headphoneLatencyMs = 0.0;
+};
+
+/// Two microphones hearing one clap at the same instant. Kitchen's device
+/// runs at 64 frames throughout; Couch's at `couchBefore` until `switchAt`
+/// samples, then `couchAfter` -- an IO size macOS moved because another app
+/// asked for a different one. Each device hands a block over when its last
+/// sample is captured; the output pulls 64 at a time between deliveries.
+IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long switchAt, long long clapAt)
+{
+    const auto dir = tempDir() + "/io_size_" + std::to_string (couchBefore) + "_" + std::to_string (couchAfter);
+    std::remove ((dir + "/01_Kitchen.wav").c_str());
+    std::remove ((dir + "/02_Couch.wav").c_str());
+    std::string mk = "mkdir -p '" + dir + "'";
+    REQUIRE (std::system (mk.c_str()) == 0);
+
+    DeviceInputStream::setClockForTesting (ioSizeClock);
+    ioSizeClockNs = 1;
+
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
+
+    std::vector<float> a (64), b (4096), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    const auto fill = [clapAt] (std::vector<float>& v, long long first, int n)
+    {
+        for (int i = 0; i < n; ++i)
+            v[static_cast<size_t> (i)] = first + i == clapAt ? 0.9f : 0.0f;
+    };
+
+    const auto nsAt = [] (long long sample) { return static_cast<int64_t> (sample * 1.0e9 / 48000.0) + 1; };
+
+    long long aNext = 0, bNext = 0;
+    const long long end = clapAt + 48000;
+
+    for (long long pullAt = 32; pullAt < end; pullAt += 64)
+    {
+        // Every delivery whose last sample was captured before this pull.
+        while (aNext + 64 <= pullAt || bNext + (bNext >= switchAt ? couchAfter : couchBefore) <= pullAt)
+        {
+            const int bBlock = bNext >= switchAt ? couchAfter : couchBefore;
+
+            if (aNext + 64 <= bNext + bBlock)
+            {
+                ioSizeClockNs = nsAt (aNext + 64);
+                fill (a, aNext, 64);
+                backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+                aNext += 64;
+            }
+            else
+            {
+                ioSizeClockNs = nsAt (bNext + bBlock);
+                fill (b, bNext, bBlock);
+                backend.inputCallbacks[1] (bIn, 1, nullptr, 0, bBlock);
+                bNext += bBlock;
+            }
+        }
+
+        ioSizeClockNs = nsAt (pullAt);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    IoSizeTakeResult r;
+    r.kitchenUnderruns = c.getUnderrunSamples (0);
+    r.couchUnderruns = c.getUnderrunSamples (1);
+    r.couchBlock = c.getDeviceIoBlockFrames ("dev-b");
+    r.kitchenAlignment = c.getDeviceAlignmentDelayFrames ("dev-a");
+    r.couchAlignment = c.getDeviceAlignmentDelayFrames ("dev-b");
+    r.kitchenShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-a");
+    r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
+    r.headphoneLatencyMs = c.getMonitoringLatencyMs();
+
+    c.stopRecording();
+    c.stopMonitoring();
+    DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; });
+
+    r.kitchenClap = loudestSampleIn (dir + "/01_Kitchen.wav");
+    r.couchClap = loudestSampleIn (dir + "/02_Couch.wav");
+    return r;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_MicsOnDevicesAtDifferentIoSizesLineUpInTheFiles)
+{
+    // Asked for 64, one device runs at 1156 -- CoreAudio leaves a device at
+    // its own size when it refuses the request. A sample waits up to a whole
+    // block in the device before it is handed over, so that stem carried
+    // every sound 1092 samples (23 ms) after the other's: a slapback in the
+    // mix wherever the two mics hear each other.
+    const auto r = recordWithIoSizes (1156, 1156, 0, 30000);
+
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (r.couchClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (r.kitchenUnderruns == 0u);
+    REQUIRE (r.couchUnderruns == 0u);
+
+    // And the record says why the Kitchen stem is held back.
+    REQUIRE (r.couchBlock == 1156);
+    REQUIRE (r.couchAlignment == 0);
+    REQUIRE (r.kitchenAlignment == 1092);
+
+    // Which the headphones hear as well: two 64-frame output buffers, plus
+    // the 1092 every microphone now waits for Couch's block.
+    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 1092) / 48000.0 * 1000.0, 1e-6);
+}
+
+TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
+{
+    // Couch's device goes from 64 to 1156 frames a second into the take.
+    // That stem has to fall 1092 samples later -- the device now holds its
+    // audio that long -- and the gap that opens is counted. Kitchen moves
+    // with it, in the same callback, so a clap afterwards still lands on the
+    // same frame in both.
+    const auto r = recordWithIoSizes (64, 1156, 48000, 96000);
+
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (r.couchUnderruns >= 1092u - 2u);
+    REQUIRE (r.couchUnderruns <= 1092u + 2u);
+
+    // Kitchen's own audio was all there: it is held back, not lost -- and
+    // the take's record says how much silence moving it put in its file.
+    REQUIRE (r.kitchenUnderruns == 0u);
+    REQUIRE (r.kitchenAlignment == 1092);
+    REQUIRE (r.kitchenShift == 1092);
+    REQUIRE (r.couchShift == 0);
+}
+
 TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
 {
     // §0.1: the backend knows the cause and the coordinator used to discard it,

@@ -1395,3 +1395,257 @@ TEST_CASE (DeviceInputStream_AnAlignmentDelayIsBounded)
     s.setAlignmentDelay (-5);
     REQUIRE (s.getAlignmentDelay() == 0);
 }
+
+namespace {
+
+/// A device whose IO size changes while it runs: macOS moves a device's block
+/// when another app asks for a different one, or on a rate or aggregate
+/// change. `schedule` is (seconds, block) pairs, the first at zero. The output
+/// pulls 64 at a time on its own timeline. The source is a ramp (sample n
+/// carries n + 1), so the output says which captured sample it is playing.
+struct BlockSwitchResult
+{
+    uint64_t underruns = 0;
+    uint64_t overruns = 0;
+    uint64_t lossEvents = 0;
+    uint64_t underrunsAfter = 0;   // from `settleAt` seconds on
+    uint64_t alignmentSilence = 0; // silence written to move the channel, not lost
+    double skippedSamples = 0.0;   // captured audio that never came out
+    std::vector<double> delays;    // capture-to-output delay at each probe
+};
+
+BlockSwitchResult runBlockSwitches (const std::vector<std::pair<double, int>>& schedule,
+                                    double seconds, double settleAt,
+                                    const std::vector<double>& probes)
+{
+    ScopedSimulatedClock clock;
+    constexpr double rate = 48000.0;
+    constexpr int outBlock = 64;
+    DeviceInputStream s (rate);
+    s.prepare (rate, 64);
+
+    std::vector<float> in (static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock), 0.0f);
+    std::vector<float> out (static_cast<size_t> (outBlock), 0.0f);
+
+    long long produced = 0;
+    double blockStart = 0.0; // when the block being captured began
+    double nextOut = 0.0005;
+    double lastValue = 0.0;
+    size_t probe = 0;
+    uint64_t underrunsAtSettle = 0;
+    bool settled = false;
+    BlockSwitchResult r;
+
+    const auto blockAt = [&] (double t)
+    {
+        int block = schedule.front().second;
+        for (const auto& [at, size] : schedule)
+            if (t >= at)
+                block = size;
+        return block;
+    };
+
+    while (nextOut < seconds)
+    {
+        // A block is handed over once its last sample has been captured.
+        const int block = blockAt (blockStart);
+        const double deliverAt = blockStart + block / rate;
+
+        if (deliverAt <= nextOut)
+        {
+            simulatedNs = static_cast<int64_t> (deliverAt * 1.0e9) + 1;
+            for (int i = 0; i < block; ++i)
+                in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
+            s.pushBlock (in.data(), block);
+            produced += block;
+            blockStart = deliverAt;
+            continue;
+        }
+
+        simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+        s.pull (out.data(), outBlock);
+
+        for (int i = 0; i < outBlock; ++i)
+        {
+            const double v = out[static_cast<size_t> (i)];
+            if (v > 0.0)
+            {
+                if (lastValue > 0.0 && v - lastValue > 1.5)
+                    r.skippedSamples += v - lastValue - 1.0;
+                lastValue = v;
+            }
+        }
+
+        if (probe < probes.size() && nextOut >= probes[probe] && out[0] > 0.0f)
+        {
+            // The output sample leaving now was captured at (value - 1) / rate.
+            r.delays.push_back (nextOut * rate - (static_cast<double> (out[0]) - 1.0));
+            ++probe;
+        }
+
+        if (! settled && nextOut >= settleAt)
+        {
+            settled = true;
+            underrunsAtSettle = s.getUnderrunSamples();
+        }
+
+        nextOut += outBlock / rate;
+    }
+
+    r.underruns = s.getUnderrunSamples();
+    r.overruns = s.getOverrunSamples();
+    r.lossEvents = s.getLossEvents();
+    r.underrunsAfter = s.getUnderrunSamples() - underrunsAtSettle;
+    r.alignmentSilence = s.getAlignmentSilenceSamples();
+    return r;
+}
+
+} // namespace
+
+TEST_CASE (DeviceInputStream_AnIoSizeThatGrowsMidStreamCostsOneExactCountedGap)
+{
+    // 64 -> 1156 five seconds in. The device now keeps each sample up to 1156
+    // frames before handing it over, so this channel has to run 1092 samples
+    // later than it did: no buffering held for 64-frame blocks could cover
+    // that. What it must not do is lose any of the audio, open the gap more
+    // than once, or count one change as a burst of separate losses -- fifteen
+    // loss events from fifteen dry 64-sample pulls stepped the buffer ladder,
+    // which rebuilt the engine and opened another gap.
+    const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 1156 } }, 12.0, 6.0, { 4.0, 11.0 });
+
+    REQUIRE (r.overruns == 0u);
+    REQUIRE (r.skippedSamples == 0.0);
+    REQUIRE (r.underrunsAfter == 0u);
+
+    // One gap, counted (§0.1), the size of the delay it opens -- and landing
+    // exactly on it, not left a target short for the loop to build back.
+    REQUIRE (r.lossEvents == 1u);
+    REQUIRE (r.underruns >= 1092u - 2u);
+    REQUIRE (r.underruns <= 1092u + 2u);
+    REQUIRE (r.delays.size() == 2u);
+    REQUIRE_NEAR (r.delays[1] - r.delays[0], 1092.0, 2.0);
+}
+
+TEST_CASE (DeviceInputStream_AnIoSizeTheDeviceRanAtBeforeIsAbsorbedWithoutAGap)
+{
+    // Another app starting and stopping moves the device back and forth. The
+    // first growth costs its one gap; after that the room the larger block
+    // needs is held while the device runs small, so going back and forth
+    // loses nothing and never moves the channel in time. Draining it instead
+    // and opening it again cost a counted thousand-sample dropout -- in the
+    // recording as well as the headphones -- at every growth.
+    //
+    // The device runs small for two minutes in the middle: long enough for a
+    // loop steering the ring back down to a small block's level (200 PPM is
+    // under ten samples a second) to have spent the headroom, so the growth
+    // after it would run dry.
+    const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 1156 }, { 10.0, 64 }, { 135.0, 1156 },
+                                       { 140.0, 512 }, { 145.0, 1156 } },
+                                     150.0, 6.0, { 7.0, 12.0, 70.0, 134.0, 137.0, 142.0, 149.0 });
+
+    REQUIRE (r.overruns == 0u);
+    REQUIRE (r.skippedSamples == 0.0);
+    REQUIRE (r.underrunsAfter == 0u);
+    REQUIRE (r.lossEvents == 1u);
+    REQUIRE (r.alignmentSilence == 0u);
+    REQUIRE (r.delays.size() == 7u);
+
+    for (const auto d : r.delays)
+        REQUIRE_NEAR (d, r.delays.front(), 2.0);
+}
+
+TEST_CASE (DeviceInputStream_AnIoSizeGrowthTheCushionCoversMovesTheChannelWithoutALoss)
+{
+    // 64 -> 96: the device now holds each sample 32 frames longer, and the
+    // ring's two-block cushion covers that -- it never runs dry. The channel
+    // still has to sit 32 samples later to keep its cushion (and its place
+    // beside every other channel, which the coordinator moves by the same
+    // amount), and it moves there at once rather than leaving the loop to
+    // creep there over seconds. Nothing was lost, so nothing is counted as
+    // lost: no underrun for §0.1 to report and no event for the buffer
+    // ladder. The silence is recorded as a shift instead.
+    const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 96 } }, 8.0, 4.0, { 4.0, 5.5 });
+
+    REQUIRE (r.overruns == 0u);
+    REQUIRE (r.skippedSamples == 0.0);
+    REQUIRE (r.underruns == 0u);
+    REQUIRE (r.lossEvents == 0u);
+    REQUIRE (r.alignmentSilence >= 32u - 2u);
+    REQUIRE (r.alignmentSilence <= 32u + 2u);
+    REQUIRE (r.delays.size() == 2u);
+    REQUIRE_NEAR (r.delays[1] - r.delays[0], 32.0, 2.0);
+}
+
+TEST_CASE (DeviceInputStream_ARunOfDryPullsIsOneLossEvent)
+{
+    // A device that stops delivering for a while: every pull in the gap runs
+    // dry, and every one is counted in samples. It is one gap.
+    DeviceInputStream s (48000.0);
+    s.prepare (48000.0, 64);
+    std::vector<float> in (64, 0.25f), out (64, 0.0f);
+
+    for (int i = 0; i < 4; ++i)
+        s.pushBlock (in.data(), 64);
+    for (int i = 0; i < 20; ++i)
+        s.pull (out.data(), 64);
+
+    REQUIRE (s.getUnderrunSamples() > 10u * 64u);
+    REQUIRE (s.getLossEvents() == 1u);
+
+    // Audio again, then another gap: a second event.
+    for (int i = 0; i < 4; ++i)
+        s.pushBlock (in.data(), 64);
+    for (int i = 0; i < 20; ++i)
+        s.pull (out.data(), 64);
+
+    REQUIRE (s.getLossEvents() == 2u);
+}
+
+TEST_CASE (DeviceInputStream_ALatencyBudgetCountsTheDevicesOwnBlock)
+{
+    // A sample waits up to a device block before it is handed over, so a
+    // device at 1156 frames plays 1092 samples later than one at 64. A budget
+    // of 1156 on the 64-frame device holds it back by exactly that; the same
+    // budget on the 1156-frame device holds nothing extra.
+    const auto delayFor = [] (int deviceBlock, int budget)
+    {
+        ScopedSimulatedClock clock;
+        DeviceInputStream s (48000.0);
+        s.prepare (48000.0, 64);
+        s.setLatencyBudget (budget);
+
+        std::vector<float> in (static_cast<size_t> (deviceBlock)), out (64);
+        long long produced = 0;
+        double blockStart = 0.0, nextOut = 0.0005, delay = 0.0;
+
+        while (nextOut < 5.0)
+        {
+            if (blockStart + deviceBlock / 48000.0 <= nextOut)
+            {
+                blockStart += deviceBlock / 48000.0;
+                simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+                for (int i = 0; i < deviceBlock; ++i)
+                    in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
+                s.pushBlock (in.data(), deviceBlock);
+                produced += deviceBlock;
+                continue;
+            }
+
+            simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            s.pull (out.data(), 64);
+            if (out[0] > 0.0f)
+                delay = nextOut * 48000.0 - (static_cast<double> (out[0]) - 1.0);
+            nextOut += 64 / 48000.0;
+        }
+
+        REQUIRE (s.getUnderrunSamples() == 0u);
+        return delay;
+    };
+
+    const double small = delayFor (64, 0);
+    const double large = delayFor (1156, 0);
+    REQUIRE_NEAR (large - small, 1092.0, 2.0);
+
+    REQUIRE_NEAR (delayFor (64, 1156), large, 2.0);
+    REQUIRE_NEAR (delayFor (1156, 1156), large, 2.0);
+}

@@ -111,6 +111,56 @@ public:
     void setAlignmentDelay (int samples) noexcept;
     int getAlignmentDelay() const noexcept { return requestedAlignmentDelay.load (std::memory_order_relaxed); }
 
+    /// The most a latency budget may ask for: the largest alignment on top of
+    /// the largest device block.
+    static constexpr int kMaxLatencyBudgetSamples = kMaxAlignmentDelaySamples + kLargestDeviceBlock;
+
+    /// Message or consumer thread: how much later than the target fill this
+    /// stream plays its audio, counted *including* the device's own block.
+    ///
+    /// A device hands its audio over a block at a time, so a sample reaches
+    /// the ring up to a block after it was captured: a stream's latency is its
+    /// target fill plus its device's block. Two microphones at different IO
+    /// sizes -- 64 and the 1156 a Mac device runs at when it refuses 64 --
+    /// were 1092 samples (23 ms) apart in every stem. The coordinator gives
+    /// every stream the same budget (the largest input latency plus block
+    /// across the rig, less this device's own input latency), and each
+    /// stream holds whatever of it its own block does not already take.
+    ///
+    /// The budget never shrinks below the largest block this device has
+    /// run at (see getDeviceBlockSamples), which is what lets the ring
+    /// absorb an IO-size change: after a device has once run at a larger
+    /// block, the room that block needs stays held while it runs smaller, so
+    /// a return to the larger size finds it there and loses nothing, and the
+    /// channel's place in time never moves. Only the first growth past
+    /// anything held moves the channel -- the device itself now holds its
+    /// audio that much longer -- and it moves once, exactly. When the ring ran
+    /// dry for it, that gap is counted as lost audio; when the cushion
+    /// covered it, the silence that moves the channel is counted as a shift
+    /// (getAlignmentSilenceSamples). Changes the budget asks for on a running
+    /// stream are applied like an alignment delay: a longer one written as
+    /// silence once, a shorter one dropped. Nothing is allocated (§11).
+    void setLatencyBudget (int samples) noexcept;
+    int getLatencyBudget() const noexcept { return requestedLatencyBudget.load (std::memory_order_relaxed); }
+
+    /// The largest IO block the device has run at since prepare(): its real
+    /// IO size, which CoreAudio does not promise is the one asked for, and
+    /// which can change mid-session when another app or a rate change moves
+    /// it. A size counts once two deliveries in a row have been at least that
+    /// large, so one odd delivery -- a test preloading the ring, a driver
+    /// handing over a backlog in one piece -- is not taken for the device's
+    /// block and does not hold the channel (and, through the coordinator, the
+    /// whole rig) later for the rest of the session. Zero before that.
+    size_t getDeviceBlockSamples() const noexcept { return deviceBlockSamples.load (std::memory_order_relaxed); }
+
+    /// Silence written, without consuming, to open a longer alignment or
+    /// budget on a stream that was already playing, or to move it later when
+    /// its device's IO block grew by less than the ring's cushion. Not lost
+    /// audio -- nothing that arrived is skipped, and the ring never ran dry --
+    /// but a gap in the stem all the same, so it is counted here rather than
+    /// nowhere (session.json records it per device and take).
+    uint64_t getAlignmentSilenceSamples() const noexcept { return alignmentSilence.load (std::memory_order_relaxed); }
+
     /// Producer: this device's audio callback. Real-time safe.
     void pushBlock (const float* samples, int numSamples) noexcept;
 
@@ -193,9 +243,13 @@ public:
     /// value above zero is audio that was not there when it was needed.
     uint64_t getUnderrunSamples() const noexcept { return underruns.load (std::memory_order_relaxed); }
 
-    /// §5.4: blocks in which this ring lost audio -- a pull that ran dry or a
-    /// push that found the ring full -- as events rather than samples. The
-    /// buffer ladder counts events: three inside thirty seconds is its trigger.
+    /// §5.4: gaps in which this ring lost audio -- a run of pulls that ran
+    /// dry, or a push that found the ring full -- as events rather than
+    /// samples. The buffer ladder counts events: three inside thirty seconds
+    /// is its trigger. A run of dry pulls with no audio between them is one
+    /// gap: a device whose IO size grew from 64 to 1156 leaves fifteen 64-
+    /// sample pulls dry in a row, and counted per pull that one change
+    /// stepped the ladder and rebuilt the engine for the rest of the session.
     uint64_t getLossEvents() const noexcept { return lossEvents.load (std::memory_order_relaxed); }
 
     /// Diagnostics for the harnesses: how often the interpolator restarted
@@ -244,6 +298,12 @@ private:
     // than the storage behind it. See kLargestDeviceBlock.
     size_t nominalBlockSamples = 64;
     std::atomic<size_t> largestPushSamples { 0 };
+
+    // Producer-owned: the size of the previous delivery; and, published, the
+    // largest size two consecutive deliveries have both reached. See
+    // getDeviceBlockSamples().
+    size_t previousPushSamples = 0;
+    std::atomic<size_t> deviceBlockSamples { 0 };
     std::atomic<size_t> largestPullSamples { 0 };
     size_t usableCapacity() const noexcept;
 
@@ -306,10 +366,21 @@ private:
     double silenceOwed = 0.0;
     int pullsSinceSilence = 0;
 
-    // Consumer-owned: a pull bigger than any before it raised the target fill
-    // after playout had started, with too little buffered to serve it. The
-    // stream writes counted silence until the ring reaches the new target.
+    // Consumer-owned: the target fill rose after playout had started, with
+    // too little buffered to serve it -- a pull bigger than any before it,
+    // or a device block bigger than the headroom held for it. The stream
+    // writes silence until the de-quantized level reaches the new target,
+    // landing on it exactly, so the channel's new place in time is set once
+    // rather than left to the loop. Counted as lost only when the ring ran
+    // dry for it; an alignment opening, or a growth the cushion covered, is a
+    // shift (rebufferCounted false, getAlignmentSilenceSamples).
     bool rebuffering = false;
+    bool rebufferCounted = true;
+
+    // Consumer-owned: the last pull ended in counted silence. A run of dry
+    // pulls is one loss event, not one per pull.
+    bool inGap = false;
+    void countGap (int samples) noexcept;
 
     // Input-latency alignment. Requested on the message thread, applied by
     // the consumer, which owns the target fill and the silence it still has
@@ -317,6 +388,18 @@ private:
     std::atomic<int> requestedAlignmentDelay { 0 };
     size_t appliedAlignmentDelay = 0;
     size_t alignmentDebt = 0;
+
+    // The latency budget (setLatencyBudget), and the largest device block the
+    // consumer has accounted for. Both consumer-owned once applied.
+    std::atomic<int> requestedLatencyBudget { 0 };
+    size_t appliedLatencyBudget = 0;
+    size_t seenDeviceBlock = 0;
+    std::atomic<uint64_t> alignmentSilence { 0 };
+
+    /// What this stream holds beyond the base target for a given budget,
+    /// with the device's block included: never less than the largest block
+    /// the device has delivered.
+    size_t heldLatency (size_t budget) const noexcept;
     void recomputeTarget() noexcept;
 
     // Reporting-thread-owned. The audio threads publish counters atomically;
@@ -351,11 +434,21 @@ private:
     float currentSample = 0.0f;
     double phase = 0.0;
     bool primed = false;
+
+    // The sample a pull that ran dry had already read but not yet played: it
+    // was only the interpolator's target. Dropping it with the pair lost one
+    // captured sample at every gap; the next prime starts from it instead.
+    // `heldLast` marks a pull that ended on a held sample, which was played.
+    float carrySample = 0.0f;
+    bool carryPending = false;
+    bool heldLast = false;
+    void resetInterpolator() noexcept;
     // Read by the reporting thread too, to know whether there is anything to
     // measure yet; the consumer alone writes it.
     std::atomic<bool> started { false };
 
     size_t targetFillSamples = 0;
+    size_t baseTargetSamples = 0; // the pull-sized pre-roll, before alignment and block headroom
 
     bool readOne (float& out) noexcept;
     void resetMeasurementWindow() noexcept;
