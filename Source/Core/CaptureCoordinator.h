@@ -10,6 +10,7 @@
 #include <vector>
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
+#include "FeedbackDetector.h"
 #include "AlarmTone.h"
 #include "DeviceInputStream.h"
 #include "ChannelLayoutAnalyzer.h"
@@ -243,6 +244,12 @@ public:
     const std::vector<CaptureChannel>& getChannels() const noexcept { return channels; }
 
     MonitorBus& getMonitorBus() noexcept { return monitorBus; }
+
+    /// §5.5 feedback protection on the headphone mix. Analysed on its own
+    /// thread from a copy the output callback hands over; a band that grows
+    /// the way a howl does cuts the bus exactly as the limiter's runaway cut
+    /// does. Runs while monitoring.
+    const FeedbackGuard& getFeedbackGuard() const noexcept { return feedbackGuard; }
 
     /// The app's own sounds -- take started, take stopped, something is
     /// wrong -- mixed into the headphone output by the callback.
@@ -544,6 +551,7 @@ private:
 
     std::vector<CaptureChannel> channels;
     MonitorBus monitorBus;
+    FeedbackGuard feedbackGuard;
     AlarmTone alarm;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
@@ -685,6 +693,10 @@ private:
     // sized at startMonitoring(). §11 forbids the callback allocating, and a
     // per-block vector here would do exactly that.
     std::vector<float> mixScratch;
+
+    // The bus before master volume, per sample of the block, for the
+    // feedback guard. Sized with mixScratch.
+    std::vector<float> busScratch;
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
 

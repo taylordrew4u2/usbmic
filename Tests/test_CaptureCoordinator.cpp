@@ -714,6 +714,122 @@ TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
     REQUIRE (r.couchShift == 0);
 }
 
+namespace {
+
+/// Plays `seconds` of `signal` into dev-a with the output pulling, faster
+/// than real time but waiting for the feedback guard's own thread to catch up
+/// every fifth of a second of audio; true once the headphones were cut.
+/// `outPeakAfterCut` is the loudest headphone sample after it.
+template <typename Signal>
+bool playIntoTheHeadphones (CaptureCoordinator& c, FakeBackend& backend, double seconds,
+                            Signal signal, float* outPeakAfterCut = nullptr)
+{
+    std::vector<float> a (64), b (64, 0.0f), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+    long long n = 0;
+    bool cut = false;
+    float peakAfter = 0.0f;
+
+    for (int block = 0; block < static_cast<int> (seconds * 48000.0 / 64); ++block)
+    {
+        for (auto& s : a)
+            s = signal (n++);
+
+        backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 64);
+        c.pullOutputBlock (outs, 1, 64);
+
+        if (cut)
+            for (const auto s : out)
+                peakAfter = std::max (peakAfter, std::abs (s));
+
+        cut = cut || c.getMonitorBus().isRunawayMuted();
+
+        // Never so far ahead of the guard's thread that its one-second ring
+        // overflows (which would restart the analysis): wait until it has
+        // analysed everything so far, however slowly a loaded machine
+        // schedules it. A thread that never runs fails the test here.
+        if (block % 150 == 149 || block + 1 == static_cast<int> (seconds * 48000.0 / 64))
+        {
+            for (int wait = 0; wait < 1000 && c.getFeedbackGuard().getPendingSamples() > 0; ++wait)
+                std::this_thread::sleep_for (std::chrono::milliseconds (5));
+
+            REQUIRE (c.getFeedbackGuard().getPendingSamples() == 0u);
+            cut = cut || c.getMonitorBus().isRunawayMuted();
+        }
+    }
+
+    REQUIRE (c.getFeedbackGuard().getDroppedSamples() == 0u);
+
+    // The last block read out of the ring may still be in the analysis.
+    for (int wait = 0; wait < 50 && ! cut; ++wait)
+    {
+        std::this_thread::sleep_for (std::chrono::milliseconds (10));
+        cut = c.getMonitorBus().isRunawayMuted();
+    }
+
+    if (outPeakAfterCut != nullptr)
+        *outPeakAfterCut = peakAfter;
+
+    return cut;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_FeedbackBuildingInTheHeadphonesCutsThem)
+{
+    // §5.5, in the shipping path: a 1.6 kHz howl climbing 20 dB a second from
+    // -50 dBFS, the whole way under the limiter's -3 dBFS ceiling. The 500 ms
+    // runaway cut never sees it until it is already at full level in
+    // everyone's ears; the band detector does. MonitorBus's detector was only
+    // ever called by a UI test script, so the app shipped without it.
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
+
+    float peakAfterCut = 1.0f;
+    const bool cut = playIntoTheHeadphones (c, backend, 2.2, [] (long long n)
+    {
+        const double t = static_cast<double> (n) / 48000.0;
+        return static_cast<float> (std::pow (10.0, (-50.0 + 20.0 * t) / 20.0)
+                                   * std::sin (6.283185307179586 * 1600.0 * t));
+    }, &peakAfterCut);
+
+    REQUIRE (cut);
+    REQUIRE (c.getFeedbackGuard().getCutCount() == 1u);
+    REQUIRE_NEAR (c.getFeedbackGuard().getLastCutFrequencyHz(), 1600.0, 1.0);
+    REQUIRE (peakAfterCut == 0.0f);
+    c.stopMonitoring();
+}
+
+TEST_CASE (CaptureCoordinator_ASteadyLoudToneDoesNotCutTheHeadphones)
+{
+    FakeBackend backend;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    REQUIRE_FALSE (playIntoTheHeadphones (c, backend, 1.5, [] (long long n)
+    {
+        return static_cast<float> (0.4 * std::sin (6.283185307179586 * 440.0 * static_cast<double> (n) / 48000.0));
+    }));
+    REQUIRE (c.getFeedbackGuard().getCutCount() == 0u);
+
+    // Watched for as long as the headphones play, and no longer.
+    REQUIRE (c.getFeedbackGuard().isRunning());
+    c.stopMonitoring();
+    REQUIRE_FALSE (c.getFeedbackGuard().isRunning());
+
+    // Input-only, there is no headphone mix to watch.
+    REQUIRE (c.startMonitoring (twoMics(), ""));
+    REQUIRE_FALSE (c.getFeedbackGuard().isRunning());
+    c.stopMonitoring();
+}
+
 TEST_CASE (CaptureCoordinator_SaysWhyAMicrophoneWouldNotOpen)
 {
     // §0.1: the backend knows the cause and the coordinator used to discard it,

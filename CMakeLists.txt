@@ -55,6 +55,7 @@ add_library(mma_core STATIC
     Source/Core/ControllerContentionDetector.cpp
     Source/Core/Metering.cpp
     Source/Core/MonitorBus.cpp
+    Source/Core/FeedbackDetector.cpp
     Source/Core/AlarmTone.cpp
     Source/Core/MixBusLimiter.cpp
     Source/Core/RingBuffer.cpp

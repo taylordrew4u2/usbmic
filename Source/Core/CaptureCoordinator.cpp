@@ -17,7 +17,7 @@ namespace mma {
 
 CaptureCoordinator::CaptureCoordinator (IAudioBackend& b, double rate, int bufferSizeSamples)
     : backend (b), sampleRate (rate), bufferSize (bufferSizeSamples),
-      monitorBus (rate), mixMeter (rate)
+      monitorBus (rate), feedbackGuard (rate, monitorBus), mixMeter (rate)
 {
     for (auto& gain : outputChannelGains)
         gain.store (1.0f, std::memory_order_relaxed);
@@ -63,6 +63,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     mixScratch.assign (std::max (static_cast<size_t> (std::max (1, bufferSize)) * 8,
                                  static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock)),
                        0.0f);
+    busScratch.assign (mixScratch.size(), 0.0f);
     trimFrame.assign (std::max<size_t> (1, channels.size()), 0.0f);
 
     // §3.2: one capture path per device, each with its own ring and PI loop.
@@ -417,6 +418,12 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     }
 
     monitoring = true;
+
+    // §5.5: the headphone mix is watched for feedback for as long as it
+    // plays. Input-only, there is no headphone mix to watch, and no thread
+    // waking a hundred times a second for nothing.
+    if (! outputDeviceId.empty())
+        feedbackGuard.start();
 
     // The devices that would not open, now that monitoring is genuinely up.
     //
@@ -784,6 +791,7 @@ void CaptureCoordinator::stopMonitoring()
     monitoring = false;
     latenciesReady.store (false, std::memory_order_relaxed);
     alignedBlockExtraFrames.store (0, std::memory_order_relaxed);
+    feedbackGuard.stop();
 
     // Nothing is monitoring, so there is no monitoring latency to report. A
     // figure left standing here would outlive the stream it describes.
@@ -1624,7 +1632,11 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
             channelMeters[static_cast<size_t> (ch)]->processAudioBlock (inputs[ch], numSamples);
 
     if (outputs == nullptr || numOutputs <= 0)
+    {
+        // No headphone mix this cycle, so the feedback analysis has a hole.
+        feedbackGuard.noteGap();
         return;
+    }
 
     // §5.1: one mix, containing every microphone including the listener's own,
     // summed at unity with no attenuation for channel count.
@@ -1634,6 +1646,7 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // repack scratch, so an unwritten block replays the previous one -- a
     // buzz at the callback rate for as long as the condition lasts.
     if (mixScratch.size() < static_cast<size_t> (numSamples)
+        || busScratch.size() < static_cast<size_t> (numSamples)
         || static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
     {
@@ -1667,9 +1680,16 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // §5.1: master volume is an output-stage gain, deliberately outside
         // processSample, so the bus keeps its -3 dBFS ceiling regardless of how
         // loud the listener happens to be running their headphones.
-        mixScratch[static_cast<size_t> (s)] =
-            monitorBus.applyMasterVolume (monitorBus.processSample (trimFrame));
+        const float bus = monitorBus.processSample (trimFrame);
+        busScratch[static_cast<size_t> (s)] = bus;
+        mixScratch[static_cast<size_t> (s)] = monitorBus.applyMasterVolume (bus);
     }
+
+    // §5.5 feedback protection: the bus as summed and limited, before the
+    // listener's volume and before the app's own tones (pure tones, which a
+    // narrowband detector would take for a howl). A copy into a preallocated
+    // ring; the analysis runs on the guard's own thread (§11).
+    feedbackGuard.push (busScratch.data(), numSamples);
 
     mixMeter.processAudioBlock (mixScratch.data(), numSamples);
 
