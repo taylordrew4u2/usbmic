@@ -1037,3 +1037,113 @@ TEST_CASE (WritePipeline_FollowsATakeFolderRenamedMidTake)
     REQUIRE (std::filesystem::exists (after / "MIX.wav"));
 }
 #endif
+
+namespace {
+
+/// Index of the loudest sample of a 16-bit mono file.
+long long loudestFrameOf (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+
+    long long best = -1;
+    int bestMagnitude = 0;
+
+    for (uint32_t i = 0; i < bytes / 2; ++i)
+    {
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        const int v = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+
+        if (std::abs (v) > bestMagnitude)
+        {
+            bestMagnitude = std::abs (v);
+            best = static_cast<long long> (i);
+        }
+    }
+
+    return best;
+}
+
+} // namespace
+
+TEST_CASE (WritePipeline_LinesTheStemsUpByTheOffsetsItIsHanded)
+{
+    // The headphones are fed each microphone as early as its device allows,
+    // so the writer is handed them unaligned, with how far to hold each one
+    // back. Left's interface is quicker by 37 samples: a clap both heard at
+    // once arrives on Left at 1000 and on Right at 1037, and lands on one
+    // frame in both stems and once in the mix. Then, from frame 10240 on,
+    // Right is to be held back 50 (its device's place moved 50 earlier
+    // against Left's): a later clap, arriving at 20000 on Left and 19987 on
+    // Right, still lands on one frame -- the change applied at the frame it
+    // was handed over for, not whenever the writer got to it.
+    for (const int clapAt : { 1000, 20000 })
+    {
+        ScopedTempTree tree ("align");
+        WritePipeline p;
+        REQUIRE (p.start (tree.card(), twoChannels(), 48000.0, 16, "2026-10-08T00:00:00Z"));
+
+        std::vector<float> left (256), right (256);
+        const float* chans[] = { left.data(), right.data() };
+
+        for (int block = 0; block < 120; ++block)
+        {
+            const long long first = static_cast<long long> (block) * 256;
+            const bool changed = first >= 10240;
+            const int offsets[] = { 37, changed ? 50 : 0 };
+            const long long rightClap = clapAt == 1000 ? 1037 : 19987;
+
+            for (int i = 0; i < 256; ++i)
+            {
+                left[static_cast<size_t> (i)] = first + i == clapAt ? 0.9f : 0.0f;
+                right[static_cast<size_t> (i)] = first + i == rightClap ? 0.9f : 0.0f;
+            }
+
+            REQUIRE (p.pushBlock (chans, 2, 256, offsets));
+        }
+
+        p.stop();
+
+        const auto l = loudestFrameOf (tree.card() + "/01_Left.wav");
+        const auto r = loudestFrameOf (tree.card() + "/02_Right.wav");
+        const auto mix = loudestFrameOf (tree.card() + "/MIX.wav");
+
+        REQUIRE (l == clapAt + 37);
+        REQUIRE (r == l);
+        REQUIRE (mix == l);
+
+        // Every stem holds exactly the frames the take accepted, and the
+        // change is on record: 50 samples of silence written into Right.
+        REQUIRE (p.getFramesWritten() == p.getFramesAccepted());
+        REQUIRE (p.getChannelStartAlignmentOffset (0) == 37);
+        REQUIRE (p.getChannelAlignmentOffset (1) == 50);
+        REQUIRE (p.getChannelAlignmentSilence (1) == 50u);
+        REQUIRE (p.getChannelAlignmentSilence (0) == 0u);
+        REQUIRE (p.isAlignmentExact());
+    }
+}
+
+TEST_CASE (WritePipeline_WithNoOffsetsTheStemsAreWrittenAsTheyCame)
+{
+    // The aggregate path: the OS has already lined the channels up, and the
+    // writer is handed no offsets at all.
+    ScopedTempTree tree ("no-align");
+    WritePipeline p;
+    REQUIRE (p.start (tree.card(), twoChannels(), 48000.0, 16, "2026-10-08T00:00:00Z"));
+
+    std::vector<float> left (256, 0.0f), right (256, 0.0f);
+    left[100] = 0.9f;
+    right[137] = 0.9f;
+    const float* chans[] = { left.data(), right.data() };
+    REQUIRE (p.pushBlock (chans, 2, 256));
+    p.stop();
+
+    REQUIRE (loudestFrameOf (tree.card() + "/01_Left.wav") == 100);
+    REQUIRE (loudestFrameOf (tree.card() + "/02_Right.wav") == 137);
+    REQUIRE (p.getChannelAlignmentOffset (0) == 0);
+    REQUIRE (p.isAlignmentExact());
+}

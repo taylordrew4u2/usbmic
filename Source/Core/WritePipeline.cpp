@@ -187,6 +187,17 @@ bool WritePipeline::start (const std::string& sessionFolder,
     stemScratch.assign (drainFrames, 0.0f);
     mixScratch.assign (drainFrames, 0.0f);
 
+    // Every channel's alignment line, and the hand-off for changes to it.
+    // Offsets start unpublished, so the first block the audio thread hands
+    // over queues each channel's starting offset at frame zero.
+    aligner.prepare (numChannels);
+    offsetQueue.clear();
+    publishedOffsets.assign (static_cast<size_t> (numChannels), -1);
+    alignmentDeferred.store (false, std::memory_order_relaxed);
+    framesDrained = 0;
+    chunkEvents.clear();
+    chunkEvents.reserve (StemOffsetQueue::kCapacity);
+
     {
         // Constructed here because this is where the rate is known, and the
         // K-weighting filter has to be built for the rate it will actually see.
@@ -204,7 +215,8 @@ bool WritePipeline::start (const std::string& sessionFolder,
     return true;
 }
 
-bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_, int numSamples) noexcept
+bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_, int numSamples,
+                               const int* channelOffsets) noexcept
 {
     if (! running.load (std::memory_order_acquire) || numSamples <= 0)
         return false;
@@ -244,6 +256,32 @@ bool WritePipeline::pushBlock (const float* const* channelData, int numChannels_
         // counted rather than quietly ignored.
         framesDropped.fetch_add (static_cast<uint64_t> (numSamples), std::memory_order_relaxed);
         return false;
+    }
+
+    // Alignment changes, queued before the block they apply from is written:
+    // a writer that reads the block has then already been handed them. Only
+    // the channels whose offset moved, so a take queues a handful in all. A
+    // full queue -- the writer stalled on the card while offsets kept moving
+    // -- leaves the change to be queued with a later block, and the take's
+    // alignment is reported as not exact. Nothing here allocates (§11).
+    if (channelOffsets != nullptr)
+    {
+        const auto frame = framesAccepted.load (std::memory_order_relaxed);
+
+        // As many as the caller's block carries, like its audio.
+        for (int ch = 0; ch < usableChannels && ch < static_cast<int> (publishedOffsets.size()); ++ch)
+        {
+            const int wanted = channelOffsets[ch];
+            auto& published = publishedOffsets[static_cast<size_t> (ch)];
+
+            if (wanted == published)
+                continue;
+
+            if (offsetQueue.push ({ frame, ch, wanted }))
+                published = wanted;
+            else
+                alignmentDeferred.store (true, std::memory_order_relaxed);
+        }
     }
 
     // Interleave in chunks. The whole block is known to fit -- that was checked
@@ -463,6 +501,23 @@ void WritePipeline::drainOnce (bool finalFlush)
 
         std::fill (mixScratch.begin(), mixScratch.begin() + static_cast<long> (frames), 0.0f);
 
+        // The alignment changes that fall inside these frames. The audio
+        // thread queued each one before the block it applies from, so every
+        // one up to the last frame read is here to be seen; any later ones
+        // stay queued for the chunk they fall in.
+        const uint64_t chunkStart = framesDrained;
+        chunkEvents.clear();
+        {
+            StemOffsetEvent event;
+            while (chunkEvents.size() < chunkEvents.capacity()
+                   && offsetQueue.peek (event) && event.frame < chunkStart + frames)
+            {
+                chunkEvents.push_back (event);
+                offsetQueue.pop();
+            }
+        }
+        framesDrained += frames;
+
         // §6.5: once degraded, the stems stop but the mix is still summed from
         // every channel -- the point is to shed write bandwidth, not to lose
         // anyone from the recording that survives.
@@ -479,16 +534,43 @@ void WritePipeline::drainOnce (bool finalFlush)
                 // the ceiling in the mix, and one NaN wiped out the take's
                 // loudness figure for good. Silence is the only honest value.
                 const float raw = drainBuffer[f * static_cast<size_t> (numChannels) + static_cast<size_t> (ch)];
-                const float sample = std::isfinite (raw) ? raw : 0.0f;
 
                 // §4: the stem is unity gain, always. A bad trim decision must
                 // not be baked into the raw material.
-                stemScratch[f] = sample;
-
-                // §5.1: unity summing, no attenuation with channel count. Trim
-                // applies here and only here.
-                mixScratch[f] += sample * gain;
+                stemScratch[f] = std::isfinite (raw) ? raw : 0.0f;
             }
+
+            // Lined up with the slowest device before anything is written or
+            // summed, so the stems and the mix agree with each other. Each
+            // change takes effect at the frame it was queued for.
+            {
+                size_t done = 0;
+
+                for (const auto& event : chunkEvents)
+                {
+                    if (event.channel != ch)
+                        continue;
+
+                    const auto at = static_cast<size_t> (std::min<uint64_t> (
+                        event.frame > chunkStart ? event.frame - chunkStart : 0, frames));
+
+                    if (at > done)
+                    {
+                        aligner.process (ch, stemScratch.data() + done, at - done);
+                        done = at;
+                    }
+
+                    aligner.setOffset (ch, event.offset);
+                }
+
+                aligner.process (ch, stemScratch.data() + done, frames - done);
+            }
+
+            // §5.1: unity summing, no attenuation with channel count. Trim
+            // applies here and only here -- to the aligned samples, so the
+            // mix carries a clap once, not once per device's latency.
+            for (size_t f = 0; f < frames; ++f)
+                mixScratch[f] += stemScratch[f] * gain;
 
             if (! writeStems)
                 continue;

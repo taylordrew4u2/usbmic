@@ -85,6 +85,7 @@ add_library(mma_core STATIC
     Source/Core/TakeFolderTracker.cpp
     Source/Core/WriteSafetyActions.cpp
     Source/Core/SetupAdvisor.cpp
+    Source/Core/StemAligner.cpp
     Source/Core/WritePipeline.cpp
     Source/Core/TapToNameDetector.cpp
     Source/Core/PermissionGuidance.cpp
