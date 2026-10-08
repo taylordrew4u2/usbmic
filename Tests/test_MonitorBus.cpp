@@ -57,6 +57,35 @@ TEST_CASE (MonitorBus_RunawayCutRequiresManualUnmute)
     REQUIRE_FALSE (bus.isRunawayMuted());
 }
 
+TEST_CASE (MonitorBus_AMuteClearsTheRunawayEvidence)
+{
+    // 400 ms of limiting, then the spacebar. While muted nothing reaches the
+    // room, so nothing is running away; the evidence used to sit frozen
+    // through the mute and resume afterwards, so 100 ms of ordinary loud
+    // audio after unmuting -- however long later -- completed a "500 ms"
+    // run and cut everyone's headphones.
+    MonitorBus bus (48000.0);
+    const int samplesFor400ms = static_cast<int> (48000.0 * 0.4);
+    for (int i = 0; i < samplesFor400ms; ++i)
+        bus.processSample ({ 5.0f });
+    REQUIRE_FALSE (bus.isRunawayMuted());
+
+    bus.setGlobalMute (true);
+    for (int i = 0; i < 4800; ++i)
+        bus.processSample ({ 5.0f }); // still loud at the microphones, silent in the room
+    bus.setGlobalMute (false);
+
+    const int samplesFor200ms = static_cast<int> (48000.0 * 0.2);
+    for (int i = 0; i < samplesFor200ms; ++i)
+        bus.processSample ({ 5.0f });
+    REQUIRE_FALSE (bus.isRunawayMuted());
+
+    // A real runaway after the mute is still caught, timed from the unmute.
+    for (int i = 0; i < samplesFor400ms; ++i)
+        bus.processSample ({ 5.0f });
+    REQUIRE (bus.isRunawayMuted());
+}
+
 TEST_CASE (MonitorBus_BriefLimitingDoesNotTriggerRunawayCut)
 {
     MonitorBus bus (48000.0);
