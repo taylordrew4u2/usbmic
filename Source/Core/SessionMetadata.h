@@ -129,6 +129,12 @@ struct SessionMetadata
     int bufferSizeSamples = 64;
     double measuredLatencyMs = 0.0;
 
+    /// The slowest open microphone's own headphone delay. measuredLatencyMs
+    /// is the quickest's (no channel waits for another, §5.4); on a rig of
+    /// like devices the two agree, and where they do not this says how late
+    /// the slowest was in its own channel.
+    double slowestMicLatencyMs = 0.0;
+
     /// The slowest open input's own latency, which the stems are lined up to
     /// (with that device's IO block). The headphone figure above does not
     /// include it: the headphones never wait for alignment. Zero where the

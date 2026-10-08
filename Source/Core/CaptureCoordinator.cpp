@@ -1567,36 +1567,70 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
     }
 }
 
-double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
+double CaptureCoordinator::monitoringLatencyMsFor (int inputFrames) const noexcept
 {
     // Zero means nothing is monitoring, and stays zero.
     if (monitoringLatencyMs <= 0.0 || sampleRate <= 0.0)
         return monitoringLatencyMs;
 
     // The figure worked out when the streams opened counts one input block
-    // at the size asked for. The quickest microphone's own path adds its
-    // device's input latency, and whatever larger block its device runs at.
-    const int nominal = std::max (1, bufferSize);
-    const int quickest = getMonitorInputFrames (nominal);
-    const int extra = std::max (0, quickest - nominal);
+    // at the size asked for. A microphone's own path adds its device's input
+    // latency, and whatever larger block its device runs at.
+    const int extra = std::max (0, inputFrames - std::max (1, bufferSize));
 
     return monitoringLatencyMs + 1000.0 * static_cast<double> (extra) / sampleRate;
 }
 
+double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
+{
+    return monitoringLatencyMsFor (getMonitorInputFrames (std::max (1, bufferSize)));
+}
+
+double CaptureCoordinator::getSlowestMonitoringLatencyMs() const noexcept
+{
+    return monitoringLatencyMsFor (getSlowestMonitorInputFrames (std::max (1, bufferSize)));
+}
+
+std::string CaptureCoordinator::getSlowestMonitoringDeviceId() const
+{
+    int channel = -1;
+    monitorInputFrames (std::max (1, bufferSize), true, &channel);
+
+    return channel >= 0 && static_cast<size_t> (channel) < channels.size()
+               ? channels[static_cast<size_t> (channel)].deviceId : std::string();
+}
+
 int CaptureCoordinator::getMonitorInputFrames (int bufferSizeFrames) const noexcept
 {
+    return monitorInputFrames (bufferSizeFrames, false, nullptr);
+}
+
+int CaptureCoordinator::getSlowestMonitorInputFrames (int bufferSizeFrames) const noexcept
+{
+    return monitorInputFrames (bufferSizeFrames, true, nullptr);
+}
+
+int CaptureCoordinator::monitorInputFrames (int bufferSizeFrames, bool slowest, int* channel) const noexcept
+{
     const auto size = static_cast<size_t> (std::max (1, bufferSizeFrames));
-    int quickest = -1;
+    int best = -1, bestChannel = -1;
 
     // Each device's block the larger of this size and the one it has been
-    // running at; the quickest channel's own path, since no channel waits
-    // for any other.
+    // running at; each channel's own path, since no channel waits for any
+    // other.
     if (latenciesReady.load (std::memory_order_acquire))
         for (size_t i = 0; i < deviceStreams.size() && i < channelInputLatency.size(); ++i)
-            if (const int own = channelOwnLatencyFrames (i, size); own >= 0)
-                quickest = quickest < 0 ? own : std::min (quickest, own);
+            if (const int own = channelOwnLatencyFrames (i, size);
+                own >= 0 && (best < 0 || (slowest ? own > best : own < best)))
+            {
+                best = own;
+                bestChannel = static_cast<int> (i);
+            }
 
-    return quickest >= 0 ? quickest : static_cast<int> (size);
+    if (channel != nullptr)
+        *channel = bestChannel;
+
+    return best >= 0 ? best : static_cast<int> (size);
 }
 
 int CaptureCoordinator::channelIndexForDevice (const std::string& deviceId) const noexcept

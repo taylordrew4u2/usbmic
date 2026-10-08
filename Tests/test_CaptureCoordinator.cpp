@@ -694,6 +694,8 @@ struct IoSizeTakeResult
     int kitchenIoShift = 0, couchIoShift = 0; // a stream's own shift left in its stem
     bool stemsAligned = false;
     double headphoneLatencyMs = 0.0;
+    double slowestHeadphoneLatencyMs = 0.0;
+    std::string slowestDevice;
     long long kitchenSoundStarts = -1, kitchenSilentAfter = 0; // with a steady level on Kitchen
 };
 
@@ -799,6 +801,8 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
     r.kitchenAlignment = c.getDeviceAlignmentDelayFrames ("dev-a");
     r.couchAlignment = c.getDeviceAlignmentDelayFrames ("dev-b");
     r.headphoneLatencyMs = c.getMonitoringLatencyMs();
+    r.slowestHeadphoneLatencyMs = c.getSlowestMonitoringLatencyMs();
+    r.slowestDevice = c.getSlowestMonitoringDeviceId();
 
     c.stopRecording();
 
@@ -1023,6 +1027,15 @@ TEST_CASE (CaptureCoordinator_TheHeadphonesNeverWaitForASlowerDevice)
         REQUIRE_NEAR (r->headphoneLatencyMs, alone.headphoneLatencyMs, 1e-9);
         REQUIRE (r->stemsAligned);
     }
+
+    // The slower device is slower in its own channel, and that is said too:
+    // the headline figure alone would read the same for all four rigs.
+    REQUIRE_NEAR (alone.slowestHeadphoneLatencyMs, alone.headphoneLatencyMs, 1e-9);
+    REQUIRE_NEAR (laggier.slowestHeadphoneLatencyMs, alone.headphoneLatencyMs + 2000.0 / 48.0, 1e-6);
+    REQUIRE_NEAR (largerBlock.slowestHeadphoneLatencyMs, alone.headphoneLatencyMs + 1092.0 / 48.0, 1e-6);
+    REQUIRE_NEAR (grows.slowestHeadphoneLatencyMs, alone.headphoneLatencyMs + 1092.0 / 48.0, 1e-6);
+    REQUIRE (largerBlock.slowestDevice == "dev-b");
+    REQUIRE (laggier.slowestDevice == "dev-b");
 
     // The stems are where they were: Kitchen held back to the slower device.
     REQUIRE (laggier.kitchenAlignment == 2000);
@@ -1249,9 +1262,12 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     // Before any device delivers, its block is the size asked for, and Couch
-    // has the shorter input latency.
+    // has the shorter input latency; Kitchen is the slower path.
     REQUIRE (c.getMonitorInputFrames (128) == 40 + 128);
+    REQUIRE (c.getSlowestMonitorInputFrames (128) == 100 + 128);
+    REQUIRE (c.getSlowestMonitoringDeviceId() == "dev-a");
     REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
 
     std::vector<float> a (64, 0.0f), b (1156, 0.0f), out (64);
     const float* aIn[] = { a.data() };
@@ -1271,12 +1287,23 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     REQUIRE (c.getMonitorInputFrames (128) == 100 + 128);
     REQUIRE (c.getMonitorInputFrames (2048) == 40 + 2048);
 
+    // Couch is now the slower path, by its block, and the ladder says so.
+    REQUIRE (c.getSlowestMonitorInputFrames (128) == 40 + 1156);
+    REQUIRE (c.getSlowestMonitorInputFrames (2048) == 100 + 2048);
+    REQUIRE (c.getSlowestMonitoringDeviceId() == "dev-b");
+
     // At the size it runs at now it is what the headphone figure carries:
     // Kitchen's 100 frames of input latency, none of Couch's 1156.
     REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
 
+    // And the slowest figure is Couch's own path: its block in place of the
+    // one asked for, and its input latency.
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+
     c.stopMonitoring();
     REQUIRE (c.getMonitorInputFrames (128) == 128);
+    REQUIRE (c.getSlowestMonitorInputFrames (128) == 128);
+    REQUIRE (c.getSlowestMonitoringDeviceId().empty());
 }
 
 namespace {

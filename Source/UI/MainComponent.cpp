@@ -1268,7 +1268,7 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setBitDepthChoice (application.getBitDepth());
     advancedPanel.setBufferSizeChoice (application.getCurrentBufferSize(),
                                        application.getBufferSizeOverride());
-    advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
+    advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs(), application.getSlowestMicLatencyMs());
     advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
     advancedPanel.setDriftReport (application.getDriftReport());
     advancedPanel.setAggregateStatus (application.getAggregateStatus());

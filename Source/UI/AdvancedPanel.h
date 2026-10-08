@@ -46,7 +46,20 @@ public:
     /// user's choice, 0 meaning automatic (§5.4's ladder).
     void setBufferSizeChoice (int current, int pinned);
     std::function<void (int)> onBufferSizeChanged;
-    void setMeasuredLatency (double ms) { latencyValue.setText (juce::String (ms, 1) + " ms", juce::dontSendNotification); }
+    /// §5.4: the headphone delay -- the quickest microphone's own path --
+    /// and, where one device is slower than the rest (a larger buffer, a
+    /// longer reported delay), that microphone's own beside it. A figure
+    /// that is only ever the quickest's could read 3 ms while one person
+    /// heard themselves 45 ms late.
+    void setMeasuredLatency (double ms, double slowestMs)
+    {
+        auto text = juce::String (ms, 1) + " ms";
+
+        if (slowestMs - ms >= 0.05)
+            text << " (slowest mic " << juce::String (slowestMs, 1) << " ms)";
+
+        latencyValue.setText (text, juce::dontSendNotification);
+    }
     void setActiveBackendDescription (const juce::String& text) { backendValue.setText (text, juce::dontSendNotification); }
     void setDriftReport (const juce::String& text) { driftLabel.setText (text, juce::dontSendNotification); }
 

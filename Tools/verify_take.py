@@ -221,6 +221,12 @@ def main():
         # whose stems are not aligned can be lined up from them. A device
         # that never opened has none of them.
         check('alignedInputLatencyFrames' in j, 'session.json records the input latency the stems are aligned to')
+        # The headline headphone delay is the quickest microphone's own path;
+        # the slowest one's is recorded beside it, never below it.
+        check(isinstance(j.get('slowestMicLatencyMs'), (int, float))
+              and j.get('slowestMicLatencyMs') >= (j.get('measuredLatencyMs') or 0),
+              'session.json records the slowest microphone\'s headphone delay (%s ms, headline %s ms)'
+              % (j.get('slowestMicLatencyMs'), j.get('measuredLatencyMs')))
         check(j.get('stemsAligned') is True,
               'session.json says the stems and MIX were lined up exactly (stemsAligned %s)' % j.get('stemsAligned'))
         aligned = [d for d in (j.get('devices') or []) if 'inputLatencyFrames' in d]

@@ -348,6 +348,13 @@ public:
     /// reopens the streams, since the size is fixed for the life of a stream.
     void setBufferSizeOverride (int samples);
     double getMeasuredLatencyMs() const { return measuredLatencyMs; }
+
+    /// §5.4: the slowest open microphone's own headphone delay. The figure
+    /// above is the quickest's, and on a rig of like devices the two agree;
+    /// a device held at a larger buffer, or reporting a longer delay, is that
+    /// much later in the headphones (its own channel only), and this says by
+    /// how much -- beside the headline figure, and in the take's record.
+    double getSlowestMicLatencyMs() const { return slowestMicLatencyMs; }
     juce::String getActiveBackendDescription() const;
     /// Display names of every candidate monitor output, and of every mic that
     /// could serve as §3.1 clock master.
@@ -727,7 +734,19 @@ private:
     double captureRate = 0.0;
     int captureBufferSize = 0;
     double measuredLatencyMs = 0.0;
+    double slowestMicLatencyMs = 0.0;
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
+
+    /// Both headphone figures from the coordinator, as it stands now.
+    void refreshMonitoringLatency();
+
+    /// §5.4: "never ship a 40 ms mix silently". Says, once per device, when
+    /// one microphone's own path through the headphones is past the 10 ms
+    /// ceiling while the headline figure (the quickest's) is well below it,
+    /// and again when that clears. reportedSlowMicId is the device last
+    /// named, empty when nothing is standing.
+    void noteSlowMicrophone();
+    std::string reportedSlowMicId;
 
     // Lifetime token for callbacks marshalled from OS threads; see initialise().
     // Every access goes through the mutex-backed helpers so shutdown cannot
@@ -977,6 +996,7 @@ private:
     std::vector<DeviceRecord> takeDevices;
     int takeAlignedInputLatencyFrames = 0;
     double takeMeasuredLatencyMs = 0.0;
+    double takeSlowestMicLatencyMs = 0.0;
     bool takeStemsAligned = false;
 
     /// Copies how the writer lined each take device's stems up -- input

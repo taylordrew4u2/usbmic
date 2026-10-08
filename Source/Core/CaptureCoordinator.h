@@ -130,8 +130,20 @@ public:
     /// is the quickest microphone's own path -- its device's input latency,
     /// and the IO block it runs at where that is larger than the one asked
     /// for -- which on a rig of like devices is everyone's. A slower device's
-    /// own figures are in the take's record, per device.
+    /// own path is getSlowestMonitoringLatencyMs().
     double getMonitoringLatencyMs() const noexcept;
+
+    /// The slowest open microphone's own path through the headphones, on the
+    /// same terms: a device at a larger IO block, or reporting more input
+    /// latency, than the rest is that much later in the headphones -- in its
+    /// own channel only. The same as getMonitoringLatencyMs() on a rig of
+    /// like devices. §5.4's ceiling applies to it too: a figure that is only
+    /// ever the quickest path can read 3 ms while one person hears
+    /// themselves 45 ms late, so this is shown and recorded beside it.
+    double getSlowestMonitoringLatencyMs() const noexcept;
+
+    /// Which device that is, by id; empty when nothing is monitoring.
+    std::string getSlowestMonitoringDeviceId() const;
 
     /// The slowest open input's own latency, in frames: what the stems are
     /// lined up to (with that device's IO block). The headphones do not wait
@@ -147,6 +159,9 @@ public:
     /// change will cost the headphones before the rig is rebuilt at it, on
     /// the same terms as getMonitoringLatencyMs(). Message thread.
     int getMonitorInputFrames (int bufferSizeFrames) const noexcept;
+
+    /// The same for the slowest microphone's own input side.
+    int getSlowestMonitorInputFrames (int bufferSizeFrames) const noexcept;
 
     /// For the take's record (session.json), per device: the input latency
     /// the backend reported (-1 when the device did not open or monitoring is
@@ -728,6 +743,11 @@ private:
     /// asked for, until the device has settled on one). -1 for a device that
     /// did not open.
     int channelOwnLatencyFrames (size_t index, size_t blockFloor) const noexcept;
+
+    /// The quickest (or slowest) channel's own input side at this buffer
+    /// size, and which channel that is (-1 when none has opened).
+    int monitorInputFrames (int bufferSizeFrames, bool slowest, int* channel) const noexcept;
+    double monitoringLatencyMsFor (int inputFrames) const noexcept;
     int channelIndexForDevice (const std::string& deviceId) const noexcept;
 
     std::vector<std::string> devicesThatFailedToOpen;

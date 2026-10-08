@@ -98,6 +98,8 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     SessionMetadata m;
     m.alignedInputLatencyFrames = 49;
     m.stemsAligned = true;
+    m.measuredLatencyMs = 2.9;
+    m.slowestMicLatencyMs = 26.1; // Laggy's own path, at its 1156-frame block
 
     DeviceRecord quick;
     quick.name = "Quick";
@@ -144,6 +146,8 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     const auto back = SessionMetadata::fromJsonString (json);
     REQUIRE (back.alignedInputLatencyFrames == 49);
     REQUIRE (back.stemsAligned);
+    REQUIRE_NEAR (back.measuredLatencyMs, 2.9, 1e-9);
+    REQUIRE_NEAR (back.slowestMicLatencyMs, 26.1, 1e-9);
     REQUIRE (back.devices.size() == 4u);
     REQUIRE (back.devices[0].inputLatencyFrames == 12);
     REQUIRE (back.devices[0].ioBlockFrames == 64);

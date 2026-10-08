@@ -12,6 +12,7 @@ JsonValue SessionMetadata::toJson() const
     root["bitDepth"] = JsonValue (bitDepth);
     root["bufferSizeSamples"] = JsonValue (bufferSizeSamples);
     root["measuredLatencyMs"] = JsonValue (measuredLatencyMs);
+    root["slowestMicLatencyMs"] = JsonValue (slowestMicLatencyMs);
     root["alignedInputLatencyFrames"] = JsonValue (alignedInputLatencyFrames);
     root["stemsAligned"] = JsonValue (stemsAligned);
     root["mirrorEnabled"] = JsonValue (mirrorEnabled);
@@ -126,6 +127,7 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
     if (auto* p = v.find ("bitDepth")) m.bitDepth = p->asInt (24);
     if (auto* p = v.find ("bufferSizeSamples")) m.bufferSizeSamples = p->asInt (64);
     if (auto* p = v.find ("measuredLatencyMs")) m.measuredLatencyMs = p->asDouble (0.0);
+    if (auto* p = v.find ("slowestMicLatencyMs")) m.slowestMicLatencyMs = p->asDouble (0.0);
     if (auto* p = v.find ("alignedInputLatencyFrames")) m.alignedInputLatencyFrames = p->asInt (0);
     if (auto* p = v.find ("stemsAligned")) m.stemsAligned = p->asBool (false);
     if (auto* p = v.find ("mirrorEnabled")) m.mirrorEnabled = p->asBool (true);
