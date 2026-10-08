@@ -167,6 +167,17 @@ public:
     int getDeviceAlignmentSilenceFramesThisTake (const std::string& deviceId) const noexcept;
     int getDeviceAlignmentDroppedFramesThisTake (const std::string& deviceId) const noexcept;
 
+    /// Silence this device's own stream left in its stems during the current
+    /// (or just finished) take. When its IO block grew by less than its
+    /// ring's cushion, the stream moved later by writing that much silence
+    /// (DeviceInputStream::getAlignmentSilenceSamples): no audio was lost, so
+    /// it is in no underrun figure, but it is a gap in the stems all the
+    /// same. The writer takes it back out when the device is not the slowest
+    /// (alignmentDropped); what this counts is what it could not -- the
+    /// device was, or became, the slowest -- and so left where it fell, at
+    /// the same frame as the silence every other stem was given for it.
+    int getDeviceIoShiftFramesThisTake (const std::string& deviceId) const noexcept;
+
     /// Whether the current (or just finished) take's stems were lined up
     /// exactly as asked: false when an offset had to be clamped or a change
     /// landed late (WritePipeline::isAlignmentExact), or when no take has
@@ -738,6 +749,13 @@ private:
     std::vector<uint64_t> lastTakeAlignmentSilence;
     std::vector<uint64_t> lastTakeAlignmentDropped;
     bool lastTakeStemsAligned = false;
+
+    /// Each stream's own shift silence (getAlignmentSilenceSamples) when the
+    /// take began, and how much of it the take had when it stopped; see
+    /// getDeviceIoShiftFramesThisTake().
+    std::vector<uint64_t> shiftSilenceBaselinePerStream;
+    std::vector<uint64_t> lastTakeShiftSilence;
+    uint64_t channelShiftSilenceThisTake (size_t index) const noexcept;
 
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a

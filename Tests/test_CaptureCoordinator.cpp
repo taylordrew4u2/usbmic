@@ -622,6 +622,7 @@ struct IoSizeTakeResult
     int couchBlock = 0, kitchenAlignment = 0, couchAlignment = 0;
     int kitchenShift = 0, couchShift = 0;     // writer silence written mid-take
     int kitchenDropped = 0, couchDropped = 0; // writer samples taken out mid-take
+    int kitchenIoShift = 0, couchIoShift = 0; // a stream's own shift left in its stem
     bool stemsAligned = false;
     double headphoneLatencyMs = 0.0;
     long long kitchenSoundStarts = -1, kitchenSilentAfter = 0; // with a steady level on Kitchen
@@ -736,6 +737,8 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
     r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
     r.kitchenDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-a");
     r.couchDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-b");
+    r.kitchenIoShift = c.getDeviceIoShiftFramesThisTake ("dev-a");
+    r.couchIoShift = c.getDeviceIoShiftFramesThisTake ("dev-b");
     r.stemsAligned = c.areStemsAligned();
 
     c.stopMonitoring();
@@ -853,7 +856,34 @@ TEST_CASE (CaptureCoordinator_AGrowthOnTheQuickerDeviceLeavesNoGapInItsStem)
         REQUIRE (r.kitchenSoundStarts >= 1400);
         REQUIRE (r.kitchenSoundStarts < 1400 + 1024);
         REQUIRE (r.kitchenSilentAfter == 0);
+        REQUIRE (r.kitchenIoShift == 0); // what its stream put in, the writer took out
         REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    }
+}
+
+TEST_CASE (CaptureCoordinator_AGrowthOnTheSlowestDeviceIsOnRecordWhereItLeftSilence)
+{
+    // Both devices start alike at 64 frames, and Kitchen's grows by less than
+    // its ring's cushion (to 96, or 160). Its stream moves later by writing
+    // the growth as silence -- no audio lost, no underrun -- and Kitchen is
+    // now the slowest, so the writer holds Couch back by the same amount
+    // rather than taking anything out of Kitchen. Kitchen's stem keeps that
+    // gap, and the take's record says so, as Couch's says how much silence
+    // it was given to match.
+    for (const int grownTo : { 96, 160 })
+    {
+        const auto r = recordWithIoSizes (64, 64, 0, 96000, grownTo, 48000, 0, 0, true, 0.25f);
+
+        REQUIRE (r.kitchenUnderruns == 0u);
+        REQUIRE (r.kitchenStreamShift > 0u);
+        REQUIRE (r.kitchenSilentAfter > 0);
+        REQUIRE (r.kitchenDropped == 0);
+        REQUIRE (r.kitchenIoShift == static_cast<int> (r.kitchenStreamShift));
+        REQUIRE (std::llabs (r.kitchenIoShift - r.kitchenSilentAfter) <= 1);
+        REQUIRE (std::llabs (r.couchShift - (grownTo - 64)) <= 1);
+        REQUIRE (r.couchIoShift == 0);
+        REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+        REQUIRE (r.stemsAligned);
     }
 }
 

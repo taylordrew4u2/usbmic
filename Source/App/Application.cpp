@@ -4611,6 +4611,7 @@ void Application::recordTakeAlignment()
         record.alignmentDelayFrames = latency >= 0 ? capture->getDeviceAlignmentDelayFrames (record.usbId) : 0;
         record.alignmentSilenceFrames = latency >= 0 ? capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId) : 0;
         record.alignmentDroppedFrames = latency >= 0 ? capture->getDeviceAlignmentDroppedFramesThisTake (record.usbId) : 0;
+        record.ioShiftFrames = latency >= 0 ? capture->getDeviceIoShiftFramesThisTake (record.usbId) : 0;
     }
 }
 

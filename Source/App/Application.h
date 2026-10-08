@@ -981,7 +981,8 @@ private:
 
     /// Copies how the writer lined each take device's stems up -- input
     /// latency, IO block, the offset it was held back by, the silence written
-    /// and samples taken out mid-take to keep it in step -- and whether all of
+    /// and samples taken out mid-take to keep it in step, and the silence its
+    /// own stream left in its stems when its IO block grew -- and whether all of
     /// that was done exactly, into the take's record, and refreshes the
     /// headphone latency figure. At the take's start and again as it stops: a
     /// device whose IO size grew during the take moved every other stem's

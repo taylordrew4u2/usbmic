@@ -115,6 +115,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     laggy.ioBlockFrames = 1156;
     laggy.alignmentDelayFrames = 0;
     laggy.alignmentDroppedFrames = 448; // its own block grew while it was not the slowest
+    laggy.ioShiftFrames = 32;           // ...and later, as the slowest, by less than its cushion
     m.devices.push_back (laggy);
 
     DeviceRecord unknown; // never opened
@@ -127,6 +128,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     REQUIRE (json.find ("\"alignmentDelayFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentSilenceFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentDroppedFrames\"") != std::string::npos);
+    REQUIRE (json.find ("\"ioShiftFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"stemsAligned\"") != std::string::npos);
 
     const auto back = SessionMetadata::fromJsonString (json);
@@ -140,6 +142,8 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     REQUIRE (back.devices[0].alignmentDroppedFrames == 0);
     REQUIRE (back.devices[1].alignmentSilenceFrames == 0);
     REQUIRE (back.devices[1].alignmentDroppedFrames == 448);
+    REQUIRE (back.devices[1].ioShiftFrames == 32);
+    REQUIRE (back.devices[0].ioShiftFrames == 0);
     REQUIRE (back.devices[1].inputLatencyFrames == 49);
     REQUIRE (back.devices[1].ioBlockFrames == 1156);
     REQUIRE (back.devices[1].alignmentDelayFrames == 0);

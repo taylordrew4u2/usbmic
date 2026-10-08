@@ -926,6 +926,16 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     lastTakeAlignmentDropped.clear();
     lastTakeStemsAligned = false;
 
+    // A stream's shift counter runs for as long as the stream does, across
+    // takes; this take's share is measured from here.
+    shiftSilenceBaselinePerStream.clear();
+    shiftSilenceBaselinePerStream.reserve (deviceStreams.size());
+
+    for (const auto& stream : deviceStreams)
+        shiftSilenceBaselinePerStream.push_back (stream->getAlignmentSilenceSamples());
+
+    lastTakeShiftSilence.clear();
+
     pipeline = std::move (p);
     activePipeline.store (pipeline.get(), std::memory_order_release);
     return true;
@@ -999,6 +1009,13 @@ void CaptureCoordinator::stopRecording()
         }
 
         lastTakeStemsAligned = pipeline->isAlignmentExact();
+
+        // The streams run on after the take; what they had shifted by now is
+        // the take's.
+        lastTakeShiftSilence.assign (deviceStreams.size(), 0);
+
+        for (size_t i = 0; i < deviceStreams.size(); ++i)
+            lastTakeShiftSilence[i] = channelShiftSilenceThisTake (i);
     }
 
     std::shared_ptr<WritePipeline> p (std::move (pipeline));
@@ -1646,6 +1663,40 @@ int CaptureCoordinator::getDeviceAlignmentDroppedFramesThisTake (const std::stri
         return clampedFrames (pipeline->getChannelAlignmentDropped (i));
 
     return index < lastTakeAlignmentDropped.size() ? clampedFrames (lastTakeAlignmentDropped[index]) : 0;
+}
+
+uint64_t CaptureCoordinator::channelShiftSilenceThisTake (size_t index) const noexcept
+{
+    if (pipeline == nullptr)
+        return index < lastTakeShiftSilence.size() ? lastTakeShiftSilence[index] : 0;
+
+    if (index >= deviceStreams.size())
+        return 0;
+
+    // A stream rebuilt since the take began counts from zero; all of it is
+    // then this take's.
+    const auto total = deviceStreams[index]->getAlignmentSilenceSamples();
+    const auto base = index < shiftSilenceBaselinePerStream.size() ? shiftSilenceBaselinePerStream[index] : 0;
+    return total >= base ? total - base : total;
+}
+
+int CaptureCoordinator::getDeviceIoShiftFramesThisTake (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    const auto index = static_cast<size_t> (i);
+    const auto shift = channelShiftSilenceThisTake (index);
+
+    // What the writer took out of this channel's stems is, for the most part,
+    // the silence its own stream put in as it moved (StemAligner takes the
+    // move's silence first), so the rest of the shift is what stayed.
+    const auto dropped = pipeline != nullptr ? pipeline->getChannelAlignmentDropped (i)
+                                             : (index < lastTakeAlignmentDropped.size() ? lastTakeAlignmentDropped[index] : 0);
+
+    return clampedFrames (shift > dropped ? shift - dropped : 0);
 }
 
 bool CaptureCoordinator::areStemsAligned() const noexcept

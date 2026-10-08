@@ -45,11 +45,23 @@ struct DeviceRecord
     ///                           during the take to bring it forward, when its
     ///                           own IO block grew: mostly the silence its own
     ///                           stream put in as it moved
+    ///   ioShiftFrames        -- silence this device's own stream left in its
+    ///                           stems during the take: its IO block grew by
+    ///                           less than its ring's cushion, so the stream
+    ///                           moved later by writing that much silence
+    ///                           (no audio lost, so not in dropouts), and the
+    ///                           writer could not take it back out because
+    ///                           the device was, or became, the slowest. It
+    ///                           sits at the same frame as the silence every
+    ///                           other stem was given for that growth. A
+    ///                           growth past the cushion is a gap counted in
+    ///                           dropouts instead
     int inputLatencyFrames = -1;
     int ioBlockFrames = 0;
     int alignmentDelayFrames = 0;
     int alignmentSilenceFrames = 0;
     int alignmentDroppedFrames = 0;
+    int ioShiftFrames = 0;
 };
 
 struct DriftLogEntry
