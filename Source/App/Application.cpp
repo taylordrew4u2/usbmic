@@ -2125,10 +2125,15 @@ juce::String Application::applyBufferLadderStep (const juce::String& cause)
     // drift cushion and an output block. "Slightly more delay" was the old
     // wording at every rung, and at 512 samples that is over 40 ms, which
     // §5.4 says is never to be shipped without saying so.
-    // Plus the slowest microphone's own input latency, which every channel is
-    // lined up to and the rebuilt rig will carry just the same.
-    const double inputLatencyFrames = capture != nullptr ? capture->getAlignedInputLatencyFrames() : 0;
-    const double delayMs = (4.0 * static_cast<double> (size) + inputLatencyFrames)
+    // In place of the input block, what every channel is lined up to and the
+    // rebuilt rig will carry just the same: the largest input latency plus IO
+    // block across the rig. A device that refuses this size and runs at 1156
+    // frames holds every headphone feed back by its block, not by this one
+    // -- as getMonitoringLatencyMs() will say once the rig is rebuilt, so the
+    // two agree.
+    const double alignedFrames = capture != nullptr ? capture->getAlignedLatencyPlusBlockFrames (size)
+                                                    : static_cast<double> (size);
+    const double delayMs = (3.0 * static_cast<double> (size) + alignedFrames)
                          / std::max (1.0, currentSampleRate) * 1000.0;
 
     auto line = juce::String ("This computer could not keep up") + cause

@@ -748,6 +748,51 @@ TEST_CASE (CaptureCoordinator_TwoDevicesGrowingAMomentApartEachMoveOnce)
     }
 }
 
+TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
+{
+    // The buffer ladder tells the user the headphone delay at the size it is
+    // about to rebuild at. Every channel is held to the largest input latency
+    // plus IO block across the rig, so a device that refuses the size asked
+    // for and runs at 1156 frames costs everyone its block, not the new one.
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = 100;
+    backend.inputLatencyFrames["dev-b"] = 40;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    // Before any device delivers, its block is the size asked for.
+    REQUIRE (c.getAlignedLatencyPlusBlockFrames (128) == 100 + 128);
+    const double openedAtMs = c.getMonitoringLatencyMs();
+
+    std::vector<float> a (64, 0.0f), b (1156, 0.0f), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    for (int i = 0; i < 2; ++i)
+        backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 1156);
+    for (int i = 0; i < 4; ++i)
+        backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+    c.pullOutputBlock (outs, 1, 64);
+
+    REQUIRE (c.getDeviceIoBlockFrames ("dev-b") == 1156);
+
+    // Couch's block outweighs Kitchen's longer latency at 128; at 2048 the
+    // new size is the larger block everywhere.
+    REQUIRE (c.getAlignedLatencyPlusBlockFrames (128) == 40 + 1156);
+    REQUIRE (c.getAlignedLatencyPlusBlockFrames (2048) == 100 + 2048);
+
+    // At the size it runs at now it is what the headphone figure carries.
+    REQUIRE_NEAR (c.getMonitoringLatencyMs() - openedAtMs,
+                  (c.getAlignedLatencyPlusBlockFrames (64) - (100 + 64)) / 48000.0 * 1000.0, 1e-6);
+
+    c.stopMonitoring();
+    REQUIRE (c.getAlignedLatencyPlusBlockFrames (128) == 128);
+}
+
 namespace {
 
 /// Plays `seconds` of `signal` into dev-a with the output pulling, faster

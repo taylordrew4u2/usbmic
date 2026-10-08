@@ -132,6 +132,16 @@ public:
     /// a backend that does not report input latency.
     int getAlignedInputLatencyFrames() const noexcept { return alignedInputLatencyFrames; }
 
+    /// What every channel is held back to (alignChannels) were the rig
+    /// running at `bufferSizeFrames`: the largest input latency plus IO block
+    /// across it, each device's block taken as the larger of that size and
+    /// the one it has been seen running at -- a device that refused the size
+    /// asked for, or that another app holds at its own, runs there whatever
+    /// this app asks next. At least the aligned input latency plus that size.
+    /// For saying what a buffer change will cost the headphones before the
+    /// rig is rebuilt at it. Message thread.
+    int getAlignedLatencyPlusBlockFrames (int bufferSizeFrames) const noexcept;
+
     /// For the take's record (session.json), per device: the input latency
     /// the backend reported (-1 when the device did not open or monitoring is
     /// not up), the largest IO block it has delivered, and how far its

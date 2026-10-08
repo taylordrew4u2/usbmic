@@ -1487,6 +1487,22 @@ double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
     return monitoringLatencyMs + 1000.0 * static_cast<double> (extra) / sampleRate;
 }
 
+int CaptureCoordinator::getAlignedLatencyPlusBlockFrames (int bufferSizeFrames) const noexcept
+{
+    const auto size = static_cast<size_t> (std::max (1, bufferSizeFrames));
+    size_t longest = static_cast<size_t> (std::max (0, alignedInputLatencyFrames)) + size;
+
+    // As alignChannels() works it out, with this size in place of the one
+    // the streams were opened at.
+    if (latenciesReady.load (std::memory_order_acquire))
+        for (size_t i = 0; i < deviceStreams.size() && i < channelInputLatency.size(); ++i)
+            if (channelInputLatency[i] >= 0)
+                longest = std::max (longest, static_cast<size_t> (channelInputLatency[i])
+                                                 + std::max (deviceStreams[i]->getDeviceBlockSamples(), size));
+
+    return static_cast<int> (longest);
+}
+
 int CaptureCoordinator::channelIndexForDevice (const std::string& deviceId) const noexcept
 {
     for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
