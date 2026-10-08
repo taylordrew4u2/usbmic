@@ -228,8 +228,8 @@ def main():
               'session.json records each open device\'s alignment (%d of %d devices)'
               % (len(aligned), len(j.get('devices') or [])))
         for d in aligned:
-            fields = ('inputLatencyFrames', 'ioBlockFrames', 'alignmentDelayFrames', 'alignmentSilenceFrames',
-                      'alignmentDroppedFrames', 'ioShiftFrames')
+            fields = ('inputLatencyFrames', 'ioBlockFrames', 'alignmentStartFrames', 'alignmentDelayFrames',
+                      'alignmentSilenceFrames', 'alignmentDroppedFrames', 'ioShiftFrames')
             check(all(isinstance(d.get(f), (int, float)) and d.get(f) >= 0 for f in fields),
                   'session.json %s: %s' % (d.get('name', '?'), ', '.join('%s %s' % (f, d.get(f)) for f in fields)))
         mirror_ran = bool(j.get('mirrorActive'))

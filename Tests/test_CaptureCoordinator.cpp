@@ -597,6 +597,11 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     REQUIRE (c.getDeviceAlignmentSilenceFramesThisTake ("dev-a") == 0);
     REQUIRE (c.getDeviceAlignmentDroppedFramesThisTake ("dev-a") == 0);
 
+    // The latencies were known before the first block, so that is the
+    // silence Kitchen's stem opened with, as the take's record has it.
+    REQUIRE (c.getDeviceAlignmentStartFrames ("dev-a") == 37);
+    REQUIRE (c.getDeviceAlignmentStartFrames ("dev-b") == 0);
+
     const auto kitchen = loudestSampleIn (dir + "/01_Kitchen.wav");
     const auto couch = loudestSampleIn (dir + "/02_Couch.wav");
     const auto mix = loudestSampleIn (dir + "/MIX.wav");
@@ -620,6 +625,8 @@ struct IoSizeTakeResult
     uint64_t kitchenUnderruns = 0, couchUnderruns = 0;
     uint64_t kitchenStreamShift = 0, couchStreamShift = 0; // the rings' own moves
     int couchBlock = 0, kitchenAlignment = 0, couchAlignment = 0;
+    int kitchenAlignmentStart = -1, couchAlignmentStart = -1; // as the take's record has them
+    int kitchenAlignmentAtStop = -1;                          // likewise
     int kitchenShift = 0, couchShift = 0;     // writer silence written mid-take
     int kitchenDropped = 0, couchDropped = 0; // writer samples taken out mid-take
     int kitchenIoShift = 0, couchIoShift = 0; // a stream's own shift left in its stem
@@ -739,6 +746,9 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
     r.couchDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-b");
     r.kitchenIoShift = c.getDeviceIoShiftFramesThisTake ("dev-a");
     r.couchIoShift = c.getDeviceIoShiftFramesThisTake ("dev-b");
+    r.kitchenAlignmentStart = c.getDeviceAlignmentStartFrames ("dev-a");
+    r.couchAlignmentStart = c.getDeviceAlignmentStartFrames ("dev-b");
+    r.kitchenAlignmentAtStop = c.getDeviceAlignmentDelayFrames ("dev-a");
     r.stemsAligned = c.areStemsAligned();
 
     c.stopMonitoring();
@@ -776,6 +786,12 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesAtDifferentIoSizesLineUpInTheFiles)
     REQUIRE (r.couchAlignment == 0);
     REQUIRE (r.kitchenAlignment == 1092);
 
+    // The take began before either device had delivered, so Kitchen's stem
+    // opened unheld and was held back as Couch's block settled, still in
+    // pre-roll: the record's two ends and the silence between them agree.
+    REQUIRE (r.kitchenAlignmentStart + r.kitchenShift - r.kitchenDropped == r.kitchenAlignment);
+    REQUIRE (r.couchAlignmentStart == 0);
+
     // Which the headphones do not hear: two 64-frame output buffers, and
     // Kitchen's own path -- nothing of Couch's block.
     REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64) / 48000.0 * 1000.0, 1e-6);
@@ -805,6 +821,13 @@ TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
     REQUIRE (r.kitchenDropped == 0);
     REQUIRE (r.couchShift == 0);
     REQUIRE (r.couchAlignment == 0);
+
+    // The record keeps both ends: Kitchen's stem opened with no silence
+    // (the devices matched then) and ended held back 1092, the silence
+    // written in between.
+    REQUIRE (r.kitchenAlignmentStart == 0);
+    REQUIRE (r.kitchenAlignmentAtStop == 1092);
+    REQUIRE (r.couchAlignmentStart == 0);
 }
 
 TEST_CASE (CaptureCoordinator_AGrowthOnTheQuickerDeviceComesOutOfItsOwnStem)

@@ -30,6 +30,7 @@ JsonValue SessionMetadata::toJson() const
         {
             dv["inputLatencyFrames"] = JsonValue (d.inputLatencyFrames);
             dv["ioBlockFrames"] = JsonValue (d.ioBlockFrames);
+            dv["alignmentStartFrames"] = JsonValue (d.alignmentStartFrames);
             dv["alignmentDelayFrames"] = JsonValue (d.alignmentDelayFrames);
             dv["alignmentSilenceFrames"] = JsonValue (d.alignmentSilenceFrames);
             dv["alignmentDroppedFrames"] = JsonValue (d.alignmentDroppedFrames);
@@ -146,6 +147,7 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
             if (auto* n = dv.find ("trimDb")) d.trimDb = static_cast<float> (n->asDouble());
             if (auto* n = dv.find ("inputLatencyFrames")) d.inputLatencyFrames = n->asInt (-1);
             if (auto* n = dv.find ("ioBlockFrames")) d.ioBlockFrames = n->asInt (0);
+            if (auto* n = dv.find ("alignmentStartFrames")) d.alignmentStartFrames = n->asInt (0);
             if (auto* n = dv.find ("alignmentDelayFrames")) d.alignmentDelayFrames = n->asInt (0);
             if (auto* n = dv.find ("alignmentSilenceFrames")) d.alignmentSilenceFrames = n->asInt (0);
             if (auto* n = dv.find ("alignmentDroppedFrames")) d.alignmentDroppedFrames = n->asInt (0);

@@ -924,6 +924,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
 
     lastTakeAlignmentSilence.clear();
     lastTakeAlignmentDropped.clear();
+    lastTakeAlignmentStart.clear();
     lastTakeStemsAligned = false;
 
     // A stream's shift counter runs for as long as the stream does, across
@@ -977,6 +978,7 @@ void CaptureCoordinator::stopRecording()
         int loudnessBlocks = 0;
         uint64_t framesDropped = 0;
         std::vector<uint64_t> alignmentSilence, alignmentDropped;
+        std::vector<int> alignmentStart;
         bool stemsAligned = false;
     };
 
@@ -1001,11 +1003,13 @@ void CaptureCoordinator::stopRecording()
         const auto count = static_cast<int> (channels.size());
         lastTakeAlignmentSilence.assign (channels.size(), 0);
         lastTakeAlignmentDropped.assign (channels.size(), 0);
+        lastTakeAlignmentStart.assign (channels.size(), 0);
 
         for (int ch = 0; ch < count; ++ch)
         {
             lastTakeAlignmentSilence[static_cast<size_t> (ch)] = pipeline->getChannelAlignmentSilence (ch);
             lastTakeAlignmentDropped[static_cast<size_t> (ch)] = pipeline->getChannelAlignmentDropped (ch);
+            lastTakeAlignmentStart[static_cast<size_t> (ch)] = pipeline->getChannelStartAlignmentOffset (ch);
         }
 
         lastTakeStemsAligned = pipeline->isAlignmentExact();
@@ -1049,6 +1053,7 @@ void CaptureCoordinator::stopRecording()
         {
             r.alignmentSilence.push_back (p->getChannelAlignmentSilence (ch));
             r.alignmentDropped.push_back (p->getChannelAlignmentDropped (ch));
+            r.alignmentStart.push_back (p->getChannelStartAlignmentOffset (ch));
         }
 
         r.stemsAligned = p->isAlignmentExact();
@@ -1133,6 +1138,7 @@ void CaptureCoordinator::stopRecording()
     lastTakeFramesDropped = state->result.framesDropped;
     lastTakeAlignmentSilence = state->result.alignmentSilence;
     lastTakeAlignmentDropped = state->result.alignmentDropped;
+    lastTakeAlignmentStart = state->result.alignmentStart;
     lastTakeStemsAligned = state->result.stemsAligned;
 }
 
@@ -1608,6 +1614,22 @@ int CaptureCoordinator::getDeviceAlignmentDelayFrames (const std::string& device
     // Every channel of one device shares its place in time, so the first
     // channel's offset is the device's.
     return getChannelRecordingOffset (i);
+}
+
+int CaptureCoordinator::getDeviceAlignmentStartFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    // The writer's own record of it: the offset in force when the channel's
+    // first sample reached it (none, for a device that did not open).
+    if (pipeline != nullptr)
+        return pipeline->getChannelStartAlignmentOffset (i);
+
+    const auto index = static_cast<size_t> (i);
+    return index < lastTakeAlignmentStart.size() ? lastTakeAlignmentStart[index] : 0;
 }
 
 int CaptureCoordinator::getChannelRecordingOffset (int index) const noexcept

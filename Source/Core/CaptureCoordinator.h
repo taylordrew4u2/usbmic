@@ -151,10 +151,17 @@ public:
     /// the backend reported (-1 when the device did not open or monitoring is
     /// not up), the largest IO block it has delivered, and how far its
     /// channels are held back in the stems (not the headphones) so they line
-    /// up with the slowest device. Message thread; reads atomics only.
+    /// up with the slowest device -- now, which at the end of a take is the
+    /// offset its stems end with. Message thread; reads atomics only.
     int getDeviceInputLatencyFrames (const std::string& deviceId) const noexcept;
     int getDeviceIoBlockFrames (const std::string& deviceId) const noexcept;
     int getDeviceAlignmentDelayFrames (const std::string& deviceId) const noexcept;
+
+    /// The offset the device's stems started the current (or just finished)
+    /// take with: the silence that opens each of them. It differs from
+    /// getDeviceAlignmentDelayFrames() when an IO block grew mid-take; the
+    /// silence and cuts in between are the two counts below.
+    int getDeviceAlignmentStartFrames (const std::string& deviceId) const noexcept;
 
     /// The writer's mid-take changes to this device's alignment, since the
     /// current take began (or in the take just finished): silence written
@@ -748,6 +755,7 @@ private:
     /// getDeviceAlignmentSilenceFramesThisTake() and areStemsAligned().
     std::vector<uint64_t> lastTakeAlignmentSilence;
     std::vector<uint64_t> lastTakeAlignmentDropped;
+    std::vector<int> lastTakeAlignmentStart;
     bool lastTakeStemsAligned = false;
 
     /// Each stream's own shift silence (getAlignmentSilenceSamples) when the

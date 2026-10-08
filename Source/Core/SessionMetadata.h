@@ -31,11 +31,17 @@ struct DeviceRecord
     ///   ioBlockFrames        -- the largest block the device handed over: its
     ///                           real IO size, which a sample can wait for
     ///                           before it is delivered
-    ///   alignmentDelayFrames -- how far this device's audio sits later in its
-    ///                           stems than it arrived, so it lines up with the
-    ///                           slowest one: the slowest device's latency
-    ///                           plus block, less this one's. Silence of this
-    ///                           length opens each of its stems.
+    ///   alignmentStartFrames -- how far this device's audio sat later in its
+    ///                           stems than it arrived when the take began, so
+    ///                           it lined up with the slowest one: the slowest
+    ///                           device's latency plus block, less this one's.
+    ///                           Silence of this length opens each of its
+    ///                           stems.
+    ///   alignmentDelayFrames -- the same at the end of the take. It differs
+    ///                           from alignmentStartFrames only when an IO
+    ///                           block grew mid-take; the two fields below
+    ///                           say what was written in or taken out to get
+    ///                           from one to the other.
     ///   alignmentSilenceFrames -- silence written into this device's stems
     ///                           during the take to hold it back further,
     ///                           when another device's IO block grew mid-take.
@@ -58,6 +64,7 @@ struct DeviceRecord
     ///                           dropouts instead
     int inputLatencyFrames = -1;
     int ioBlockFrames = 0;
+    int alignmentStartFrames = 0;
     int alignmentDelayFrames = 0;
     int alignmentSilenceFrames = 0;
     int alignmentDroppedFrames = 0;
@@ -122,10 +129,11 @@ struct SessionMetadata
     int alignedInputLatencyFrames = 0;
 
     /// Whether the stems and MIX.wav were lined up exactly as each device's
-    /// alignmentDelayFrames says. False when the writer could not (an offset
-    /// past its bound, a change that landed late) -- or for an older
-    /// session.json, whose stems were lined up on the monitor path or not at
-    /// all; then each device's offset is what to slide its stems by.
+    /// alignmentStartFrames and alignmentDelayFrames say. False when the
+    /// writer could not (an offset past its bound, a change that landed
+    /// late) -- or for an older session.json, whose stems were lined up on
+    /// the monitor path or not at all; then each device's offsets are what to
+    /// slide its stems by.
     bool stemsAligned = false;
     std::vector<DeviceRecord> devices;
     std::vector<DriftLogEntry> driftLog;

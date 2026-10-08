@@ -104,6 +104,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     quick.usbId = "usb-1";
     quick.inputLatencyFrames = 12;
     quick.ioBlockFrames = 64;
+    quick.alignmentStartFrames = 37;
     quick.alignmentDelayFrames = 37 + 1092;
     quick.alignmentSilenceFrames = 1092; // held back further when Laggy's block grew mid-take
     m.devices.push_back (quick);
@@ -126,6 +127,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     const auto json = m.toJsonString();
     REQUIRE (json.find ("\"inputLatencyFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentDelayFrames\"") != std::string::npos);
+    REQUIRE (json.find ("\"alignmentStartFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentSilenceFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentDroppedFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"ioShiftFrames\"") != std::string::npos);
@@ -138,6 +140,8 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     REQUIRE (back.devices[0].inputLatencyFrames == 12);
     REQUIRE (back.devices[0].ioBlockFrames == 64);
     REQUIRE (back.devices[0].alignmentDelayFrames == 37 + 1092);
+    REQUIRE (back.devices[0].alignmentStartFrames == 37);
+    REQUIRE (back.devices[1].alignmentStartFrames == 0);
     REQUIRE (back.devices[0].alignmentSilenceFrames == 1092);
     REQUIRE (back.devices[0].alignmentDroppedFrames == 0);
     REQUIRE (back.devices[1].alignmentSilenceFrames == 0);
