@@ -1200,7 +1200,9 @@ private:
     /// dropout, a camera starting, the backup stopping, a loss or a buffer
     /// step (SessionRecordSchedule) -- on workers, so a crash leaves an
     /// accurate session.json and the message thread never waits on the card
-    /// for it.
+    /// for it. At Stop the card's are retired before its stop-time record;
+    /// the backup's stop-time record goes through its writer (writeLast), so
+    /// no refresh can land on top of either.
     std::unique_ptr<BackgroundRecordWriter> sessionRecordCard, sessionRecordMirror;
     SessionRecordSchedule sessionRecordSchedule;
     std::string sessionRecordEventSignature() const;

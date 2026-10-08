@@ -4806,11 +4806,30 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // backup whose record failed to write is a folder of audio with no account
     // of how the take went -- which is the half of the pair the user reaches
     // for precisely when the card's copy is the one that went wrong.
-    if (currentMirrorFolder.isNotEmpty()
-        && ! writeTakeText (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
-        noteActivity (ActivityLevel::Warning, "Local backup",
-                      "Couldn't write the details file into the backup copy. The backed-up audio "
-                      "itself is there.");
+    if (currentMirrorFolder.isNotEmpty())
+    {
+        const auto mirrorRecord = juce::File (currentMirrorFolder).getChildFile ("session.json");
+
+        // At Stop, through the refreshes' own writer, so one still in flight
+        // to a slow backup drive can never be put in place over this record:
+        // refused at its rename if it gets there later, and waited for on the
+        // writer's worker -- not here -- if it is inside its rename now. The
+        // same deadline as any other write here; past it this record still
+        // lands, and still lands last.
+        const bool mirrorWritten =
+            sessionHasStopped && sessionRecordMirror != nullptr
+                ? sessionRecordMirror->writeLast (mirrorRecord.getFullPathName().toStdString(), json,
+                                                  kRemovableVolumeDeadline).value_or (false)
+                : writeTakeText (mirrorRecord, juce::String (json));
+
+        if (! mirrorWritten)
+            noteActivity (ActivityLevel::Warning, "Local backup",
+                          "Couldn't write the details file into the backup copy. The backed-up audio "
+                          "itself is there.");
+    }
+
+    if (sessionHasStopped)
+        sessionRecordMirror.reset();
 
     writeActivityLog (juce::File (currentSessionFolder));
 
@@ -4874,10 +4893,14 @@ void Application::startSessionRecordRefreshes()
     // A free function and two strings: the worker never reaches back into
     // Application, so one still stuck on a dead card when the app quits holds
     // nothing that is going away.
-    const auto write = [] (const std::string& path, const std::string& text)
+    // The rename goes through the writer's commit, which refuses a refresh
+    // that reaches it after Stop -- however long the drive held it.
+    const auto write = [] (const std::string& path, const std::string& text,
+                           const BackgroundRecordWriter::Commit& commit)
     {
         return replaceWithTextChecked (juce::File (juce::String::fromUTF8 (path.data(), (int) path.size())),
-                                       juce::String::fromUTF8 (text.data(), (int) text.size()));
+                                       juce::String::fromUTF8 (text.data(), (int) text.size()),
+                                       commit);
     };
 
     sessionRecordCard = std::make_unique<BackgroundRecordWriter> (write);
@@ -4896,23 +4919,24 @@ void Application::retireSessionRecordRefreshes()
 
     // No refresh may land after the stop-time record, or a finished take's
     // session.json goes back to having no stop time and is offered as
-    // interrupted at the next launch. One still inside the card is waited for
-    // within the same deadline as every other card step, and a card that does
-    // not answer in it is treated as every other step treats it: gone, for the
-    // rest of the take, so the steps after this one do not wait again. A card
-    // already known to be gone is not waited on at all.
+    // interrupted at the next launch. A refresh still writing its temporary
+    // copy is refused at its rename; one inside the rename on the card is
+    // waited for within the same deadline as every other card step, and a card
+    // that does not answer in it is treated as every other step treats it:
+    // gone, for the rest of the take, so its stop-time write is skipped and
+    // the steps after this one do not wait again. A card already known to be
+    // gone is not waited on at all.
     if (sessionRecordCard != nullptr
         && ! sessionRecordCard->retire (takeCardUnresponsive ? std::chrono::milliseconds (0)
                                                              : kRemovableVolumeDeadline))
         takeCardUnresponsive = true;
 
-    // The backup is on this computer: waited for within the same bound, and the
-    // stop-time record is written either way.
-    if (sessionRecordMirror != nullptr)
-        (void) sessionRecordMirror->retire (kRemovableVolumeDeadline);
-
     sessionRecordCard.reset();
-    sessionRecordMirror.reset();
+
+    // The backup's refreshes are retired by its stop-time record itself
+    // (writeSessionMetadata), written through the same writer: the backup is
+    // on this computer and gets that record whatever its drive is doing, so it
+    // is ordered after any refresh still in flight rather than skipped.
 }
 
 void Application::followRenamedTakeFolder()
