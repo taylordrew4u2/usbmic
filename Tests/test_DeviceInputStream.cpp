@@ -1324,80 +1324,6 @@ TEST_CASE (DeviceInputStream_TheRingStillOverflowsAtSixteenOfItsOwnBlocks)
 
 namespace {
 
-/// Two streams fed the same ramp in step; `delayed` gets an alignment delay
-/// of `delay` samples, set before playout (blocksBeforeDelay < 0) or that many
-/// blocks in. Returns how many samples later `delayed` plays the same source
-/// sample.
-double alignmentOffset (int delay, int blocksBeforeDelay, uint64_t* underruns = nullptr)
-{
-    ScopedSimulatedClock clock;
-    DeviceInputStream plain (48000.0), delayed (48000.0);
-    plain.prepare (48000.0, 64);
-    delayed.prepare (48000.0, 64);
-
-    if (blocksBeforeDelay < 0)
-        delayed.setAlignmentDelay (delay);
-
-    RampSource a (64), b (64);
-    std::vector<float> outA (64, 0.0f), outB (64, 0.0f);
-    simulatedNs = 1'000'000'000;
-
-    for (int i = 0; i < 3000; ++i)
-    {
-        if (i == blocksBeforeDelay)
-            delayed.setAlignmentDelay (delay);
-
-        a.push (plain, 64);
-        b.push (delayed, 64);
-        simulatedNs += kBlockNs64 / 2;
-        plain.pull (outA.data(), 64);
-        delayed.pull (outB.data(), 64);
-        simulatedNs += kBlockNs64 - kBlockNs64 / 2;
-    }
-
-    if (underruns != nullptr)
-        *underruns = plain.getUnderrunSamples() + delayed.getUnderrunSamples();
-
-    return static_cast<double> (outA[32]) - static_cast<double> (outB[32]);
-}
-
-} // namespace
-
-TEST_CASE (DeviceInputStream_AnAlignmentDelayHoldsTheStreamBackBySoManySamples)
-{
-    // Two interfaces with different input latency hand the same instant over
-    // that far apart; the earlier one is held back by the difference.
-    uint64_t underruns = 0;
-    REQUIRE_NEAR (alignmentOffset (0, -1), 0.0, 1.0);
-    REQUIRE_NEAR (alignmentOffset (57, -1, &underruns), 57.0, 1.0);
-    REQUIRE (underruns == 0u);
-    REQUIRE_NEAR (alignmentOffset (1000, -1), 1000.0, 1.0);
-}
-
-TEST_CASE (DeviceInputStream_AnAlignmentDelaySetOnARunningStreamIsExactAndNotALoss)
-{
-    // The coordinator learns an input's latency only once the device is open,
-    // by when the output may already be pulling. The delay is opened with
-    // silence written once, not counted as lost audio, and holds from then on.
-    uint64_t underruns = 0;
-    REQUIRE_NEAR (alignmentOffset (57, 200, &underruns), 57.0, 1.0);
-    REQUIRE (underruns == 0u);
-    REQUIRE_NEAR (alignmentOffset (777, 200, &underruns), 777.0, 1.0);
-    REQUIRE (underruns == 0u);
-}
-
-TEST_CASE (DeviceInputStream_AnAlignmentDelayIsBounded)
-{
-    DeviceInputStream s (48000.0);
-    s.prepare (48000.0, 64);
-    s.setAlignmentDelay (10'000'000);
-    REQUIRE (s.getAlignmentDelay() == DeviceInputStream::kMaxAlignmentDelaySamples);
-    s.setAlignmentDelay (-5);
-    REQUIRE (s.getAlignmentDelay() == 0);
-}
-
-namespace {
-
 /// A device whose IO size changes while it runs: macOS moves a device's block
 /// when another app asks for a different one, or on a rate or aggregate
 /// change. `schedule` is (seconds, block) pairs, the first at zero. The output
@@ -1558,9 +1484,9 @@ TEST_CASE (DeviceInputStream_AnIoSizeGrowthTheCushionCoversMovesTheChannelWithou
 {
     // 64 -> 96: the device now holds each sample 32 frames longer, and the
     // ring's two-block cushion covers that -- it never runs dry. The channel
-    // still has to sit 32 samples later to keep its cushion (and its place
-    // beside every other channel, which the coordinator moves by the same
-    // amount), and it moves there at once rather than leaving the loop to
+    // still has to sit 32 samples later to keep its cushion (the writer lines
+    // the stems up again from the new block), and it moves there at once
+    // rather than leaving the loop to
     // creep there over seconds. Nothing was lost, so nothing is counted as
     // lost: no underrun for §0.1 to report and no event for the buffer
     // ladder. The silence is recorded as a shift instead.
@@ -1618,71 +1544,6 @@ TEST_CASE (DeviceInputStream_ABacklogHandedOverInOnePieceDoesNotMoveTheChannel)
     REQUIRE_NEAR (r.delays[2] - r.delays[0], 448.0, 3.0);
 }
 
-TEST_CASE (DeviceInputStream_ABudgetRaisedWhileTheRingIsDryMovesTheChannelOnce)
-{
-    // Another device's IO block grows and the coordinator raises this
-    // stream's budget by the difference -- while this stream's own ring is
-    // dry, because its device is growing to the same size and has not handed
-    // its first large block over yet. The silence already going out is that
-    // growth; writing the whole raise on top of it moved the channel twice,
-    // a block late for minutes. Either way round, it lands 1092 later, once.
-    for (const double raiseAfter : { 0.010, 0.020 })
-    {
-        ScopedSimulatedClock clock;
-        DeviceInputStream s (48000.0);
-        s.prepare (48000.0, 64);
-        s.setLatencyBudget (64);
-
-        std::vector<float> in (1156), out (64);
-        long long produced = 0;
-        double blockStart = 0.0, nextOut = 0.0005, before = 0.0, after = 0.0;
-        bool raised = false;
-
-        while (nextOut < 8.0)
-        {
-            const int block = blockStart >= 5.0 ? 1156 : 64;
-
-            if (blockStart + block / 48000.0 <= nextOut)
-            {
-                blockStart += block / 48000.0;
-                simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
-                for (int i = 0; i < block; ++i)
-                    in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
-                s.pushBlock (in.data(), block);
-                produced += block;
-                continue;
-            }
-
-            // The raise lands inside the dry spell, before this device's
-            // first large block (5.024 s).
-            if (! raised && nextOut >= 5.0 + raiseAfter)
-            {
-                s.setLatencyBudget (1156);
-                raised = true;
-            }
-
-            simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
-            s.pull (out.data(), 64);
-
-            if (out[0] > 0.0f)
-            {
-                const double delay = nextOut * 48000.0 - (static_cast<double> (out[0]) - 1.0);
-                (nextOut < 5.0 ? before : after) = delay;
-            }
-
-            nextOut += 64 / 48000.0;
-        }
-
-        REQUIRE (s.getOverrunSamples() == 0u);
-        REQUIRE_NEAR (after - before, 1092.0, 3.0);
-
-        // All of the move went out as silence once: what the dry ring
-        // counted, and the shift that topped it up.
-        const double moved = static_cast<double> (s.getUnderrunSamples() + s.getAlignmentSilenceSamples());
-        REQUIRE_NEAR (moved, 1092.0, 3.0);
-    }
-}
-
 TEST_CASE (DeviceInputStream_ARunOfDryPullsIsOneLossEvent)
 {
     // A device that stops delivering for a while: every pull in the gap runs
@@ -1708,18 +1569,19 @@ TEST_CASE (DeviceInputStream_ARunOfDryPullsIsOneLossEvent)
     REQUIRE (s.getLossEvents() == 2u);
 }
 
-TEST_CASE (DeviceInputStream_ALatencyBudgetCountsTheDevicesOwnBlock)
+TEST_CASE (DeviceInputStream_AStreamsPlaceInTimeIsItsOwnDevicesBlock)
 {
     // A sample waits up to a device block before it is handed over, so a
-    // device at 1156 frames plays 1092 samples later than one at 64. A budget
-    // of 1156 on the 64-frame device holds it back by exactly that; the same
-    // budget on the 1156-frame device holds nothing extra.
-    const auto delayFor = [] (int deviceBlock, int budget)
+    // device at 1156 frames plays 1092 samples later than one at 64 -- and
+    // nothing more: no stream is held back for any other device, which is
+    // what keeps the headphone mix as early as each microphone allows. The
+    // coordinator tells the writer exactly this (two pulls of cushion plus
+    // getDeviceBlockSamples()), and the writer lines the stems up from it.
+    const auto delayFor = [] (int deviceBlock, size_t* settledBlock = nullptr)
     {
         ScopedSimulatedClock clock;
         DeviceInputStream s (48000.0);
         s.prepare (48000.0, 64);
-        s.setLatencyBudget (budget);
 
         std::vector<float> in (static_cast<size_t> (deviceBlock)), out (64);
         long long produced = 0;
@@ -1746,13 +1608,20 @@ TEST_CASE (DeviceInputStream_ALatencyBudgetCountsTheDevicesOwnBlock)
         }
 
         REQUIRE (s.getUnderrunSamples() == 0u);
+        REQUIRE (s.getAlignmentSilenceSamples() == 0u);
+        if (settledBlock != nullptr)
+            *settledBlock = s.getDeviceBlockSamples();
         return delay;
     };
 
-    const double small = delayFor (64, 0);
-    const double large = delayFor (1156, 0);
-    REQUIRE_NEAR (large - small, 1092.0, 2.0);
+    size_t smallBlock = 0, middleBlock = 0, largeBlock = 0;
+    const double small = delayFor (64, &smallBlock);
+    const double middle = delayFor (512, &middleBlock);
+    const double large = delayFor (1156, &largeBlock);
 
-    REQUIRE_NEAR (delayFor (64, 1156), large, 2.0);
-    REQUIRE_NEAR (delayFor (1156, 1156), large, 2.0);
+    REQUIRE (smallBlock == 64u);
+    REQUIRE (middleBlock == 512u);
+    REQUIRE (largeBlock == 1156u);
+    REQUIRE_NEAR (middle - small, 448.0, 2.0);
+    REQUIRE_NEAR (large - small, 1092.0, 2.0);
 }

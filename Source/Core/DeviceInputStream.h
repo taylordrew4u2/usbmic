@@ -67,12 +67,6 @@ public:
     /// keeps exactly the latency and the bound on staleness it always had.
     static constexpr int kLargestDeviceBlock = 4096;
 
-    /// The most a stream will delay its own audio to line up with a device
-    /// whose input latency is longer. A quarter of a second at 96 kHz: far
-    /// past any wired interface's figure, and a bound on what a confused
-    /// driver's report can cost every other microphone.
-    static constexpr int kMaxAlignmentDelaySamples = 24000;
-
     static_assert (kSourceBufferBlocks + kPreRollBlocks + 2 <= kRingBlocks,
                    "the ring must hold a full driver burst above its target fill, with a block "
                    "of delivery jitter and one in flight");
@@ -101,47 +95,30 @@ public:
     /// before the streams open.
     void prepare (double sampleRate, int bufferSizeSamples);
 
-    /// Message thread: hold this stream's audio back by `samples` more than
-    /// its target fill, sample-accurately, so it lines up with a microphone
-    /// on a device whose input latency is that much longer. Clamped to
-    /// kMaxAlignmentDelaySamples. Applied on the consumer thread: before
-    /// playout starts it simply raises the pre-roll; once running, the stream
-    /// writes that much silence without consuming, once, and the ring holds
-    /// the difference from then on. Nothing is allocated (§11).
-    void setAlignmentDelay (int samples) noexcept;
-    int getAlignmentDelay() const noexcept { return requestedAlignmentDelay.load (std::memory_order_relaxed); }
-
-    /// The most a latency budget may ask for: the largest alignment on top of
-    /// the largest device block.
-    static constexpr int kMaxLatencyBudgetSamples = kMaxAlignmentDelaySamples + kLargestDeviceBlock;
-
-    /// Message or consumer thread: how much later than the target fill this
-    /// stream plays its audio, counted *including* the device's own block.
+    /// This stream's place in time: its audio reaches the output the target
+    /// fill plus one device block after the device handed it over, since a
+    /// sample waits up to a block in the device before it is delivered. Two
+    /// microphones at different IO sizes -- 64 and the 1156 a Mac device
+    /// runs at when it refuses 64 -- therefore play 1092 samples (23 ms)
+    /// apart, and that is left alone here: the headphone mix hears each
+    /// microphone as early as its own device allows (§5.4), and the stems
+    /// are lined up afterwards, on the writer thread, where it costs the
+    /// monitor path nothing (WritePipeline, StemAligner).
     ///
-    /// A device hands its audio over a block at a time, so a sample reaches
-    /// the ring up to a block after it was captured: a stream's latency is its
-    /// target fill plus its device's block. Two microphones at different IO
-    /// sizes -- 64 and the 1156 a Mac device runs at when it refuses 64 --
-    /// were 1092 samples (23 ms) apart in every stem. The coordinator gives
-    /// every stream the same budget (the largest input latency plus block
-    /// across the rig, less this device's own input latency), and each
-    /// stream holds whatever of it its own block does not already take.
-    ///
-    /// The budget never shrinks below the largest block this device has
-    /// run at (see getDeviceBlockSamples), which is what lets the ring
-    /// absorb an IO-size change: after a device has once run at a larger
-    /// block, the room that block needs stays held while it runs smaller, so
-    /// a return to the larger size finds it there and loses nothing, and the
+    /// What the stream does hold is room for its *own* device's largest
+    /// block (see getDeviceBlockSamples), which is what lets the ring absorb
+    /// an IO-size change: after a device has once run at a larger block, the
+    /// room that block needs stays held while it runs smaller, so a return
+    /// to the larger size finds it there and loses nothing, and the
     /// channel's place in time never moves. Only the first growth past
     /// anything held moves the channel -- the device itself now holds its
     /// audio that much longer -- and it moves once, exactly. When the ring ran
     /// dry for it, that gap is counted as lost audio; when the cushion
     /// covered it, the silence that moves the channel is counted as a shift
-    /// (getAlignmentSilenceSamples). Changes the budget asks for on a running
-    /// stream are applied like an alignment delay: a longer one written as
-    /// silence once, a shorter one dropped. Nothing is allocated (§11).
-    void setLatencyBudget (int samples) noexcept;
-    int getLatencyBudget() const noexcept { return requestedLatencyBudget.load (std::memory_order_relaxed); }
+    /// (getAlignmentSilenceSamples). Its place in time is therefore always
+    /// two pulls of cushion plus getDeviceBlockSamples() (or the block asked
+    /// for, before the device has settled on one), which is what the
+    /// coordinator tells the writer.
 
     /// The largest IO block the device has run at since prepare(): its real
     /// IO size, which CoreAudio does not promise is the one asked for, and
@@ -149,16 +126,25 @@ public:
     /// it. A size counts once two deliveries in a row have been at least that
     /// large, so one odd delivery -- a test preloading the ring, a driver
     /// handing over a backlog in one piece -- is not taken for the device's
-    /// block and does not hold the channel (and, through the coordinator, the
-    /// whole rig) later for the rest of the session. Zero before that.
+    /// block and does not hold the channel later for the rest of the session.
+    /// Zero before that.
     size_t getDeviceBlockSamples() const noexcept { return deviceBlockSamples.load (std::memory_order_relaxed); }
 
-    /// Silence written, without consuming, to open a longer alignment or
-    /// budget on a stream that was already playing, or to move it later when
-    /// its device's IO block grew by less than the ring's cushion. Not lost
-    /// audio -- nothing that arrived is skipped, and the ring never ran dry --
-    /// but a gap in the stem all the same, so it is counted here rather than
-    /// nowhere (session.json records it per device and take).
+    /// The device block this stream's place in time includes, as of its last
+    /// pull: the largest it has settled at (the block asked for, before the
+    /// device has settled on one) -- and, for getHeldBlockSamples, a larger
+    /// one it has just moved for and is waiting for the next delivery to
+    /// confirm or refuse. Published by the consumer, so the two always agree
+    /// with each other and with what the stream has actually done.
+    size_t getSettledBlockSamples() const noexcept { return settledBlockPublished.load (std::memory_order_relaxed); }
+    size_t getHeldBlockSamples() const noexcept { return heldBlockPublished.load (std::memory_order_relaxed); }
+
+    /// Silence written, without consuming, to move the channel later when its
+    /// device's IO block grew by less than the ring's cushion. Not lost audio
+    /// -- nothing that arrived is skipped, and the ring never ran dry -- but a
+    /// gap in what this stream hands on all the same, so it is counted here
+    /// rather than nowhere. (The writer allows for the move when it lines the
+    /// stems up; see StemAligner.)
     uint64_t getAlignmentSilenceSamples() const noexcept { return alignmentSilence.load (std::memory_order_relaxed); }
 
     /// Producer: this device's audio callback. Real-time safe.
@@ -372,15 +358,15 @@ private:
     // writes silence until the de-quantized level reaches the new target,
     // landing on it exactly, so the channel's new place in time is set once
     // rather than left to the loop. Counted as lost only when the ring ran
-    // dry for it; an alignment opening, or a growth the cushion covered, is a
-    // shift (rebufferCounted false, getAlignmentSilenceSamples).
+    // dry for it; a growth the cushion covered is a shift (rebufferCounted
+    // false, getAlignmentSilenceSamples).
     bool rebuffering = false;
     bool rebufferCounted = true;
 
     // Consumer-owned: the rebuffer is filling a gap whose cause is not
-    // settled -- a provisional block, or a budget raised while the ring was
-    // dry -- so the silence it writes is owed like the gap's own (noteSilence)
-    // and late audio landing above the target answers for it.
+    // settled -- a provisional block -- so the silence it writes is owed like
+    // the gap's own (noteSilence) and late audio landing above the target
+    // answers for it.
     bool rebufferOwed = false;
 
     // Consumer-owned: a delivery larger than any block held room for ended a
@@ -396,24 +382,18 @@ private:
     bool inGap = false;
     void countGap (int samples) noexcept;
 
-    // Input-latency alignment. Requested on the message thread, applied by
-    // the consumer, which owns the target fill and the silence it still has
-    // to write to open the delay on a running stream.
-    std::atomic<int> requestedAlignmentDelay { 0 };
-    size_t appliedAlignmentDelay = 0;
-    size_t alignmentDebt = 0;
-
-    // The latency budget (setLatencyBudget), and the largest device block the
-    // consumer has accounted for. Both consumer-owned once applied.
-    std::atomic<int> requestedLatencyBudget { 0 };
-    size_t appliedLatencyBudget = 0;
+    // Consumer-owned: the largest device block the consumer has accounted
+    // for, and the shift silence it has written (getAlignmentSilenceSamples).
     size_t seenDeviceBlock = 0;
     std::atomic<uint64_t> alignmentSilence { 0 };
+    std::atomic<size_t> settledBlockPublished { 0 };
+    std::atomic<size_t> heldBlockPublished { 0 };
+    void publishPlaceInTime() noexcept;
 
-    /// What this stream holds beyond the base target for a given budget,
-    /// with the device's block included: never less than the largest block
-    /// the device has delivered, or a provisional one it has moved for.
-    size_t heldLatency (size_t budget) const noexcept;
+    /// What this stream holds beyond the base target, with the device's block
+    /// included: the largest block the device has delivered, or a provisional
+    /// one it has moved for.
+    size_t heldLatency() const noexcept;
     void recomputeTarget() noexcept;
 
     // Reporting-thread-owned. The audio threads publish counters atomically;
@@ -462,7 +442,7 @@ private:
     std::atomic<bool> started { false };
 
     size_t targetFillSamples = 0;
-    size_t baseTargetSamples = 0; // the pull-sized pre-roll, before alignment and block headroom
+    size_t baseTargetSamples = 0; // the pull-sized pre-roll, before block headroom
 
     bool readOne (float& out) noexcept;
     void resetMeasurementWindow() noexcept;

@@ -13,6 +13,7 @@ JsonValue SessionMetadata::toJson() const
     root["bufferSizeSamples"] = JsonValue (bufferSizeSamples);
     root["measuredLatencyMs"] = JsonValue (measuredLatencyMs);
     root["alignedInputLatencyFrames"] = JsonValue (alignedInputLatencyFrames);
+    root["stemsAligned"] = JsonValue (stemsAligned);
     root["mirrorEnabled"] = JsonValue (mirrorEnabled);
     root["mirrorActive"] = JsonValue (mirrorActive);
     root["mirrorPath"] = JsonValue (mirrorPath);
@@ -31,6 +32,7 @@ JsonValue SessionMetadata::toJson() const
             dv["ioBlockFrames"] = JsonValue (d.ioBlockFrames);
             dv["alignmentDelayFrames"] = JsonValue (d.alignmentDelayFrames);
             dv["alignmentSilenceFrames"] = JsonValue (d.alignmentSilenceFrames);
+            dv["alignmentDroppedFrames"] = JsonValue (d.alignmentDroppedFrames);
         }
 
         if (! d.inputTrimDb.empty())
@@ -119,6 +121,7 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
     if (auto* p = v.find ("bufferSizeSamples")) m.bufferSizeSamples = p->asInt (64);
     if (auto* p = v.find ("measuredLatencyMs")) m.measuredLatencyMs = p->asDouble (0.0);
     if (auto* p = v.find ("alignedInputLatencyFrames")) m.alignedInputLatencyFrames = p->asInt (0);
+    if (auto* p = v.find ("stemsAligned")) m.stemsAligned = p->asBool (false);
     if (auto* p = v.find ("mirrorEnabled")) m.mirrorEnabled = p->asBool (true);
     if (auto* p = v.find ("videos"))
         for (const auto& dv : p->asArray())
@@ -144,6 +147,7 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
             if (auto* n = dv.find ("ioBlockFrames")) d.ioBlockFrames = n->asInt (0);
             if (auto* n = dv.find ("alignmentDelayFrames")) d.alignmentDelayFrames = n->asInt (0);
             if (auto* n = dv.find ("alignmentSilenceFrames")) d.alignmentSilenceFrames = n->asInt (0);
+            if (auto* n = dv.find ("alignmentDroppedFrames")) d.alignmentDroppedFrames = n->asInt (0);
 
             if (auto* n = dv.find ("inputTrims"))
                 for (const auto& ev : n->asArray())

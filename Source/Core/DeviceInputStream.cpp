@@ -49,37 +49,24 @@ size_t DeviceInputStream::usableCapacity() const noexcept
     const size_t block = std::max ({ nominalBlockSamples,
                                      largestPushSamples.load (std::memory_order_relaxed),
                                      largestPullSamples.load (std::memory_order_relaxed) });
-    const auto delay = static_cast<size_t> (std::max (0, requestedAlignmentDelay.load (std::memory_order_relaxed)));
 
-    // A budget beyond the device's own block is alignment too, and the ring
-    // has to hold it on top of the jitter headroom.
-    const auto budget = static_cast<size_t> (std::max (0, requestedLatencyBudget.load (std::memory_order_relaxed)));
-    const size_t beyondBlock = budget > block ? budget - block : 0;
-
-    return std::min (ring.capacity(), block * static_cast<size_t> (kRingBlocks) + delay + beyondBlock);
+    return std::min (ring.capacity(), block * static_cast<size_t> (kRingBlocks));
 }
 
-void DeviceInputStream::setAlignmentDelay (int samples) noexcept
-{
-    requestedAlignmentDelay.store (std::clamp (samples, 0, kMaxAlignmentDelaySamples),
-                                   std::memory_order_relaxed);
-}
-
-void DeviceInputStream::setLatencyBudget (int samples) noexcept
-{
-    requestedLatencyBudget.store (std::clamp (samples, 0, kMaxLatencyBudgetSamples),
-                                  std::memory_order_relaxed);
-}
-
-size_t DeviceInputStream::heldLatency (size_t budget) const noexcept
+size_t DeviceInputStream::heldLatency() const noexcept
 {
     // Before the first delivery the device's block is taken to be the one
     // asked for; it is replaced by the real one the moment one lands. A
-    // provisional block counts too: the stream has already moved for it, so
-    // a budget raised before the next delivery settles it is measured from
-    // there, not from a block the ring no longer sits at.
+    // provisional block counts too: the stream has already moved for it.
     const size_t block = seenDeviceBlock > 0 ? seenDeviceBlock : nominalBlockSamples;
-    return std::max ({ budget, block, provisionalBlock });
+    return std::max (block, provisionalBlock);
+}
+
+void DeviceInputStream::publishPlaceInTime() noexcept
+{
+    settledBlockPublished.store (seenDeviceBlock > 0 ? seenDeviceBlock : nominalBlockSamples,
+                                 std::memory_order_relaxed);
+    heldBlockPublished.store (heldLatency(), std::memory_order_relaxed);
 }
 
 void DeviceInputStream::recomputeTarget() noexcept
@@ -91,14 +78,14 @@ void DeviceInputStream::recomputeTarget() noexcept
     // discounts (virtualFillNow): the ring is held at the base target just
     // before each delivery, so a sample waits the target plus a block. What
     // this stream holds beyond its current block is headroom: the room a
-    // larger block it has run at before -- or a budget it was given -- needs,
-    // so a change of IO size moves nothing in time and loses nothing.
+    // larger block it has run at before needs, so a change of IO size moves
+    // nothing in time and loses nothing.
     const auto lastPush = static_cast<size_t> (std::max (0, lastPushSamples.load (std::memory_order_acquire)));
-    const size_t held = heldLatency (appliedLatencyBudget);
+    const size_t held = heldLatency();
     const size_t current = lastPush > 0 ? std::min (lastPush, held)
                                         : (seenDeviceBlock > 0 ? seenDeviceBlock : nominalBlockSamples);
 
-    targetFillSamples = baseTargetSamples + appliedAlignmentDelay + (held > current ? held - current : 0);
+    targetFillSamples = baseTargetSamples + (held > current ? held - current : 0);
 }
 
 void DeviceInputStream::resetInterpolator() noexcept
@@ -133,13 +120,7 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     // Storage for the largest block a device may actually deliver, not just
     // the one asked for; see kLargestDeviceBlock.
     ring.reset (std::max (block, static_cast<size_t> (kLargestDeviceBlock))
-                    * static_cast<size_t> (kRingBlocks)
-                + static_cast<size_t> (kMaxAlignmentDelaySamples));
-    requestedAlignmentDelay.store (0, std::memory_order_relaxed);
-    appliedAlignmentDelay = 0;
-    alignmentDebt = 0;
-    requestedLatencyBudget.store (0, std::memory_order_relaxed);
-    appliedLatencyBudget = 0;
+                * static_cast<size_t> (kRingBlocks));
     seenDeviceBlock = 0;
     alignmentSilence.store (0, std::memory_order_relaxed);
     nominalBlockSamples = block;
@@ -193,6 +174,8 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     // while merely monitoring, or during an earlier take, was added to this
     // take's figure.
     overrunSamples.store (0, std::memory_order_relaxed);
+
+    publishPlaceInTime();
 }
 
 void DeviceInputStream::pushBlock (const float* samples, int numSamples) noexcept
@@ -432,7 +415,6 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         rebufferOwed = false;
         provisionalBlock = 0;
         inGap = false;
-        alignmentDebt = 0; // the pre-roll ahead opens the delay itself
 
         driftPpm.store (0.0, std::memory_order_relaxed);
         excessDrift.store (false, std::memory_order_relaxed);
@@ -454,7 +436,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     {
         const auto block = deviceBlockSamples.load (std::memory_order_relaxed);
         const bool firstDelivery = seenDeviceBlock == 0;
-        const size_t before = heldLatency (appliedLatencyBudget); // a provisional block's room included
+        const size_t before = heldLatency(); // a provisional block's room included
 
         // A provisional block (below) is settled by the delivery after it.
         if (provisionalBlock > 0)
@@ -489,14 +471,14 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             seenDeviceBlock = block;
 
             if (! firstDelivery && started.load (std::memory_order_relaxed)
-                && heldLatency (appliedLatencyBudget) > before)
+                && heldLatency() > before)
             {
                 // Counted as loss only as part of a gap the ring really ran dry
                 // for (the branch below, or one still being buffered). A growth
                 // the cushion covered lost nothing: the silence that moves the
-                // channel to its new place is a shift, recorded like an alignment
-                // opening (getAlignmentSilenceSamples), not an underrun that
-                // would step the buffer ladder and tell the user audio was lost.
+                // channel to its new place is a shift
+                // (getAlignmentSilenceSamples), not an underrun that would step
+                // the buffer ladder and tell the user audio was lost.
                 rebufferCounted = (rebuffering && rebufferCounted) || inGap;
                 rebuffering = true;
                 rebufferOwed = false;
@@ -512,10 +494,9 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // device period with no cushion at all. But one large delivery is also
     // what a driver handing over a backlog looks like, so the block is only
     // provisional until the next delivery confirms or refuses it (above):
-    // held as room meanwhile -- a budget raised in that window is measured
-    // from it, not from the block the ring has already moved past -- and the
-    // silence written for it still owed, so a refusal can take it back.
-    if (inGap && started.load (std::memory_order_relaxed) && lastPush > heldLatency (appliedLatencyBudget))
+    // held as room meanwhile, and the silence written for it still owed, so a
+    // refusal can take it back.
+    if (inGap && started.load (std::memory_order_relaxed) && lastPush > heldLatency())
     {
         provisionalBlock = lastPush;
         rebuffering = true;
@@ -523,68 +504,8 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         rebufferOwed = true;
     }
 
-    // Input-latency alignment (setAlignmentDelay, setLatencyBudget). Before
-    // playout starts a longer delay is only a longer pre-roll. On a running
-    // stream the extra is written as silence without consuming, so the ring
-    // fills by exactly that much and every later sample comes out that much
-    // later; a shorter one drops what is no longer wanted. Either way the
-    // target moves with it, so the loop holds the new level rather than
-    // steering back. A budget is measured with the device's block in it, so
-    // only what it asks for beyond the block already held moves anything.
-    {
-        const auto wantedDelay = static_cast<size_t> (requestedAlignmentDelay.load (std::memory_order_relaxed));
-        const auto wantedBudget = static_cast<size_t> (requestedLatencyBudget.load (std::memory_order_relaxed));
-
-        if (wantedDelay != appliedAlignmentDelay || wantedBudget != appliedLatencyBudget)
-        {
-            const size_t before = appliedAlignmentDelay + heldLatency (appliedLatencyBudget);
-            const size_t after = wantedDelay + heldLatency (wantedBudget);
-
-            if (started.load (std::memory_order_relaxed) && after != before)
-            {
-                if (after > before && inGap)
-                {
-                    // Raised while the ring is dry: the silence going out
-                    // already holds this channel later, by an amount not known
-                    // until its audio comes back -- its own device growing its
-                    // block (another device's growth is what raised the
-                    // budget), or a stall. Writing the whole difference on top
-                    // moved the channel twice for one change, a block past the
-                    // rest of the rig until the loop drained it at 200 PPM.
-                    // So the stream buffers to its new target instead, which
-                    // already holds any delay still owed, and the silence is
-                    // owed too: late audio that lands above the target is
-                    // skipped (skipLateAudio), a larger block is topped up to it.
-                    rebufferCounted = true;
-                    rebuffering = true;
-                    rebufferOwed = true;
-                    alignmentDebt = 0;
-                }
-                else if (after > before)
-                {
-                    alignmentDebt += after - before;
-                }
-                else
-                {
-                    auto shorter = before - after;
-                    const auto unpaid = std::min (alignmentDebt, shorter);
-                    alignmentDebt -= unpaid;
-                    shorter -= unpaid;
-
-                    if (shorter > 0)
-                    {
-                        ring.discard (shorter);
-                        resetInterpolator();
-                    }
-                }
-
-                fillAverageValid = false;
-            }
-
-            appliedAlignmentDelay = wantedDelay;
-            appliedLatencyBudget = wantedBudget;
-        }
-    }
+    // Where this stream now sits, for the writer to line its stem up by.
+    publishPlaceInTime();
 
     // The output's real callback size, which CoreAudio does not promise is
     // the one asked for either. Two of the pull, not two nominal blocks, is
@@ -679,8 +600,9 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         // the first pull is where this channel sits in time against every
         // other one, and the loop moves it at 5 PPM/s: starting a pull deep
         // left a channel up to a block behind its neighbours for a minute,
-        // and an alignment delay (setAlignmentDelay) only as accurate as the
-        // pull that happened to cross the target. What is dropped is pre-roll,
+        // and its place in time -- which the writer lines the stems up by --
+        // only as accurate as the pull that happened to cross the target. What
+        // is dropped is pre-roll,
         // before anything has been played or recorded from this stream. Only
         // the overshoot of that crossing: a surplus bigger than a pull is a
         // device that delivered ahead, and the loop's to drain.
@@ -691,26 +613,6 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             ring.discard (excess);
 
         started.store (true, std::memory_order_relaxed);
-    }
-
-    // Silence still owed to open an alignment delay on a running stream. Not
-    // a loss -- nothing that arrived is skipped -- so it is not counted as
-    // one; the consumer's clock still ran, so the pull is.
-    if (alignmentDebt > 0)
-    {
-        const auto silent = static_cast<int> (std::min (alignmentDebt, static_cast<size_t> (numSamples)));
-        std::fill (destination, destination + silent, 0.0f);
-        alignmentDebt -= static_cast<size_t> (silent);
-        alignmentSilence.fetch_add (static_cast<uint64_t> (silent), std::memory_order_relaxed);
-
-        pulledSamples.fetch_add (static_cast<uint64_t> (silent), std::memory_order_relaxed);
-        lastPullNs.store (nowNs(), std::memory_order_release);
-
-        if (silent == numSamples)
-            return;
-
-        destination += silent;
-        numSamples -= silent;
     }
 
     // Count, then stamp: a reporter that reads the stamp sees a count at most

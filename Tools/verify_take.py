@@ -213,17 +213,23 @@ def main():
         j = json.load(open(meta))
         check(bool(j.get('stopTimestamp')), 'session.json has a stop timestamp')
         check_reported_losses(j.get('dropouts') or [], check, a.expect_loss)
-        # How each device was lined up with the rest of the rig: its input
-        # latency, the IO block it really ran at and what was added to bring
-        # it into step. A stem an editor finds offset is explained by these;
-        # a device that never opened has none of them.
-        check('alignedInputLatencyFrames' in j, 'session.json records the input latency the rig is aligned to')
+        # How each device's stems were lined up with the rest of the rig: its
+        # input latency, the IO block it really ran at, the offset the writer
+        # held it back by and its mid-take changes -- and whether the writer
+        # managed all of it exactly. The headphones never wait for any of it;
+        # a stem an editor finds offset is explained by these, and a take
+        # whose stems are not aligned can be lined up from them. A device
+        # that never opened has none of them.
+        check('alignedInputLatencyFrames' in j, 'session.json records the input latency the stems are aligned to')
+        check(j.get('stemsAligned') is True,
+              'session.json says the stems and MIX were lined up exactly (stemsAligned %s)' % j.get('stemsAligned'))
         aligned = [d for d in (j.get('devices') or []) if 'inputLatencyFrames' in d]
         check(any(d.get('ioBlockFrames', 0) > 0 for d in aligned),
               'session.json records each open device\'s alignment (%d of %d devices)'
               % (len(aligned), len(j.get('devices') or [])))
         for d in aligned:
-            fields = ('inputLatencyFrames', 'ioBlockFrames', 'alignmentDelayFrames', 'alignmentSilenceFrames')
+            fields = ('inputLatencyFrames', 'ioBlockFrames', 'alignmentDelayFrames', 'alignmentSilenceFrames',
+                      'alignmentDroppedFrames')
             check(all(isinstance(d.get(f), (int, float)) and d.get(f) >= 0 for f in fields),
                   'session.json %s: %s' % (d.get('name', '?'), ', '.join('%s %s' % (f, d.get(f)) for f in fields)))
         mirror_ran = bool(j.get('mirrorActive'))

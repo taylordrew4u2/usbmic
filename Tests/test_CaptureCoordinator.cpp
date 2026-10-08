@@ -512,6 +512,33 @@ long long loudestSampleIn (const std::string& path)
     return best;
 }
 
+/// Where a 16-bit mono stem's sound starts, and how many silent samples it
+/// has after that: a gap in a channel that carries a steady level.
+std::pair<long long, long long> silenceAfterFirstSoundIn (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+
+    long long first = -1, silent = 0;
+
+    for (uint32_t i = 0; i < bytes / 2; ++i)
+    {
+        unsigned char lo = 0, hi = 0;
+        f.read (reinterpret_cast<char*> (&lo), 1);
+        f.read (reinterpret_cast<char*> (&hi), 1);
+        const auto v = static_cast<int16_t> (static_cast<uint16_t> (lo) | (static_cast<uint16_t> (hi) << 8));
+
+        if (v != 0 && first < 0)
+            first = static_cast<long long> (i);
+        else if (v == 0 && first >= 0)
+            ++silent;
+    }
+
+    return { first, silent };
+}
+
 } // namespace
 
 TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheFiles)
@@ -531,9 +558,11 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     c.setSoftwareClockEnabled (false);
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
-    // The headphones hear the slower device's latency as well.
+    // The stems are lined up to the slower device; the headphones are not.
+    // Their figure is the quicker microphone's own path, with nothing of
+    // Couch's extra 37 frames in it.
     REQUIRE (c.getAlignedInputLatencyFrames() == 49);
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 49) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 12) / 48000.0 * 1000.0, 1e-9);
 
     REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
 
@@ -557,14 +586,26 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
         c.pullOutputBlock (outs, 1, 64);
     }
 
+    // The writer holds Kitchen back by the difference; Couch not at all.
+    REQUIRE (c.getDeviceAlignmentDelayFrames ("dev-a") == 37);
+    REQUIRE (c.getDeviceAlignmentDelayFrames ("dev-b") == 0);
+
     c.stopRecording();
     c.stopMonitoring();
 
+    REQUIRE (c.areStemsAligned());
+    REQUIRE (c.getDeviceAlignmentSilenceFramesThisTake ("dev-a") == 0);
+    REQUIRE (c.getDeviceAlignmentDroppedFramesThisTake ("dev-a") == 0);
+
     const auto kitchen = loudestSampleIn (dir + "/01_Kitchen.wav");
     const auto couch = loudestSampleIn (dir + "/02_Couch.wav");
+    const auto mix = loudestSampleIn (dir + "/MIX.wav");
     REQUIRE (kitchen > 0);
     REQUIRE (couch > 0);
     REQUIRE (std::llabs (kitchen - couch) <= 1);
+
+    // The mix is summed from the aligned stems: one clap, where both are.
+    REQUIRE (std::llabs (mix - couch) <= 1);
 }
 
 namespace {
@@ -574,11 +615,16 @@ int64_t ioSizeClock() { return ioSizeClockNs; }
 
 struct IoSizeTakeResult
 {
-    long long kitchenClap = -1, couchClap = -1;
+    long long kitchenClap = -1, couchClap = -1, mixClap = -1;
+    long long headphoneClap = -1; // loudest headphone sample, in output frames
     uint64_t kitchenUnderruns = 0, couchUnderruns = 0;
+    uint64_t kitchenStreamShift = 0, couchStreamShift = 0; // the rings' own moves
     int couchBlock = 0, kitchenAlignment = 0, couchAlignment = 0;
-    int kitchenShift = 0, couchShift = 0; // alignment silence written this take
+    int kitchenShift = 0, couchShift = 0;     // writer silence written mid-take
+    int kitchenDropped = 0, couchDropped = 0; // writer samples taken out mid-take
+    bool stemsAligned = false;
     double headphoneLatencyMs = 0.0;
+    long long kitchenSoundStarts = -1, kitchenSilentAfter = 0; // with a steady level on Kitchen
 };
 
 /// Two microphones hearing one clap at the same instant. Couch's device runs
@@ -588,14 +634,22 @@ struct IoSizeTakeResult
 /// `kitchenSwitchAt` (an app or aggregate setting the size on both devices,
 /// each taking it up at its own next period). Each device hands a block over
 /// when its last sample is captured; the output pulls 64 at a time between
-/// deliveries.
+/// deliveries. Each device reports `...Latency` frames of input latency, and
+/// so hands the clap over that much later. With `couchHearsIt` false only
+/// Kitchen's microphone carries the clap, so the headphone output says
+/// exactly when Kitchen reaches the headphones. `kitchenLevel` puts a steady
+/// level on Kitchen's microphone between claps, so a gap in its stem shows.
 IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long switchAt, long long clapAt,
-                                    int kitchenAfter = 64, long long kitchenSwitchAt = 0)
+                                    int kitchenAfter = 64, long long kitchenSwitchAt = 0,
+                                    int kitchenLatency = 0, int couchLatency = 0, bool couchHearsIt = true,
+                                    float kitchenLevel = 0.0f)
 {
     const auto dir = tempDir() + "/io_size_" + std::to_string (couchBefore) + "_" + std::to_string (couchAfter)
-                   + "_" + std::to_string (kitchenAfter) + "_" + std::to_string (kitchenSwitchAt);
+                   + "_" + std::to_string (kitchenAfter) + "_" + std::to_string (kitchenSwitchAt)
+                   + "_" + std::to_string (switchAt) + "_" + std::to_string (couchLatency);
     std::remove ((dir + "/01_Kitchen.wav").c_str());
     std::remove ((dir + "/02_Couch.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
     std::string mk = "mkdir -p '" + dir + "'";
     REQUIRE (std::system (mk.c_str()) == 0);
 
@@ -604,9 +658,12 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
 
     FakeBackend backend;
     backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = kitchenLatency;
+    backend.inputLatencyFrames["dev-b"] = couchLatency;
     CaptureCoordinator c (backend, 48000.0, 64);
     c.setSoftwareClockEnabled (false);
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    c.getMonitorBus().setMasterVolume (100.0);
     REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
 
     std::vector<float> a (4096), b (4096), out (64);
@@ -614,15 +671,18 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
     const float* bIn[] = { b.data() };
     float* outs[] = { out.data() };
 
-    const auto fill = [clapAt] (std::vector<float>& v, long long first, int n)
+    // A device with more input latency hands the same instant over later.
+    const auto fill = [] (std::vector<float>& v, long long first, int n, long long heardAt, float level)
     {
         for (int i = 0; i < n; ++i)
-            v[static_cast<size_t> (i)] = first + i == clapAt ? 0.9f : 0.0f;
+            v[static_cast<size_t> (i)] = first + i == heardAt ? 0.9f : level;
     };
 
     const auto nsAt = [] (long long sample) { return static_cast<int64_t> (sample * 1.0e9 / 48000.0) + 1; };
 
-    long long aNext = 0, bNext = 0;
+    long long aNext = 0, bNext = 0, outFrame = 0;
+    float headphonePeak = 0.0f;
+    IoSizeTakeResult r;
     const long long end = clapAt + 48000;
     const auto kitchenBlock = [&] { return kitchenSwitchAt > 0 && aNext >= kitchenSwitchAt ? kitchenAfter : 64; };
 
@@ -637,14 +697,14 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
             if (aNext + aBlock <= bNext + bBlock)
             {
                 ioSizeClockNs = nsAt (aNext + aBlock);
-                fill (a, aNext, aBlock);
+                fill (a, aNext, aBlock, clapAt + kitchenLatency, kitchenLevel);
                 backend.inputCallbacks[0] (aIn, 1, nullptr, 0, aBlock);
                 aNext += aBlock;
             }
             else
             {
                 ioSizeClockNs = nsAt (bNext + bBlock);
-                fill (b, bNext, bBlock);
+                fill (b, bNext, bBlock, couchHearsIt ? clapAt + couchLatency : -1, 0.0f);
                 backend.inputCallbacks[1] (bIn, 1, nullptr, 0, bBlock);
                 bNext += bBlock;
             }
@@ -652,24 +712,39 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
 
         ioSizeClockNs = nsAt (pullAt);
         c.pullOutputBlock (outs, 1, 64);
+
+        for (int i = 0; i < 64; ++i, ++outFrame)
+            if (std::abs (out[static_cast<size_t> (i)]) > headphonePeak)
+            {
+                headphonePeak = std::abs (out[static_cast<size_t> (i)]);
+                r.headphoneClap = outFrame;
+            }
     }
 
-    IoSizeTakeResult r;
     r.kitchenUnderruns = c.getUnderrunSamples (0);
     r.couchUnderruns = c.getUnderrunSamples (1);
+    r.kitchenStreamShift = c.getChannelShiftSilenceSamples (0);
+    r.couchStreamShift = c.getChannelShiftSilenceSamples (1);
     r.couchBlock = c.getDeviceIoBlockFrames ("dev-b");
     r.kitchenAlignment = c.getDeviceAlignmentDelayFrames ("dev-a");
     r.couchAlignment = c.getDeviceAlignmentDelayFrames ("dev-b");
-    r.kitchenShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-a");
-    r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
     r.headphoneLatencyMs = c.getMonitoringLatencyMs();
 
     c.stopRecording();
+
+    r.kitchenShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-a");
+    r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
+    r.kitchenDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-a");
+    r.couchDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-b");
+    r.stemsAligned = c.areStemsAligned();
+
     c.stopMonitoring();
     DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; });
 
     r.kitchenClap = loudestSampleIn (dir + "/01_Kitchen.wav");
     r.couchClap = loudestSampleIn (dir + "/02_Couch.wav");
+    r.mixClap = loudestSampleIn (dir + "/MIX.wav");
+    std::tie (r.kitchenSoundStarts, r.kitchenSilentAfter) = silenceAfterFirstSoundIn (dir + "/01_Kitchen.wav");
     return r;
 }
 
@@ -681,79 +756,173 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesAtDifferentIoSizesLineUpInTheFiles)
     // its own size when it refuses the request. A sample waits up to a whole
     // block in the device before it is handed over, so that stem carried
     // every sound 1092 samples (23 ms) after the other's: a slapback in the
-    // mix wherever the two mics hear each other.
+    // mix wherever the two mics hear each other. The writer lines the stems
+    // (and the mix summed from them) up.
     const auto r = recordWithIoSizes (1156, 1156, 0, 30000);
 
     REQUIRE (r.kitchenClap > 0);
     REQUIRE (r.couchClap > 0);
     REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
     REQUIRE (r.kitchenUnderruns == 0u);
     REQUIRE (r.couchUnderruns == 0u);
+    REQUIRE (r.stemsAligned);
 
     // And the record says why the Kitchen stem is held back.
     REQUIRE (r.couchBlock == 1156);
     REQUIRE (r.couchAlignment == 0);
     REQUIRE (r.kitchenAlignment == 1092);
 
-    // Which the headphones hear as well: two 64-frame output buffers, plus
-    // the 1092 every microphone now waits for Couch's block.
-    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 1092) / 48000.0 * 1000.0, 1e-6);
+    // Which the headphones do not hear: two 64-frame output buffers, and
+    // Kitchen's own path -- nothing of Couch's block.
+    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64) / 48000.0 * 1000.0, 1e-6);
 }
 
 TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
 {
     // Couch's device goes from 64 to 1156 frames a second into the take.
-    // That stem has to fall 1092 samples later -- the device now holds its
-    // audio that long -- and the gap that opens is counted. Kitchen moves
-    // with it, in the same callback, so a clap afterwards still lands on the
-    // same frame in both.
+    // That channel has to fall 1092 samples later -- the device now holds its
+    // audio that long -- and the gap that opens is counted. The writer holds
+    // Kitchen's stem back with it, so a clap afterwards still lands on the
+    // same frame in both, and in the mix.
     const auto r = recordWithIoSizes (64, 1156, 48000, 96000);
 
     REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
     REQUIRE (r.couchUnderruns >= 1092u - 2u);
     REQUIRE (r.couchUnderruns <= 1092u + 2u);
+    REQUIRE (r.stemsAligned);
 
     // Kitchen's own audio was all there: it is held back, not lost -- and
     // the take's record says how much silence moving it put in its file.
     REQUIRE (r.kitchenUnderruns == 0u);
+    REQUIRE (r.kitchenStreamShift == 0u);
     REQUIRE (r.kitchenAlignment == 1092);
     REQUIRE (r.kitchenShift == 1092);
+    REQUIRE (r.kitchenDropped == 0);
     REQUIRE (r.couchShift == 0);
+    REQUIRE (r.couchAlignment == 0);
+}
+
+TEST_CASE (CaptureCoordinator_AGrowthOnTheQuickerDeviceComesOutOfItsOwnStem)
+{
+    // Couch's interface has 1400 frames more input latency than Kitchen's,
+    // so Kitchen's stem is held back 1400 behind it. Then Kitchen's device
+    // grows from 64 to 1156: its channel falls 1092 later (a counted gap in
+    // the headphones), and the writer takes the same 1092 back out of
+    // Kitchen's stem -- the silence its stream put in -- rather than holding
+    // Couch back too. Both stems carry the later clap on one frame.
+    const auto r = recordWithIoSizes (64, 64, 0, 96000, 1156, 48000, 0, 1400);
+
+    REQUIRE (r.kitchenClap > 0);
+    REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    REQUIRE (std::llabs (r.mixClap - r.couchClap) <= 1);
+    REQUIRE (r.stemsAligned);
+
+    REQUIRE (r.kitchenUnderruns + r.kitchenStreamShift >= 1092u - 2u);
+    REQUIRE (r.kitchenUnderruns + r.kitchenStreamShift <= 1092u + 2u);
+    REQUIRE (r.kitchenAlignment == 1400 - 1092);
+    REQUIRE (r.kitchenDropped == 1092);
+    REQUIRE (r.kitchenShift == 0);
+
+    // Couch never moved, and nothing was done to its stem.
+    REQUIRE (r.couchUnderruns == 0u);
+    REQUIRE (r.couchAlignment == 0);
+    REQUIRE (r.couchShift == 0);
+    REQUIRE (r.couchDropped == 0);
+}
+
+TEST_CASE (CaptureCoordinator_AGrowthOnTheQuickerDeviceLeavesNoGapInItsStem)
+{
+    // The same growth with a steady level on Kitchen's microphone. Its
+    // headphone feed had a gap -- the device held its audio 1092 samples
+    // longer, and nothing could cover that -- but the writer took the
+    // silence of that move back out of the stem, so the stem runs on without
+    // one: once its sound starts, not a single silent sample. Likewise for a growth the ring's cushion covered
+    // (64 -> 96), whose move is silence written at once rather than a dry
+    // gap.
+    for (const int grownTo : { 1156, 96 })
+    {
+        const auto r = recordWithIoSizes (64, 64, 0, 96000, grownTo, 48000, 0, 1400, true, 0.25f);
+
+        REQUIRE (r.kitchenUnderruns + r.kitchenStreamShift >= static_cast<uint64_t> (grownTo - 64 - 2));
+        REQUIRE (r.kitchenDropped >= grownTo - 64 - 2);
+        REQUIRE (r.kitchenDropped <= grownTo - 64 + 2);
+        // Couch's 1400 extra frames, and the stream's own pre-roll at the top
+        // of the take, before any sound.
+        REQUIRE (r.kitchenSoundStarts >= 1400);
+        REQUIRE (r.kitchenSoundStarts < 1400 + 1024);
+        REQUIRE (r.kitchenSilentAfter == 0);
+        REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+    }
 }
 
 TEST_CASE (CaptureCoordinator_TwoDevicesGrowingAMomentApartEachMoveOnce)
 {
     // Another app (or an aggregate) sets 1156 frames on both devices, and
     // each takes it up at its own next period: Couch a few hundred samples
-    // after Kitchen, or more than a large block after. Kitchen's new size is
-    // confirmed first and every budget rises to it -- while Couch has already
-    // moved for its own first large block (its ring ran dry for it), or is
-    // running dry for it right then. That move was paid twice: 1092 samples
-    // of counted gap and 1092 more of alignment silence, a clap 23 ms later
-    // in Couch's stem than in Kitchen's, still 1045 apart twenty seconds on.
+    // after Kitchen, or more than a large block after. Each stream moves
+    // once, by its own growth -- a counted gap where its ring ran dry, a
+    // shift where its cushion covered it, never both for the same move --
+    // and no stream is moved for the other's. The writer follows each move,
+    // so the clap after both lands on one frame in both stems.
     for (const long long apart : { 320LL, 640LL, 1216LL, 1600LL })
     {
         const auto r = recordWithIoSizes (64, 1156, 48000 + apart, 96000, 1156, 48000);
 
         REQUIRE (r.kitchenClap > 0);
         REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+        REQUIRE (r.stemsAligned);
 
-        // Each stem moved once, by the growth: the silence it took went out
-        // as a counted gap or a shift, never both for the same move.
         REQUIRE (r.couchBlock == 1156);
-        REQUIRE (r.kitchenUnderruns + static_cast<uint64_t> (r.kitchenShift) >= 1092u - 2u);
-        REQUIRE (r.kitchenUnderruns + static_cast<uint64_t> (r.kitchenShift) <= 1092u + 2u);
-        REQUIRE (r.couchUnderruns + static_cast<uint64_t> (r.couchShift) >= 1092u - 2u);
-        REQUIRE (r.couchUnderruns + static_cast<uint64_t> (r.couchShift) <= 1092u + 2u);
+        REQUIRE (r.kitchenUnderruns + r.kitchenStreamShift >= 1092u - 2u);
+        REQUIRE (r.kitchenUnderruns + r.kitchenStreamShift <= 1092u + 2u);
+        REQUIRE (r.couchUnderruns + r.couchStreamShift >= 1092u - 2u);
+        REQUIRE (r.couchUnderruns + r.couchStreamShift <= 1092u + 2u);
+
+        // Both ended where they started against each other.
+        REQUIRE (r.kitchenAlignment == 0);
+        REQUIRE (r.couchAlignment == 0);
     }
+}
+
+TEST_CASE (CaptureCoordinator_TheHeadphonesNeverWaitForASlowerDevice)
+{
+    // §5.4: audio monitoring comes first. Kitchen claps; Couch hears nothing.
+    // Whatever Couch's device does -- report more input latency, run at a
+    // larger IO block from the start, or grow its block mid-take -- Kitchen
+    // reaches the headphones at exactly the same output frame as on a rig
+    // where Couch is just like it. Lining the two up is the writer's job,
+    // and the stems are still lined up.
+    const auto alone = recordWithIoSizes (64, 64, 0, 96000, 64, 0, 0, 0, false);
+    REQUIRE (alone.headphoneClap > 96000);
+
+    const auto laggier = recordWithIoSizes (64, 64, 0, 96000, 64, 0, 0, 2000, false);
+    const auto largerBlock = recordWithIoSizes (1156, 1156, 0, 96000, 64, 0, 0, 0, false);
+    const auto grows = recordWithIoSizes (64, 1156, 48000, 96000, 64, 0, 0, 0, false);
+
+    for (const auto* r : { &laggier, &largerBlock, &grows })
+    {
+        REQUIRE (r->headphoneClap == alone.headphoneClap);
+        REQUIRE (r->kitchenUnderruns == 0u);
+        REQUIRE_NEAR (r->headphoneLatencyMs, alone.headphoneLatencyMs, 1e-9);
+        REQUIRE (r->stemsAligned);
+    }
+
+    // The stems are where they were: Kitchen held back to the slower device.
+    REQUIRE (laggier.kitchenAlignment == 2000);
+    REQUIRE (largerBlock.kitchenAlignment == 1092);
+    REQUIRE (grows.kitchenAlignment == 1092);
+    REQUIRE (alone.kitchenAlignment == 0);
 }
 
 TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 {
     // The buffer ladder tells the user the headphone delay at the size it is
-    // about to rebuild at. Every channel is held to the largest input latency
-    // plus IO block across the rig, so a device that refuses the size asked
-    // for and runs at 1156 frames costs everyone its block, not the new one.
+    // about to rebuild at: the quickest microphone's own path, since no
+    // channel waits for any other. A device that refuses the size asked for
+    // and runs at 1156 frames costs its own channel its block, not the
+    // figure.
     FakeBackend backend;
     backend.grantedOutputBufferFrames = 64;
     backend.inputLatencyFrames["dev-a"] = 100;
@@ -763,9 +932,10 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     c.setSoftwareClockEnabled (false);
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
-    // Before any device delivers, its block is the size asked for.
-    REQUIRE (c.getAlignedLatencyPlusBlockFrames (128) == 100 + 128);
-    const double openedAtMs = c.getMonitoringLatencyMs();
+    // Before any device delivers, its block is the size asked for, and Couch
+    // has the shorter input latency.
+    REQUIRE (c.getMonitorInputFrames (128) == 40 + 128);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 40) / 48000.0 * 1000.0, 1e-9);
 
     std::vector<float> a (64, 0.0f), b (1156, 0.0f), out (64);
     const float* aIn[] = { a.data() };
@@ -780,17 +950,17 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 
     REQUIRE (c.getDeviceIoBlockFrames ("dev-b") == 1156);
 
-    // Couch's block outweighs Kitchen's longer latency at 128; at 2048 the
-    // new size is the larger block everywhere.
-    REQUIRE (c.getAlignedLatencyPlusBlockFrames (128) == 40 + 1156);
-    REQUIRE (c.getAlignedLatencyPlusBlockFrames (2048) == 100 + 2048);
+    // Couch's block now outweighs Kitchen's longer latency, so Kitchen is the
+    // quicker path; at 2048 the new size is the block everywhere.
+    REQUIRE (c.getMonitorInputFrames (128) == 100 + 128);
+    REQUIRE (c.getMonitorInputFrames (2048) == 40 + 2048);
 
-    // At the size it runs at now it is what the headphone figure carries.
-    REQUIRE_NEAR (c.getMonitoringLatencyMs() - openedAtMs,
-                  (c.getAlignedLatencyPlusBlockFrames (64) - (100 + 64)) / 48000.0 * 1000.0, 1e-6);
+    // At the size it runs at now it is what the headphone figure carries:
+    // Kitchen's 100 frames of input latency, none of Couch's 1156.
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
 
     c.stopMonitoring();
-    REQUIRE (c.getAlignedLatencyPlusBlockFrames (128) == 128);
+    REQUIRE (c.getMonitorInputFrames (128) == 128);
 }
 
 namespace {

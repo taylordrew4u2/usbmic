@@ -977,12 +977,15 @@ private:
     std::vector<DeviceRecord> takeDevices;
     int takeAlignedInputLatencyFrames = 0;
     double takeMeasuredLatencyMs = 0.0;
+    bool takeStemsAligned = false;
 
-    /// Copies how the running engine lined each take device up -- input
-    /// latency, IO block, alignment added, silence written to move it -- into
-    /// the take's roster, and refreshes the headphone latency figure. At the
-    /// take's start and again as it stops: a device whose IO size grew during
-    /// the take moved every other channel with it.
+    /// Copies how the writer lined each take device's stems up -- input
+    /// latency, IO block, the offset it was held back by, the silence written
+    /// and samples taken out mid-take to keep it in step -- and whether all of
+    /// that was done exactly, into the take's record, and refreshes the
+    /// headphone latency figure. At the take's start and again as it stops: a
+    /// device whose IO size grew during the take moved every other stem's
+    /// alignment with it (never the headphones).
     void recordTakeAlignment();
 
     std::string destinationFolder;

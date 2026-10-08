@@ -2125,15 +2125,16 @@ juce::String Application::applyBufferLadderStep (const juce::String& cause)
     // drift cushion and an output block. "Slightly more delay" was the old
     // wording at every rung, and at 512 samples that is over 40 ms, which
     // §5.4 says is never to be shipped without saying so.
-    // In place of the input block, what every channel is lined up to and the
-    // rebuilt rig will carry just the same: the largest input latency plus IO
-    // block across the rig. A device that refuses this size and runs at 1156
-    // frames holds every headphone feed back by its block, not by this one
-    // -- as getMonitoringLatencyMs() will say once the rig is rebuilt, so the
-    // two agree.
-    const double alignedFrames = capture != nullptr ? capture->getAlignedLatencyPlusBlockFrames (size)
-                                                    : static_cast<double> (size);
-    const double delayMs = (3.0 * static_cast<double> (size) + alignedFrames)
+    // In place of the input block, the quickest microphone's own input side
+    // at this size: its device's input latency plus its IO block (the larger
+    // of this size and the one the device has been running at). No channel
+    // waits for any other in the headphones -- the stems are lined up on the
+    // writer -- so a device that refuses this size and runs at 1156 frames
+    // delays its own channel, not this figure; it agrees with
+    // getMonitoringLatencyMs() once the rig is rebuilt.
+    const double inputFrames = capture != nullptr ? capture->getMonitorInputFrames (size)
+                                                  : static_cast<double> (size);
+    const double delayMs = (3.0 * static_cast<double> (size) + inputFrames)
                          / std::max (1.0, currentSampleRate) * 1000.0;
 
     auto line = juce::String ("This computer could not keep up") + cause
@@ -4582,20 +4583,25 @@ void Application::recordTakeAlignment()
     if (capture == nullptr)
     {
         takeMeasuredLatencyMs = measuredLatencyMs;
+        takeStemsAligned = false;
         return;
     }
 
     takeAlignedInputLatencyFrames = capture->getAlignedInputLatencyFrames();
 
     // What the headphones cost now that the devices have said what IO size
-    // they really run at: a larger block on one of them holds every channel
-    // back by the difference, which the figure taken when the streams opened
-    // could not include. Fixed here for the take's record, so a stop-time
+    // they really run at: the quickest microphone's own path, which no other
+    // device's latency or block is added to (the stems are lined up on the
+    // writer instead). Fixed here for the take's record, so a stop-time
     // session.json written after the engine has moved on still describes it.
     if (capture->isMonitoring())
         measuredLatencyMs = capture->getMonitoringLatencyMs();
 
     takeMeasuredLatencyMs = measuredLatencyMs;
+
+    // Whether the writer lined the stems up exactly; with each device's
+    // offset below, whatever it could not do can be done in an editor.
+    takeStemsAligned = capture->areStemsAligned();
 
     for (auto& record : takeDevices)
     {
@@ -4604,6 +4610,7 @@ void Application::recordTakeAlignment()
         record.ioBlockFrames = latency >= 0 ? capture->getDeviceIoBlockFrames (record.usbId) : 0;
         record.alignmentDelayFrames = latency >= 0 ? capture->getDeviceAlignmentDelayFrames (record.usbId) : 0;
         record.alignmentSilenceFrames = latency >= 0 ? capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId) : 0;
+        record.alignmentDroppedFrames = latency >= 0 ? capture->getDeviceAlignmentDroppedFramesThisTake (record.usbId) : 0;
     }
 }
 
@@ -4664,6 +4671,7 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     meta.bufferSizeSamples = figures.bufferSizeSamples;
     meta.measuredLatencyMs = takeMeasuredLatencyMs;
     meta.alignedInputLatencyFrames = takeAlignedInputLatencyFrames;
+    meta.stemsAligned = takeStemsAligned;
 
     // The take's roster, fixed when it started, not whoever is ticked and
     // plugged in now. A mic unplugged mid-take still has its stem in the
@@ -5245,9 +5253,9 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         capture->tickDriftReporting (sinceLastCallSeconds);
         driftMeasuredSeconds += sinceLastCallSeconds;
 
-        // §5.4's headphone figure, kept current for the Advanced panel: what
-        // lining the rig up costs is only known once every device has said
-        // what IO size it really runs at, and can grow while it runs.
+        // §5.4's headphone figure, kept current for the Advanced panel: the
+        // quickest microphone's own path is only known once every device has
+        // said what IO size it really runs at, and can grow while it runs.
         if (capture->isMonitoring())
             measuredLatencyMs = capture->getMonitoringLatencyMs();
 

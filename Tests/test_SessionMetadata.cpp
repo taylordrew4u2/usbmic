@@ -91,10 +91,13 @@ TEST_CASE (SessionMetadata_RecordsEachInterfaceInputsOwnTrim)
 TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
 {
     // Two interfaces 37 frames apart in input latency, one running at a
-    // larger IO block: the faster, smaller one is held back by the difference
-    // in both. An editor finding the stems offset can read why from here.
+    // larger IO block: the writer held the faster, smaller one's stems back
+    // by the difference in both (the headphones were never held back). An
+    // editor finding the stems offset can read why from here -- and, were
+    // they not lined up, line them up from it.
     SessionMetadata m;
     m.alignedInputLatencyFrames = 49;
+    m.stemsAligned = true;
 
     DeviceRecord quick;
     quick.name = "Quick";
@@ -102,7 +105,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     quick.inputLatencyFrames = 12;
     quick.ioBlockFrames = 64;
     quick.alignmentDelayFrames = 37 + 1092;
-    quick.alignmentSilenceFrames = 1092; // moved when Laggy's block grew mid-take
+    quick.alignmentSilenceFrames = 1092; // held back further when Laggy's block grew mid-take
     m.devices.push_back (quick);
 
     DeviceRecord laggy;
@@ -111,6 +114,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     laggy.inputLatencyFrames = 49;
     laggy.ioBlockFrames = 1156;
     laggy.alignmentDelayFrames = 0;
+    laggy.alignmentDroppedFrames = 448; // its own block grew while it was not the slowest
     m.devices.push_back (laggy);
 
     DeviceRecord unknown; // never opened
@@ -122,26 +126,37 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     REQUIRE (json.find ("\"inputLatencyFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentDelayFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentSilenceFrames\"") != std::string::npos);
+    REQUIRE (json.find ("\"alignmentDroppedFrames\"") != std::string::npos);
+    REQUIRE (json.find ("\"stemsAligned\"") != std::string::npos);
 
     const auto back = SessionMetadata::fromJsonString (json);
     REQUIRE (back.alignedInputLatencyFrames == 49);
+    REQUIRE (back.stemsAligned);
     REQUIRE (back.devices.size() == 3u);
     REQUIRE (back.devices[0].inputLatencyFrames == 12);
     REQUIRE (back.devices[0].ioBlockFrames == 64);
     REQUIRE (back.devices[0].alignmentDelayFrames == 37 + 1092);
     REQUIRE (back.devices[0].alignmentSilenceFrames == 1092);
+    REQUIRE (back.devices[0].alignmentDroppedFrames == 0);
     REQUIRE (back.devices[1].alignmentSilenceFrames == 0);
+    REQUIRE (back.devices[1].alignmentDroppedFrames == 448);
     REQUIRE (back.devices[1].inputLatencyFrames == 49);
     REQUIRE (back.devices[1].ioBlockFrames == 1156);
     REQUIRE (back.devices[1].alignmentDelayFrames == 0);
     REQUIRE (back.devices[2].inputLatencyFrames == -1);
 
-    // An older session.json, without them, reads as "not known".
+    // An older session.json, without them, reads as "not known" -- and its
+    // stems as not lined up by the writer.
     const auto old = SessionMetadata::fromJsonString (
         "{\"devices\":[{\"name\":\"Yeti\",\"usbId\":\"u\",\"trimDb\":0}]}");
     REQUIRE (old.devices.size() == 1u);
     REQUIRE (old.devices[0].inputLatencyFrames == -1);
     REQUIRE (old.alignedInputLatencyFrames == 0);
+    REQUIRE (! old.stemsAligned);
+
+    // A take whose writer could not line the stems up says so.
+    m.stemsAligned = false;
+    REQUIRE (! SessionMetadata::fromJsonString (m.toJsonString()).stemsAligned);
 }
 
 TEST_CASE (SessionMetadata_EmptySessionRoundTrips)
