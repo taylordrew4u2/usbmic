@@ -581,14 +581,19 @@ struct IoSizeTakeResult
     double headphoneLatencyMs = 0.0;
 };
 
-/// Two microphones hearing one clap at the same instant. Kitchen's device
-/// runs at 64 frames throughout; Couch's at `couchBefore` until `switchAt`
-/// samples, then `couchAfter` -- an IO size macOS moved because another app
-/// asked for a different one. Each device hands a block over when its last
-/// sample is captured; the output pulls 64 at a time between deliveries.
-IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long switchAt, long long clapAt)
+/// Two microphones hearing one clap at the same instant. Couch's device runs
+/// at `couchBefore` frames until `switchAt` samples, then `couchAfter` -- an
+/// IO size macOS moved because another app asked for a different one.
+/// Kitchen's runs at 64 frames, or moves to `kitchenAfter` at
+/// `kitchenSwitchAt` (an app or aggregate setting the size on both devices,
+/// each taking it up at its own next period). Each device hands a block over
+/// when its last sample is captured; the output pulls 64 at a time between
+/// deliveries.
+IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long switchAt, long long clapAt,
+                                    int kitchenAfter = 64, long long kitchenSwitchAt = 0)
 {
-    const auto dir = tempDir() + "/io_size_" + std::to_string (couchBefore) + "_" + std::to_string (couchAfter);
+    const auto dir = tempDir() + "/io_size_" + std::to_string (couchBefore) + "_" + std::to_string (couchAfter)
+                   + "_" + std::to_string (kitchenAfter) + "_" + std::to_string (kitchenSwitchAt);
     std::remove ((dir + "/01_Kitchen.wav").c_str());
     std::remove ((dir + "/02_Couch.wav").c_str());
     std::string mk = "mkdir -p '" + dir + "'";
@@ -604,7 +609,7 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
     REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
 
-    std::vector<float> a (64), b (4096), out (64);
+    std::vector<float> a (4096), b (4096), out (64);
     const float* aIn[] = { a.data() };
     const float* bIn[] = { b.data() };
     float* outs[] = { out.data() };
@@ -619,20 +624,22 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
 
     long long aNext = 0, bNext = 0;
     const long long end = clapAt + 48000;
+    const auto kitchenBlock = [&] { return kitchenSwitchAt > 0 && aNext >= kitchenSwitchAt ? kitchenAfter : 64; };
 
     for (long long pullAt = 32; pullAt < end; pullAt += 64)
     {
         // Every delivery whose last sample was captured before this pull.
-        while (aNext + 64 <= pullAt || bNext + (bNext >= switchAt ? couchAfter : couchBefore) <= pullAt)
+        while (aNext + kitchenBlock() <= pullAt || bNext + (bNext >= switchAt ? couchAfter : couchBefore) <= pullAt)
         {
+            const int aBlock = kitchenBlock();
             const int bBlock = bNext >= switchAt ? couchAfter : couchBefore;
 
-            if (aNext + 64 <= bNext + bBlock)
+            if (aNext + aBlock <= bNext + bBlock)
             {
-                ioSizeClockNs = nsAt (aNext + 64);
-                fill (a, aNext, 64);
-                backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
-                aNext += 64;
+                ioSizeClockNs = nsAt (aNext + aBlock);
+                fill (a, aNext, aBlock);
+                backend.inputCallbacks[0] (aIn, 1, nullptr, 0, aBlock);
+                aNext += aBlock;
             }
             else
             {
@@ -712,6 +719,33 @@ TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
     REQUIRE (r.kitchenAlignment == 1092);
     REQUIRE (r.kitchenShift == 1092);
     REQUIRE (r.couchShift == 0);
+}
+
+TEST_CASE (CaptureCoordinator_TwoDevicesGrowingAMomentApartEachMoveOnce)
+{
+    // Another app (or an aggregate) sets 1156 frames on both devices, and
+    // each takes it up at its own next period: Couch a few hundred samples
+    // after Kitchen, or more than a large block after. Kitchen's new size is
+    // confirmed first and every budget rises to it -- while Couch has already
+    // moved for its own first large block (its ring ran dry for it), or is
+    // running dry for it right then. That move was paid twice: 1092 samples
+    // of counted gap and 1092 more of alignment silence, a clap 23 ms later
+    // in Couch's stem than in Kitchen's, still 1045 apart twenty seconds on.
+    for (const long long apart : { 320LL, 640LL, 1216LL, 1600LL })
+    {
+        const auto r = recordWithIoSizes (64, 1156, 48000 + apart, 96000, 1156, 48000);
+
+        REQUIRE (r.kitchenClap > 0);
+        REQUIRE (std::llabs (r.kitchenClap - r.couchClap) <= 1);
+
+        // Each stem moved once, by the growth: the silence it took went out
+        // as a counted gap or a shift, never both for the same move.
+        REQUIRE (r.couchBlock == 1156);
+        REQUIRE (r.kitchenUnderruns + static_cast<uint64_t> (r.kitchenShift) >= 1092u - 2u);
+        REQUIRE (r.kitchenUnderruns + static_cast<uint64_t> (r.kitchenShift) <= 1092u + 2u);
+        REQUIRE (r.couchUnderruns + static_cast<uint64_t> (r.couchShift) >= 1092u - 2u);
+        REQUIRE (r.couchUnderruns + static_cast<uint64_t> (r.couchShift) <= 1092u + 2u);
+    }
 }
 
 namespace {

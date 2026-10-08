@@ -377,6 +377,20 @@ private:
     bool rebuffering = false;
     bool rebufferCounted = true;
 
+    // Consumer-owned: the rebuffer is filling a gap whose cause is not
+    // settled -- a provisional block, or a budget raised while the ring was
+    // dry -- so the silence it writes is owed like the gap's own (noteSilence)
+    // and late audio landing above the target answers for it.
+    bool rebufferOwed = false;
+
+    // Consumer-owned: a delivery larger than any block held room for ended a
+    // dry gap. The device may have grown its IO size, or a driver may have
+    // handed a backlog over in one piece; the delivery after it tells which
+    // (a size two in a row reach is the device's block). Until then the
+    // stream holds room for it (heldLatency) and keeps the gap's silence
+    // owed. Zero when nothing is pending.
+    size_t provisionalBlock = 0;
+
     // Consumer-owned: the last pull ended in counted silence. A run of dry
     // pulls is one loss event, not one per pull.
     bool inGap = false;
@@ -398,7 +412,7 @@ private:
 
     /// What this stream holds beyond the base target for a given budget,
     /// with the device's block included: never less than the largest block
-    /// the device has delivered.
+    /// the device has delivered, or a provisional one it has moved for.
     size_t heldLatency (size_t budget) const noexcept;
     void recomputeTarget() noexcept;
 

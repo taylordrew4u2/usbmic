@@ -74,9 +74,12 @@ void DeviceInputStream::setLatencyBudget (int samples) noexcept
 size_t DeviceInputStream::heldLatency (size_t budget) const noexcept
 {
     // Before the first delivery the device's block is taken to be the one
-    // asked for; it is replaced by the real one the moment one lands.
+    // asked for; it is replaced by the real one the moment one lands. A
+    // provisional block counts too: the stream has already moved for it, so
+    // a budget raised before the next delivery settles it is measured from
+    // there, not from a block the ring no longer sits at.
     const size_t block = seenDeviceBlock > 0 ? seenDeviceBlock : nominalBlockSamples;
-    return std::max (budget, block);
+    return std::max ({ budget, block, provisionalBlock });
 }
 
 void DeviceInputStream::recomputeTarget() noexcept
@@ -162,6 +165,8 @@ void DeviceInputStream::prepare (double sampleRate, int bufferSizeSamples)
     pullsSinceSilence = 0;
     rebuffering = false;
     rebufferCounted = true;
+    rebufferOwed = false;
+    provisionalBlock = 0;
     inGap = false;
 
     driftPpm.store (0.0, std::memory_order_relaxed);
@@ -328,8 +333,12 @@ double DeviceInputStream::fillErrorNow (size_t available) noexcept
 void DeviceInputStream::noteSilence (int samples) noexcept
 {
     // Capped at what the ring can hold above target, which is the most late
-    // audio a burst could ever leave there to be skipped.
-    const double cap = static_cast<double> (usableCapacity())
+    // audio a burst could ever leave there to be skipped. Its storage, not
+    // the part of it in use now: that follows the largest delivery so far,
+    // and a backlog handed over in one larger piece raises it only as it
+    // lands -- a gap of more than fourteen 64-sample blocks used to be owed
+    // only in part, and the rest of the late audio stayed in the ring.
+    const double cap = static_cast<double> (ring.capacity())
                      - static_cast<double> (targetFillSamples);
     silenceOwed = std::min (cap, silenceOwed + static_cast<double> (samples));
     pullsSinceSilence = 0;
@@ -420,6 +429,8 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         silenceOwed = 0.0;
         pullsSinceSilence = 0;
         rebuffering = false;
+        rebufferOwed = false;
+        provisionalBlock = 0;
         inGap = false;
         alignmentDebt = 0; // the pre-roll ahead opens the delay itself
 
@@ -439,40 +450,77 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
     // for late audio, so none of the block is skipped. A block no larger than
     // what is held (a device going back to a size it ran at before) changes
     // nothing at all: the headroom was kept for it.
-    if (const auto block = deviceBlockSamples.load (std::memory_order_relaxed); block > seenDeviceBlock)
+    const auto lastPush = static_cast<size_t> (std::max (0, lastPushSamples.load (std::memory_order_acquire)));
     {
+        const auto block = deviceBlockSamples.load (std::memory_order_relaxed);
         const bool firstDelivery = seenDeviceBlock == 0;
-        const size_t before = heldLatency (appliedLatencyBudget);
-        seenDeviceBlock = block;
+        const size_t before = heldLatency (appliedLatencyBudget); // a provisional block's room included
 
-        if (! firstDelivery && started.load (std::memory_order_relaxed)
-            && heldLatency (appliedLatencyBudget) > before)
+        // A provisional block (below) is settled by the delivery after it.
+        if (provisionalBlock > 0)
         {
-            // Counted as loss only as part of a gap the ring really ran dry
-            // for (the branch below, or one still being buffered). A growth
-            // the cushion covered lost nothing: the silence that moves the
-            // channel to its new place is a shift, recorded like an alignment
-            // opening (getAlignmentSilenceSamples), not an underrun that
-            // would step the buffer ladder and tell the user audio was lost.
-            rebufferCounted = (rebuffering && rebufferCounted) || inGap;
-            rebuffering = true;
-            silenceOwed = 0.0;
+            if (block >= provisionalBlock)
+            {
+                // Confirmed. The gap was the device holding its audio longer,
+                // and the channel was moved for it then: nothing in the ring
+                // is late, and none of it is skipped.
+                provisionalBlock = 0;
+                silenceOwed = 0.0;
+                rebufferOwed = false;
+            }
+            else if (lastPush < provisionalBlock)
+            {
+                // Refused: the next delivery is back at the device's own size,
+                // so the large one was a backlog handed over in one piece and
+                // the gap was audio arriving late after all. The silence
+                // written for it -- the gap and the buffering up for a block
+                // that is not coming -- is still owed, and the late audio
+                // standing in the ring for it is skipped (skipLateAudio) down
+                // to the target the device's real block sets. Holding it
+                // instead kept the channel a block behind every other stem
+                // for minutes while the loop drained it at 200 PPM.
+                provisionalBlock = 0;
+                pullsSinceSilence = 0;
+            }
+        }
+
+        if (block > seenDeviceBlock)
+        {
+            seenDeviceBlock = block;
+
+            if (! firstDelivery && started.load (std::memory_order_relaxed)
+                && heldLatency (appliedLatencyBudget) > before)
+            {
+                // Counted as loss only as part of a gap the ring really ran dry
+                // for (the branch below, or one still being buffered). A growth
+                // the cushion covered lost nothing: the silence that moves the
+                // channel to its new place is a shift, recorded like an alignment
+                // opening (getAlignmentSilenceSamples), not an underrun that
+                // would step the buffer ladder and tell the user audio was lost.
+                rebufferCounted = (rebuffering && rebufferCounted) || inGap;
+                rebuffering = true;
+                rebufferOwed = false;
+                silenceOwed = 0.0;
+            }
         }
     }
 
     // The same change, seen one delivery sooner: the ring ran dry and what
-    // ended the gap was a block larger than any held room for. Until a second
-    // one confirms it this is not yet the device's block, but the gap it
-    // ended was the device holding its audio longer, not audio arriving late
-    // -- so nothing is skipped, and the stream buffers up to its target now
-    // rather than running a device period with no cushion at all.
-    if (inGap && started.load (std::memory_order_relaxed)
-        && static_cast<size_t> (std::max (0, lastPushSamples.load (std::memory_order_acquire)))
-               > heldLatency (appliedLatencyBudget))
+    // ended the gap was a block larger than any held room for. If the device
+    // has grown, the gap was it holding its audio longer, not audio arriving
+    // late, and the stream buffers up to its target now rather than running a
+    // device period with no cushion at all. But one large delivery is also
+    // what a driver handing over a backlog looks like, so the block is only
+    // provisional until the next delivery confirms or refuses it (above):
+    // held as room meanwhile -- a budget raised in that window is measured
+    // from it, not from the block the ring has already moved past -- and the
+    // silence written for it still owed, so a refusal can take it back.
+    if (inGap && started.load (std::memory_order_relaxed) && lastPush > heldLatency (appliedLatencyBudget))
     {
+        provisionalBlock = lastPush;
         rebuffering = true;
         rebufferCounted = true;
-        silenceOwed = 0.0;
+        rebufferOwed = true;
     }
 
     // Input-latency alignment (setAlignmentDelay, setLatencyBudget). Before
@@ -494,7 +542,25 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
 
             if (started.load (std::memory_order_relaxed) && after != before)
             {
-                if (after > before)
+                if (after > before && inGap)
+                {
+                    // Raised while the ring is dry: the silence going out
+                    // already holds this channel later, by an amount not known
+                    // until its audio comes back -- its own device growing its
+                    // block (another device's growth is what raised the
+                    // budget), or a stall. Writing the whole difference on top
+                    // moved the channel twice for one change, a block past the
+                    // rest of the rig until the loop drained it at 200 PPM.
+                    // So the stream buffers to its new target instead, which
+                    // already holds any delay still owed, and the silence is
+                    // owed too: late audio that lands above the target is
+                    // skipped (skipLateAudio), a larger block is topped up to it.
+                    rebufferCounted = true;
+                    rebuffering = true;
+                    rebufferOwed = true;
+                    alignmentDebt = 0;
+                }
+                else if (after > before)
                 {
                     alignmentDebt += after - before;
                 }
@@ -573,6 +639,12 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
             else
                 alignmentSilence.fetch_add (static_cast<uint64_t> (silent), std::memory_order_relaxed);
 
+            // Buffering up across a gap whose cause is not settled yet: like
+            // the gap's own silence, it is answered by late audio if late
+            // audio is what turns up.
+            if (rebufferOwed)
+                noteSilence (silent);
+
             if (silent == numSamples)
                 return;
 
@@ -581,6 +653,7 @@ void DeviceInputStream::pull (float* destination, int numSamples) noexcept
         }
 
         rebuffering = false;
+        rebufferOwed = false;
         fillAverageValid = false;
     }
 

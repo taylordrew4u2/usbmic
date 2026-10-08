@@ -1576,6 +1576,113 @@ TEST_CASE (DeviceInputStream_AnIoSizeGrowthTheCushionCoversMovesTheChannelWithou
     REQUIRE_NEAR (r.delays[1] - r.delays[0], 32.0, 2.0);
 }
 
+TEST_CASE (DeviceInputStream_ABacklogHandedOverInOnePieceDoesNotMoveTheChannel)
+{
+    // A 64-frame device goes quiet for one long period and then hands the
+    // whole of it over in one delivery before carrying on at 64. That first
+    // delivery looks exactly like an IO-size growth, and was taken for one:
+    // the gap's silence was forgotten rather than answered by the late audio,
+    // and the stream buffered up for a block that never came -- the channel
+    // left a block behind every other stem (193 -> 1242 samples) for the
+    // minutes the loop took to drain it. The next delivery says which it was;
+    // a backlog's late audio is skipped, as for any gap, and the channel is
+    // back where it was.
+    for (const int backlog : { 1156, 512 })
+    {
+        const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, backlog }, { 5.0 + (backlog - 64) / 48000.0, 64 } },
+                                         12.0, 6.0, { 4.0, 5.2, 11.0 });
+
+        REQUIRE (r.overruns == 0u);
+        REQUIRE (r.underrunsAfter == 0u);
+        REQUIRE (r.lossEvents == 1u);
+        REQUIRE (r.underruns > 0u);
+        REQUIRE (r.alignmentSilence == 0u);
+
+        // What went out as silence while the device held its audio is what
+        // was skipped when that audio arrived: no more, no less.
+        REQUIRE_NEAR (r.skippedSamples, static_cast<double> (r.underruns), 2.0);
+        REQUIRE (r.delays.size() == 3u);
+        REQUIRE_NEAR (r.delays[1], r.delays[0], 2.0);
+        REQUIRE_NEAR (r.delays[2], r.delays[0], 2.0);
+    }
+
+    // One large delivery and then the device settles at a size in between:
+    // it holds its audio 448 frames longer now, and the channel moves by
+    // exactly that, with the rest of the gap skipped as late.
+    const auto r = runBlockSwitches ({ { 0.0, 64 }, { 5.0, 1156 }, { 5.02, 512 } }, 12.0, 6.0, { 4.0, 5.2, 11.0 });
+    REQUIRE (r.overruns == 0u);
+    REQUIRE (r.underrunsAfter == 0u);
+    REQUIRE (r.lossEvents == 1u);
+    REQUIRE (r.delays.size() == 3u);
+    REQUIRE_NEAR (r.delays[1] - r.delays[0], 448.0, 2.0);
+    REQUIRE_NEAR (r.delays[2] - r.delays[0], 448.0, 3.0);
+}
+
+TEST_CASE (DeviceInputStream_ABudgetRaisedWhileTheRingIsDryMovesTheChannelOnce)
+{
+    // Another device's IO block grows and the coordinator raises this
+    // stream's budget by the difference -- while this stream's own ring is
+    // dry, because its device is growing to the same size and has not handed
+    // its first large block over yet. The silence already going out is that
+    // growth; writing the whole raise on top of it moved the channel twice,
+    // a block late for minutes. Either way round, it lands 1092 later, once.
+    for (const double raiseAfter : { 0.010, 0.020 })
+    {
+        ScopedSimulatedClock clock;
+        DeviceInputStream s (48000.0);
+        s.prepare (48000.0, 64);
+        s.setLatencyBudget (64);
+
+        std::vector<float> in (1156), out (64);
+        long long produced = 0;
+        double blockStart = 0.0, nextOut = 0.0005, before = 0.0, after = 0.0;
+        bool raised = false;
+
+        while (nextOut < 8.0)
+        {
+            const int block = blockStart >= 5.0 ? 1156 : 64;
+
+            if (blockStart + block / 48000.0 <= nextOut)
+            {
+                blockStart += block / 48000.0;
+                simulatedNs = static_cast<int64_t> (blockStart * 1.0e9) + 1;
+                for (int i = 0; i < block; ++i)
+                    in[static_cast<size_t> (i)] = static_cast<float> (produced + i + 1);
+                s.pushBlock (in.data(), block);
+                produced += block;
+                continue;
+            }
+
+            // The raise lands inside the dry spell, before this device's
+            // first large block (5.024 s).
+            if (! raised && nextOut >= 5.0 + raiseAfter)
+            {
+                s.setLatencyBudget (1156);
+                raised = true;
+            }
+
+            simulatedNs = static_cast<int64_t> (nextOut * 1.0e9) + 1;
+            s.pull (out.data(), 64);
+
+            if (out[0] > 0.0f)
+            {
+                const double delay = nextOut * 48000.0 - (static_cast<double> (out[0]) - 1.0);
+                (nextOut < 5.0 ? before : after) = delay;
+            }
+
+            nextOut += 64 / 48000.0;
+        }
+
+        REQUIRE (s.getOverrunSamples() == 0u);
+        REQUIRE_NEAR (after - before, 1092.0, 3.0);
+
+        // All of the move went out as silence once: what the dry ring
+        // counted, and the shift that topped it up.
+        const double moved = static_cast<double> (s.getUnderrunSamples() + s.getAlignmentSilenceSamples());
+        REQUIRE_NEAR (moved, 1092.0, 3.0);
+    }
+}
+
 TEST_CASE (DeviceInputStream_ARunOfDryPullsIsOneLossEvent)
 {
     // A device that stops delivering for a while: every pull in the gap runs
