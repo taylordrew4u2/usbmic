@@ -155,7 +155,13 @@ unsigned on Windows; the workflow signs and notarizes once the credentials in
    cameras, macOS also asks for **camera permission**; SobStage waits for your
    answer and starts the cameras when you click Allow. The Mac's microphone,
    iPhone/Continuity, Bluetooth/AirPlay and software inputs are intentionally
-   left out. Monitoring is live from launch; there is nothing to arm.
+   left out. Monitoring is live from launch; there is nothing to arm. Each
+   microphone reaches the headphones as soon as its own device allows: an
+   interface that is slower than the rest (or that macOS runs at a larger
+   buffer because another app asked for one) delays only itself, never
+   everyone's headphones. The recording is lined up as it is written, so the
+   tracks still match — see *Headphones first* in the
+   [user guide](USER-GUIDE.md).
 
 #### Troubleshooting (macOS)
 
