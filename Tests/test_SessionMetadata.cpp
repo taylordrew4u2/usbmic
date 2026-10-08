@@ -88,6 +88,62 @@ TEST_CASE (SessionMetadata_RecordsEachInterfaceInputsOwnTrim)
     REQUIRE_NEAR (back.devices[0].inputTrimDb.at (1), -1.5, 1e-4);
 }
 
+TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
+{
+    // Two interfaces 37 frames apart in input latency, one running at a
+    // larger IO block: the faster, smaller one is held back by the difference
+    // in both. An editor finding the stems offset can read why from here.
+    SessionMetadata m;
+    m.alignedInputLatencyFrames = 49;
+
+    DeviceRecord quick;
+    quick.name = "Quick";
+    quick.usbId = "usb-1";
+    quick.inputLatencyFrames = 12;
+    quick.ioBlockFrames = 64;
+    quick.alignmentDelayFrames = 37 + 1092;
+    quick.alignmentSilenceFrames = 1092; // moved when Laggy's block grew mid-take
+    m.devices.push_back (quick);
+
+    DeviceRecord laggy;
+    laggy.name = "Laggy";
+    laggy.usbId = "usb-2";
+    laggy.inputLatencyFrames = 49;
+    laggy.ioBlockFrames = 1156;
+    laggy.alignmentDelayFrames = 0;
+    m.devices.push_back (laggy);
+
+    DeviceRecord unknown; // never opened
+    unknown.name = "Gone";
+    unknown.usbId = "usb-3";
+    m.devices.push_back (unknown);
+
+    const auto json = m.toJsonString();
+    REQUIRE (json.find ("\"inputLatencyFrames\"") != std::string::npos);
+    REQUIRE (json.find ("\"alignmentDelayFrames\"") != std::string::npos);
+    REQUIRE (json.find ("\"alignmentSilenceFrames\"") != std::string::npos);
+
+    const auto back = SessionMetadata::fromJsonString (json);
+    REQUIRE (back.alignedInputLatencyFrames == 49);
+    REQUIRE (back.devices.size() == 3u);
+    REQUIRE (back.devices[0].inputLatencyFrames == 12);
+    REQUIRE (back.devices[0].ioBlockFrames == 64);
+    REQUIRE (back.devices[0].alignmentDelayFrames == 37 + 1092);
+    REQUIRE (back.devices[0].alignmentSilenceFrames == 1092);
+    REQUIRE (back.devices[1].alignmentSilenceFrames == 0);
+    REQUIRE (back.devices[1].inputLatencyFrames == 49);
+    REQUIRE (back.devices[1].ioBlockFrames == 1156);
+    REQUIRE (back.devices[1].alignmentDelayFrames == 0);
+    REQUIRE (back.devices[2].inputLatencyFrames == -1);
+
+    // An older session.json, without them, reads as "not known".
+    const auto old = SessionMetadata::fromJsonString (
+        "{\"devices\":[{\"name\":\"Yeti\",\"usbId\":\"u\",\"trimDb\":0}]}");
+    REQUIRE (old.devices.size() == 1u);
+    REQUIRE (old.devices[0].inputLatencyFrames == -1);
+    REQUIRE (old.alignedInputLatencyFrames == 0);
+}
+
 TEST_CASE (SessionMetadata_EmptySessionRoundTrips)
 {
     SessionMetadata m;

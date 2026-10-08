@@ -2838,6 +2838,8 @@ void Application::toggleRecording()
                     takeDevices.push_back (std::move (record));
                 }
 
+                recordTakeAlignment();
+
                 // Do not attempt a fresh platform camera open after the audio
                 // writer has started. JUCE's desktop open is synchronous and a
                 // broken capture-card driver can wait inside it indefinitely;
@@ -2984,6 +2986,7 @@ void Application::toggleRecording()
         // The stop-time session.json is written from this, not from whatever
         // the live state says by the time a camera finishes its movie.
         takeStopSnapshot.capture (liveTakeFigures (true));
+        recordTakeAlignment();
 
         // Before the folder is listed for the panel that shows what was saved,
         // so the video files are closed and their real sizes are on disk by the
@@ -4569,6 +4572,36 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
     return root.getFullPathName();
 }
 
+void Application::recordTakeAlignment()
+{
+    if (capture == nullptr)
+    {
+        takeMeasuredLatencyMs = measuredLatencyMs;
+        return;
+    }
+
+    takeAlignedInputLatencyFrames = capture->getAlignedInputLatencyFrames();
+
+    // What the headphones cost now that the devices have said what IO size
+    // they really run at: a larger block on one of them holds every channel
+    // back by the difference, which the figure taken when the streams opened
+    // could not include. Fixed here for the take's record, so a stop-time
+    // session.json written after the engine has moved on still describes it.
+    if (capture->isMonitoring())
+        measuredLatencyMs = capture->getMonitoringLatencyMs();
+
+    takeMeasuredLatencyMs = measuredLatencyMs;
+
+    for (auto& record : takeDevices)
+    {
+        const int latency = capture->getDeviceInputLatencyFrames (record.usbId);
+        record.inputLatencyFrames = latency;
+        record.ioBlockFrames = latency >= 0 ? capture->getDeviceIoBlockFrames (record.usbId) : 0;
+        record.alignmentDelayFrames = latency >= 0 ? capture->getDeviceAlignmentDelayFrames (record.usbId) : 0;
+        record.alignmentSilenceFrames = latency >= 0 ? capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId) : 0;
+    }
+}
+
 TakeFigures Application::liveTakeFigures (bool sessionHasStopped) const
 {
     TakeFigures f;
@@ -4624,7 +4657,8 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // The size the take's streams actually ran at. The ladder can have stepped
     // on during the take; that step applies to the next one.
     meta.bufferSizeSamples = figures.bufferSizeSamples;
-    meta.measuredLatencyMs = measuredLatencyMs;
+    meta.measuredLatencyMs = takeMeasuredLatencyMs;
+    meta.alignedInputLatencyFrames = takeAlignedInputLatencyFrames;
 
     // The take's roster, fixed when it started, not whoever is ticked and
     // plugged in now. A mic unplugged mid-take still has its stem in the
@@ -5205,6 +5239,12 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         capture->tickDriftReporting (sinceLastCallSeconds);
         driftMeasuredSeconds += sinceLastCallSeconds;
+
+        // §5.4's headphone figure, kept current for the Advanced panel: what
+        // lining the rig up costs is only known once every device has said
+        // what IO size it really runs at, and can grow while it runs.
+        if (capture->isMonitoring())
+            measuredLatencyMs = capture->getMonitoringLatencyMs();
 
         // Walked over capture's channels rather than the device list: the two
         // agree only until a microphone is unplugged mid-take, and after that

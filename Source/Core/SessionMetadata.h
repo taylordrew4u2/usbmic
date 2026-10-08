@@ -16,6 +16,30 @@ struct DeviceRecord
     /// Trim per physical input of an interface, keyed like the port settings.
     /// Empty for a single microphone, whose trim is trimDb.
     std::map<int, float> inputTrimDb;
+
+    /// How this device's channels were lined up with the rest of the rig.
+    /// Every stem is held back to the slowest device's figure, so a clap lands
+    /// on the same frame in all of them; these say by how much, and why, so a
+    /// take whose stems an editor finds offset can be explained from its own
+    /// record. All in frames at the take's rate. -1 for the latency means not
+    /// known: the device did not open, or this is an older session.json.
+    ///   inputLatencyFrames   -- what the driver reported (device latency,
+    ///                           safety offset and stream latency on macOS;
+    ///                           zero where the platform does not report it)
+    ///   ioBlockFrames        -- the largest block the device handed over: its
+    ///                           real IO size, which a sample can wait for
+    ///                           before it is delivered
+    ///   alignmentDelayFrames -- what was added on top of both so this device
+    ///                           lines up with the slowest one
+    ///   alignmentSilenceFrames -- silence written into this device's files
+    ///                           during the take to move it later, when
+    ///                           another device's IO block grew mid-take. Not
+    ///                           lost audio (nothing that arrived was
+    ///                           skipped), but a gap in the file all the same
+    int inputLatencyFrames = -1;
+    int ioBlockFrames = 0;
+    int alignmentDelayFrames = 0;
+    int alignmentSilenceFrames = 0;
 };
 
 struct DriftLogEntry
@@ -68,6 +92,11 @@ struct SessionMetadata
     int bitDepth = 24;
     int bufferSizeSamples = 64;
     double measuredLatencyMs = 0.0;
+
+    /// The slowest open input's own latency, which every channel is aligned
+    /// to (and the headphone figure above includes). Zero where the platform
+    /// does not report input latency.
+    int alignedInputLatencyFrames = 0;
     std::vector<DeviceRecord> devices;
     std::vector<DriftLogEntry> driftLog;
     std::vector<BufferChangeEntry> bufferChanges;

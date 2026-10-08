@@ -975,6 +975,15 @@ private:
     double takeSampleRate = 0.0;
     int takeBitDepth = 0;
     std::vector<DeviceRecord> takeDevices;
+    int takeAlignedInputLatencyFrames = 0;
+    double takeMeasuredLatencyMs = 0.0;
+
+    /// Copies how the running engine lined each take device up -- input
+    /// latency, IO block, alignment added, silence written to move it -- into
+    /// the take's roster, and refreshes the headphone latency figure. At the
+    /// take's start and again as it stops: a device whose IO size grew during
+    /// the take moved every other channel with it.
+    void recordTakeAlignment();
 
     std::string destinationFolder;
 
