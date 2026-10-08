@@ -56,7 +56,7 @@ void StemAligner::prepare (int numChannels)
     exact.store (true, std::memory_order_relaxed);
 }
 
-void StemAligner::setOffset (int channel, int samples) noexcept
+void StemAligner::setOffset (int channel, int samples, StemOffsetKind kind) noexcept
 {
     if (channel < 0 || channel >= static_cast<int> (lines.size()))
         return;
@@ -68,6 +68,10 @@ void StemAligner::setOffset (int channel, int samples) noexcept
 
     const int wanted = std::clamp (samples, 0, kMaxOffsetSamples);
     const int current = line.offset.load (std::memory_order_relaxed);
+
+    // Only the change straight after a provisional one can take it back.
+    const auto undo = line.undo;
+    line.undo = {};
 
     if (wanted == current)
         return;
@@ -84,6 +88,24 @@ void StemAligner::setOffset (int channel, int samples) noexcept
         const auto unskipped = std::min (longer, line.skipOwed);
         line.skipOwed -= unskipped;
         longer -= unskipped;
+
+        // The device refused the block the last change was for: a driver
+        // handed a backlog over in one piece, and the stream, having moved
+        // nothing in the end, is back where it was. The silence that change
+        // took out goes back where it was taken from -- behind whatever was
+        // waiting ahead of it and has not gone out yet -- so the stem is as
+        // if the backlog had never been mistaken for a growth, and neither
+        // change is counted. Writing it at the head instead put the audio
+        // still waiting from before the backlog's gap after the gap.
+        if (kind == StemOffsetKind::refused && undo.valid && longer > 0)
+        {
+            const auto position = std::min (undo.ahead > undo.emitted ? undo.ahead - undo.emitted : size_t { 0 },
+                                            line.size);
+            const auto restored = insertSilence (line, position, std::min (longer, undo.silence));
+
+            line.dropped.fetch_sub (restored, std::memory_order_relaxed);
+            longer -= restored;
+        }
 
         (line.started ? line.silenceOwed : line.paddingOwed) += longer;
     }
@@ -123,6 +145,12 @@ void StemAligner::setOffset (int channel, int samples) noexcept
         }
 
         line.skipOwed += shorter;
+
+        // For a block the device has not confirmed: remembered, so a refusal
+        // can put this silence back (above). What is taken out as it arrives
+        // is added to it in process().
+        if (kind == StemOffsetKind::provisional)
+            line.undo = { true, silentTail, line.size, 0 };
     }
 
     line.offset.store (wanted, std::memory_order_relaxed);
@@ -135,6 +163,33 @@ void StemAligner::dropNewest (Line& line, size_t count) noexcept
 
     if (removed > 0)
         line.dropped.fetch_add (removed, std::memory_order_relaxed);
+
+    // Audio, not the move's silence: there is no putting that back.
+    line.undo.valid = false;
+}
+
+size_t StemAligner::insertSilence (Line& line, size_t position, size_t count) noexcept
+{
+    // Never past the storage; the offset's own bound keeps it well inside.
+    const size_t capacity = line.buffer.size();
+    count = std::min (count, capacity - 1 - std::min (line.size, capacity - 1));
+    position = std::min (position, line.size);
+
+    if (count == 0)
+        return 0;
+
+    // The samples from `position` on (the newer ones) move along by `count`,
+    // newest first so none is overwritten before it has moved, and silence
+    // fills the space they leave. Bounded by the line's length, on the writer
+    // thread, once for a refused block.
+    for (size_t i = line.size; i-- > position;)
+        line.buffer[(line.head + i + count) % capacity] = line.buffer[(line.head + i) % capacity];
+
+    for (size_t i = 0; i < count; ++i)
+        line.buffer[(line.head + position + i) % capacity] = 0.0f;
+
+    line.size += count;
+    return count;
 }
 
 void StemAligner::process (int channel, float* samples, size_t frames) noexcept
@@ -175,6 +230,13 @@ void StemAligner::process (int channel, float* samples, size_t frames) noexcept
                 samples[f] = line.buffer[line.head];
                 line.head = (line.head + 1) % capacity;
                 --line.size;
+
+                if (line.undo.valid)
+                {
+                    ++line.undo.silence;
+                    ++line.undo.emitted;
+                }
+
                 continue;
             }
 
@@ -203,6 +265,9 @@ void StemAligner::process (int channel, float* samples, size_t frames) noexcept
             samples[f] = line.buffer[line.head];
             line.head = (line.head + 1) % capacity;
             --line.size;
+
+            if (line.undo.valid)
+                ++line.undo.emitted;
         }
     }
 

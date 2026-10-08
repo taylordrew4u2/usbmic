@@ -68,8 +68,13 @@ public:
     /// not wait (§5.4), and the writer lines it up instead (StemAligner). A
     /// change is handed to the writer tagged with the frame it applies from,
     /// so it lands sample-exactly. Null leaves every offset where it is.
+    /// `channelOffsetKinds`, when given beside them, says for each channel
+    /// whether a change is for a block its device has not confirmed, or takes
+    /// such a change back (StemOffsetKind); null means every change is
+    /// settled.
     bool pushBlock (const float* const* channelData, int numChannels, int numSamples,
-                    const int* channelOffsets = nullptr) noexcept;
+                    const int* channelOffsets = nullptr,
+                    const StemOffsetKind* channelOffsetKinds = nullptr) noexcept;
 
     /// How the stems were lined up, per channel: the offset in force now and
     /// the one the take started with, the silence written mid-take to hold a

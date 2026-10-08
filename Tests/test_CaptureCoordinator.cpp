@@ -916,6 +916,207 @@ TEST_CASE (CaptureCoordinator_TheHeadphonesNeverWaitForASlowerDevice)
     REQUIRE (alone.kitchenAlignment == 0);
 }
 
+namespace {
+
+/// A 16-bit mono stem's samples.
+std::vector<int16_t> stemSamples (const std::string& path)
+{
+    std::ifstream f (path, std::ios::binary);
+    REQUIRE (f.is_open());
+    const auto bytes = readU32LE (f, kDataSizeOffset);
+    f.seekg (kAudioDataOffset);
+    std::vector<int16_t> v (bytes / 2);
+    f.read (reinterpret_cast<char*> (v.data()), static_cast<std::streamsize> (v.size() * 2));
+    return v;
+}
+
+struct BacklogTakeResult
+{
+    std::vector<int16_t> kitchen, couch;
+    int kitchenShift = 0, kitchenDropped = 0, couchShift = 0, couchDropped = 0;
+    int kitchenAlignment = 0;
+    uint64_t kitchenUnderruns = 0;
+    bool stemsAligned = false;
+};
+
+/// Kitchen's driver goes quiet at `backlogAt` and then hands the `backlog`
+/// samples it held over in one delivery, going straight back to 64-frame
+/// blocks: a late reader, not a device that grew its IO size. Both devices
+/// otherwise run at 64. Kitchen's microphone carries a ramp (sample n of the
+/// room reads n % 30000 + 1 in 16-bit steps) or, with `kitchenRamp` false,
+/// a clap at `clapAt`; Couch's carries `couchLevel` and the same clap. Couch
+/// reports `couchLatency` frames more input latency than Kitchen and hands
+/// the room over that much later.
+BacklogTakeResult recordBacklog (int couchLatency, long long backlogAt, int backlog,
+                                 bool kitchenRamp, float couchLevel, long long clapAt)
+{
+    const auto dir = tempDir() + "/backlog_" + std::to_string (couchLatency) + "_" + std::to_string (backlog)
+                   + (kitchenRamp ? "_ramp" : "_clap");
+    std::remove ((dir + "/01_Kitchen.wav").c_str());
+    std::remove ((dir + "/02_Couch.wav").c_str());
+    std::remove ((dir + "/MIX.wav").c_str());
+    std::string mk = "mkdir -p '" + dir + "'";
+    REQUIRE (std::system (mk.c_str()) == 0);
+
+    DeviceInputStream::setClockForTesting (ioSizeClock);
+    ioSizeClockNs = 1;
+
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = 0;
+    backend.inputLatencyFrames["dev-b"] = couchLatency;
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
+
+    std::vector<float> a (4096), b (64), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+    const auto nsAt = [] (long long sample) { return static_cast<int64_t> (sample * 1.0e9 / 48000.0) + 1; };
+
+    long long aNext = 0, bNext = 0;
+
+    for (long long pullAt = 32; pullAt < clapAt + 48000; pullAt += 64)
+    {
+        for (;;)
+        {
+            const int aBlock = aNext == backlogAt ? backlog : 64;
+            const bool aDue = aNext + aBlock <= pullAt;
+            const bool bDue = bNext + 64 <= pullAt;
+
+            if (! aDue && ! bDue)
+                break;
+
+            if (aDue && (! bDue || aNext + aBlock <= bNext + 64))
+            {
+                ioSizeClockNs = nsAt (aNext + aBlock);
+
+                for (int i = 0; i < aBlock; ++i)
+                {
+                    const long long n = aNext + i;
+                    a[static_cast<size_t> (i)] = kitchenRamp ? static_cast<float> (n % 30000 + 1) / 32768.0f
+                                                             : (n == clapAt ? 0.9f : 0.0f);
+                }
+
+                backend.inputCallbacks[0] (aIn, 1, nullptr, 0, aBlock);
+                aNext += aBlock;
+            }
+            else
+            {
+                ioSizeClockNs = nsAt (bNext + 64);
+
+                for (int i = 0; i < 64; ++i)
+                    b[static_cast<size_t> (i)] = bNext + i == clapAt + couchLatency ? 0.9f : couchLevel;
+
+                backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 64);
+                bNext += 64;
+            }
+        }
+
+        ioSizeClockNs = nsAt (pullAt);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    BacklogTakeResult r;
+    r.kitchenUnderruns = c.getUnderrunSamples (0);
+    r.kitchenAlignment = c.getDeviceAlignmentDelayFrames ("dev-a");
+
+    c.stopRecording();
+
+    r.kitchenShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-a");
+    r.kitchenDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-a");
+    r.couchShift = c.getDeviceAlignmentSilenceFramesThisTake ("dev-b");
+    r.couchDropped = c.getDeviceAlignmentDroppedFramesThisTake ("dev-b");
+    r.stemsAligned = c.areStemsAligned();
+
+    c.stopMonitoring();
+    DeviceInputStream::setClockForTesting ([]() -> int64_t { return 0; });
+
+    r.kitchen = stemSamples (dir + "/01_Kitchen.wav");
+    r.couch = stemSamples (dir + "/02_Couch.wav");
+    return r;
+}
+
+long long loudestOf (const std::vector<int16_t>& s)
+{
+    long long best = -1;
+    int magnitude = 0;
+
+    for (size_t i = 0; i < s.size(); ++i)
+        if (std::abs (static_cast<int> (s[i])) > magnitude)
+        {
+            magnitude = std::abs (static_cast<int> (s[i]));
+            best = static_cast<long long> (i);
+        }
+
+    return best;
+}
+
+} // namespace
+
+TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNoOtherStem)
+{
+    // Kitchen's driver hands over 1152 samples in one piece and goes back to
+    // 64-frame blocks. Until its next delivery that looks like a device that
+    // grew its IO size, so Kitchen's own stream holds room for it -- but the
+    // rig's reference follows settled blocks only, so Couch's stem, carrying
+    // a steady level, is never held back for it: not one silent sample once
+    // its sound starts, nothing written into it or taken out, and the clap
+    // after it lands on one frame in both stems.
+    const auto r = recordBacklog (0, 48000, 1152, false, 0.25f, 96000);
+
+    long long first = -1, silent = 0;
+
+    for (size_t i = 0; i < r.couch.size(); ++i)
+    {
+        if (r.couch[i] != 0 && first < 0)
+            first = static_cast<long long> (i);
+        else if (r.couch[i] == 0 && first >= 0)
+            ++silent;
+    }
+
+    REQUIRE (first >= 0);
+    REQUIRE (silent == 0);
+    REQUIRE (r.couchShift == 0);
+    REQUIRE (r.couchDropped == 0);
+    REQUIRE (r.kitchenUnderruns > 0u); // Kitchen's gap was real, and counted
+    REQUIRE (std::llabs (loudestOf (r.kitchen) - loudestOf (r.couch)) <= 1);
+    REQUIRE (r.stemsAligned);
+}
+
+TEST_CASE (CaptureCoordinator_ADriverBacklogMovesNothingInItsOwnStem)
+{
+    // The same backlog on Kitchen, now the quicker device: Couch reports more
+    // input latency, so Kitchen's stem is held back behind it. For the one
+    // device period the large delivery is provisional, Kitchen's own place
+    // includes it, and the writer brings Kitchen's stem forward by it -- the
+    // gap's silence out of the newest end of the line. The device refuses
+    // it, and the writer puts that silence back where it was: Kitchen's stem
+    // is exactly the one it has on a rig of like devices, held back by the
+    // difference. The audio waiting from before the gap stays before it, and
+    // nothing is recorded as alignment, since no IO size changed.
+    const auto reference = recordBacklog (0, 48000, 1152, true, 0.0f, 96000);
+    REQUIRE (reference.kitchenUnderruns > 0u);
+
+    for (const int couchLatency : { 1400, 300 })
+    {
+        const auto r = recordBacklog (couchLatency, 48000, 1152, true, 0.0f, 96000);
+
+        REQUIRE (r.kitchenAlignment == couchLatency);
+        REQUIRE (r.kitchenShift == 0);
+        REQUIRE (r.kitchenDropped == 0);
+        REQUIRE (r.stemsAligned);
+
+        REQUIRE (r.kitchen.size() == reference.kitchen.size());
+        for (size_t i = 0; i < static_cast<size_t> (couchLatency); ++i)
+            REQUIRE (r.kitchen[i] == 0);
+        for (size_t i = static_cast<size_t> (couchLatency); i < r.kitchen.size(); ++i)
+            REQUIRE (r.kitchen[i] == reference.kitchen[i - static_cast<size_t> (couchLatency)]);
+    }
+}
+
 TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 {
     // The buffer ladder tells the user the headphone delay at the size it is

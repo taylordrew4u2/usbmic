@@ -53,6 +53,8 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     latenciesReady.store (false, std::memory_order_relaxed);
     channelInputLatency.assign (chans.size(), 0);
     recordingOffsets.assign (chans.size(), 0);
+    recordingOffsetKinds.assign (chans.size(), StemOffsetKind::settled);
+    heldBlockSeen.assign (chans.size(), 0);
     recordingOffsetView = std::make_unique<std::atomic<int>[]> (std::max<size_t> (1, chans.size()));
     for (size_t i = 0; i < std::max<size_t> (1, chans.size()); ++i)
         recordingOffsetView[i].store (0, std::memory_order_relaxed);
@@ -1433,9 +1435,12 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
         // streams stand after this pull.
         updateRecordingOffsets();
 
+        const bool offsetsFit = recordingOffsets.size() >= static_cast<size_t> (channelCount)
+                             && recordingOffsetKinds.size() >= static_cast<size_t> (channelCount);
         mixAndPublish (devicePointers.data(), channelCount, outputs, numOutputs,
                        frames, frameOffset,
-                       recordingOffsets.size() >= static_cast<size_t> (channelCount) ? recordingOffsets.data() : nullptr);
+                       offsetsFit ? recordingOffsets.data() : nullptr,
+                       offsetsFit ? recordingOffsetKinds.data() : nullptr);
         frameOffset += frames;
     }
 
@@ -1476,9 +1481,19 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
     // is, a block it has just moved for included, so when it grows without
     // becoming the slowest its stem is brought forward in the very block its
     // stream moved, while the silence that move put in is still at hand to
-    // take back out (StemAligner::setOffset). Nothing allocates or locks
-    // (§11): the vectors were sized at startMonitoring().
-    const size_t count = std::min (deviceStreams.size(), recordingOffsets.size());
+    // take back out (StemAligner::setOffset).
+    //
+    // That block is provisional until its device's next delivery: one large
+    // delivery is also what a driver handing over a backlog looks like. So
+    // each change is tagged for the writer: provisional while the stream
+    // holds a block its device has not confirmed, and refused when that
+    // block is taken back (the held block falls, which nothing else makes it
+    // do). The writer then puts back what the provisional change took out,
+    // where it took it from, and the backlog moves nothing in the stem
+    // either. Nothing allocates or locks (§11): the vectors were sized at
+    // startMonitoring().
+    const size_t count = std::min ({ deviceStreams.size(), recordingOffsets.size(),
+                                     recordingOffsetKinds.size(), heldBlockSeen.size() });
     const bool ready = latenciesReady.load (std::memory_order_acquire) && channelInputLatency.size() >= count;
     int reference = 0;
 
@@ -1489,12 +1504,19 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
 
     for (size_t i = 0; i < count; ++i)
     {
+        const auto& stream = *deviceStreams[i];
+        const auto held = stream.getHeldBlockSamples();
+
+        recordingOffsetKinds[i] = held > stream.getSettledBlockSamples() ? StemOffsetKind::provisional
+                                : held < heldBlockSeen[i]                ? StemOffsetKind::refused
+                                                                         : StemOffsetKind::settled;
+        heldBlockSeen[i] = held;
+
         // A device that did not open is silent; it is not moved.
         recordingOffsets[i] = 0;
 
         if (ready && channelInputLatency[i] >= 0)
-            recordingOffsets[i] = std::max (0, reference - channelInputLatency[i]
-                                                   - static_cast<int> (deviceStreams[i]->getHeldBlockSamples()));
+            recordingOffsets[i] = std::max (0, reference - channelInputLatency[i] - static_cast<int> (held));
 
         if (recordingOffsetView != nullptr)
             recordingOffsetView[i].store (recordingOffsets[i], std::memory_order_relaxed);
@@ -1647,14 +1669,15 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     const int channelCount = std::min (numInputs, static_cast<int> (channels.size()));
 
     // Already lined up by the OS, so the writer leaves every stem where it is.
-    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr);
+    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr, nullptr);
     noteCallbackLoad (callbackStart, numSamples);
 }
 
 void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelCount,
                                         float* const* outputs, int numOutputs,
                                         int numSamples, int outputFrameOffset,
-                                        const int* recordingOffsetsForBlock) noexcept
+                                        const int* recordingOffsetsForBlock,
+                                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept
 {
     if (inputs == nullptr || channelCount <= 0)
         return;
@@ -1676,7 +1699,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // unreported loss the one unacceptable failure, and the pipeline
         // rejects a mismatched block anyway -- what it does with it now is
         // count it.
-        activeWriter->pushBlock (inputs, channelCount, numSamples, recordingOffsetsForBlock);
+        activeWriter->pushBlock (inputs, channelCount, numSamples, recordingOffsetsForBlock,
+                                 recordingOffsetKindsForBlock);
     }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);

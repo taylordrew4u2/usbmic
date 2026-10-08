@@ -679,6 +679,14 @@ private:
     // message thread (recordingOffsetView). Both sized at startMonitoring().
     std::vector<int> recordingOffsets;
     std::unique_ptr<std::atomic<int>[]> recordingOffsetView;
+
+    // Consumer-owned, sized with recordingOffsets: whether each channel's
+    // offset is for a block its device has not confirmed, or takes one back
+    // (StemOffsetKind, handed to the writer beside the offsets), and the
+    // block each stream held at the last update, which is how a refusal is
+    // seen: a held block only ever falls when a provisional one is refused.
+    std::vector<StemOffsetKind> recordingOffsetKinds;
+    std::vector<size_t> heldBlockSeen;
     void updateRecordingOffsets() noexcept;
 
     /// A channel's own place in time beyond the cushion every stream shares:
@@ -792,7 +800,8 @@ private:
     /// Real-time safe.
     void mixAndPublish (const float* const* inputs, int channelCount,
                         float* const* outputs, int numOutputs, int numSamples,
-                        int outputFrameOffset, const int* recordingOffsetsForBlock) noexcept;
+                        int outputFrameOffset, const int* recordingOffsetsForBlock,
+                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept;
 };
 
 } // namespace mma

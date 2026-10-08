@@ -218,6 +218,111 @@ TEST_CASE (StemAligner_AShorterOffsetFirstCancelsSilenceNotYetWritten)
         REQUIRE (third[static_cast<size_t> (i)] == static_cast<float> (401 + i));
 }
 
+TEST_CASE (StemAligner_ALongerOffsetFirstCancelsSilenceNotYetTakenOut)
+{
+    // A shorter offset with no silence waiting to take out leaves it to be
+    // taken out as it arrives. A longer one before any has arrived simply
+    // cancels that: nothing is written, nothing is taken out, and the channel
+    // is held back exactly as before.
+    StemAligner a;
+    a.prepare (1);
+    a.setOffset (0, 500);
+
+    auto first = ramp (1, 1000);
+    a.process (0, first.data(), first.size());
+    a.setOffset (0, 200); // 300 still to take out, none of it here yet
+    a.setOffset (0, 500); // ...and back again before any arrives
+
+    auto second = ramp (1001, 1000);
+    a.process (0, second.data(), second.size());
+
+    REQUIRE (a.getSilenceInserted (0) == 0u);
+    REQUIRE (a.getSamplesDropped (0) == 0u);
+
+    std::vector<float> out (first);
+    out.insert (out.end(), second.begin(), second.end());
+
+    for (size_t i = 500; i < out.size(); ++i)
+        REQUIRE (out[i] == static_cast<float> (i - 500 + 1));
+}
+
+namespace {
+
+/// A stream whose driver held its audio back and then handed it over in one
+/// piece: a ramp, `gap` samples of the stream's silence, then the ramp again
+/// (the late audio itself is the stream's to skip, and does not reach here).
+std::vector<float> rampWithGap (int before, int gap, int after)
+{
+    std::vector<float> v;
+    for (int i = 0; i < before; ++i)
+        v.push_back (static_cast<float> (i + 1));
+    v.insert (v.end(), static_cast<size_t> (gap), 0.0f);
+    for (int i = 0; i < after; ++i)
+        v.push_back (static_cast<float> (before + gap + i + 1));
+    return v;
+}
+
+} // namespace
+
+TEST_CASE (StemAligner_ARefusedProvisionalOffsetPutsItsSilenceBackWhereItWas)
+{
+    // The quicker channel, held back 1400. Its driver goes quiet: its stream
+    // writes 1055 samples of silence, then one large delivery lands and the
+    // stream moves for it as if the device had grown to 1152 -- the offset
+    // shortens by 1088, provisionally, taking the gap's silence out of the
+    // newest end of the line and 33 more as it arrives. The device's next
+    // delivery is back at 64: a backlog, refused, and the offset goes back
+    // to 1400. The silence goes back where it was taken from, behind the
+    // samples that were waiting ahead of it, so the stem is the stream's
+    // audio held back by 1400 throughout -- nothing moved, nothing counted.
+    StemAligner a;
+    a.prepare (1);
+    a.setOffset (0, 1400);
+
+    // 3000 samples of ramp, the 1055-sample gap, then 128 of the stream's
+    // silence buffering up for the block it thought had grown, then audio.
+    auto in = rampWithGap (3000, 1055 + 128, 4000);
+    auto out = in;
+
+    const size_t atProvisional = 3000 + 1055;
+    a.process (0, out.data(), atProvisional);
+    a.setOffset (0, 1400 - 1088, StemOffsetKind::provisional);
+    a.process (0, out.data() + atProvisional, 64);
+    a.setOffset (0, 1400, StemOffsetKind::refused);
+    a.process (0, out.data() + atProvisional + 64, out.size() - atProvisional - 64);
+
+    REQUIRE (a.getSilenceInserted (0) == 0u);
+    REQUIRE (a.getSamplesDropped (0) == 0u);
+
+    for (size_t i = 0; i < 1400; ++i)
+        REQUIRE (out[i] == 0.0f);
+    for (size_t i = 1400; i < out.size(); ++i)
+        REQUIRE (out[i] == in[i - 1400]);
+}
+
+TEST_CASE (StemAligner_AConfirmedProvisionalOffsetStands)
+{
+    // The same provisional change, followed by a settled one rather than a
+    // refusal (another device moved the reference): the move's silence
+    // stays taken out, and is counted.
+    StemAligner a;
+    a.prepare (1);
+    a.setOffset (0, 1400);
+
+    auto in = rampWithGap (3000, 1055 + 128, 4000);
+    auto out = in;
+
+    const size_t atProvisional = 3000 + 1055;
+    a.process (0, out.data(), atProvisional);
+    a.setOffset (0, 1400 - 1088, StemOffsetKind::provisional);
+    a.process (0, out.data() + atProvisional, 64);
+    a.setOffset (0, 1400 - 1088 + 10);
+    a.process (0, out.data() + atProvisional + 64, out.size() - atProvisional - 64);
+
+    REQUIRE (a.getSamplesDropped (0) == 1088u);
+    REQUIRE (a.getSilenceInserted (0) == 10u);
+}
+
 TEST_CASE (StemAligner_AnOffsetPastItsBoundIsClampedAndSaidSo)
 {
     StemAligner a;

@@ -8,6 +8,22 @@
 
 namespace mma {
 
+/// Why a channel's offset changed, as far as its own device is concerned.
+///  - settled: the device's IO block is known (two deliveries at it), or
+///    the change is another device's doing.
+///  - provisional: the channel's own stream has just moved for a block one
+///    large delivery suggested and the device has not yet confirmed. It may
+///    be a driver handing over a backlog in one piece instead.
+///  - refused: the device's next delivery said it was a backlog, and the
+///    stream has gone back to its own block. This takes back the last
+///    provisional change; it is not a move of its own.
+enum class StemOffsetKind : uint8_t
+{
+    settled,
+    provisional,
+    refused
+};
+
 /// One channel's alignment changing: from `frame` of the take on (counted in
 /// frames the writer accepted), channel `channel` is to be held back by
 /// `offset` samples.
@@ -16,6 +32,7 @@ struct StemOffsetEvent
     uint64_t frame = 0;
     int channel = 0;
     int offset = 0;
+    StemOffsetKind kind = StemOffsetKind::settled;
 };
 
 /// Carries alignment changes from the audio thread to the writer thread,
@@ -71,6 +88,15 @@ private:
 ///    -- audio arrived first -- comes out of the newest samples waiting, so
 ///    a growth on a device that is not the slowest leaves its stem
 ///    seamless.
+///  - A shorter offset for a block the device has not confirmed is applied
+///    the same way, at once, while the move's silence is still at the newest
+///    end of the line -- and remembered. When the device refuses that block
+///    (a driver handed a backlog over in one piece, and the stream moved
+///    nothing in the end), the longer offset that follows puts that silence
+///    back exactly where it was taken from, behind the samples that were
+///    waiting ahead of it, and neither change is counted: the stem is as if
+///    nothing had happened. Writing fresh silence at the head instead put
+///    the audio still waiting from before the backlog's gap after it.
 ///  - The offset set before a channel's first sample is the take's starting
 ///    alignment: the leading channels start with that much silence.
 ///
@@ -94,8 +120,9 @@ public:
     void prepare (int numChannels);
 
     /// Writer thread: from the next sample process() takes for `channel`, it
-    /// is held back by `samples`.
-    void setOffset (int channel, int samples) noexcept;
+    /// is held back by `samples`. `kind` says whether the change is for a
+    /// block the device has not confirmed yet, or takes such a change back.
+    void setOffset (int channel, int samples, StemOffsetKind kind = StemOffsetKind::settled) noexcept;
 
     /// Writer thread: `frames` samples of one channel, in place, through its
     /// line.
@@ -126,6 +153,19 @@ private:
         size_t skipOwed = 0;    // silence still to take out as it arrives, for a shorter one
         bool started = false;
 
+        // The last provisional shorter offset, kept so a refusal can undo it:
+        // the silence it took out (from the newest end of the line, then as
+        // it arrived), how many samples were waiting ahead of that silence,
+        // and how many have gone out of the line since. Invalid once anything
+        // else changes the offset, or audio had to be taken out for it.
+        struct Undo
+        {
+            bool valid = false;
+            size_t silence = 0;
+            size_t ahead = 0;
+            size_t emitted = 0;
+        } undo;
+
         std::atomic<int> offset { 0 };
         std::atomic<int> startOffset { 0 };
         std::atomic<uint64_t> silenceInserted { 0 };
@@ -136,6 +176,7 @@ private:
     std::atomic<bool> exact { true };
 
     static void dropNewest (Line& line, size_t count) noexcept;
+    static size_t insertSilence (Line& line, size_t position, size_t count) noexcept;
 };
 
 } // namespace mma
