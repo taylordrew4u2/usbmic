@@ -1,4 +1,5 @@
 #pragma once
+#include "../Core/ElapsedClock.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../Core/Metering.h"
 #include <functional>
@@ -71,6 +72,7 @@ public:
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
 
 private:
+    mma::ElapsedClock meterClock { 1.0 / 60.0 };
     void timerCallback() override;
 
     Metering* metering = nullptr;

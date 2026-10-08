@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 #include "Core/Metering.h"
+#include "Core/ElapsedClock.h"
 #include <vector>
 
 using namespace mma;
@@ -109,4 +110,74 @@ TEST_CASE (Metering_PeakConsumedByTickIsNotReportedAgain)
     for (int i = 0; i < 600; ++i) // 10s: hold expires and decays to the floor
         m.tick (1.0 / 60.0);
     REQUIRE (m.getPeakHoldDb() < -50.0f);
+}
+
+namespace {
+
+double fakeNowSeconds = 0.0;
+double fakeNow() { return fakeNowSeconds; }
+
+} // namespace
+
+TEST_CASE (ElapsedClock_MeasuresRealTimeNotCallbacks)
+{
+    fakeNowSeconds = 100.0;
+    ElapsedClock clock (1.0 / 60.0, 5.0, &fakeNow);
+
+    // Nothing to measure from yet.
+    REQUIRE_NEAR (clock.tick(), 1.0 / 60.0, 1e-12);
+
+    fakeNowSeconds += 0.25; // a timer asked for 60 Hz, firing at 4
+    REQUIRE_NEAR (clock.tick(), 0.25, 1e-12);
+
+    // A machine asleep for an hour is one capped step, not an hour of
+    // observation handed to a detector.
+    fakeNowSeconds += 3600.0;
+    REQUIRE_NEAR (clock.tick(), 5.0, 1e-12);
+
+    // A cadence by the clock: due once its period has passed, however many
+    // callbacks that took.
+    REQUIRE_FALSE (clock.isDue (0.5));
+    fakeNowSeconds += 0.49;
+    REQUIRE_FALSE (clock.isDue (0.5));
+    fakeNowSeconds += 0.02;
+    REQUIRE (clock.isDue (0.5));
+}
+
+TEST_CASE (Metering_PeakHoldLastsTwoRealSecondsWhenTheTimerIsThrottled)
+{
+    // App Nap throttles the 60 Hz meter timer to a few callbacks a second. At
+    // 1/60 s a callback the 2 s hold lasted 120 callbacks -- half a minute at
+    // 4 Hz -- so a peak from long ago sat on the meter as if it were now.
+    fakeNowSeconds = 50.0;
+    ElapsedClock clock (1.0 / 60.0, 5.0, &fakeNow);
+    Metering m (48000.0);
+
+    m.pushBlockStats (1.0f, 64);
+    m.tick (clock.tick());
+    REQUIRE (m.getPeakHoldDb() > -1.0f);
+
+    // Three real seconds at 4 callbacks a second, the room silent.
+    for (int i = 0; i < 12; ++i)
+    {
+        fakeNowSeconds += 0.25;
+        m.pushBlockStats (0.0f, 64);
+        m.tick (clock.tick());
+    }
+
+    // Held for two seconds, then falling at 20 dB/s for one.
+    REQUIRE (m.getPeakHoldDb() < -15.0f);
+    REQUIRE (m.getPeakHoldDb() > -25.0f);
+}
+
+TEST_CASE (Metering_ALongStepOnlyDecaysThePartPastTheHold)
+{
+    // One 2.5 s step -- a stalled message thread -- is two seconds of hold
+    // and half a second of decay, not two and a half seconds of decay.
+    Metering m (48000.0);
+    m.pushBlockStats (1.0f, 64);
+    m.tick (1.0 / 60.0);
+    m.pushBlockStats (0.0f, 64);
+    m.tick (2.5);
+    REQUIRE_NEAR (m.getPeakHoldDb(), -10.0, 0.5);
 }

@@ -92,11 +92,14 @@ float Metering::tick (double dtSeconds) noexcept
         peakHoldElapsed += dtSeconds;
         if (peakHoldElapsed > kPeakHoldSeconds)
         {
-            const double decaying = peakHoldElapsed - kPeakHoldSeconds;
-            peakHoldDb = static_cast<float> (peakHoldDb - kPeakDecayDbPerSecond * dtSeconds);
+            // Only the part of this step past the hold decays. With steps of
+            // real elapsed time -- a throttled timer can hand over a second
+            // at once -- charging the whole step dropped a peak up to 20 dB
+            // in the tick its hold ran out.
+            const double decaying = std::min (dtSeconds, peakHoldElapsed - kPeakHoldSeconds);
+            peakHoldDb = static_cast<float> (peakHoldDb - kPeakDecayDbPerSecond * decaying);
             peakHoldDb = std::max (peakHoldDb, blockDb);
             peakHoldDb = std::clamp (peakHoldDb, kMinDb, kMaxDb);
-            (void) decaying;
         }
     }
 

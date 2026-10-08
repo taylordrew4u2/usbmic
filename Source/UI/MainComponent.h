@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "MainScreen.h"
+#include "../Core/ElapsedClock.h"
 #include "AdvancedPanel.h"
 #include "CameraPanel.h"
 #include "HelpPanel.h"
@@ -136,7 +137,7 @@ private:
     void applyPanelVisibility();
     int lastMicCount = -1;
     juce::StringArray lastAdvancedTrimRows; // identity and name of each trim row shown
-    int framesUntilStatusRefresh = 1;
+    mma::ElapsedClock statusClock { 1.0 / kStatusRefreshHz };
 
     // What the live "files are appearing" line last reported, so it is only
     // rebuilt when the folder on disk has actually changed underneath it.
