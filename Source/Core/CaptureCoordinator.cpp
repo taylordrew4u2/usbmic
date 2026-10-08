@@ -52,6 +52,8 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // the latencies only once latenciesReady says they are filled in.
     latenciesReady.store (false, std::memory_order_relaxed);
     channelInputLatency.assign (chans.size(), 0);
+    channelReportedLatency.assign (chans.size(), -1);
+    latencyClamped = false;
     recordingOffsets.assign (chans.size(), 0);
     recordingOffsetKinds.assign (chans.size(), StemOffsetKind::settled);
     heldBlockSeen.assign (chans.size(), 0);
@@ -399,14 +401,32 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
             const bool failed = std::find (failedDevices.begin(), failedDevices.end(), channels[i].deviceId)
                                 != failedDevices.end();
 
-            channelInputLatency[i] = failed ? -1
-                                            : std::clamp (backend.getInputLatencyFrames (channels[i].deviceId),
-                                                          0, kLargestCredibleInputLatency);
+            if (failed)
+            {
+                channelInputLatency[i] = -1;
+                continue;
+            }
+
+            // A figure past the bound is not believed, and the stems cannot
+            // be lined up by it: the take's record keeps what the driver
+            // said and says the stems are not exactly aligned, so they get
+            // checked in an editor. Lining up to the bound instead put a
+            // clap 26000 samples apart in two stems, twice in the mix, under
+            // a record saying it was exact.
+            const int reported = backend.getInputLatencyFrames (channels[i].deviceId);
+            channelReportedLatency[i] = reported;
+            channelInputLatency[i] = std::clamp (reported, 0, kLargestCredibleInputLatency);
+            latencyClamped = latencyClamped || channelInputLatency[i] != reported;
             longest = std::max (longest, channelInputLatency[i]);
         }
 
         alignedInputLatencyFrames = longest;
         latenciesReady.store (true, std::memory_order_release);
+
+        // Monitoring rebuilt under a take still running: that take's stems
+        // are lined up by these figures from here on.
+        if (pipeline != nullptr)
+            latencyClampedThisTake = latencyClampedThisTake || latencyClamped;
     }
 
     monitoring = true;
@@ -926,6 +946,7 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     lastTakeAlignmentDropped.clear();
     lastTakeAlignmentStart.clear();
     lastTakeStemsAligned = false;
+    latencyClampedThisTake = latencyClamped;
 
     // A stream's shift counter runs for as long as the stream does, across
     // takes; this take's share is measured from here.
@@ -1012,7 +1033,7 @@ void CaptureCoordinator::stopRecording()
             lastTakeAlignmentStart[static_cast<size_t> (ch)] = pipeline->getChannelStartAlignmentOffset (ch);
         }
 
-        lastTakeStemsAligned = pipeline->isAlignmentExact();
+        lastTakeStemsAligned = pipeline->isAlignmentExact() && ! latencyClampedThisTake;
 
         // The streams run on after the take; what they had shifted by now is
         // the take's.
@@ -1139,7 +1160,7 @@ void CaptureCoordinator::stopRecording()
     lastTakeAlignmentSilence = state->result.alignmentSilence;
     lastTakeAlignmentDropped = state->result.alignmentDropped;
     lastTakeAlignmentStart = state->result.alignmentStart;
-    lastTakeStemsAligned = state->result.stemsAligned;
+    lastTakeStemsAligned = state->result.stemsAligned && ! latencyClampedThisTake;
 }
 
 bool CaptureCoordinator::isDeviceDelivering (const std::string& deviceId,
@@ -1598,6 +1619,19 @@ int CaptureCoordinator::getDeviceInputLatencyFrames (const std::string& deviceId
     return channelInputLatency[static_cast<size_t> (i)];
 }
 
+std::optional<int> CaptureCoordinator::getDeviceReportedInputLatencyFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0 || ! latenciesReady.load (std::memory_order_acquire)
+        || static_cast<size_t> (i) >= channelReportedLatency.size()
+        || static_cast<size_t> (i) >= channelInputLatency.size()
+        || channelInputLatency[static_cast<size_t> (i)] < 0)
+        return std::nullopt;
+
+    return channelReportedLatency[static_cast<size_t> (i)];
+}
+
 int CaptureCoordinator::getDeviceIoBlockFrames (const std::string& deviceId) const noexcept
 {
     const int i = channelIndexForDevice (deviceId);
@@ -1723,7 +1757,8 @@ int CaptureCoordinator::getDeviceIoShiftFramesThisTake (const std::string& devic
 
 bool CaptureCoordinator::areStemsAligned() const noexcept
 {
-    return pipeline != nullptr ? pipeline->isAlignmentExact() : lastTakeStemsAligned;
+    return pipeline != nullptr ? pipeline->isAlignmentExact() && ! latencyClampedThisTake
+                               : lastTakeStemsAligned;
 }
 
 void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numInputs,

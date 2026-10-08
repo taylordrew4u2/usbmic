@@ -27,7 +27,13 @@ struct DeviceRecord
     /// open, or this is an older session.json.
     ///   inputLatencyFrames   -- what the driver reported (device latency,
     ///                           safety offset and stream latency on macOS;
-    ///                           zero where the platform does not report it)
+    ///                           zero where the platform does not report it),
+    ///                           bounded to 0..24000: the figure the stems
+    ///                           were lined up by
+    ///   reportedInputLatencyFrames -- only when the driver's own figure was
+    ///                           past that bound and not believed: what it
+    ///                           said. The take's stemsAligned is then false,
+    ///                           since the stems were lined up by the bound
     ///   ioBlockFrames        -- the largest block the device handed over: its
     ///                           real IO size, which a sample can wait for
     ///                           before it is delivered
@@ -63,6 +69,7 @@ struct DeviceRecord
     ///                           growth past the cushion is a gap counted in
     ///                           dropouts instead
     int inputLatencyFrames = -1;
+    std::optional<int> reportedInputLatencyFrames;
     int ioBlockFrames = 0;
     int alignmentStartFrames = 0;
     int alignmentDelayFrames = 0;
@@ -131,9 +138,10 @@ struct SessionMetadata
     /// Whether the stems and MIX.wav were lined up exactly as each device's
     /// alignmentStartFrames and alignmentDelayFrames say. False when the
     /// writer could not (an offset past its bound, a change that landed
-    /// late) -- or for an older session.json, whose stems were lined up on
-    /// the monitor path or not at all; then each device's offsets are what to
-    /// slide its stems by.
+    /// late), when a device's reported input latency was past belief
+    /// (reportedInputLatencyFrames) -- or for an older session.json, whose
+    /// stems were lined up on the monitor path or not at all; then each
+    /// device's offsets are what to slide its stems by.
     bool stemsAligned = false;
     std::vector<DeviceRecord> devices;
     std::vector<DriftLogEntry> driftLog;

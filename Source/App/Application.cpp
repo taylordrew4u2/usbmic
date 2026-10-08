@@ -4607,6 +4607,14 @@ void Application::recordTakeAlignment()
     {
         const int latency = capture->getDeviceInputLatencyFrames (record.usbId);
         record.inputLatencyFrames = latency;
+
+        // Kept only where the driver's own figure was not believed, beside
+        // the bound the stems were lined up by.
+        record.reportedInputLatencyFrames.reset();
+        if (const auto reported = capture->getDeviceReportedInputLatencyFrames (record.usbId);
+            latency >= 0 && reported.has_value() && *reported != latency)
+            record.reportedInputLatencyFrames = *reported;
+
         record.ioBlockFrames = latency >= 0 ? capture->getDeviceIoBlockFrames (record.usbId) : 0;
         record.alignmentDelayFrames = latency >= 0 ? capture->getDeviceAlignmentDelayFrames (record.usbId) : 0;
         record.alignmentStartFrames = latency >= 0 ? capture->getDeviceAlignmentStartFrames (record.usbId) : 0;

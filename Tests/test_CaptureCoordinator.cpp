@@ -613,6 +613,68 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     REQUIRE (std::llabs (mix - couch) <= 1);
 }
 
+TEST_CASE (CaptureCoordinator_ALatencyPastBeliefIsBoundedAndTheStemsAreNotCalledAligned)
+{
+    // Couch's driver reports 50000 frames of input latency -- over a second.
+    // It is not believed: the stems are lined up by the 24000-frame bound,
+    // and since that cannot be right either, the take says its stems are not
+    // exactly aligned, with the driver's own figure beside the bound, so the
+    // user is told to check them rather than shown a clap twice in the mix
+    // under a record that calls it exact.
+    const auto dir = tempDir() + "/latency_past_belief";
+    REQUIRE (std::system (("mkdir -p '" + dir + "'").c_str()) == 0);
+
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = 12;
+    backend.inputLatencyFrames["dev-b"] = 50000;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    REQUIRE (c.getDeviceInputLatencyFrames ("dev-b") == 24000);
+    REQUIRE (c.getDeviceReportedInputLatencyFrames ("dev-b") == std::optional<int> (50000));
+    REQUIRE (c.getDeviceReportedInputLatencyFrames ("dev-a") == std::optional<int> (12));
+    REQUIRE (c.getAlignedInputLatencyFrames() == 24000);
+
+    REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
+
+    std::vector<float> a (64, 0.1f), b (64, 0.1f), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    for (int block = 0; block < 100; ++block)
+    {
+        backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 64);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    REQUIRE (! c.areStemsAligned());
+    c.stopRecording();
+    REQUIRE (! c.areStemsAligned());
+    c.stopMonitoring();
+    REQUIRE (! c.getDeviceReportedInputLatencyFrames ("dev-b").has_value());
+
+    // A rig whose figures are believable is aligned as before.
+    backend.inputLatencyFrames["dev-b"] = 49;
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+    REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:01Z"));
+
+    for (int block = 0; block < 100; ++block)
+    {
+        backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+        backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 64);
+        c.pullOutputBlock (outs, 1, 64);
+    }
+
+    c.stopRecording();
+    REQUIRE (c.areStemsAligned());
+    c.stopMonitoring();
+}
+
 namespace {
 
 int64_t ioSizeClockNs = 0;

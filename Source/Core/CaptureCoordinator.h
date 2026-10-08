@@ -4,6 +4,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -155,6 +156,13 @@ public:
     /// offset its stems end with. Message thread; reads atomics only.
     int getDeviceInputLatencyFrames (const std::string& deviceId) const noexcept;
     int getDeviceIoBlockFrames (const std::string& deviceId) const noexcept;
+
+    /// What the driver itself reported as the device's input latency, before
+    /// it was bounded: a figure past half a second (24000 frames), or below
+    /// zero, is not believed, the stems are lined up by the bound, and
+    /// areStemsAligned() is false for the take. Nothing when the device did
+    /// not open or monitoring is not up.
+    std::optional<int> getDeviceReportedInputLatencyFrames (const std::string& deviceId) const noexcept;
     int getDeviceAlignmentDelayFrames (const std::string& deviceId) const noexcept;
 
     /// The offset the device's stems started the current (or just finished)
@@ -187,8 +195,9 @@ public:
 
     /// Whether the current (or just finished) take's stems were lined up
     /// exactly as asked: false when an offset had to be clamped or a change
-    /// landed late (WritePipeline::isAlignmentExact), or when no take has
-    /// recorded. The take's record says so, with each device's offset, so
+    /// landed late (WritePipeline::isAlignmentExact), when a device's
+    /// reported input latency was past belief and had to be bounded (see
+    /// getDeviceReportedInputLatencyFrames), or when no take has recorded. The take's record says so, with each device's offset, so
     /// whatever the writer could not do can be done in an editor.
     bool areStemsAligned() const noexcept;
 
@@ -690,6 +699,13 @@ private:
     // latenciesReady.
     std::vector<int> channelInputLatency;
     std::atomic<bool> latenciesReady { false };
+
+    // Message thread: what each driver reported before it was bounded, and
+    // whether any figure had to be -- for the monitoring session, and for
+    // the take running or just finished (areStemsAligned()).
+    std::vector<int> channelReportedLatency;
+    bool latencyClamped = false;
+    bool latencyClampedThisTake = false;
 
     // Per channel, how far it is held back in its stem to line up with the
     // slowest device: worked out by the consumer before every block it hands

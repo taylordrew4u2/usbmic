@@ -124,6 +124,14 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     unknown.usbId = "usb-3";
     m.devices.push_back (unknown);
 
+    DeviceRecord confused; // a driver reporting over a second: kept beside the bound
+    confused.name = "Confused";
+    confused.usbId = "usb-4";
+    confused.inputLatencyFrames = 24000;
+    confused.reportedInputLatencyFrames = 50000;
+    confused.ioBlockFrames = 64;
+    m.devices.push_back (confused);
+
     const auto json = m.toJsonString();
     REQUIRE (json.find ("\"inputLatencyFrames\"") != std::string::npos);
     REQUIRE (json.find ("\"alignmentDelayFrames\"") != std::string::npos);
@@ -136,7 +144,7 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     const auto back = SessionMetadata::fromJsonString (json);
     REQUIRE (back.alignedInputLatencyFrames == 49);
     REQUIRE (back.stemsAligned);
-    REQUIRE (back.devices.size() == 3u);
+    REQUIRE (back.devices.size() == 4u);
     REQUIRE (back.devices[0].inputLatencyFrames == 12);
     REQUIRE (back.devices[0].ioBlockFrames == 64);
     REQUIRE (back.devices[0].alignmentDelayFrames == 37 + 1092);
@@ -149,6 +157,10 @@ TEST_CASE (SessionMetadata_RecordsEachDevicesInputLatencyAndTheAlignmentApplied)
     REQUIRE (back.devices[1].ioShiftFrames == 32);
     REQUIRE (back.devices[0].ioShiftFrames == 0);
     REQUIRE (back.devices[1].inputLatencyFrames == 49);
+    REQUIRE (! back.devices[0].reportedInputLatencyFrames.has_value());
+    REQUIRE (! back.devices[1].reportedInputLatencyFrames.has_value());
+    REQUIRE (back.devices[3].inputLatencyFrames == 24000);
+    REQUIRE (back.devices[3].reportedInputLatencyFrames == std::optional<int> (50000));
     REQUIRE (back.devices[1].ioBlockFrames == 1156);
     REQUIRE (back.devices[1].alignmentDelayFrames == 0);
     REQUIRE (back.devices[2].inputLatencyFrames == -1);
