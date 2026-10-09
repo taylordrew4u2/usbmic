@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -120,17 +121,15 @@ public:
     /// refused when it reaches its rename.
     bool retire (std::chrono::milliseconds waitAtMost)
     {
-        {
-            const std::lock_guard<std::mutex> guard (state->mutex);
-            state->retired = true;
-            state->pending.reset();
-        }
+        std::unique_lock<std::mutex> guard (state->mutex);
+        state->retired = true;
+        state->pending.reset();
 
-        if (! state->commitLock.try_lock_for (waitAtMost))
-            return false;
-
-        state->commitLock.unlock();
-        return true;
+        // A refresh that passed its check before the flag was set is counted
+        // in renamesInFlight under this same mutex, so it is either counted
+        // here or it sees the flag and never renames.
+        return state->renameFinished.wait_for (guard, waitAtMost,
+                                               [this] { return state->renamesInFlight == 0; });
     }
 
     /// The stop-time record: retires the refreshes and writes `text` on a
@@ -194,7 +193,9 @@ private:
     struct State
     {
         mutable std::mutex mutex;          // the fields below; never held across I/O
-        std::timed_mutex commitLock;       // held across a rename, and only a rename
+        std::mutex renameOrder;            // one rename at a time, held across a rename only
+        std::condition_variable renameFinished; // signalled, under `mutex`, as a rename ends
+        int renamesInFlight = 0;           // renames that passed the guard and have not ended
         WriteFunction write;
         std::optional<std::pair<std::string, std::string>> pending;
         std::uint64_t pendingNumber = 0;
@@ -204,21 +205,26 @@ private:
         bool retired = false;
     };
 
-    // The generation guard, checked under the commit lock right before the
+    // The generation guard, checked under the rename lock right before the
     // rename: a refresh after Stop, or any text older than the one already in
-    // place, is refused. retire() sets its flag before it asks for this lock,
-    // so either it sees a refresh's rename finish or that refresh sees the flag
-    // and never renames.
+    // place, is refused. The guard and retire()'s flag share one mutex, so
+    // either retire() counts a rename already past the guard and waits for it,
+    // or that refresh sees the flag and never renames.
     static Commit commitFor (std::shared_ptr<State> s, std::uint64_t number, bool isLast)
     {
         return [s = std::move (s), number, isLast] (const Rename& rename)
         {
-            const std::lock_guard<std::timed_mutex> held (s->commitLock);
+            // A plain mutex and a counter, not a timed mutex: retire() waits on
+            // the counter with a deadline instead of trying the lock, which
+            // ThreadSanitizer cannot follow through glibc's clocked lock.
+            const std::lock_guard<std::mutex> order (s->renameOrder);
             {
                 const std::lock_guard<std::mutex> guard (s->mutex);
 
                 if (number <= s->inPlace || (s->retired && ! isLast))
                     return false;
+
+                ++s->renamesInFlight;
             }
 
             bool renamed = false;
@@ -231,12 +237,16 @@ private:
             {
             }
 
-            if (renamed)
             {
                 const std::lock_guard<std::mutex> guard (s->mutex);
-                s->inPlace = number;
+
+                if (renamed)
+                    s->inPlace = number;
+
+                --s->renamesInFlight;
             }
 
+            s->renameFinished.notify_all();
             return renamed;
         };
     }
