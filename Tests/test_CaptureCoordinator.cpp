@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <vector>
 #include <thread>
@@ -26,6 +27,15 @@ std::string tempDir()
             return std::string (dir);
     }
     return "/tmp";
+}
+
+// A shell `mkdir -p` is not there on Windows, where every test that made its
+// take folder that way failed before recording a sample.
+bool makeDir (const std::string& dir)
+{
+    std::error_code ec;
+    std::filesystem::create_directories (std::filesystem::u8path (dir), ec);
+    return ! ec && std::filesystem::is_directory (std::filesystem::u8path (dir), ec);
 }
 
 // §6.1 writes BWF: RIFF 12 + fmt (8+16) + bext (8+602) + "data" tag 4.
@@ -625,7 +635,7 @@ TEST_CASE (CaptureCoordinator_TheTakesStartingOffsetIsRightBeforeTheWriterReache
     // take's first half-minute leaves, and the one a user is told to slide
     // the stems by when they are not called aligned.
     const auto dir = tempDir() + "/start_offset_before_writer";
-    REQUIRE (std::system (("mkdir -p '" + dir + "'").c_str()) == 0);
+    REQUIRE (makeDir (dir));
 
     FakeBackend backend;
     backend.grantedOutputBufferFrames = 64;
@@ -680,7 +690,7 @@ TEST_CASE (CaptureCoordinator_ALatencyPastBeliefIsBoundedAndTheStemsAreNotCalled
     // user is told to check them rather than shown a clap twice in the mix
     // under a record that calls it exact.
     const auto dir = tempDir() + "/latency_past_belief";
-    REQUIRE (std::system (("mkdir -p '" + dir + "'").c_str()) == 0);
+    REQUIRE (makeDir (dir));
 
     FakeBackend backend;
     backend.grantedOutputBufferFrames = 64;
@@ -780,8 +790,7 @@ IoSizeTakeResult recordWithIoSizes (int couchBefore, int couchAfter, long long s
     std::remove ((dir + "/01_Kitchen.wav").c_str());
     std::remove ((dir + "/02_Couch.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
-    std::string mk = "mkdir -p '" + dir + "'";
-    REQUIRE (std::system (mk.c_str()) == 0);
+    REQUIRE (makeDir (dir));
 
     DeviceInputStream::setClockForTesting (ioSizeClock);
     ioSizeClockNs = 1;
@@ -1141,8 +1150,7 @@ BacklogTakeResult recordBacklog (int couchLatency, long long backlogAt, int back
     std::remove ((dir + "/01_Kitchen.wav").c_str());
     std::remove ((dir + "/02_Couch.wav").c_str());
     std::remove ((dir + "/MIX.wav").c_str());
-    std::string mk = "mkdir -p '" + dir + "'";
-    REQUIRE (std::system (mk.c_str()) == 0);
+    REQUIRE (makeDir (dir));
 
     DeviceInputStream::setClockForTesting (ioSizeClock);
     ioSizeClockNs = 1;
