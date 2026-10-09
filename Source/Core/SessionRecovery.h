@@ -41,10 +41,15 @@ struct RecoveredSession
     /// The folder's modification time, milliseconds since 1970. Orders the
     /// card newest first across both roots: the scans finish in either order.
     int64_t modifiedMs = 0;
-    /// Camera movies beside the audio. Nothing repairs them: AVFoundation
-    /// writes a movie fragment every ten seconds, so a movie cut off by a crash
-    /// opens up to its last fragment -- or not at all if the take was shorter.
+    /// Camera movies beside the audio, in whatever container the camera
+    /// wrote (see countCameraMovie). Nothing repairs them.
     int movieCount = 0;
+    /// Of those, the QuickTime movies (.mov) AVFoundation writes on a Mac: it
+    /// writes a movie fragment every ten seconds, so one cut off by a crash
+    /// opens up to its last fragment -- or not at all if the take was
+    /// shorter. A Windows camera's .wmv is not written that way, and nothing
+    /// is promised about where it ends.
+    int quickTimeMovieCount = 0;
     /// The take's own record says its local backup copy had stopped being
     /// written before the record was last refreshed -- the backup's drive
     /// filled or failed, or the backup was switched off mid-take. That copy
@@ -106,6 +111,7 @@ struct RecoveredTakeRow
     int emptyFileCount = 0;
     double longestSeconds = 0.0;
     int movieCount = 0;
+    int quickTimeMovieCount = 0;
     /// The row is the local backup copy, because the card's copy could not be
     /// repaired; said in the detail line, or the user opens a folder that is
     /// not on the card they recorded to and wonders why.
@@ -151,6 +157,19 @@ public:
     /// Returns frames == 0 for anything that is not a readable WAV, rather than
     /// throwing -- a folder recovered off a card can contain anything.
     static RecoveredFile repairWavFile (const std::string& path);
+
+    /// Counts `fileName`, one file in an interrupted take's folder, into
+    /// `session` when it is a camera movie: in the container this computer's
+    /// cameras write (`cameraExtension`, juce::CameraDevice's own -- ".mov"
+    /// on a Mac, ".wmv" on Windows) or any other a camera writes (.mov, .mp4,
+    /// .wmv), for a card recorded on another computer. Matched without regard
+    /// to case. A hidden file is the operating system's (isSystemClutterFile),
+    /// never a movie. Only .mov counts as a QuickTime movie.
+    ///
+    /// Windows' .wmv was not counted at all, so the recovery card never
+    /// mentioned a Windows take's movies.
+    static void countCameraMovie (RecoveredSession& session, const std::string& fileName,
+                                  const std::string& cameraExtension);
 
     /// Adds one root's scan to the list. A take found in both the save
     /// location and the local backup -- under the same folder name, or as the

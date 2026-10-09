@@ -606,7 +606,7 @@ TEST_CASE (SessionRecovery_aLockedCardsTakeIsOfferedFromTheBackupWithItsMoviesAc
     RecoveredSession card;
     card.folder = "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take";
     card.mirrorFolder = "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2";
-    card.movieCount = 1;
+    SessionRecovery::countCameraMovie (card, "V01_FaceTime.mov", ".mov");
     card.modifiedMs = 2000;
     card.files.push_back ({ "01_Alice.wav", 0, 0.0, false, false, true });
     card.files.push_back ({ "MIX.wav", 0, 0.0, false, false, true });
@@ -719,6 +719,7 @@ TEST_CASE (SessionRecovery_theCardSaysWhatACrashMeansForTheCameraMovies)
     session.folder = "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take";
     session.files.push_back ({ "MIX.wav", 48000 * 64, 64.0, true, false, false });
     session.movieCount = 2;
+    session.quickTimeMovieCount = 2;
 
     const auto row = recoveredTakeRow (session);
     REQUIRE (row.movieCount == 2);
@@ -727,10 +728,58 @@ TEST_CASE (SessionRecovery_theCardSaysWhatACrashMeansForTheCameraMovies)
     // Shorter than one fragment: there may be nothing in the movie to open.
     session.files[0].seconds = 4.0;
     session.movieCount = 1;
+    session.quickTimeMovieCount = 1;
     REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
              == "1 file, 4s of sound; 1 camera movie, which may not open");
 
     // No camera, no mention.
     session.movieCount = 0;
+    session.quickTimeMovieCount = 0;
     REQUIRE (recoveredTakeDetail (recoveredTakeRow (session)) == "1 file, 4s of sound");
+}
+
+TEST_CASE (SessionRecovery_aWindowsTakesMoviesAreCountedWithoutAQuickTimePromise)
+{
+    // JUCE's Windows cameras write .wmv. The scan counted *.mov and *.mp4
+    // only, so a Windows take's recovery row never mentioned its movies --
+    // and AVFoundation's ten-second fragments are nothing a .wmv promises.
+    RecoveredSession session;
+    session.folder = "D:\\RECORDINGS\\2026-09-01_2000_Take";
+    session.files.push_back ({ "MIX.wav", 48000 * 64, 64.0, true, false, false });
+
+    for (const char* name : { "V01_Logitech.wmv", "V02_Capture.WMV", "._V01_Logitech.wmv", "MIX.wav",
+                              "session.json", "activity.log", ".DS_Store", "notes.txt" })
+        SessionRecovery::countCameraMovie (session, name, ".wmv");
+
+    REQUIRE (session.movieCount == 2);
+    REQUIRE (session.quickTimeMovieCount == 0);
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
+             == "1 file, 1m 4s of sound; 2 camera movies, which weren't finished and may not open");
+
+    session.files[0].seconds = 4.0;
+    session.movieCount = 0;
+    SessionRecovery::countCameraMovie (session, "V01_Logitech.wmv", ".wmv");
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
+             == "1 file, 4s of sound; 1 camera movie, which wasn't finished and may not open");
+
+    // A Mac's movies, read on Windows, are still QuickTime's; a card with
+    // both kinds is promised nothing about either.
+    RecoveredSession mixed = session;
+    mixed.movieCount = 0;
+    mixed.quickTimeMovieCount = 0;
+    SessionRecovery::countCameraMovie (mixed, "V01_FaceTime.mov", ".wmv");
+    REQUIRE (mixed.movieCount == 1);
+    REQUIRE (mixed.quickTimeMovieCount == 1);
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (mixed)) == "1 file, 4s of sound; 1 camera movie, which may not open");
+    SessionRecovery::countCameraMovie (mixed, "V02_Logitech.wmv", ".mov");
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (mixed))
+             == "1 file, 4s of sound; 2 camera movies, which weren't finished and may not open");
+
+    // Whatever container this computer's cameras write is a movie.
+    RecoveredSession other;
+    SessionRecovery::countCameraMovie (other, "V01_Cam.avi", ".avi");
+    SessionRecovery::countCameraMovie (other, "V02_Cam.mp4", ".avi");
+    SessionRecovery::countCameraMovie (other, "V03_Cam.avi", ".mov");
+    REQUIRE (other.movieCount == 2);
+    REQUIRE (other.quickTimeMovieCount == 0);
 }

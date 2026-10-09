@@ -1,7 +1,9 @@
 #include "SessionRecovery.h"
+#include "TakeCompleteness.h"
 #include "Utf8Path.h"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -308,6 +310,7 @@ RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session)
     row.emptyFileCount = session.emptyFileCount();
     row.longestSeconds = session.longestSeconds();
     row.movieCount = session.movieCount;
+    row.quickTimeMovieCount = session.quickTimeMovieCount;
     row.isBackupBecauseCardCopyUnrepairable = session.shownBecauseCardCopyUnrepairable;
     row.moviesInCardCopy = session.moviesInCardCopy;
     return row;
@@ -360,10 +363,7 @@ std::string recoveredTakeDetail (const RecoveredTakeRow& take)
 
     // The card said only what happened to the sound, and the camera movies in
     // the same folder were not mentioned at all -- so the first anyone heard
-    // of a movie cut short was opening it. Nothing here repairs a movie:
-    // AVFoundation writes one fragment every ten seconds, so an interrupted
-    // movie plays up to its last fragment, and one shorter than that may not
-    // open at all.
+    // of a movie cut short was opening it. Nothing here repairs a movie.
     if (take.movieCount > 0)
     {
         detail += "; " + std::to_string (take.movieCount)
@@ -375,11 +375,48 @@ std::string recoveredTakeDetail (const RecoveredTakeRow& take)
         if (take.moviesInCardCopy)
             detail += " on the card only";
 
-        detail += take.longestSeconds < 10.0 ? ", which may not open"
-                                             : ", which may end up to 10 s early";
+        // AVFoundation writes a QuickTime movie one ten-second fragment at a
+        // time, so an interrupted one plays up to its last fragment, and one
+        // shorter than that may not open at all. That is promised of .mov
+        // only: what a crash leaves of another container -- the .wmv a
+        // Windows camera writes -- is not known here, so it is not guessed at.
+        if (take.quickTimeMovieCount == take.movieCount)
+            detail += take.longestSeconds < 10.0 ? ", which may not open"
+                                                 : ", which may end up to 10 s early";
+        else
+            detail += take.movieCount == 1 ? ", which wasn't finished and may not open"
+                                           : ", which weren't finished and may not open";
     }
 
     return detail;
+}
+
+void SessionRecovery::countCameraMovie (RecoveredSession& session, const std::string& fileName,
+                                        const std::string& cameraExtension)
+{
+    if (isSystemClutterFile (fileName))
+        return;
+
+    const auto endsWith = [&fileName] (const std::string& extension)
+    {
+        if (extension.empty() || fileName.size() <= extension.size())
+            return false;
+
+        return std::equal (extension.rbegin(), extension.rend(), fileName.rbegin(),
+                           [] (char a, char b)
+                           {
+                               return std::tolower (static_cast<unsigned char> (a))
+                                   == std::tolower (static_cast<unsigned char> (b));
+                           });
+    };
+
+    if (! (endsWith (cameraExtension) || endsWith (".mov") || endsWith (".mp4") || endsWith (".wmv")))
+        return;
+
+    ++session.movieCount;
+
+    if (endsWith (".mov"))
+        ++session.quickTimeMovieCount;
 }
 
 bool SessionRecovery::backupCanStandInForCard (const RecoveredSession& card, const RecoveredSession& backup)
@@ -441,6 +478,7 @@ RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
             backup.shownBecauseCardCopyUnrepairable = true;
             backup.moviesInCardCopy = card.movieCount > 0;
             backup.movieCount = card.movieCount;
+            backup.quickTimeMovieCount = card.quickTimeMovieCount;
         };
 
         if (existing == list.shown.end())

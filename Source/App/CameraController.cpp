@@ -1441,15 +1441,19 @@ uint64_t CameraController::getViewerRevision (const std::string& deviceId) const
 #endif
 }
 
+juce::String CameraController::getMovieFileExtension()
+{
+#if JUCE_USE_CAMERA
+    return juce::CameraDevice::getFileExtension();
+#else
+    return ".mov";
+#endif
+}
+
 juce::StringArray CameraController::getPlannedFileNames() const
 {
     juce::StringArray names;
-
-#if JUCE_USE_CAMERA
-    const auto extension = juce::CameraDevice::getFileExtension();
-#else
-    const juce::String extension { ".mov" };
-#endif
+    const auto extension = getMovieFileExtension();
 
     for (const auto& plan : selection.buildPlans())
         names.add (juce::String (plan.fileName) + extension);
@@ -1459,11 +1463,7 @@ juce::StringArray CameraController::getPlannedFileNames() const
 
 juce::String CameraController::getPlannedFileNameFor (const std::string& deviceId) const
 {
-#if JUCE_USE_CAMERA
-    const auto extension = juce::CameraDevice::getFileExtension();
-#else
-    const juce::String extension { ".mov" };
-#endif
+    const auto extension = getMovieFileExtension();
 
     for (const auto& plan : selection.buildPlans())
         if (plan.deviceId == deviceId)

@@ -406,7 +406,10 @@ recording remain part of the physical-hardware gate.
   got a stop timestamp, repairs their file headers from the audio actually on
   disk, and shows you what it found before the main screen — with a button that
   opens the folder. Files holding less than a second are reported as empty
-  rather than offered, and are left on disk rather than deleted.
+  rather than offered, and are left on disk rather than deleted. Camera
+  movies in the take are counted on the card too, but nothing repairs them:
+  a Mac's (`.mov`) plays up to its last ten-second fragment, and one from a
+  Windows camera (`.wmv`) was not finished and may not open.
 
 <p align="center">
   <img src="images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">

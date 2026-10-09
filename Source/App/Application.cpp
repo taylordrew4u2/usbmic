@@ -7587,6 +7587,9 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         result.activity.push_back ({ level, "Interrupted take", message.toStdString() });
     };
 
+    // A constant of the platform's camera code: no device is asked.
+    const auto movieExtension = CameraController::getMovieFileExtension().toStdString();
+
     if (wasCancelled())
         return result;
 
@@ -7738,11 +7741,13 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
             return result;
 
         // Camera movies are not repaired -- there is nothing in them this app
-        // can fix -- but the card must not leave them out of its account.
-        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*.mov;*.mp4",
-                                                                juce::File::findFiles))
-            if (! isSystemClutterFile (entry.getFile().getFileName().toStdString()))
-                ++session.movieCount;
+        // can fix -- but the card must not leave them out of its account. In
+        // the container this computer's cameras write as well as the others:
+        // a Windows camera's .wmv was never counted, so a Windows take's
+        // recovery row never mentioned its movies.
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*", juce::File::findFiles))
+            SessionRecovery::countCameraMovie (session, entry.getFile().getFileName().toStdString(),
+                                               movieExtension);
 
         if (wasCancelled())
             return result;

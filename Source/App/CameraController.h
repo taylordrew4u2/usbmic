@@ -241,6 +241,11 @@ public:
     /// wrote and how late it started. Empty when nothing recorded.
     std::vector<CombinedTakeInput> getCombinedTakeInputs() const;
 
+    /// The container this computer's cameras write their movies in,
+    /// juce::CameraDevice's own: ".mov" on a Mac, ".wmv" on Windows (and
+    /// ".mov" where cameras are not supported, for the summaries).
+    static juce::String getMovieFileExtension();
+
     /// The file names currently available enabled cameras would write,
     /// extension included, for the pre-take save summary.
     juce::StringArray getPlannedFileNames() const;
