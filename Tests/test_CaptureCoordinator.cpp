@@ -4,6 +4,7 @@
 #include <set>
 #include "Core/StreamingTargets.h"
 #include "Core/PolarPatternDetector.h"
+#include "Core/SlowMicrophoneNotice.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1371,6 +1372,42 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     // Nothing monitoring, no headphone delay to announce.
     REQUIRE (c.getMonitoringLatencyMsAt (128) == 0.0);
     REQUIRE (c.getSlowestMonitoringLatencyMsAt (128) == 0.0);
+}
+
+TEST_CASE (CaptureCoordinator_ARigTheLadderTookPastTheCeilingNamesNoMicrophoneForABlock)
+{
+    // At 128 frames every microphone's own path is past 10 ms (round trip,
+    // the ring's cushion and its input side: 13.3 ms). Couch's interface
+    // reports 48 frames more input latency than Kitchen's -- one millisecond
+    // -- and was named in the activity log as running "at a larger buffer
+    // than the others", with advice to close apps and replug it.
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 128;
+    backend.inputLatencyFrames["dev-a"] = 0;
+    backend.inputLatencyFrames["dev-b"] = 48;
+
+    CaptureCoordinator c (backend, 48000.0, 128);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    REQUIRE (c.getMonitoringLatencyMs() > SlowMicrophoneNotice::kCeilingMs);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs() - c.getMonitoringLatencyMs(), 1.0, 1e-9);
+    REQUIRE (! SlowMicrophoneNotice::isFarBehind (c.getMonitoringLatencyMs(), c.getSlowestMonitoringLatencyMs()));
+
+    // Another app holding Couch's interface at 1156 frames is still named.
+    std::vector<float> a (1156, 0.0f), b (1156, 0.0f), out (128);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    for (int i = 0; i < 2; ++i)
+        backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 1156);
+    for (int i = 0; i < 4; ++i)
+        backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 128);
+    c.pullOutputBlock (outs, 1, 128);
+
+    REQUIRE (c.getSlowestMonitoringDeviceId() == "dev-b");
+    REQUIRE (SlowMicrophoneNotice::isFarBehind (c.getMonitoringLatencyMs(), c.getSlowestMonitoringLatencyMs()));
 }
 
 TEST_CASE (CaptureCoordinator_TheLadderAnnouncesTheHeadphoneDelayThePanelThenShows)

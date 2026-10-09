@@ -224,8 +224,9 @@ files really are empty and the card says so instead of calling it saved.
   which names the figure Advanced will show at the new size) is the
   quickest microphone's own; a slower interface's microphone is late
   in its own channel only, and where there is one its delay is shown beside
-  it ("slowest mic"). If that one is past 10 ms the app tells you which
-  microphone it is, in the activity list.
+  it ("slowest mic"). If that one is past 10 ms while the others are not,
+  or 5 ms or more behind them, the app tells you which microphone it is, in
+  the activity list.
 
   `session.json` records how each device was lined up: its delay
   (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how

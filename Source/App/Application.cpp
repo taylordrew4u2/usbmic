@@ -20,6 +20,7 @@
 #include "../Core/WriteSafetyActions.h"
 #include "../Core/UpdateCheck.h"
 #include "../Core/ShowTemplate.h"
+#include "../Core/SlowMicrophoneNotice.h"
 #include "../Platform/NullBackend.h"
 #include "CheckedTextWrite.h"
 #include <algorithm>
@@ -4641,17 +4642,17 @@ void Application::noteSlowMicrophone()
     // The headline figure is the quickest microphone's own path, since no
     // channel waits for any other (§5.4). That is what most of the rig
     // hears -- but one interface that another app holds at a 2048-frame
-    // buffer is 45 ms late in the headphones, in its own channel, while the
-    // figure reads 3 ms. Over the ceiling, and well past the figure shown,
-    // it is said once, naming the microphone.
-    constexpr double kCeilingMs = 10.0;
-
+    // buffer is 40 ms late in the headphones, in its own channel, while the
+    // figure reads 5 ms. Past the ceiling while the rest are within it, or
+    // several milliseconds behind them, it is said once, naming the
+    // microphone. Not for being a block behind a rig the buffer ladder has
+    // taken past the ceiling as a whole: the ladder's notice has said that.
     if (capture == nullptr || ! capture->isMonitoring())
         return;
 
     std::string slowId;
 
-    if (slowestMicLatencyMs > kCeilingMs && slowestMicLatencyMs - measuredLatencyMs >= 1.0)
+    if (SlowMicrophoneNotice::isFarBehind (measuredLatencyMs, slowestMicLatencyMs))
         slowId = capture->getSlowestMonitoringDeviceId();
 
     if (slowId == reportedSlowMicId)

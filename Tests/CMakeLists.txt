@@ -61,6 +61,7 @@ add_executable(mma_core_tests
     test_LogSizeBudget.cpp
     test_VolumeCapacity.cpp
     test_TakeFolderTracker.cpp
+    test_SlowMicrophoneNotice.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)
