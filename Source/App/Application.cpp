@@ -2864,8 +2864,6 @@ void Application::toggleRecording()
                     takeDevices.push_back (std::move (record));
                 }
 
-                recordTakeAlignment();
-
                 // Do not attempt a fresh platform camera open after the audio
                 // writer has started. JUCE's desktop open is synchronous and a
                 // broken capture-card driver can wait inside it indefinitely;
@@ -2902,6 +2900,12 @@ void Application::toggleRecording()
                 // what a crash in the take's first half-minute leaves behind,
                 // carried the previous take's dropouts as this one's.
                 midTakeDropouts.clear();
+
+                // How the stems are being lined up, read just before the
+                // record that carries it -- and that the first refresh's
+                // signature is taken against -- so nothing that changed while
+                // the cameras started is missed until the next period.
+                recordTakeAlignment();
 
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
@@ -4998,14 +5002,36 @@ std::string Application::sessionRecordEventSignature() const
                           || figures.underrunSamples > 0 || figures.framesMissedByLayout > 0
                           || figures.backendFramesDropped > 0;
 
-    return std::to_string (midTakeDropouts.size())
-         + "|" + std::to_string (cameraController.getTakeVideoRecordsSoFar().size())
-         + "|" + (capture != nullptr && capture->isMirroring() ? "1" : "0")
-         + "|" + (mirrorPolicy.wasStoppedForSpace() ? "1" : "0")
-         + "|" + (mirrorPolicy.wasStoppedForWriteFailure() ? "1" : "0")
-         + "|" + (capacityMonitor.getDegradationSamplePosition() >= 0 ? "1" : "0")
-         + "|" + std::to_string (bufferLadder.getChangeLog().size())
-         + "|" + (lossCounted ? "1" : "0");
+    auto signature = std::to_string (midTakeDropouts.size())
+                   + "|" + std::to_string (cameraController.getTakeVideoRecordsSoFar().size())
+                   + "|" + (capture != nullptr && capture->isMirroring() ? "1" : "0")
+                   + "|" + (mirrorPolicy.wasStoppedForSpace() ? "1" : "0")
+                   + "|" + (mirrorPolicy.wasStoppedForWriteFailure() ? "1" : "0")
+                   + "|" + (capacityMonitor.getDegradationSamplePosition() >= 0 ? "1" : "0")
+                   + "|" + std::to_string (bufferLadder.getChangeLog().size())
+                   + "|" + (lossCounted ? "1" : "0");
+
+    // How the stems are being lined up: a device that has only now said its
+    // input latency, an IO block that grew and moved every other stem, an
+    // offset that had to be clamped. Each changes the offsets an editor needs
+    // to put right whatever the writer could not, and they change a handful
+    // of times a take -- so a crash just after one still leaves the offsets
+    // the files were written with.
+    if (capture != nullptr)
+    {
+        signature += capture->areStemsAligned() ? "|A" : "|a";
+
+        for (const auto& record : takeDevices)
+            signature += "|" + std::to_string (capture->getDeviceInputLatencyFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceIoBlockFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentStartFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentDelayFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentDroppedFramesThisTake (record.usbId))
+                       + "," + std::to_string (capture->getDeviceIoShiftFramesThisTake (record.usbId));
+    }
+
+    return signature;
 }
 
 void Application::refreshSessionRecordIfDue()
@@ -5020,6 +5046,12 @@ void Application::refreshSessionRecordIfDue()
         return;
 
     sessionRecordSchedule.written (nowSeconds, std::move (signature));
+
+    // Each device's offsets, the silence and cuts the writer has made since,
+    // and whether the stems are still lined up exactly, as they stand now:
+    // copied at the take's start and its Stop only, a crash in between left
+    // the start's figures beside the latest of everything else.
+    recordTakeAlignment();
 
     // Built here, written elsewhere: the message thread assembles a few
     // hundred bytes from state it already owns and hands them over. The write

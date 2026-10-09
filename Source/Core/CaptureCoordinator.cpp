@@ -1692,9 +1692,16 @@ int CaptureCoordinator::getDeviceAlignmentStartFrames (const std::string& device
         return 0;
 
     // The writer's own record of it: the offset in force when the channel's
-    // first sample reached it (none, for a device that did not open).
+    // first sample reached it (none, for a device that did not open). Until
+    // the writer has reached the channel -- it sleeps between chunks, and the
+    // take's start-time record is written before it wakes -- the offset the
+    // audio thread is handing it now, which is what its stem will open with:
+    // the writer's own figure is zero until the first change reaches it, and
+    // a record saying "starts at 0, held back by 37" is one no editor can
+    // follow.
     if (pipeline != nullptr)
-        return pipeline->getChannelStartAlignmentOffset (i);
+        return pipeline->hasChannelAlignmentStarted (i) ? pipeline->getChannelStartAlignmentOffset (i)
+                                                        : getChannelRecordingOffset (i);
 
     const auto index = static_cast<size_t> (i);
     return index < lastTakeAlignmentStart.size() ? lastTakeAlignmentStart[index] : 0;

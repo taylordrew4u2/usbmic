@@ -183,7 +183,10 @@ public:
     /// The offset the device's stems started the current (or just finished)
     /// take with: the silence that opens each of them. It differs from
     /// getDeviceAlignmentDelayFrames() when an IO block grew mid-take; the
-    /// silence and cuts in between are the two counts below.
+    /// silence and cuts in between are the two counts below. Before the
+    /// writer has reached the device's channels, the offset they are being
+    /// handed over with now -- what the stems will open with -- so a record
+    /// written at the take's start agrees with the delay beside it.
     int getDeviceAlignmentStartFrames (const std::string& deviceId) const noexcept;
 
     /// The writer's mid-take changes to this device's alignment, since the

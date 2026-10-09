@@ -130,9 +130,18 @@ public:
 
     int getNumChannels() const noexcept { return static_cast<int> (lines.size()); }
 
-    /// The offset in force now, and the one the take started with.
+    /// The offset in force now, and the one the take started with. Until the
+    /// channel's first sample has gone through, the starting offset is the
+    /// one already set for it -- the silence its stem will open with -- not
+    /// zero: the writer reaches a channel some milliseconds after the take
+    /// begins, and a record written in between must not say the stem starts
+    /// unshifted while its offset says otherwise.
     int getOffset (int channel) const noexcept;
     int getStartOffset (int channel) const noexcept;
+
+    /// Whether the channel's first sample has gone through, which is when its
+    /// starting offset is fixed.
+    bool hasStarted (int channel) const noexcept;
 
     /// Silence written into this channel after its first sample to hold it
     /// back further, and samples taken out to bring it forward.
@@ -167,7 +176,7 @@ private:
         } undo;
 
         std::atomic<int> offset { 0 };
-        std::atomic<int> startOffset { 0 };
+        std::atomic<int> startOffset { -1 }; // -1 until the first sample
         std::atomic<uint64_t> silenceInserted { 0 };
         std::atomic<uint64_t> dropped { 0 };
     };

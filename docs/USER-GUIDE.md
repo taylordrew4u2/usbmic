@@ -230,7 +230,9 @@ files really are empty and the card says so instead of calling it saved.
   (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how
   many samples later its tracks sit than its sound arrived, at the start of
   the take (`alignmentStartFrames`: the silence its tracks open with) and at
-  the end (`alignmentDelayFrames`); any silence written into or samples
+  the end (`alignmentDelayFrames`; for a take the app did not get to stop,
+  when its record was last brought up to date, which it is every 30 seconds
+  and whenever any of these change); any silence written into or samples
   taken out of its tracks mid-take to keep it in step
   (`alignmentSilenceFrames`, `alignmentDroppedFrames`); and any short
   silence its own buffer growing left in its tracks (`ioShiftFrames`; the

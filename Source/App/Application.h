@@ -1006,9 +1006,10 @@ private:
     /// and samples taken out mid-take to keep it in step, and the silence its
     /// own stream left in its stems when its IO block grew -- and whether all of
     /// that was done exactly, into the take's record, and refreshes the
-    /// headphone latency figure. At the take's start and again as it stops: a
-    /// device whose IO size grew during the take moved every other stem's
-    /// alignment with it (never the headphones).
+    /// headphone latency figure. At the take's start, before every mid-take
+    /// refresh of its record, and again as it stops: a device whose IO size
+    /// grew during the take moved every other stem's alignment with it (never
+    /// the headphones), and a crash's record must carry that too.
     void recordTakeAlignment();
 
     std::string destinationFolder;

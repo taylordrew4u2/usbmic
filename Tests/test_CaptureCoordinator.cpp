@@ -613,6 +613,62 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     REQUIRE (std::llabs (mix - couch) <= 1);
 }
 
+TEST_CASE (CaptureCoordinator_TheTakesStartingOffsetIsRightBeforeTheWriterReachesIt)
+{
+    // The take's start-time session.json is written the moment the files
+    // open, before the writer -- which sleeps between chunks -- has reached
+    // a single channel. It read each device's starting offset from the
+    // writer, which is zero until then, so the record said Kitchen's stem
+    // starts unshifted while being held back by 37: the record a crash in the
+    // take's first half-minute leaves, and the one a user is told to slide
+    // the stems by when they are not called aligned.
+    const auto dir = tempDir() + "/start_offset_before_writer";
+    REQUIRE (std::system (("mkdir -p '" + dir + "'").c_str()) == 0);
+
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.inputLatencyFrames["dev-a"] = 12;
+    backend.inputLatencyFrames["dev-b"] = 12 + 37;
+
+    CaptureCoordinator c (backend, 48000.0, 64);
+    c.setSoftwareClockEnabled (false);
+    REQUIRE (c.startMonitoring (twoMics(), "out-device"));
+
+    std::vector<float> a (64, 0.0f), b (64, 0.0f), out (64);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    auto runBlocks = [&] (int count)
+    {
+        for (int block = 0; block < count; ++block)
+        {
+            backend.inputCallbacks[0] (aIn, 1, nullptr, 0, 64);
+            backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 64);
+            c.pullOutputBlock (outs, 1, 64);
+        }
+    };
+
+    // Monitoring has been running, as it always has by the time Record is
+    // pressed.
+    runBlocks (20);
+
+    REQUIRE (c.startRecording (dir, 16, "2026-10-09T00:00:00Z"));
+
+    // Not one block has reached the writer yet.
+    REQUIRE (c.getDeviceAlignmentDelayFrames ("dev-a") == 37);
+    REQUIRE (c.getDeviceAlignmentStartFrames ("dev-a") == 37);
+    REQUIRE (c.getDeviceAlignmentStartFrames ("dev-b") == 0);
+
+    // Nor does it move once the writer has started the channels.
+    runBlocks (200);
+    c.stopRecording();
+    c.stopMonitoring();
+
+    REQUIRE (c.getDeviceAlignmentStartFrames ("dev-a") == 37);
+    REQUIRE (c.getDeviceAlignmentStartFrames ("dev-b") == 0);
+}
+
 TEST_CASE (CaptureCoordinator_ALatencyPastBeliefIsBoundedAndTheStemsAreNotCalledAligned)
 {
     // Couch's driver reports 50000 frames of input latency -- over a second.

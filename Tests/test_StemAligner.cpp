@@ -61,6 +61,37 @@ TEST_CASE (StemAligner_TheStartingOffsetOpensTheStemWithThatMuchSilence)
     REQUIRE (a.getSamplesDropped (0) == 0u);
 }
 
+TEST_CASE (StemAligner_TheStartingOffsetIsKnownBeforeTheFirstSampleReachesTheChannel)
+{
+    // The writer reaches a channel some milliseconds into the take, and the
+    // take's start-time record is written before then. It said the stem
+    // starts unshifted (0) beside an offset of 37 -- the record a crash in
+    // the first half-minute leaves, and the one a user with a clamped latency
+    // is told to line the stems up by.
+    StemAligner a;
+    a.prepare (2);
+    a.setOffset (0, 37);
+
+    REQUIRE (! a.hasStarted (0));
+    REQUIRE (a.getStartOffset (0) == 37);
+    REQUIRE (a.getStartOffset (1) == 0);
+
+    auto block = ramp (1, 64);
+    a.process (0, block.data(), block.size());
+
+    // Fixed by the first sample: a later change is a change, not the start.
+    REQUIRE (a.hasStarted (0));
+    REQUIRE (! a.hasStarted (1));
+    a.setOffset (0, 50);
+    REQUIRE (a.getStartOffset (0) == 37);
+    REQUIRE (a.getOffset (0) == 50);
+
+    // And a new take starts unstarted again.
+    a.prepare (2);
+    REQUIRE (! a.hasStarted (0));
+    REQUIRE (a.getStartOffset (0) == 0);
+}
+
 TEST_CASE (StemAligner_ALongerOffsetMidTakeWritesSilenceAndLosesNothing)
 {
     // Another device's IO block grew: this channel is held back 1092 more

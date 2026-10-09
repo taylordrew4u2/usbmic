@@ -286,8 +286,20 @@ int StemAligner::getOffset (int channel) const noexcept
 
 int StemAligner::getStartOffset (int channel) const noexcept
 {
+    if (channel < 0 || channel >= static_cast<int> (lines.size()))
+        return 0;
+
+    const auto& line = *lines[static_cast<size_t> (channel)];
+    const int start = line.startOffset.load (std::memory_order_relaxed);
+
+    // Not started yet: what it will start with is the offset set for it now.
+    return start >= 0 ? start : line.offset.load (std::memory_order_relaxed);
+}
+
+bool StemAligner::hasStarted (int channel) const noexcept
+{
     return channel >= 0 && channel < static_cast<int> (lines.size())
-               ? lines[static_cast<size_t> (channel)]->startOffset.load (std::memory_order_relaxed) : 0;
+           && lines[static_cast<size_t> (channel)]->startOffset.load (std::memory_order_relaxed) >= 0;
 }
 
 uint64_t StemAligner::getSilenceInserted (int channel) const noexcept

@@ -83,6 +83,7 @@ public:
     /// still answers after stop().
     int getChannelAlignmentOffset (int channel) const noexcept { return aligner.getOffset (channel); }
     int getChannelStartAlignmentOffset (int channel) const noexcept { return aligner.getStartOffset (channel); }
+    bool hasChannelAlignmentStarted (int channel) const noexcept { return aligner.hasStarted (channel); }
     uint64_t getChannelAlignmentSilence (int channel) const noexcept { return aligner.getSilenceInserted (channel); }
     uint64_t getChannelAlignmentDropped (int channel) const noexcept { return aligner.getSamplesDropped (channel); }
 
