@@ -12,6 +12,9 @@ JsonValue SessionMetadata::toJson() const
     root["bitDepth"] = JsonValue (bitDepth);
     root["bufferSizeSamples"] = JsonValue (bufferSizeSamples);
     root["measuredLatencyMs"] = JsonValue (measuredLatencyMs);
+    root["slowestMicLatencyMs"] = JsonValue (slowestMicLatencyMs);
+    root["alignedInputLatencyFrames"] = JsonValue (alignedInputLatencyFrames);
+    root["stemsAligned"] = JsonValue (stemsAligned);
     root["mirrorEnabled"] = JsonValue (mirrorEnabled);
     root["mirrorActive"] = JsonValue (mirrorActive);
     root["mirrorPath"] = JsonValue (mirrorPath);
@@ -23,6 +26,21 @@ JsonValue SessionMetadata::toJson() const
         dv["name"] = JsonValue (d.name);
         dv["usbId"] = JsonValue (d.usbId);
         dv["trimDb"] = JsonValue (static_cast<double> (d.trimDb));
+
+        if (d.inputLatencyFrames >= 0)
+        {
+            dv["inputLatencyFrames"] = JsonValue (d.inputLatencyFrames);
+
+            if (d.reportedInputLatencyFrames.has_value())
+                dv["reportedInputLatencyFrames"] = JsonValue (*d.reportedInputLatencyFrames);
+
+            dv["ioBlockFrames"] = JsonValue (d.ioBlockFrames);
+            dv["alignmentStartFrames"] = JsonValue (d.alignmentStartFrames);
+            dv["alignmentDelayFrames"] = JsonValue (d.alignmentDelayFrames);
+            dv["alignmentSilenceFrames"] = JsonValue (d.alignmentSilenceFrames);
+            dv["alignmentDroppedFrames"] = JsonValue (d.alignmentDroppedFrames);
+            dv["ioShiftFrames"] = JsonValue (d.ioShiftFrames);
+        }
 
         if (! d.inputTrimDb.empty())
         {
@@ -109,6 +127,9 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
     if (auto* p = v.find ("bitDepth")) m.bitDepth = p->asInt (24);
     if (auto* p = v.find ("bufferSizeSamples")) m.bufferSizeSamples = p->asInt (64);
     if (auto* p = v.find ("measuredLatencyMs")) m.measuredLatencyMs = p->asDouble (0.0);
+    if (auto* p = v.find ("slowestMicLatencyMs")) m.slowestMicLatencyMs = p->asDouble (0.0);
+    if (auto* p = v.find ("alignedInputLatencyFrames")) m.alignedInputLatencyFrames = p->asInt (0);
+    if (auto* p = v.find ("stemsAligned")) m.stemsAligned = p->asBool (false);
     if (auto* p = v.find ("mirrorEnabled")) m.mirrorEnabled = p->asBool (true);
     if (auto* p = v.find ("videos"))
         for (const auto& dv : p->asArray())
@@ -130,6 +151,14 @@ SessionMetadata SessionMetadata::fromJson (const JsonValue& v)
             if (auto* n = dv.find ("name")) d.name = n->asString();
             if (auto* n = dv.find ("usbId")) d.usbId = n->asString();
             if (auto* n = dv.find ("trimDb")) d.trimDb = static_cast<float> (n->asDouble());
+            if (auto* n = dv.find ("inputLatencyFrames")) d.inputLatencyFrames = n->asInt (-1);
+            if (auto* n = dv.find ("reportedInputLatencyFrames")) d.reportedInputLatencyFrames = n->asInt (0);
+            if (auto* n = dv.find ("ioBlockFrames")) d.ioBlockFrames = n->asInt (0);
+            if (auto* n = dv.find ("alignmentStartFrames")) d.alignmentStartFrames = n->asInt (0);
+            if (auto* n = dv.find ("alignmentDelayFrames")) d.alignmentDelayFrames = n->asInt (0);
+            if (auto* n = dv.find ("alignmentSilenceFrames")) d.alignmentSilenceFrames = n->asInt (0);
+            if (auto* n = dv.find ("alignmentDroppedFrames")) d.alignmentDroppedFrames = n->asInt (0);
+            if (auto* n = dv.find ("ioShiftFrames")) d.ioShiftFrames = n->asInt (0);
 
             if (auto* n = dv.find ("inputTrims"))
                 for (const auto& ev : n->asArray())

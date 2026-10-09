@@ -136,6 +136,31 @@ int main()
                  savedRateRemainsVisible ? "PASS" : "FAIL");
     failures += savedRateRemainsVisible ? 0 : 1;
 
+    // §5.4: the headline headphone delay is the quickest microphone's own
+    // path, so a slower interface's own delay has to be on screen beside it
+    // -- and only when there is one.
+    {
+        const auto latencyText = [&advancedPanel]
+        {
+            for (int i = 0; i < advancedPanel.getNumChildComponents(); ++i)
+                if (auto* label = dynamic_cast<juce::Label*> (advancedPanel.getChildComponent (i));
+                    label != nullptr && label->getText().startsWith ("2.7 ms"))
+                    return label->getText();
+
+            return juce::String();
+        };
+
+        advancedPanel.setMeasuredLatency (2.7, 45.3);
+        const auto slower = latencyText();
+        advancedPanel.setMeasuredLatency (2.7, 2.7);
+        const auto alike = latencyText();
+        const bool slowestShown = slower == "2.7 ms (slowest mic 45.3 ms)" && alike == "2.7 ms";
+
+        std::printf ("headphone delay names a slower mic's own beside it: %s ('%s', '%s')\n\n",
+                     slowestShown ? "PASS" : "FAIL", slower.toRawUTF8(), alike.toRawUTF8());
+        failures += slowestShown ? 0 : 1;
+    }
+
     std::printf ("-- camera viewer revision invalidates UI caches --\n");
 
     int mainViewerCreates = 0;

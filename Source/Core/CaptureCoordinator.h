@@ -4,12 +4,14 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 #include "../Platform/IAudioBackend.h"
 #include "MonitorBus.h"
+#include "FeedbackDetector.h"
 #include "AlarmTone.h"
 #include "DeviceInputStream.h"
 #include "ChannelLayoutAnalyzer.h"
@@ -119,12 +121,111 @@ public:
     /// latency, it is an impossible one -- and this is the number someone
     /// singing to a click reads to decide whether they can work through the
     /// headphones at all.
-    double getMonitoringLatencyMs() const noexcept { return monitoringLatencyMs; }
+    ///
+    /// The headphones are never held back to line the rig up: every
+    /// microphone reaches them as early as its own device allows, and the
+    /// stems are lined up afterwards, on the writer thread (StemAligner). So
+    /// a device that reports more input latency, or runs at a larger IO block
+    /// than the rest, delays its own channel and no one else's. This figure
+    /// is the quickest microphone's own path -- its device's input latency,
+    /// and the IO block it runs at where that is larger than the one asked
+    /// for -- which on a rig of like devices is everyone's. A slower device's
+    /// own path is getSlowestMonitoringLatencyMs().
+    double getMonitoringLatencyMs() const noexcept;
 
-    /// The slowest open input's own latency, in frames, which every channel
-    /// is aligned to (and so every channel's headphone feed carries). Zero on
-    /// a backend that does not report input latency.
+    /// The slowest open microphone's own path through the headphones, on the
+    /// same terms: a device at a larger IO block, or reporting more input
+    /// latency, than the rest is that much later in the headphones -- in its
+    /// own channel only. The same as getMonitoringLatencyMs() on a rig of
+    /// like devices. §5.4's ceiling applies to it too: a figure that is only
+    /// ever the quickest path can read 3 ms while one person hears
+    /// themselves 45 ms late, so this is shown and recorded beside it.
+    double getSlowestMonitoringLatencyMs() const noexcept;
+
+    /// Which device that is, by id; empty when nothing is monitoring.
+    std::string getSlowestMonitoringDeviceId() const;
+
+    /// The slowest open input's own latency, in frames: what the stems are
+    /// lined up to (with that device's IO block). The headphones do not wait
+    /// for it. Zero on a backend that does not report input latency.
     int getAlignedInputLatencyFrames() const noexcept { return alignedInputLatencyFrames; }
+
+    /// The quickest microphone's own input side were the rig running at
+    /// `bufferSizeFrames`: its device's input latency plus its IO block, the
+    /// block taken as the larger of that size and the one the device has been
+    /// seen running at -- a device that refused the size asked for, or that
+    /// another app holds at its own, runs there whatever this app asks next.
+    /// That size alone when no device has opened. For saying what a buffer
+    /// change will cost the headphones before the rig is rebuilt at it, on
+    /// the same terms as getMonitoringLatencyMs(). Message thread.
+    int getMonitorInputFrames (int bufferSizeFrames) const noexcept;
+
+    /// The same for the slowest microphone's own input side.
+    int getSlowestMonitorInputFrames (int bufferSizeFrames) const noexcept;
+
+    /// For the take's record (session.json), per device: the input latency
+    /// the backend reported (-1 when the device did not open or monitoring is
+    /// not up), the largest IO block it has delivered, and how far its
+    /// channels are held back in the stems (not the headphones) so they line
+    /// up with the slowest device -- now, which at the end of a take is the
+    /// offset its stems end with. Message thread; reads atomics only.
+    int getDeviceInputLatencyFrames (const std::string& deviceId) const noexcept;
+    int getDeviceIoBlockFrames (const std::string& deviceId) const noexcept;
+
+    /// What the driver itself reported as the device's input latency, before
+    /// it was bounded: a figure past half a second (24000 frames), or below
+    /// zero, is not believed, the stems are lined up by the bound, and
+    /// areStemsAligned() is false for the take. Nothing when the device did
+    /// not open or monitoring is not up.
+    std::optional<int> getDeviceReportedInputLatencyFrames (const std::string& deviceId) const noexcept;
+    int getDeviceAlignmentDelayFrames (const std::string& deviceId) const noexcept;
+
+    /// The offset the device's stems started the current (or just finished)
+    /// take with: the silence that opens each of them. It differs from
+    /// getDeviceAlignmentDelayFrames() when an IO block grew mid-take; the
+    /// silence and cuts in between are the two counts below.
+    int getDeviceAlignmentStartFrames (const std::string& deviceId) const noexcept;
+
+    /// The writer's mid-take changes to this device's alignment, since the
+    /// current take began (or in the take just finished): silence written
+    /// into its stems to hold it back further when another device's IO block
+    /// grew, and samples taken out to bring it forward when its own did --
+    /// for the most part the silence its own stream put in when it moved
+    /// (DeviceInputStream moves once, by the growth). Not lost audio either
+    /// way, and in no underrun figure, but a gap or a cut in the file, so the
+    /// take's record says where the time went.
+    int getDeviceAlignmentSilenceFramesThisTake (const std::string& deviceId) const noexcept;
+    int getDeviceAlignmentDroppedFramesThisTake (const std::string& deviceId) const noexcept;
+
+    /// Silence this device's own stream left in its stems during the current
+    /// (or just finished) take. When its IO block grew by less than its
+    /// ring's cushion, the stream moved later by writing that much silence
+    /// (DeviceInputStream::getAlignmentSilenceSamples): no audio was lost, so
+    /// it is in no underrun figure, but it is a gap in the stems all the
+    /// same. The writer takes it back out when the device is not the slowest
+    /// (alignmentDropped); what this counts is what it could not -- the
+    /// device was, or became, the slowest -- and so left where it fell, at
+    /// the same frame as the silence every other stem was given for it.
+    int getDeviceIoShiftFramesThisTake (const std::string& deviceId) const noexcept;
+
+    /// Whether the current (or just finished) take's stems were lined up
+    /// exactly as asked: false when an offset had to be clamped or a change
+    /// landed late (WritePipeline::isAlignmentExact), when a device's
+    /// reported input latency was past belief and had to be bounded (see
+    /// getDeviceReportedInputLatencyFrames), or when no take has recorded. The take's record says so, with each device's offset, so
+    /// whatever the writer could not do can be done in an editor.
+    bool areStemsAligned() const noexcept;
+
+    /// Harness diagnostics: how far channel `index` is held back in its stem
+    /// now, as the audio thread last handed it to the writer.
+    int getChannelRecordingOffset (int index) const noexcept;
+
+    /// Harness diagnostics: the silence channel `index`'s own stream wrote to
+    /// move later when its device's IO block grew by less than its cushion
+    /// (DeviceInputStream::getAlignmentSilenceSamples), since monitoring
+    /// began. With getUnderrunSamples (index) it says how far the stream
+    /// moved, and that it moved once.
+    uint64_t getChannelShiftSilenceSamples (int index) const noexcept;
 
     /// Devices that refused to open when monitoring started, by id.
     ///
@@ -220,6 +321,12 @@ public:
     const std::vector<CaptureChannel>& getChannels() const noexcept { return channels; }
 
     MonitorBus& getMonitorBus() noexcept { return monitorBus; }
+
+    /// §5.5 feedback protection on the headphone mix. Analysed on its own
+    /// thread from a copy the output callback hands over; a band that grows
+    /// the way a howl does cuts the bus exactly as the limiter's runaway cut
+    /// does. Runs while monitoring.
+    const FeedbackGuard& getFeedbackGuard() const noexcept { return feedbackGuard; }
 
     /// The app's own sounds -- take started, take stopped, something is
     /// wrong -- mixed into the headphone output by the callback.
@@ -521,6 +628,7 @@ private:
 
     std::vector<CaptureChannel> channels;
     MonitorBus monitorBus;
+    FeedbackGuard feedbackGuard;
     AlarmTone alarm;
     std::vector<std::unique_ptr<Metering>> channelMeters;
     std::vector<std::unique_ptr<DeviceInputStream>> deviceStreams;
@@ -600,6 +708,48 @@ private:
     std::string monitorProblem;
     double monitoringLatencyMs = 0.0;
     int alignedInputLatencyFrames = 0;
+
+    // Per channel: the device's input latency (-1 for a device that did not
+    // open), filled in once the streams are open and published by
+    // latenciesReady.
+    std::vector<int> channelInputLatency;
+    std::atomic<bool> latenciesReady { false };
+
+    // Message thread: what each driver reported before it was bounded, and
+    // whether any figure had to be -- for the monitoring session, and for
+    // the take running or just finished (areStemsAligned()).
+    std::vector<int> channelReportedLatency;
+    bool latencyClamped = false;
+    bool latencyClampedThisTake = false;
+
+    // Per channel, how far it is held back in its stem to line up with the
+    // slowest device: worked out by the consumer before every block it hands
+    // the writer (recordingOffsets, consumer-owned) and published for the
+    // message thread (recordingOffsetView). Both sized at startMonitoring().
+    std::vector<int> recordingOffsets;
+    std::unique_ptr<std::atomic<int>[]> recordingOffsetView;
+
+    // Consumer-owned, sized with recordingOffsets: whether each channel's
+    // offset is for a block its device has not confirmed, or takes one back
+    // (StemOffsetKind, handed to the writer beside the offsets), and the
+    // block each stream held at the last update, which is how a refusal is
+    // seen: a held block only ever falls when a provisional one is refused.
+    std::vector<StemOffsetKind> recordingOffsetKinds;
+    std::vector<size_t> heldBlockSeen;
+    void updateRecordingOffsets() noexcept;
+
+    /// A channel's own place in time beyond the cushion every stream shares:
+    /// its device's input latency plus the IO block it runs at (the one
+    /// asked for, until the device has settled on one). -1 for a device that
+    /// did not open.
+    int channelOwnLatencyFrames (size_t index, size_t blockFloor) const noexcept;
+
+    /// The quickest (or slowest) channel's own input side at this buffer
+    /// size, and which channel that is (-1 when none has opened).
+    int monitorInputFrames (int bufferSizeFrames, bool slowest, int* channel) const noexcept;
+    double monitoringLatencyMsFor (int inputFrames) const noexcept;
+    int channelIndexForDevice (const std::string& deviceId) const noexcept;
+
     std::vector<std::string> devicesThatFailedToOpen;
     std::string recordingProblem;
     std::atomic<uint64_t> framesMissedByLayout { 0 };
@@ -636,10 +786,29 @@ private:
     /// be measured against its own starting point rather than the rig's.
     std::vector<uint64_t> overrunBaselinePerStream;
 
+    /// The writer's alignment account of the take just finished, per channel,
+    /// captured as it stopped (the pipeline is gone after that); see
+    /// getDeviceAlignmentSilenceFramesThisTake() and areStemsAligned().
+    std::vector<uint64_t> lastTakeAlignmentSilence;
+    std::vector<uint64_t> lastTakeAlignmentDropped;
+    std::vector<int> lastTakeAlignmentStart;
+    bool lastTakeStemsAligned = false;
+
+    /// Each stream's own shift silence (getAlignmentSilenceSamples) when the
+    /// take began, and how much of it the take had when it stopped; see
+    /// getDeviceIoShiftFramesThisTake().
+    std::vector<uint64_t> shiftSilenceBaselinePerStream;
+    std::vector<uint64_t> lastTakeShiftSilence;
+    uint64_t channelShiftSilenceThisTake (size_t index) const noexcept;
+
     // Scratch for the summed monitor mix and the per-sample trim frame, both
     // sized at startMonitoring(). §11 forbids the callback allocating, and a
     // per-block vector here would do exactly that.
     std::vector<float> mixScratch;
+
+    // The bus before master volume, per sample of the block, for the
+    // feedback guard. Sized with mixScratch.
+    std::vector<float> busScratch;
     std::vector<float> trimFrame;
     std::vector<float> trimGains;
 
@@ -674,8 +843,8 @@ private:
     // break a false trigger is the thing most likely to be missed.
     float polarThirdPeakHeldDb = kPolarFloorDb;
 
-    /// §14.4 measurement over one already-aligned frame block. Real-time safe:
-    /// sums over the block, no allocation, no locking.
+    /// §14.4 measurement over one frame block, on the headphones' timing.
+    /// Real-time safe: sums over the block, no allocation, no locking.
     void measurePolarPattern (const float* const* inputs, int channelCount, int numSamples) noexcept;
 
     void noteCallbackLoad (std::chrono::steady_clock::time_point start, int numSamples) noexcept;
@@ -684,13 +853,17 @@ private:
     /// every §3.3 figure is quoted relative to. Zero when there is no master.
     double getMasterDriftPpm() const noexcept;
 
-    /// Shared by both capture paths: sum, meter, record and publish one already
-    /// time-aligned frame block. outputFrameOffset selects the destination
-    /// range when a larger callback is processed in bounded slices. Real-time
-    /// safe.
+    /// Shared by both capture paths: sum, meter, record and publish one frame
+    /// block, each channel as early as its device allows. The headphone mix
+    /// is made from it as it stands; the writer is handed recordingOffsets
+    /// (or nothing, where the OS has already lined the channels up) and
+    /// lines the stems up itself. outputFrameOffset selects the destination
+    /// range when a larger callback is processed in bounded slices.
+    /// Real-time safe.
     void mixAndPublish (const float* const* inputs, int channelCount,
                         float* const* outputs, int numOutputs, int numSamples,
-                        int outputFrameOffset) noexcept;
+                        int outputFrameOffset, const int* recordingOffsetsForBlock,
+                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept;
 };
 
 } // namespace mma

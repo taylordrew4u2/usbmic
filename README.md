@@ -112,13 +112,14 @@ flowchart LR
     WT -.-> BK["Local backup copy"]
 ```
 
-Each device's callback only pushes samples into its own ring. The output device's callback is the single clock: it pulls every ring through a resampler whose ratio the drift loop adjusts from ring-fill error, feeds the monitor mix, and hands the aligned block to a writer thread that owns all disk I/O.
+Each device's callback only pushes samples into its own ring. The output device's callback is the single clock: it pulls every ring through a resampler whose ratio the drift loop adjusts from ring-fill error, feeds the monitor mix, and hands the same block to a writer thread that owns all disk I/O and lines the tracks up.
 
 **Design decisions**
 
 - **Every input is resampled, the reference mic included.** The clock that pulls the rings belongs to the output device, so exempting a "master" mic would leave it uncorrected against a clock it has no relationship to.
 - **No JUCE in `Source/Core`.** The engine builds and tests on a headless machine with no audio hardware and no network; JUCE is confined to the UI and app layers.
 - **Separate limiters for monitor and mix.** A monitor mute or runaway cut can never silence the recorded mix file.
+- **Headphones never wait for alignment.** Each mic reaches the monitor mix as early as its own device allows; the writer thread delays the quicker devices' stems to line up with the slowest, so one slow interface never puts its latency in everyone's ears.
 - **Fail-closed device policy.** Only removable USB, FireWire and Thunderbolt inputs are admitted; built-in, Bluetooth, virtual and unknown inputs are excluded rather than guessed at.
 - **Fixed channel layout per take.** A mic that unplugs writes silence into its slot instead of shrinking the file, so tracks stay aligned to the end.
 

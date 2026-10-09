@@ -40,7 +40,8 @@ void ChannelMeterComponent::timerCallback()
 
     const bool wasClipped = currentClip;
     const int previousClipCount = currentClipCount;
-    currentLevelDb = metering->tick (1.0 / 60.0);
+    // Real elapsed time: the timer is asked for 60 Hz and not promised it.
+    currentLevelDb = metering->tick (meterClock.tick());
     currentPeakDb = metering->getPeakHoldDb();
     currentClip = metering->isClipped();
     currentClipCount = metering->getClipCount();

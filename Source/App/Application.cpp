@@ -1114,7 +1114,7 @@ void Application::restartCapture()
     // session.json recorded 0.0 as a permanent fact about how the take was
     // made. Zero is not a small latency; it is an impossible one. Every backend
     // had worked the figure out all along and CaptureCoordinator dropped it.
-    measuredLatencyMs = capture->getMonitoringLatencyMs();
+    refreshMonitoringLatency();
 
     // The microphones that actually OPENED, not the ones that were selected.
     //
@@ -2132,17 +2132,36 @@ juce::String Application::applyBufferLadderStep (const juce::String& cause)
     // drift cushion and an output block. "Slightly more delay" was the old
     // wording at every rung, and at 512 samples that is over 40 ms, which
     // §5.4 says is never to be shipped without saying so.
-    // Plus the slowest microphone's own input latency, which every channel is
-    // lined up to and the rebuilt rig will carry just the same.
-    const double inputLatencyFrames = capture != nullptr ? capture->getAlignedInputLatencyFrames() : 0;
-    const double delayMs = (4.0 * static_cast<double> (size) + inputLatencyFrames)
-                         / std::max (1.0, currentSampleRate) * 1000.0;
+    // In place of the input block, the quickest microphone's own input side
+    // at this size: its device's input latency plus its IO block (the larger
+    // of this size and the one the device has been running at). No channel
+    // waits for any other in the headphones -- the stems are lined up on the
+    // writer -- so a device that refuses this size and runs at 1156 frames
+    // delays its own channel, not this figure; it agrees with
+    // getMonitoringLatencyMs() once the rig is rebuilt.
+    const auto msAt = [this, size] (double inputFrames)
+    {
+        return (3.0 * static_cast<double> (size) + inputFrames) / std::max (1.0, currentSampleRate) * 1000.0;
+    };
+    const auto spoken = [] (double ms)
+    {
+        return ms < 10.0 ? juce::String (ms, 1) : juce::String (juce::roundToInt (ms));
+    };
+
+    const double delayMs = msAt (capture != nullptr ? capture->getMonitorInputFrames (size)
+                                                    : static_cast<double> (size));
+
+    // And a slower device's own path, where there is one: that microphone is
+    // that much later in the headphones, and §5.4 does not let it go unsaid.
+    const double slowestMs = msAt (capture != nullptr ? capture->getSlowestMonitorInputFrames (size)
+                                                      : static_cast<double> (size));
 
     auto line = juce::String ("This computer could not keep up") + cause
               + ", so the audio buffer has been increased to " + juce::String (size)
-              + " samples. The headphone delay is now about "
-              + (delayMs < 10.0 ? juce::String (delayMs, 1) : juce::String (juce::roundToInt (delayMs)))
-              + " ms";
+              + " samples. The headphone delay is now about " + spoken (delayMs) + " ms";
+
+    if (slowestMs - delayMs >= 1.0)
+        line += " (about " + spoken (slowestMs) + " ms for the slowest microphone)";
 
     // Fixed for the life of a stream, so the streams are reopened through the
     // same path a hot-plug takes -- the same one setBufferSizeOverride uses.
@@ -2845,6 +2864,8 @@ void Application::toggleRecording()
                     takeDevices.push_back (std::move (record));
                 }
 
+                recordTakeAlignment();
+
                 // Do not attempt a fresh platform camera open after the audio
                 // writer has started. JUCE's desktop open is synchronous and a
                 // broken capture-card driver can wait inside it indefinitely;
@@ -3003,6 +3024,7 @@ void Application::toggleRecording()
         // The stop-time session.json is written from this, not from whatever
         // the live state says by the time a camera finishes its movie.
         takeStopSnapshot.capture (liveTakeFigures (true));
+        recordTakeAlignment();
 
         // Before the folder is listed for the panel that shows what was saved,
         // so the video files are closed and their real sizes are on disk by the
@@ -4604,6 +4626,114 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
     return root.getFullPathName();
 }
 
+void Application::refreshMonitoringLatency()
+{
+    if (capture == nullptr)
+        return;
+
+    measuredLatencyMs = capture->getMonitoringLatencyMs();
+    slowestMicLatencyMs = std::max (measuredLatencyMs, capture->getSlowestMonitoringLatencyMs());
+}
+
+void Application::noteSlowMicrophone()
+{
+    // The headline figure is the quickest microphone's own path, since no
+    // channel waits for any other (§5.4). That is what most of the rig
+    // hears -- but one interface that another app holds at a 2048-frame
+    // buffer is 45 ms late in the headphones, in its own channel, while the
+    // figure reads 3 ms. Over the ceiling, and well past the figure shown,
+    // it is said once, naming the microphone.
+    constexpr double kCeilingMs = 10.0;
+
+    if (capture == nullptr || ! capture->isMonitoring())
+        return;
+
+    std::string slowId;
+
+    if (slowestMicLatencyMs > kCeilingMs && slowestMicLatencyMs - measuredLatencyMs >= 1.0)
+        slowId = capture->getSlowestMonitoringDeviceId();
+
+    if (slowId == reportedSlowMicId)
+        return;
+
+    const bool wasStanding = ! reportedSlowMicId.empty();
+    reportedSlowMicId = slowId;
+
+    if (slowId.empty())
+    {
+        if (wasStanding)
+            noteActivity (ActivityLevel::Recovered, "Monitoring",
+                          "No microphone is far behind the others in the headphones any more (about "
+                              + juce::String (juce::roundToInt (slowestMicLatencyMs)) + " ms for the slowest).");
+        return;
+    }
+
+    juce::String name ("One microphone");
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.identity.key() == slowId)
+        {
+            name = juce::String (d.displayName);
+            break;
+        }
+
+    noteActivity (ActivityLevel::Warning, "Monitoring",
+                  name + " reaches the headphones about " + juce::String (juce::roundToInt (slowestMicLatencyMs))
+                      + " ms late: its interface runs at a larger buffer than the others (another app may "
+                        "have set it) or reports a longer delay. The other microphones are not held back for "
+                        "it, and its recording is lined up with theirs. If another audio app is open, "
+                        "closing it and then unplugging and replugging this microphone may bring it back.");
+}
+
+void Application::recordTakeAlignment()
+{
+    if (capture == nullptr)
+    {
+        takeMeasuredLatencyMs = measuredLatencyMs;
+        takeSlowestMicLatencyMs = slowestMicLatencyMs;
+        takeStemsAligned = false;
+        return;
+    }
+
+    takeAlignedInputLatencyFrames = capture->getAlignedInputLatencyFrames();
+
+    // What the headphones cost now that the devices have said what IO size
+    // they really run at: the quickest microphone's own path, which no other
+    // device's latency or block is added to (the stems are lined up on the
+    // writer instead). Fixed here for the take's record, so a stop-time
+    // session.json written after the engine has moved on still describes it,
+    // with the slowest microphone's own path beside it.
+    if (capture->isMonitoring())
+        refreshMonitoringLatency();
+
+    takeMeasuredLatencyMs = measuredLatencyMs;
+    takeSlowestMicLatencyMs = slowestMicLatencyMs;
+
+    // Whether the writer lined the stems up exactly; with each device's
+    // offset below, whatever it could not do can be done in an editor.
+    takeStemsAligned = capture->areStemsAligned();
+
+    for (auto& record : takeDevices)
+    {
+        const int latency = capture->getDeviceInputLatencyFrames (record.usbId);
+        record.inputLatencyFrames = latency;
+
+        // Kept only where the driver's own figure was not believed, beside
+        // the bound the stems were lined up by.
+        record.reportedInputLatencyFrames.reset();
+        if (const auto reported = capture->getDeviceReportedInputLatencyFrames (record.usbId);
+            latency >= 0 && reported.has_value() && *reported != latency)
+            record.reportedInputLatencyFrames = *reported;
+
+        record.ioBlockFrames = latency >= 0 ? capture->getDeviceIoBlockFrames (record.usbId) : 0;
+        record.alignmentDelayFrames = latency >= 0 ? capture->getDeviceAlignmentDelayFrames (record.usbId) : 0;
+        record.alignmentStartFrames = latency >= 0 ? capture->getDeviceAlignmentStartFrames (record.usbId) : 0;
+        record.alignmentSilenceFrames = latency >= 0 ? capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId) : 0;
+        record.alignmentDroppedFrames = latency >= 0 ? capture->getDeviceAlignmentDroppedFramesThisTake (record.usbId) : 0;
+        record.ioShiftFrames = latency >= 0 ? capture->getDeviceIoShiftFramesThisTake (record.usbId) : 0;
+    }
+}
+
 TakeFigures Application::liveTakeFigures (bool sessionHasStopped) const
 {
     TakeFigures f;
@@ -4656,7 +4786,10 @@ std::string Application::buildSessionMetadataJson (bool sessionHasStopped)
     // The size the take's streams actually ran at. The ladder can have stepped
     // on during the take; that step applies to the next one.
     meta.bufferSizeSamples = figures.bufferSizeSamples;
-    meta.measuredLatencyMs = measuredLatencyMs;
+    meta.measuredLatencyMs = takeMeasuredLatencyMs;
+    meta.slowestMicLatencyMs = takeSlowestMicLatencyMs;
+    meta.alignedInputLatencyFrames = takeAlignedInputLatencyFrames;
+    meta.stemsAligned = takeStemsAligned;
 
     // The take's roster, fixed when it started, not whoever is ticked and
     // plugged in now. A mic unplugged mid-take still has its stem in the
@@ -5403,6 +5536,15 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         capture->tickDriftReporting (sinceLastCallSeconds);
         driftMeasuredSeconds += sinceLastCallSeconds;
+
+        // §5.4's headphone figures, kept current for the Advanced panel: each
+        // microphone's own path is only known once every device has said
+        // what IO size it really runs at, and can grow while it runs.
+        if (capture->isMonitoring())
+        {
+            refreshMonitoringLatency();
+            noteSlowMicrophone();
+        }
 
         // Walked over capture's channels rather than the device list: the two
         // agree only until a microphone is unplugged mid-take, and after that

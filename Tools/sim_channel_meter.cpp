@@ -12,8 +12,10 @@
 #include "UI/AppLookAndFeel.h"
 #include "Core/Metering.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -81,11 +83,10 @@ void run (int ms)
 }
 
 /// Runs the app's timers until the strip is showing a level within 1.5 dB of
-/// target. The meter's ballistics count timer ticks, not wall time, and a busy
-/// CI machine ticks slower than 60 Hz -- so waiting a fixed time checked the
-/// face mid-decay on macOS. Waiting on the level checks it where it lands.
-/// A 30 dB fall is about 275 ticks (1.5 s decay constant at 1/60 s a tick);
-/// a starved macOS runner was seen ticking near 18 Hz, so allow a minute.
+/// target. The meter's ballistics follow real elapsed time, but a busy CI
+/// machine can still deliver the timer late and in bursts -- so waiting a
+/// fixed time checked the face mid-decay on macOS. Waiting on the level
+/// checks it where it lands; allow a minute for a starved runner.
 void settleAt (ChannelMeterComponent& meter, float targetDb, int timeoutMs = 60000)
 {
     const auto start = juce::Time::getMillisecondCounter();
@@ -270,6 +271,42 @@ int main (int argc, char** argv)
         expectFace (meter, Face::OneTear, "the face still shows through the highlight");
         snapshot (meter, "09-highlighted");
 
+        meter.setMetering (nullptr);
+    }
+
+    std::printf ("\n-- a timer that does not fire at 60 Hz --\n");
+    {
+        // App Nap throttles an occluded app's timers to a few a second, and a
+        // busy message thread delivers them late and coalesced. The strip used
+        // to charge every callback as 1/60 s, so a 2-second peak hold lasted
+        // 120 callbacks -- half a minute at 4 Hz -- and the setup advice that
+        // reads the held peak heard a sound long gone. Real time now.
+        mma::Metering metering (48000.0);
+        ChannelMeterComponent meter;
+        meter.setSize (220, 40);
+        meter.setMicName ("Throttled");
+        meter.setMetering (&metering);
+        meter.setNoSignal (false);
+
+        FakeMic mic (metering);
+        mic.setPeakDb (-6.0f);
+        run (300);
+        mic.setPeakDb (-200.0f);
+        run (100);
+
+        const float held = metering.getPeakHoldDb();
+        check (held > -7.0f, "a -6 dBFS peak is held (" + juce::String (held, 1) + " dBFS)");
+
+        // No timer fires for 3.5 s: the message thread is held, as App Nap or
+        // a stalled callback holds it.
+        std::this_thread::sleep_for (std::chrono::milliseconds (3500));
+        run (150);
+
+        // Two seconds of hold, then 20 dB a second: about 30 dB down by now.
+        // Counted in callbacks it would not even have started to fall.
+        const float after = metering.getPeakHoldDb();
+        check (after < held - 20.0f, "3.5 real seconds later the hold has run out and the peak "
+                                     "has fallen (" + juce::String (after, 1) + " dBFS)");
         meter.setMetering (nullptr);
     }
 

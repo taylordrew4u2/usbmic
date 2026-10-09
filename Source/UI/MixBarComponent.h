@@ -1,4 +1,5 @@
 #pragma once
+#include "../Core/ElapsedClock.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../Core/Metering.h"
 
@@ -20,6 +21,7 @@ public:
     void paint (juce::Graphics& g) override;
 
 private:
+    mma::ElapsedClock meterClock { 1.0 / 60.0 };
     void timerCallback() override;
     void updateAccessibilityText();
 

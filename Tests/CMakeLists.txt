@@ -7,6 +7,7 @@ add_executable(mma_core_tests
     test_DeadChannelDetector.cpp
     test_Metering.cpp
     test_MonitorBus.cpp
+    test_FeedbackDetector.cpp
     test_SessionFolderNaming.cpp
     test_CameraSelection.cpp
     test_AppSettings.cpp
@@ -32,6 +33,7 @@ add_executable(mma_core_tests
     test_SetupAdvisor.cpp
     test_SampleFormat.cpp
     test_WritePipeline.cpp
+    test_StemAligner.cpp
     test_CombinedTake.cpp
     test_Loudness.cpp
     test_TapToNameDetector.cpp

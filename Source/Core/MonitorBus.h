@@ -8,7 +8,8 @@ namespace mma {
 /// §5: the live monitor mix. Unity sum (no per-channel attenuation with channel
 /// count -- level is managed by trim and master volume only), a mandatory
 /// zero-lookahead brickwall limiter at -3dBFS, a runaway cut if that limiter
-/// stays engaged for >500ms, third-octave feedback detection, and a global mute.
+/// stays engaged for >500ms, and a global mute. Third-octave feedback detection
+/// (§5.5) watches this bus from FeedbackGuard and cuts it the same way.
 /// This bus's limiter is a *separate instance* from MixBusLimiter (§6.1) so a
 /// monitor mute or runaway cut can never silence the recorded mix file.
 class MonitorBus
@@ -66,9 +67,13 @@ public:
 
     bool isMuted() const noexcept { return isGloballyMuted() || isRunawayMuted(); }
 
-    /// Feed a 1/3-octave-band analysis result (done outside the RT audio callback's
-    /// hot path if it needs FFT work -- the detector here just tracks the growth
-    /// rule). bandLevelDb is one band's level, broadbandPeakDb is the mix peak.
+    /// The §5.5 growth rule for a single band's level, tumbling 500 ms windows.
+    /// bandLevelDb is one band's level, broadbandPeakDb is the mix peak. The
+    /// shipping path does not use this: FeedbackGuard (FeedbackDetector.h)
+    /// analyses every third-octave band of the bus on its own thread and cuts
+    /// through engageRunawayCut(). Kept for the UI walker, which trips a cut
+    /// with it without needing a howl in the fixture. Not thread-safe against
+    /// itself; call from one thread.
     bool processFeedbackCandidate (double bandLevelDb, double broadbandPeakDb, double blockSeconds) noexcept;
 
 private:

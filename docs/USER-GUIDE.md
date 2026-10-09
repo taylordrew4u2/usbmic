@@ -211,6 +211,39 @@ files really are empty and the card says so instead of calling it saved.
   silence, never a different mix. Picking another output under **Monitoring
   and output** in Settings turns this off, and that choice is remembered.
 
+- **Headphones first; the tracks are lined up afterwards.** Microphones and
+  interfaces don't hand their sound over at the same moment: each has its
+  own delay, and a Mac sometimes runs one at a much larger buffer than the
+  rest (another app asked for it). Everyone hears each microphone as soon as
+  that microphone allows — one slow interface never adds its delay to
+  everyone else's headphones. The recording is lined up as it is written
+  instead: a clap that two microphones heard at once lands on the same frame
+  in both tracks, and once in `MIX.wav`. The quicker microphones' tracks
+  therefore start with a few milliseconds of silence. The headphone delay
+  shown under Advanced (and in the message when the app raises its buffer)
+  is the quickest microphone's own; a slower interface's microphone is late
+  in its own channel only, and where there is one its delay is shown beside
+  it ("slowest mic"). If that one is past 10 ms the app tells you which
+  microphone it is, in the activity list.
+
+  `session.json` records how each device was lined up: its delay
+  (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how
+  many samples later its tracks sit than its sound arrived, at the start of
+  the take (`alignmentStartFrames`: the silence its tracks open with) and at
+  the end (`alignmentDelayFrames`); any silence written into or samples
+  taken out of its tracks mid-take to keep it in step
+  (`alignmentSilenceFrames`, `alignmentDroppedFrames`); and any short
+  silence its own buffer growing left in its tracks (`ioShiftFrames`; the
+  other tracks get the same silence at the same moment, so they stay in
+  step). `stemsAligned` says whether all of that was done exactly. If it
+  ever reads `false` (a driver reporting an implausibly long delay, say,
+  which `reportedInputLatencyFrames` then shows), check that device's tracks
+  against the others in an editor: its sound belongs `alignmentStartFrames`
+  samples later than it arrived at the start of the take and
+  `alignmentDelayFrames` by the end (the two differ only if a buffer grew
+  mid-take), which is the slowest device's `inputLatencyFrames` plus
+  `ioBlockFrames` less its own.
+
 - **Tell your mics apart** — tap (or speak into) a microphone and its strip
   lights up. Click a strip to name that mic; the name sticks to the physical
   port across replug and goes into that mic's recording filename.

@@ -1079,9 +1079,12 @@ void MainComponent::refreshStatus()
 
     // Remaining time consumes the filesystem worker's latest snapshot at the
     // status cadence. No volume or per-file stat happens on this thread.
-    if (--framesUntilStatusRefresh <= 0)
+    if (statusClock.isDue (1.0 / kStatusRefreshHz))
     {
-        framesUntilStatusRefresh = kUiRefreshHz / kStatusRefreshHz;
+        // How long it has really been: App Nap and a busy message thread
+        // stretch the timer, and every detector fed from here times itself
+        // by this. See ElapsedClock.
+        const double sinceLastStatus = statusClock.tick();
 
         // The app's own voice. The figure is the §6.4 remaining-time estimate
         // either way -- the joke is in the unit, not in the number, so nothing
@@ -1175,7 +1178,7 @@ void MainComponent::refreshStatus()
 
         // §10.5/§6.5/§6.6 guidance. The slow tick consumes background disk
         // snapshots and advances the level detectors.
-        mainScreen.setAdviceText (application.pollStatusAdvice (1.0 / kStatusRefreshHz));
+        mainScreen.setAdviceText (application.pollStatusAdvice (sinceLastStatus));
 
         mainScreen.setCameraCount (application.getCameraController().getSelection().getEnabledCount());
 
@@ -1265,7 +1268,7 @@ void MainComponent::refreshAdvanced()
     advancedPanel.setBitDepthChoice (application.getBitDepth());
     advancedPanel.setBufferSizeChoice (application.getCurrentBufferSize(),
                                        application.getBufferSizeOverride());
-    advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs());
+    advancedPanel.setMeasuredLatency (application.getMeasuredLatencyMs(), application.getSlowestMicLatencyMs());
     advancedPanel.setActiveBackendDescription (application.getActiveBackendDescription());
     advancedPanel.setDriftReport (application.getDriftReport());
     advancedPanel.setAggregateStatus (application.getAggregateStatus());

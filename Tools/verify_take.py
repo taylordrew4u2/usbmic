@@ -213,6 +213,31 @@ def main():
         j = json.load(open(meta))
         check(bool(j.get('stopTimestamp')), 'session.json has a stop timestamp')
         check_reported_losses(j.get('dropouts') or [], check, a.expect_loss)
+        # How each device's stems were lined up with the rest of the rig: its
+        # input latency, the IO block it really ran at, the offset the writer
+        # held it back by and its mid-take changes -- and whether the writer
+        # managed all of it exactly. The headphones never wait for any of it;
+        # a stem an editor finds offset is explained by these, and a take
+        # whose stems are not aligned can be lined up from them. A device
+        # that never opened has none of them.
+        check('alignedInputLatencyFrames' in j, 'session.json records the input latency the stems are aligned to')
+        # The headline headphone delay is the quickest microphone's own path;
+        # the slowest one's is recorded beside it, never below it.
+        check(isinstance(j.get('slowestMicLatencyMs'), (int, float))
+              and j.get('slowestMicLatencyMs') >= (j.get('measuredLatencyMs') or 0),
+              'session.json records the slowest microphone\'s headphone delay (%s ms, headline %s ms)'
+              % (j.get('slowestMicLatencyMs'), j.get('measuredLatencyMs')))
+        check(j.get('stemsAligned') is True,
+              'session.json says the stems and MIX were lined up exactly (stemsAligned %s)' % j.get('stemsAligned'))
+        aligned = [d for d in (j.get('devices') or []) if 'inputLatencyFrames' in d]
+        check(any(d.get('ioBlockFrames', 0) > 0 for d in aligned),
+              'session.json records each open device\'s alignment (%d of %d devices)'
+              % (len(aligned), len(j.get('devices') or [])))
+        for d in aligned:
+            fields = ('inputLatencyFrames', 'ioBlockFrames', 'alignmentStartFrames', 'alignmentDelayFrames',
+                      'alignmentSilenceFrames', 'alignmentDroppedFrames', 'ioShiftFrames')
+            check(all(isinstance(d.get(f), (int, float)) and d.get(f) >= 0 for f in fields),
+                  'session.json %s: %s' % (d.get('name', '?'), ', '.join('%s %s' % (f, d.get(f)) for f in fields)))
         mirror_ran = bool(j.get('mirrorActive'))
         if j.get('mirrorEnabled') and not mirror_ran:
             print('  NOTE  mirror was enabled but did not run (low space on the internal drive, '
