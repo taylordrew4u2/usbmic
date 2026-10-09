@@ -1004,6 +1004,7 @@ int main()
             backup.fullPath = "/Users/me/RECORDINGS-MIRROR/" + backup.folderName;
             backup.emptyFileCount = 2;
             backup.movieCount = 2;
+            backup.quickTimeMovieCount = 2; // a Mac's: AVFoundation's wording
             backup.moviesInCardCopy = true;
             backup.isBackupBecauseCardCopyUnrepairable = true;
             takes.push_back (backup);
@@ -1013,7 +1014,7 @@ int main()
             worst.fileCount = 12;
             worst.playableFileCount = 1;
             worst.emptyFileCount = 3;
-            worst.movieCount = 3;
+            worst.movieCount = 3; // a Windows camera's .wmv: the longer, neutral wording
             takes.push_back (worst);
         }
 
