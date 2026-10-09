@@ -280,15 +280,20 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     //
     // Zero means the backend cannot say, and then the estimate stands: a
     // latency of nothing is the one answer that is certainly wrong.
+    monitorOutputFrames = 0;
+    monitorPresentationFrames = 0;
+
     if (! outputDeviceId.empty())
     {
-        if (const int granted = backend.getGrantedOutputBufferFrames();
-            granted > 0 && sampleRate > 0.0)
+        const int granted = backend.getGrantedOutputBufferFrames();
+        monitorOutputFrames = granted > 0 ? granted : std::max (1, bufferSize);
+        monitorPresentationFrames = std::max (0, backend.getOutputPresentationLatencyFrames());
+
+        if (granted > 0 && sampleRate > 0.0)
         {
             // Plus what the device adds after the buffers. Bluetooth reports
             // well over 100 ms there, and leaving it out printed about 3 ms.
-            monitoringLatencyMs = ((2.0 * granted + backend.getOutputPresentationLatencyFrames())
-                                   / sampleRate) * 1000.0;
+            monitoringLatencyMs = ((2.0 * granted + monitorPresentationFrames) / sampleRate) * 1000.0;
         }
     }
 
@@ -807,6 +812,8 @@ void CaptureCoordinator::stopMonitoring()
     // Nothing is monitoring, so there is no monitoring latency to report. A
     // figure left standing here would outlive the stream it describes.
     monitoringLatencyMs = 0.0;
+    monitorOutputFrames = 0;
+    monitorPresentationFrames = 0;
     alignedInputLatencyFrames = 0;
 }
 
@@ -1567,28 +1574,64 @@ void CaptureCoordinator::updateRecordingOffsets() noexcept
     }
 }
 
-double CaptureCoordinator::monitoringLatencyMsFor (int inputFrames) const noexcept
+double CaptureCoordinator::monitorPathMs (double roundTripMs, int bufferSizeFrames,
+                                          int outputFrames, int inputFrames) const noexcept
 {
     // Zero means nothing is monitoring, and stays zero.
-    if (monitoringLatencyMs <= 0.0 || sampleRate <= 0.0)
-        return monitoringLatencyMs;
+    if (roundTripMs <= 0.0 || sampleRate <= 0.0)
+        return roundTripMs;
 
-    // The figure worked out when the streams opened counts one input block
-    // at the size asked for. A microphone's own path adds its device's input
-    // latency, and whatever larger block its device runs at.
-    const int extra = std::max (0, inputFrames - std::max (1, bufferSize));
+    const int size = std::max (1, bufferSizeFrames);
 
-    return monitoringLatencyMs + 1000.0 * static_cast<double> (extra) / sampleRate;
+    // Every microphone's ring holds this much ahead of the output, so the
+    // loop can absorb the drift between the two clocks (DeviceInputStream's
+    // target fill: kPreRollBlocks of the largest pull, which is the output
+    // block). A sample waits it out before the output takes it. Leaving it
+    // out made the Advanced panel read two blocks quicker than the
+    // buffer-ladder notice that had just announced the same figure.
+    const int cushion = DeviceInputStream::kPreRollBlocks * std::max (size, outputFrames);
+
+    // The round trip counts one input block at the size asked for. A
+    // microphone's own path adds its device's input latency, and whatever
+    // larger block its device runs at.
+    const int extra = std::max (0, inputFrames - size);
+
+    return roundTripMs + 1000.0 * static_cast<double> (cushion + extra) / sampleRate;
 }
 
 double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
 {
-    return monitoringLatencyMsFor (getMonitorInputFrames (std::max (1, bufferSize)));
+    const int size = std::max (1, bufferSize);
+    return monitorPathMs (monitoringLatencyMs, size, monitorOutputFrames, getMonitorInputFrames (size));
 }
 
 double CaptureCoordinator::getSlowestMonitoringLatencyMs() const noexcept
 {
-    return monitoringLatencyMsFor (getSlowestMonitorInputFrames (std::max (1, bufferSize)));
+    const int size = std::max (1, bufferSize);
+    return monitorPathMs (monitoringLatencyMs, size, monitorOutputFrames, getSlowestMonitorInputFrames (size));
+}
+
+double CaptureCoordinator::getMonitoringLatencyMsAt (int bufferSizeFrames) const noexcept
+{
+    if (monitoringLatencyMs <= 0.0 || sampleRate <= 0.0)
+        return 0.0;
+
+    // The round trip as startMonitoring will work it out from the size the
+    // device grants, taken to be the size asked for; what the output device
+    // adds after the buffers does not change with them.
+    const int size = std::max (1, bufferSizeFrames);
+    const double roundTripMs = (2.0 * size + monitorPresentationFrames) / sampleRate * 1000.0;
+    return monitorPathMs (roundTripMs, size, size, getMonitorInputFrames (size));
+}
+
+double CaptureCoordinator::getSlowestMonitoringLatencyMsAt (int bufferSizeFrames) const noexcept
+{
+    if (monitoringLatencyMs <= 0.0 || sampleRate <= 0.0)
+        return 0.0;
+
+    const int size = std::max (1, bufferSizeFrames);
+    const double roundTripMs = (2.0 * size + monitorPresentationFrames) / sampleRate * 1000.0;
+    return monitorPathMs (roundTripMs, size, size, getSlowestMonitorInputFrames (size));
 }
 
 std::string CaptureCoordinator::getSlowestMonitoringDeviceId() const

@@ -734,7 +734,9 @@ int main()
            "the backend reports the period the card granted, not the one we asked for");
     check (192 != block, "the granted period really does differ from the request");
     {
-        const double expected = (192.0 / rate) * 1000.0 * 2.0;
+        // The round trip at the granted period, and the two pulls of it
+        // every microphone's ring holds ahead of the output.
+        const double expected = (192.0 / rate) * 1000.0 * 2.0 + (2.0 * std::max (192, block) / rate) * 1000.0;
         const double reported = monitored.getMonitoringLatencyMs();
         check (std::fabs (reported - expected) < 0.001,
                "the monitoring latency describes the granted period, not the asked-for one");

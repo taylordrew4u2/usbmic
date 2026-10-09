@@ -2128,40 +2128,37 @@ juce::String Application::applyBufferLadderStep (const juce::String& cause)
     const int size = bufferLadder.getCurrentSize();
     const bool midTake = capture != nullptr && capture->isRecording();
 
-    // What the monitor path costs at this size: an input block, the two-block
-    // drift cushion and an output block. "Slightly more delay" was the old
+    // What the headphones will cost at this size, from the coordinator's own
+    // sum (getMonitoringLatencyMsAt): "slightly more delay" was the old
     // wording at every rung, and at 512 samples that is over 40 ms, which
-    // §5.4 says is never to be shipped without saying so.
-    // In place of the input block, the quickest microphone's own input side
-    // at this size: its device's input latency plus its IO block (the larger
-    // of this size and the one the device has been running at). No channel
-    // waits for any other in the headphones -- the stems are lined up on the
-    // writer -- so a device that refuses this size and runs at 1156 frames
-    // delays its own channel, not this figure; it agrees with
-    // getMonitoringLatencyMs() once the rig is rebuilt.
-    const auto msAt = [this, size] (double inputFrames)
-    {
-        return (3.0 * static_cast<double> (size) + inputFrames) / std::max (1.0, currentSampleRate) * 1000.0;
-    };
+    // §5.4 says is never to be shipped without saying so. The quickest
+    // microphone's own path -- no channel waits for any other in the
+    // headphones, the stems are lined up on the writer -- so a device that
+    // refuses this size and runs at 1156 frames delays its own channel, not
+    // this figure. It is the figure the Advanced panel shows once the rig is
+    // rebuilt; this notice worked its own out and read two blocks slower.
     const auto spoken = [] (double ms)
     {
         return ms < 10.0 ? juce::String (ms, 1) : juce::String (juce::roundToInt (ms));
     };
 
-    const double delayMs = msAt (capture != nullptr ? capture->getMonitorInputFrames (size)
-                                                    : static_cast<double> (size));
+    const double delayMs = capture != nullptr ? capture->getMonitoringLatencyMsAt (size) : 0.0;
 
     // And a slower device's own path, where there is one: that microphone is
     // that much later in the headphones, and §5.4 does not let it go unsaid.
-    const double slowestMs = msAt (capture != nullptr ? capture->getSlowestMonitorInputFrames (size)
-                                                      : static_cast<double> (size));
+    const double slowestMs = capture != nullptr ? capture->getSlowestMonitoringLatencyMsAt (size) : 0.0;
 
     auto line = juce::String ("This computer could not keep up") + cause
-              + ", so the audio buffer has been increased to " + juce::String (size)
-              + " samples. The headphone delay is now about " + spoken (delayMs) + " ms";
+              + ", so the audio buffer has been increased to " + juce::String (size) + " samples";
 
-    if (slowestMs - delayMs >= 1.0)
-        line += " (about " + spoken (slowestMs) + " ms for the slowest microphone)";
+    // Nothing is monitoring, so there is no headphone delay to name.
+    if (delayMs > 0.0)
+    {
+        line += ". The headphone delay is now about " + spoken (delayMs) + " ms";
+
+        if (slowestMs - delayMs >= 1.0)
+            line += " (about " + spoken (slowestMs) + " ms for the slowest microphone)";
+    }
 
     // Fixed for the life of a stream, so the streams are reopened through the
     // same path a hot-plug takes -- the same one setBufferSizeOverride uses.

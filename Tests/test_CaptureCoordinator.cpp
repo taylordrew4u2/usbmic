@@ -559,10 +559,11 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesWithDifferentInputLatencyLineUpInTheF
     REQUIRE (c.startMonitoring (twoMics(), "out-device"));
 
     // The stems are lined up to the slower device; the headphones are not.
-    // Their figure is the quicker microphone's own path, with nothing of
+    // Their figure is the quicker microphone's own path -- the round trip,
+    // the ring's two-pull cushion and its 12 frames -- with nothing of
     // Couch's extra 37 frames in it.
     REQUIRE (c.getAlignedInputLatencyFrames() == 49);
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 12) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 12) / 48000.0 * 1000.0, 1e-9);
 
     REQUIRE (c.startRecording (dir, 16, "2026-10-07T00:00:00Z"));
 
@@ -914,9 +915,9 @@ TEST_CASE (CaptureCoordinator_MicsOnDevicesAtDifferentIoSizesLineUpInTheFiles)
     REQUIRE (r.kitchenAlignmentStart + r.kitchenShift - r.kitchenDropped == r.kitchenAlignment);
     REQUIRE (r.couchAlignmentStart == 0);
 
-    // Which the headphones do not hear: two 64-frame output buffers, and
-    // Kitchen's own path -- nothing of Couch's block.
-    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64) / 48000.0 * 1000.0, 1e-6);
+    // Which the headphones do not hear: two 64-frame buffers, the ring's
+    // two-pull cushion, and Kitchen's own path -- nothing of Couch's block.
+    REQUIRE_NEAR (r.headphoneLatencyMs, (2.0 * 64 + 2.0 * 64) / 48000.0 * 1000.0, 1e-6);
 }
 
 TEST_CASE (CaptureCoordinator_AnIoSizeThatGrowsMidTakeKeepsEveryStemInStep)
@@ -1322,8 +1323,9 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
     REQUIRE (c.getMonitorInputFrames (128) == 40 + 128);
     REQUIRE (c.getSlowestMonitorInputFrames (128) == 100 + 128);
     REQUIRE (c.getSlowestMonitoringDeviceId() == "dev-a");
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 40) / 48000.0 * 1000.0, 1e-9);
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
+    // Each with the round trip and the two-pull cushion every ring holds.
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
 
     std::vector<float> a (64, 0.0f), b (1156, 0.0f), out (64);
     const float* aIn[] = { a.data() };
@@ -1350,16 +1352,80 @@ TEST_CASE (CaptureCoordinator_SaysWhatALargerBufferWillCostTheHeadphones)
 
     // At the size it runs at now it is what the headphone figure carries:
     // Kitchen's 100 frames of input latency, none of Couch's 1156.
-    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getMonitoringLatencyMs(), (2.0 * 64 + 2.0 * 64 + 100) / 48000.0 * 1000.0, 1e-9);
 
     // And the slowest figure is Couch's own path: its block in place of the
     // one asked for, and its input latency.
-    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMs(), (64.0 + 2.0 * 64 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
+
+    // What the ladder says a step to 128 will cost: the round trip and the
+    // cushion at 128, and each path's own input side at it.
+    REQUIRE_NEAR (c.getMonitoringLatencyMsAt (128), (2.0 * 128 + 2.0 * 128 + 100) / 48000.0 * 1000.0, 1e-9);
+    REQUIRE_NEAR (c.getSlowestMonitoringLatencyMsAt (128), (128.0 + 2.0 * 128 + 1156 + 40) / 48000.0 * 1000.0, 1e-9);
 
     c.stopMonitoring();
     REQUIRE (c.getMonitorInputFrames (128) == 128);
     REQUIRE (c.getSlowestMonitorInputFrames (128) == 128);
     REQUIRE (c.getSlowestMonitoringDeviceId().empty());
+
+    // Nothing monitoring, no headphone delay to announce.
+    REQUIRE (c.getMonitoringLatencyMsAt (128) == 0.0);
+    REQUIRE (c.getSlowestMonitoringLatencyMsAt (128) == 0.0);
+}
+
+TEST_CASE (CaptureCoordinator_TheLadderAnnouncesTheHeadphoneDelayThePanelThenShows)
+{
+    // The buffer-ladder notice said "the headphone delay is now about X ms"
+    // from a sum of its own -- three blocks and the quickest input side --
+    // while the Advanced panel, session.json and the slow-microphone check
+    // read the coordinator's, which had no ring cushion in it: at 128 the
+    // notice said 10.7 ms and the panel, a moment later, 5.3. Both now come
+    // from one sum, and the figure announced before the step is the one
+    // shown after it.
+    FakeBackend backend;
+    backend.grantedOutputBufferFrames = 64;
+    backend.outputPresentationLatencyFrames = 30;
+    backend.inputLatencyFrames["dev-a"] = 100;
+    backend.inputLatencyFrames["dev-b"] = 40;
+
+    std::vector<float> a (2048, 0.0f), b (2048, 0.0f), out (2048);
+    const float* aIn[] = { a.data() };
+    const float* bIn[] = { b.data() };
+    float* outs[] = { out.data() };
+
+    // Couch's interface is held at 1156 by another app; Kitchen runs at the
+    // size asked for.
+    auto deliver = [&] (CaptureCoordinator& c, int size)
+    {
+        for (int i = 0; i < 2; ++i)
+            backend.inputCallbacks[1] (bIn, 1, nullptr, 0, 1156);
+        for (int i = 0; i < 4; ++i)
+            backend.inputCallbacks[0] (aIn, 1, nullptr, 0, size);
+        c.pullOutputBlock (outs, 1, size);
+    };
+
+    CaptureCoordinator before (backend, 48000.0, 64);
+    before.setSoftwareClockEnabled (false);
+    REQUIRE (before.startMonitoring (twoMics(), "out-device"));
+    deliver (before, 64);
+
+    const double announced = before.getMonitoringLatencyMsAt (128);
+    const double announcedSlowest = before.getSlowestMonitoringLatencyMsAt (128);
+    REQUIRE (announced > before.getMonitoringLatencyMs());
+    REQUIRE (announcedSlowest - announced >= 1.0);
+    before.stopMonitoring();
+
+    // The rig rebuilt at 128, the way the app does it: a new coordinator,
+    // the output granted the size asked for.
+    backend.grantedOutputBufferFrames = 128;
+    backend.inputCallbacks.clear();
+    CaptureCoordinator after (backend, 48000.0, 128);
+    after.setSoftwareClockEnabled (false);
+    REQUIRE (after.startMonitoring (twoMics(), "out-device"));
+    deliver (after, 128);
+
+    REQUIRE_NEAR (after.getMonitoringLatencyMs(), announced, 1e-9);
+    REQUIRE_NEAR (after.getSlowestMonitoringLatencyMs(), announcedSlowest, 1e-9);
 }
 
 namespace {
@@ -3116,7 +3182,10 @@ TEST_CASE (CaptureCoordinator_TheMonitoringLatencyReachesTheCaller)
     mic.fileName = "01_Singer";
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) < 1e-9);
+
+    // The backend's round trip, and the two pulls every microphone's ring
+    // holds ahead of the output.
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 2.0 * 256 / 48000.0 * 1000.0)) < 1e-9);
 }
 
 // Nothing monitoring means no monitoring latency. A figure left standing would
@@ -3216,12 +3285,14 @@ TEST_CASE (CaptureCoordinator_TheLatencyDescribesTheBufferTheDeviceGranted)
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
     // 512 frames at 48 kHz is 10.667 ms one way, so the round trip is 21.333 --
-    // twice the estimate, because the device gave twice the buffer.
-    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0;
+    // twice the estimate, because the device gave twice the buffer -- and
+    // every microphone's ring is pulled 512 at a time, so it holds two of
+    // those ahead of the output.
+    const double expected = (512.0 / 48000.0) * 1000.0 * 2.0 + (2.0 * 512.0 / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 
-    // And it is emphatically not the estimate any more.
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) > 1.0);
+    // And it is emphatically not the estimate's any more.
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 2.0 * 256 / 48000.0 * 1000.0)) > 1.0);
 }
 
 // Bluetooth headphones add well over 100 ms after the buffers. The figure
@@ -3242,9 +3313,14 @@ TEST_CASE (CaptureCoordinator_TheLatencyIncludesWhatTheOutputDeviceAdds)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    const double expected = ((2.0 * 64.0 + 7200.0) / 48000.0) * 1000.0;
+    const double expected = ((2.0 * 64.0 + 2.0 * 64.0 + 7200.0) / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
     REQUIRE (coordinator.getMonitoringLatencyMs() > 150.0);
+
+    // And it is still there after a buffer step: the ladder's figure for 128
+    // keeps what the device adds.
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMsAt (128)
+                       - ((2.0 * 128.0 + 2.0 * 128.0 + 7200.0) / 48000.0) * 1000.0) < 1e-9);
 }
 
 // A backend that cannot say keeps the estimate. Zero is not a small latency,
@@ -3264,7 +3340,7 @@ TEST_CASE (CaptureCoordinator_ABackendThatCannotSayKeepsTheEstimate)
     mic.fileName = "01_Singer";
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
-    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - 10.67) < 1e-9);
+    REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - (10.67 + 2.0 * 256 / 48000.0 * 1000.0)) < 1e-9);
 }
 
 // A device that granted exactly what was asked for reports exactly the
@@ -3285,7 +3361,7 @@ TEST_CASE (CaptureCoordinator_AGrantedBufferMatchingTheRequestChangesNothing)
 
     REQUIRE (coordinator.startMonitoring ({ mic }, "out-1"));
 
-    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0;
+    const double expected = (256.0 / 48000.0) * 1000.0 * 2.0 + (2.0 * 256.0 / 48000.0) * 1000.0;
     REQUIRE (std::abs (coordinator.getMonitoringLatencyMs() - expected) < 1e-9);
 }
 

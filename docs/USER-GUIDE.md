@@ -220,8 +220,9 @@ files really are empty and the card says so instead of calling it saved.
   instead: a clap that two microphones heard at once lands on the same frame
   in both tracks, and once in `MIX.wav`. The quicker microphones' tracks
   therefore start with a few milliseconds of silence. The headphone delay
-  shown under Advanced (and in the message when the app raises its buffer)
-  is the quickest microphone's own; a slower interface's microphone is late
+  shown under Advanced (and in the message when the app raises its buffer,
+  which names the figure Advanced will show at the new size) is the
+  quickest microphone's own; a slower interface's microphone is late
   in its own channel only, and where there is one its delay is shown beside
   it ("slowest mic"). If that one is past 10 ms the app tells you which
   microphone it is, in the activity list.

@@ -129,8 +129,10 @@ public:
     /// than the rest, delays its own channel and no one else's. This figure
     /// is the quickest microphone's own path -- its device's input latency,
     /// and the IO block it runs at where that is larger than the one asked
-    /// for -- which on a rig of like devices is everyone's. A slower device's
-    /// own path is getSlowestMonitoringLatencyMs().
+    /// for, then the cushion its ring holds against the drift between its
+    /// clock and the output's (two pulls), the output block and what the
+    /// output device adds -- which on a rig of like devices is everyone's. A
+    /// slower device's own path is getSlowestMonitoringLatencyMs().
     double getMonitoringLatencyMs() const noexcept;
 
     /// The slowest open microphone's own path through the headphones, on the
@@ -149,6 +151,14 @@ public:
     /// lined up to (with that device's IO block). The headphones do not wait
     /// for it. Zero on a backend that does not report input latency.
     int getAlignedInputLatencyFrames() const noexcept { return alignedInputLatencyFrames; }
+
+    /// §5.4's two headphone figures as they will be once the rig has been
+    /// rebuilt at `bufferSizeFrames` with the output granted that size: what
+    /// the buffer-ladder notice says before the step, on exactly the terms
+    /// getMonitoringLatencyMs() and getSlowestMonitoringLatencyMs() give them
+    /// after it. Zero when nothing is monitoring. Message thread.
+    double getMonitoringLatencyMsAt (int bufferSizeFrames) const noexcept;
+    double getSlowestMonitoringLatencyMsAt (int bufferSizeFrames) const noexcept;
 
     /// The quickest microphone's own input side were the rig running at
     /// `bufferSizeFrames`: its device's input latency plus its IO block, the
@@ -712,6 +722,13 @@ private:
     double monitoringLatencyMs = 0.0;
     int alignedInputLatencyFrames = 0;
 
+    // The monitor output's block -- what the device granted, or the size
+    // asked for where it cannot say -- and what it adds after the buffers.
+    // Each microphone's ring is pulled a block at a time, so its cushion is
+    // counted in these; and a buffer change keeps the second.
+    int monitorOutputFrames = 0;
+    int monitorPresentationFrames = 0;
+
     // Per channel: the device's input latency (-1 for a device that did not
     // open), filled in once the streams are open and published by
     // latenciesReady.
@@ -750,7 +767,18 @@ private:
     /// The quickest (or slowest) channel's own input side at this buffer
     /// size, and which channel that is (-1 when none has opened).
     int monitorInputFrames (int bufferSizeFrames, bool slowest, int* channel) const noexcept;
-    double monitoringLatencyMsFor (int inputFrames) const noexcept;
+
+    /// The one sum behind every headphone figure the app gives (§5.4), so
+    /// the buffer-ladder notice and the Advanced panel cannot disagree:
+    /// `roundTripMs` -- an input block at `bufferSizeFrames`, the output
+    /// block and what the output device adds after it, as the stream was
+    /// worked out -- plus the ring's cushion (DeviceInputStream holds
+    /// kPreRollBlocks pulls, a pull being the output block or the size asked
+    /// for where that is larger, before the output takes a sample), plus
+    /// whatever of the microphone's own input side (`inputFrames`) goes past
+    /// the one input block already counted. Zero stays zero: nothing is
+    /// monitoring.
+    double monitorPathMs (double roundTripMs, int bufferSizeFrames, int outputFrames, int inputFrames) const noexcept;
     int channelIndexForDevice (const std::string& deviceId) const noexcept;
 
     std::vector<std::string> devicesThatFailedToOpen;
