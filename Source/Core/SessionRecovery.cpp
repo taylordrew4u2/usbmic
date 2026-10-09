@@ -308,6 +308,8 @@ RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session)
     row.emptyFileCount = session.emptyFileCount();
     row.longestSeconds = session.longestSeconds();
     row.movieCount = session.movieCount;
+    row.isBackupBecauseCardCopyUnrepairable = session.shownBecauseCardCopyUnrepairable;
+    row.moviesInCardCopy = session.moviesInCardCopy;
     return row;
 }
 
@@ -351,6 +353,11 @@ std::string recoveredTakeDetail (const RecoveredTakeRow& take)
                 + (take.emptyFileCount == 1 ? " empty file left alone"
                                             : " empty files left alone");
 
+    // Said, or the user opens a folder in the backup and wonders why it is
+    // not the card they recorded to.
+    if (take.isBackupBecauseCardCopyUnrepairable)
+        detail += "; the card's copy couldn't be repaired, so this is the local backup copy";
+
     // The card said only what happened to the sound, and the camera movies in
     // the same folder were not mentioned at all -- so the first anyone heard
     // of a movie cut short was opening it. Nothing here repairs a movie:
@@ -361,11 +368,44 @@ std::string recoveredTakeDetail (const RecoveredTakeRow& take)
     {
         detail += "; " + std::to_string (take.movieCount)
                 + (take.movieCount == 1 ? " camera movie" : " camera movies");
+
+        // Movies are never backed up. A backup copy offered in the card's
+        // place has none beside it, and the folder Open goes to would leave
+        // them unaccounted for.
+        if (take.moviesInCardCopy)
+            detail += " on the card only";
+
         detail += take.longestSeconds < 10.0 ? ", which may not open"
                                              : ", which may end up to 10 s early";
     }
 
     return detail;
+}
+
+bool SessionRecovery::backupCanStandInForCard (const RecoveredSession& card, const RecoveredSession& backup)
+{
+    // Only a card copy in trouble is ever passed over.
+    if (card.playableFileCount() >= card.keptFileCount())
+        return false;
+
+    // A backup that stopped mid-take ends early, whatever its headers say.
+    // Either copy's record can know: the card's session.json may have been
+    // refreshed after the backup's drive stopped taking writes.
+    if (card.backupCopyCutShort || backup.backupCopyCutShort)
+        return false;
+
+    // Every file the card copy has, and every one of them playable. A file the
+    // card would not even open counts as one the card has -- nobody knows
+    // what is in it, which is the point.
+    if (backup.playableFileCount() != backup.keptFileCount()
+        || backup.keptFileCount() < card.keptFileCount())
+        return false;
+
+    // Not shorter than what could be measured on the card. A file the card
+    // would not open has no length here, so a locked card's copy measures
+    // nothing; one that opened but refused the repair still has its bytes
+    // counted, and a backup missing the end of them is not the better copy.
+    return backup.longestSeconds() + kBackupLengthToleranceSeconds >= card.longestSeconds();
 }
 
 RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
@@ -390,9 +430,33 @@ RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
                                                     && primary.mirrorFolder == backup.folder;
                                             });
 
+        // The card's copy normally wins. Not when the card refused the repair
+        // (locked, read-only, failing) and the backup took it: the card copy
+        // then still has its broken header, and the button sent the user to
+        // it while a playable copy of the same take sat in the backup folder.
+        // The backup stands in for it, carrying the card copy's movie count --
+        // movies are never backed up -- so the row still accounts for them.
+        const auto standIn = [] (RecoveredSession& backup, const RecoveredSession& card)
+        {
+            backup.shownBecauseCardCopyUnrepairable = true;
+            backup.moviesInCardCopy = card.movieCount > 0;
+            backup.movieCount = card.movieCount;
+        };
+
         if (existing == list.shown.end())
         {
             list.shown.push_back (std::move (session));
+        }
+        else if (scanIsPrimaryCopy && backupCanStandInForCard (session, *existing))
+        {
+            standIn (*existing, session);
+            list.hiddenFolders.push_back (std::move (session.folder));
+        }
+        else if (! scanIsPrimaryCopy && backupCanStandInForCard (*existing, session))
+        {
+            standIn (session, *existing);
+            list.hiddenFolders.push_back (std::move (existing->folder));
+            *existing = std::move (session);
         }
         else if (scanIsPrimaryCopy)
         {
