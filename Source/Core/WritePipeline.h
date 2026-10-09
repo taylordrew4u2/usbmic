@@ -10,6 +10,7 @@
 #include "SessionWriter.h"
 #include "MixBusLimiter.h"
 #include "LoudnessMeter.h"
+#include "StemAligner.h"
 
 namespace mma {
 
@@ -59,7 +60,40 @@ public:
     /// Audio-thread entry point. Real-time safe: no allocation, no locking, no
     /// file I/O. Returns false when the ring buffer could not take the whole
     /// block, which is a dropout and must be reported (§0.1, §6.5).
-    bool pushBlock (const float* const* channelData, int numChannels, int numSamples) noexcept;
+    ///
+    /// `channelOffsets`, when given, is how far each channel is to be held
+    /// back in its stem (and so in the mix) to line up with the slowest
+    /// device, from this block on: the audio arrives as early as each device
+    /// allows, because the headphones are fed from the same samples and must
+    /// not wait (§5.4), and the writer lines it up instead (StemAligner). A
+    /// change is handed to the writer tagged with the frame it applies from,
+    /// so it lands sample-exactly. Null leaves every offset where it is.
+    /// `channelOffsetKinds`, when given beside them, says for each channel
+    /// whether a change is for a block its device has not confirmed, or takes
+    /// such a change back (StemOffsetKind); null means every change is
+    /// settled.
+    bool pushBlock (const float* const* channelData, int numChannels, int numSamples,
+                    const int* channelOffsets = nullptr,
+                    const StemOffsetKind* channelOffsetKinds = nullptr) noexcept;
+
+    /// How the stems were lined up, per channel: the offset in force now and
+    /// the one the take started with, the silence written mid-take to hold a
+    /// channel back further when another device's IO block grew, and the
+    /// samples taken out to bring one forward when its own did. Any thread;
+    /// still answers after stop().
+    int getChannelAlignmentOffset (int channel) const noexcept { return aligner.getOffset (channel); }
+    int getChannelStartAlignmentOffset (int channel) const noexcept { return aligner.getStartOffset (channel); }
+    bool hasChannelAlignmentStarted (int channel) const noexcept { return aligner.hasStarted (channel); }
+    uint64_t getChannelAlignmentSilence (int channel) const noexcept { return aligner.getSilenceInserted (channel); }
+    uint64_t getChannelAlignmentDropped (int channel) const noexcept { return aligner.getSamplesDropped (channel); }
+
+    /// True when every offset asked for was applied exactly, at the frame it
+    /// was asked for. False when one had to be clamped, or a change could not
+    /// be queued at once and landed late.
+    bool isAlignmentExact() const noexcept
+    {
+        return aligner.isExact() && ! alignmentDeferred.load (std::memory_order_relaxed);
+    }
 
     /// §6.5: at 90% ring fill, the stems stop on both destinations and the
     /// mix keeps going. A mirror is fed from the same ring and writer thread, so
@@ -266,6 +300,16 @@ private:
     std::vector<float> drainBuffer;
     std::vector<float> stemScratch;
     std::vector<float> mixScratch;
+
+    // Stem alignment. The audio thread queues each change to a channel's
+    // offset (publishedOffsets is what it has queued, audio-thread-owned);
+    // the writer applies them at the frames they were tagged with.
+    StemAligner aligner;
+    StemOffsetQueue offsetQueue;
+    std::vector<int> publishedOffsets;
+    std::atomic<bool> alignmentDeferred { false };
+    uint64_t framesDrained = 0;                 // writer-owned
+    std::vector<StemOffsetEvent> chunkEvents;   // writer scratch, reserved at start()
 
     void runWriterThread();
     void drainOnce (bool finalFlush);

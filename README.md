@@ -25,7 +25,7 @@
   <a href="docs/images/demo.mp4"><img src="docs/images/demo.gif" alt="A 20-second screen recording: two microphone meters moving, Start recording pressed, the take clock counting while the file count grows, then Stop and a Saved card listing every file with its size" width="680"></a>
 </p>
 
-> **Status:** v1.13.24 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
+> **Status:** v1.13.25 release candidate. CI passes on macOS, Windows and Linux against simulated devices; the physical-microphone validation matrix is still open ([details](docs/VERIFICATION.md)).
 
 ## Why I built it
 
@@ -112,13 +112,14 @@ flowchart LR
     WT -.-> BK["Local backup copy"]
 ```
 
-Each device's callback only pushes samples into its own ring. The output device's callback is the single clock: it pulls every ring through a resampler whose ratio the drift loop adjusts from ring-fill error, feeds the monitor mix, and hands the aligned block to a writer thread that owns all disk I/O.
+Each device's callback only pushes samples into its own ring. The output device's callback is the single clock: it pulls every ring through a resampler whose ratio the drift loop adjusts from ring-fill error, feeds the monitor mix, and hands the same block to a writer thread that owns all disk I/O and lines the tracks up.
 
 **Design decisions**
 
 - **Every input is resampled, the reference mic included.** The clock that pulls the rings belongs to the output device, so exempting a "master" mic would leave it uncorrected against a clock it has no relationship to.
 - **No JUCE in `Source/Core`.** The engine builds and tests on a headless machine with no audio hardware and no network; JUCE is confined to the UI and app layers.
 - **Separate limiters for monitor and mix.** A monitor mute or runaway cut can never silence the recorded mix file.
+- **Headphones never wait for alignment.** Each mic reaches the monitor mix as early as its own device allows; the writer thread delays the quicker devices' stems to line up with the slowest, so one slow interface never puts its latency in everyone's ears.
 - **Fail-closed device policy.** Only removable USB, FireWire and Thunderbolt inputs are admitted; built-in, Bluetooth, virtual and unknown inputs are excluded rather than guessed at.
 - **Fixed channel layout per take.** A mic that unplugs writes silence into its slot instead of shrinking the file, so tracks stay aligned to the end.
 
@@ -161,7 +162,7 @@ Build options, packaging and every harness: [docs/BUILDING.md](docs/BUILDING.md)
 
 ## Testing
 
-A default build registers **13 CTest targets, all passing**, including **808 engine unit tests**:
+A default build registers **13 CTest targets, all passing**, including **878 engine unit tests**:
 
 - **Unit tests** (`mma_core_tests`): drift loop, ring buffers, monitor bus, metering, loudness, session writer, crash recovery and more.
 - **Drift harnesses:** `soak_drift` (four-hour, four-clock alignment gate) and `sim_drift_loop` at four buffer-jitter rungs.

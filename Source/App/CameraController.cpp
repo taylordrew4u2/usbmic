@@ -1441,15 +1441,19 @@ uint64_t CameraController::getViewerRevision (const std::string& deviceId) const
 #endif
 }
 
+juce::String CameraController::getMovieFileExtension()
+{
+#if JUCE_USE_CAMERA
+    return juce::CameraDevice::getFileExtension();
+#else
+    return ".mov";
+#endif
+}
+
 juce::StringArray CameraController::getPlannedFileNames() const
 {
     juce::StringArray names;
-
-#if JUCE_USE_CAMERA
-    const auto extension = juce::CameraDevice::getFileExtension();
-#else
-    const juce::String extension { ".mov" };
-#endif
+    const auto extension = getMovieFileExtension();
 
     for (const auto& plan : selection.buildPlans())
         names.add (juce::String (plan.fileName) + extension);
@@ -1459,11 +1463,7 @@ juce::StringArray CameraController::getPlannedFileNames() const
 
 juce::String CameraController::getPlannedFileNameFor (const std::string& deviceId) const
 {
-#if JUCE_USE_CAMERA
-    const auto extension = juce::CameraDevice::getFileExtension();
-#else
-    const juce::String extension { ".mov" };
-#endif
+    const auto extension = getMovieFileExtension();
 
     for (const auto& plan : selection.buildPlans())
         if (plan.deviceId == deviceId)
@@ -1652,6 +1652,26 @@ std::vector<CameraController::TakeVideoRecord> CameraController::getTakeVideoRec
     for (const auto& takeRecording : takeRecordings)
         if (takeRecording.started && takeRecording.finalizationComplete
             && takeRecording.finalizationError.isEmpty())
+            videos.push_back ({ takeRecording.displayName,
+                                takeRecording.file.getFileName().toStdString() });
+#endif
+
+    return videos;
+}
+
+std::vector<CameraController::TakeVideoRecord> CameraController::getTakeVideoRecordsSoFar() const
+{
+    std::vector<TakeVideoRecord> videos;
+
+#if JUCE_USE_CAMERA
+    videos.reserve (takeRecordings.size());
+
+    // didStart is the proof a file exists, as above. Not waiting for didFinish
+    // is the whole difference: a movie still being written is listed, and one
+    // whose writer has already reported a failure is not -- it is no more
+    // usable after a crash than after a clean stop.
+    for (const auto& takeRecording : takeRecordings)
+        if (takeRecording.started && takeRecording.finalizationError.isEmpty())
             videos.push_back ({ takeRecording.displayName,
                                 takeRecording.file.getFileName().toStdString() });
 #endif

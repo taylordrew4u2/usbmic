@@ -20,6 +20,7 @@
 #include "../Source/Platform/CoreAudioBackend.h"
 #include "../Source/Core/CaptureCoordinator.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -733,7 +734,9 @@ int main()
            "the backend reports the period the card granted, not the one we asked for");
     check (192 != block, "the granted period really does differ from the request");
     {
-        const double expected = (192.0 / rate) * 1000.0 * 2.0;
+        // The round trip at the granted period, and the two pulls of it
+        // every microphone's ring holds ahead of the output.
+        const double expected = (192.0 / rate) * 1000.0 * 2.0 + (2.0 * std::max (192, block) / rate) * 1000.0;
         const double reported = monitored.getMonitoringLatencyMs();
         check (std::fabs (reported - expected) < 0.001,
                "the monitoring latency describes the granted period, not the asked-for one");
@@ -801,6 +804,11 @@ int main()
     // its input stream's latency. Two boxes seldom agree, so one clap heard
     // by both microphones is handed over that many samples apart -- and was
     // written into the two stems that far apart, a smear in the mix.
+    //
+    // The headphones take each microphone as early as its own device allows
+    // (§5.4: audio monitoring comes first); the writer lines the stems up.
+    // So the clap reaches the headphones twice, the laggy interface's
+    // kLatencyGap after the quick one's, and lands once in the files.
     // ---------------------------------------------------------------------
     std::printf ("\nTwo interfaces that report different input latencies\n");
     fakeca::reset();
@@ -846,6 +854,7 @@ int main()
 
     std::vector<float> alignedOut (static_cast<size_t> (block) * 2, 0.0f);
     float* alignedOuts[] = { alignedOut.data(), alignedOut.data() + block };
+    std::vector<float> headphones; // the left channel of everything the output played
 
     // The clap, at the same instant in the room: frame 4000 of what the
     // quick interface hands over, kLatencyGap frames later from the laggy one.
@@ -866,11 +875,51 @@ int main()
         fakeca::pumpInput (quickId, { q });
         fakeca::pumpInput (laggyId, { l });
         aligned.pullOutputBlock (alignedOuts, 2, block);
+        headphones.insert (headphones.end(), alignedOut.begin(), alignedOut.begin() + block);
     }
+
+    const int quickOffset = aligned.getDeviceAlignmentDelayFrames ("uid-quick");
+    const int laggyOffset = aligned.getDeviceAlignmentDelayFrames ("uid-laggy");
 
     aligned.stopRecording();
     aligned.stopMonitoring();
     mma::DeviceInputStream::setClockForTesting (nullptr);
+
+    // Where each clap reached the headphones: the loudest sample, and the
+    // loudest one more than a few frames from it.
+    {
+        const auto loudestOutside = [&headphones] (long long avoid)
+        {
+            long long best = -1;
+            float bestPeak = 0.0f;
+            for (size_t i = 0; i < headphones.size(); ++i)
+            {
+                if (avoid >= 0 && std::llabs (static_cast<long long> (i) - avoid) <= 8)
+                    continue;
+                if (std::fabs (headphones[i]) > bestPeak)
+                {
+                    bestPeak = std::fabs (headphones[i]);
+                    best = static_cast<long long> (i);
+                }
+            }
+            return best;
+        };
+
+        const auto first = loudestOutside (-1);
+        const auto second = loudestOutside (first);
+        const auto earlier = std::min (first, second), later = std::max (first, second);
+        std::printf ("  in the headphones: the clap at output frame %lld and again at %lld\n", earlier, later);
+
+        check (first >= 0 && second >= 0, "the headphones carry the clap from both microphones");
+        check (std::llabs ((later - earlier) - kLatencyGap) <= 1,
+               "each as early as its own interface allows: the quick one is not held back for the laggy one");
+    }
+
+    std::printf ("  writer offsets: Quick %d frames, Laggy %d frames; stems aligned: %s\n",
+                 quickOffset, laggyOffset, aligned.areStemsAligned() ? "yes" : "no");
+    check (quickOffset == kLatencyGap && laggyOffset == 0,
+           "the writer holds the quick interface's stem back by the difference, and the take's record says so");
+    check (aligned.areStemsAligned(), "and the take is recorded as lined up exactly");
 
     const auto loudestFrame = [] (const std::string& path)
     {
@@ -907,6 +956,9 @@ int main()
     check (quickClap >= 0 && laggyClap >= 0, "both stems carry the clap");
     check (std::llabs (quickClap - laggyClap) <= 1,
            "and at the same frame: the quicker interface is held back by the difference");
+
+    const auto mixClap = loudestFrame (dir + "/MIX.wav");
+    check (std::llabs (mixClap - laggyClap) <= 1, "and the mix, summed from the lined-up stems, carries it once, there");
 
     std::remove ((dir + "/01_Quick.wav").c_str());
     std::remove ((dir + "/02_Laggy.wav").c_str());

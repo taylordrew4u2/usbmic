@@ -30,7 +30,8 @@ void MixBarComponent::timerCallback()
     if (metering == nullptr)
         return;
     const bool wasClipped = currentClip;
-    currentLevelDb = metering->tick (1.0 / 60.0);
+    // Real elapsed time: the timer is asked for 60 Hz and not promised it.
+    currentLevelDb = metering->tick (meterClock.tick());
     currentPeakDb = metering->getPeakHoldDb();
     currentClip = metering->isClipped();
 

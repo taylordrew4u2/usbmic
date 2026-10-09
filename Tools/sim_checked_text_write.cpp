@@ -6,6 +6,9 @@
 // rename that follows still succeeds -- which is the case that matters, since
 // renaming the failed temporary file over the good one is the bug.
 #include "App/CheckedTextWrite.h"
+#include "Core/BackgroundRecordWriter.h"
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <sys/resource.h>
@@ -99,6 +102,66 @@ int main()
     check (unlimitFileSize(), "simulated full disk removed");
     check (! freshReported, "a new file that did not fit is reported as failed");
     check (! fresh.exists(), "and no cut-short file is left in its place");
+
+    // A rename the caller declines (an older session.json refused because a
+    // newer one is already in place) is a failure like any other: the file is
+    // untouched and the temporary copy removed.
+    const bool declined = mma::replaceWithTextChecked (settings, good, [] (const auto&) { return false; });
+    check (! declined, "a declined rename is reported as not written");
+    check (settings.loadFileAsString() == smallText, "and the file is left as it was");
+    check (countHiddenTemporaries (folder) == 0, "and its temporary copy is removed");
+
+    // The same on real files through BackgroundRecordWriter: a mid-take
+    // refresh whose temporary copy is complete but whose rename is held up
+    // (a slow backup drive) until after the stop-time record is in place is
+    // refused at its rename, and session.json is the stop-time record.
+    {
+        const auto record = folder.getChildFile ("session.json");
+        std::mutex gateMutex;
+        std::condition_variable gateChanged;
+        bool refreshReady = false, refreshReleased = false;
+
+        mma::BackgroundRecordWriter writer ([&] (const std::string&, const std::string& text,
+                                                 const mma::BackgroundRecordWriter::Commit& commit)
+        {
+            return mma::replaceWithTextChecked (record, juce::String (text), [&] (const auto& rename)
+            {
+                if (text == "refresh")
+                {
+                    std::unique_lock<std::mutex> lock (gateMutex);
+                    refreshReady = true;
+                    gateChanged.notify_all();
+                    gateChanged.wait (lock, [&] { return refreshReleased; });
+                }
+
+                return commit (rename);
+            });
+        });
+
+        writer.submit (record.getFullPathName().toStdString(), "refresh");
+        {
+            std::unique_lock<std::mutex> lock (gateMutex);
+            gateChanged.wait_for (lock, std::chrono::seconds (5), [&] { return refreshReady; });
+        }
+
+        const auto stopped = writer.writeLast (record.getFullPathName().toStdString(), "stopped",
+                                               std::chrono::milliseconds (5000));
+        check (stopped.has_value() && *stopped, "the stop-time record is written");
+
+        {
+            const std::lock_guard<std::mutex> lock (gateMutex);
+            refreshReleased = true;
+            gateChanged.notify_all();
+        }
+
+        for (int i = 0; i < 500 && writer.isBusy(); ++i)
+            std::this_thread::sleep_for (std::chrono::milliseconds (10));
+
+        check (! writer.isBusy(), "the held-up refresh finishes");
+        check (record.loadFileAsString() == "stopped",
+               "and session.json is still the stop-time record, not the refresh");
+        check (countHiddenTemporaries (folder) == 0, "and the refused refresh leaves no temporary file");
+    }
 
     folder.deleteRecursively();
 

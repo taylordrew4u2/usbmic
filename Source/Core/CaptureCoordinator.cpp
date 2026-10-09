@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -16,7 +17,7 @@ namespace mma {
 
 CaptureCoordinator::CaptureCoordinator (IAudioBackend& b, double rate, int bufferSizeSamples)
     : backend (b), sampleRate (rate), bufferSize (bufferSizeSamples),
-      monitorBus (rate), mixMeter (rate)
+      monitorBus (rate), feedbackGuard (rate, monitorBus), mixMeter (rate)
 {
     for (auto& gain : outputChannelGains)
         gain.store (1.0f, std::memory_order_relaxed);
@@ -47,6 +48,19 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     for (size_t i = 0; i < channels.size(); ++i)
         channelMeters.push_back (std::make_unique<Metering> (sampleRate));
 
+    // Alignment state, sized here while no stream is open: the consumer reads
+    // the latencies only once latenciesReady says they are filled in.
+    latenciesReady.store (false, std::memory_order_relaxed);
+    channelInputLatency.assign (chans.size(), 0);
+    channelReportedLatency.assign (chans.size(), -1);
+    latencyClamped = false;
+    recordingOffsets.assign (chans.size(), 0);
+    recordingOffsetKinds.assign (chans.size(), StemOffsetKind::settled);
+    heldBlockSeen.assign (chans.size(), 0);
+    recordingOffsetView = std::make_unique<std::atomic<int>[]> (std::max<size_t> (1, chans.size()));
+    for (size_t i = 0; i < std::max<size_t> (1, chans.size()); ++i)
+        recordingOffsetView[i].store (0, std::memory_order_relaxed);
+
     // Sized here so the audio callback never allocates (§11).
     //
     // Floored at the largest callback CoreAudio sizes its own scratch for: an
@@ -54,6 +68,7 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     mixScratch.assign (std::max (static_cast<size_t> (std::max (1, bufferSize)) * 8,
                                  static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock)),
                        0.0f);
+    busScratch.assign (mixScratch.size(), 0.0f);
     trimFrame.assign (std::max<size_t> (1, channels.size()), 0.0f);
 
     // §3.2: one capture path per device, each with its own ring and PI loop.
@@ -265,15 +280,20 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     //
     // Zero means the backend cannot say, and then the estimate stands: a
     // latency of nothing is the one answer that is certainly wrong.
+    monitorOutputFrames = 0;
+    monitorPresentationFrames = 0;
+
     if (! outputDeviceId.empty())
     {
-        if (const int granted = backend.getGrantedOutputBufferFrames();
-            granted > 0 && sampleRate > 0.0)
+        const int granted = backend.getGrantedOutputBufferFrames();
+        monitorOutputFrames = granted > 0 ? granted : std::max (1, bufferSize);
+        monitorPresentationFrames = std::max (0, backend.getOutputPresentationLatencyFrames());
+
+        if (granted > 0 && sampleRate > 0.0)
         {
             // Plus what the device adds after the buffers. Bluetooth reports
             // well over 100 ms there, and leaving it out printed about 3 ms.
-            monitoringLatencyMs = ((2.0 * granted + backend.getOutputPresentationLatencyFrames())
-                                   / sampleRate) * 1000.0;
+            monitoringLatencyMs = ((2.0 * granted + monitorPresentationFrames) / sampleRate) * 1000.0;
         }
     }
 
@@ -367,37 +387,60 @@ bool CaptureCoordinator::startMonitoring (const std::vector<CaptureChannel>& cha
     // Input latency. Each device hands its audio over some fixed time after
     // the microphone heard it -- its own latency, its safety offset, its
     // stream's -- and two interfaces seldom agree: a clap both microphones
-    // heard at once landed in the two stems that many samples apart, and in
-    // the mix as a smear. Every channel is held back to the slowest device's
-    // figure, so the tracks line up as the room heard them. Devices that did
-    // not open take no part; their channels are silent anyway.
+    // heard at once arrives in the two channels that many samples apart. The
+    // headphones take each as it comes: holding the quicker ones back to the
+    // slowest would put the slowest device's delay in everyone's ears
+    // (§5.4). The writer lines the stems up instead, from these figures and
+    // each device's IO block (updateRecordingOffsets), so the tracks land
+    // as the room heard them. Devices that did not open take no part; their
+    // channels are silent anyway.
     {
-        std::vector<int> latency (channels.size(), 0);
+        // Far past any wired interface's figure, and a bound on what a
+        // confused driver's report can do to the arithmetic below.
+        constexpr int kLargestCredibleInputLatency = 24000;
+
         int longest = 0;
 
-        for (size_t i = 0; i < channels.size(); ++i)
+        for (size_t i = 0; i < channels.size() && i < channelInputLatency.size(); ++i)
         {
-            if (std::find (failedDevices.begin(), failedDevices.end(), channels[i].deviceId)
-                != failedDevices.end())
-                continue;
+            const bool failed = std::find (failedDevices.begin(), failedDevices.end(), channels[i].deviceId)
+                                != failedDevices.end();
 
-            latency[i] = std::max (0, backend.getInputLatencyFrames (channels[i].deviceId));
-            longest = std::max (longest, latency[i]);
+            if (failed)
+            {
+                channelInputLatency[i] = -1;
+                continue;
+            }
+
+            // A figure past the bound is not believed, and the stems cannot
+            // be lined up by it: the take's record keeps what the driver
+            // said and says the stems are not exactly aligned, so they get
+            // checked in an editor. Lining up to the bound instead put a
+            // clap 26000 samples apart in two stems, twice in the mix, under
+            // a record saying it was exact.
+            const int reported = backend.getInputLatencyFrames (channels[i].deviceId);
+            channelReportedLatency[i] = reported;
+            channelInputLatency[i] = std::clamp (reported, 0, kLargestCredibleInputLatency);
+            latencyClamped = latencyClamped || channelInputLatency[i] != reported;
+            longest = std::max (longest, channelInputLatency[i]);
         }
 
-        longest = std::min (longest, DeviceInputStream::kMaxAlignmentDelaySamples);
         alignedInputLatencyFrames = longest;
+        latenciesReady.store (true, std::memory_order_release);
 
-        for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
-            deviceStreams[i]->setAlignmentDelay (longest - std::min (latency[i], longest));
-
-        // The headphones hear every microphone that much later too, and the
-        // slowest input's own latency was never in the figure at all.
-        if (monitoringLatencyMs > 0.0 && sampleRate > 0.0)
-            monitoringLatencyMs += 1000.0 * static_cast<double> (longest) / sampleRate;
+        // Monitoring rebuilt under a take still running: that take's stems
+        // are lined up by these figures from here on.
+        if (pipeline != nullptr)
+            latencyClampedThisTake = latencyClampedThisTake || latencyClamped;
     }
 
     monitoring = true;
+
+    // §5.5: the headphone mix is watched for feedback for as long as it
+    // plays. Input-only, there is no headphone mix to watch, and no thread
+    // waking a hundred times a second for nothing.
+    if (! outputDeviceId.empty())
+        feedbackGuard.start();
 
     // The devices that would not open, now that monitoring is genuinely up.
     //
@@ -763,10 +806,14 @@ void CaptureCoordinator::stopMonitoring()
     stopSoftwareClock();
     backend.closeAllStreams();
     monitoring = false;
+    latenciesReady.store (false, std::memory_order_relaxed);
+    feedbackGuard.stop();
 
     // Nothing is monitoring, so there is no monitoring latency to report. A
     // figure left standing here would outlive the stream it describes.
     monitoringLatencyMs = 0.0;
+    monitorOutputFrames = 0;
+    monitorPresentationFrames = 0;
     alignedInputLatencyFrames = 0;
 }
 
@@ -902,6 +949,22 @@ bool CaptureCoordinator::startRecording (const std::string& sessionFolder, int b
     for (const auto& stream : deviceStreams)
         overrunBaselinePerStream.push_back (stream->getOverrunSamples());
 
+    lastTakeAlignmentSilence.clear();
+    lastTakeAlignmentDropped.clear();
+    lastTakeAlignmentStart.clear();
+    lastTakeStemsAligned = false;
+    latencyClampedThisTake = latencyClamped;
+
+    // A stream's shift counter runs for as long as the stream does, across
+    // takes; this take's share is measured from here.
+    shiftSilenceBaselinePerStream.clear();
+    shiftSilenceBaselinePerStream.reserve (deviceStreams.size());
+
+    for (const auto& stream : deviceStreams)
+        shiftSilenceBaselinePerStream.push_back (stream->getAlignmentSilenceSamples());
+
+    lastTakeShiftSilence.clear();
+
     pipeline = std::move (p);
     activePipeline.store (pipeline.get(), std::memory_order_release);
     return true;
@@ -942,6 +1005,9 @@ void CaptureCoordinator::stopRecording()
         double truePeakDbtp = LoudnessMeter::kSilenceLufs;
         int loudnessBlocks = 0;
         uint64_t framesDropped = 0;
+        std::vector<uint64_t> alignmentSilence, alignmentDropped;
+        std::vector<int> alignmentStart;
+        bool stemsAligned = false;
     };
 
     struct StopState
@@ -958,10 +1024,37 @@ void CaptureCoordinator::stopRecording()
     // the audio thread has let go, so this is every drop but the final drain's.
     lastTakeFramesDropped = pipeline->getFramesDropped();
     lastTakeLiveSessionFolder = pipeline->getLiveSessionFolder();
+
+    // So is the alignment account, bar whatever the final drain changes;
+    // the stop's own snapshot below replaces it when the stop finishes.
+    {
+        const auto count = static_cast<int> (channels.size());
+        lastTakeAlignmentSilence.assign (channels.size(), 0);
+        lastTakeAlignmentDropped.assign (channels.size(), 0);
+        lastTakeAlignmentStart.assign (channels.size(), 0);
+
+        for (int ch = 0; ch < count; ++ch)
+        {
+            lastTakeAlignmentSilence[static_cast<size_t> (ch)] = pipeline->getChannelAlignmentSilence (ch);
+            lastTakeAlignmentDropped[static_cast<size_t> (ch)] = pipeline->getChannelAlignmentDropped (ch);
+            lastTakeAlignmentStart[static_cast<size_t> (ch)] = pipeline->getChannelStartAlignmentOffset (ch);
+        }
+
+        lastTakeStemsAligned = pipeline->isAlignmentExact() && ! latencyClampedThisTake;
+
+        // The streams run on after the take; what they had shifted by now is
+        // the take's.
+        lastTakeShiftSilence.assign (deviceStreams.size(), 0);
+
+        for (size_t i = 0; i < deviceStreams.size(); ++i)
+            lastTakeShiftSilence[i] = channelShiftSilenceThisTake (i);
+    }
+
     std::shared_ptr<WritePipeline> p (std::move (pipeline));
+    const auto channelCount = static_cast<int> (channels.size());
     auto stall = filesystemStallForTesting;
 
-    std::thread ([state, p, stall]
+    std::thread ([state, p, stall, channelCount]
     {
         if (stall)
             stall();
@@ -983,6 +1076,15 @@ void CaptureCoordinator::stopRecording()
         r.truePeakDbtp = p->getTruePeakDbtp();
         r.loudnessBlocks = p->getLoudnessBlockCount();
         r.framesDropped = p->getFramesDropped();
+
+        for (int ch = 0; ch < channelCount; ++ch)
+        {
+            r.alignmentSilence.push_back (p->getChannelAlignmentSilence (ch));
+            r.alignmentDropped.push_back (p->getChannelAlignmentDropped (ch));
+            r.alignmentStart.push_back (p->getChannelStartAlignmentOffset (ch));
+        }
+
+        r.stemsAligned = p->isAlignmentExact();
 
         {
             const std::lock_guard<std::mutex> lock (state->mutex);
@@ -1062,6 +1164,10 @@ void CaptureCoordinator::stopRecording()
     lastTakeTruePeakDbtp = state->result.truePeakDbtp;
     lastTakeLoudnessBlocks = state->result.loudnessBlocks;
     lastTakeFramesDropped = state->result.framesDropped;
+    lastTakeAlignmentSilence = state->result.alignmentSilence;
+    lastTakeAlignmentDropped = state->result.alignmentDropped;
+    lastTakeAlignmentStart = state->result.alignmentStart;
+    lastTakeStemsAligned = state->result.stemsAligned && ! latencyClampedThisTake;
 }
 
 bool CaptureCoordinator::isDeviceDelivering (const std::string& deviceId,
@@ -1363,10 +1469,11 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
             framesPerSlice, static_cast<size_t> (numSamples - frameOffset)));
 
         // §3.2: every device is pulled onto this callback's timebase here. This
-        // is the single point where the independent USB clocks become one aligned
-        // frame, and every channel is corrected onto it -- including the one §3.1
-        // names as clock master, whose crystal is no more this clock than any
-        // other mic's is.
+        // is the single point where the independent USB clocks become one
+        // frame, and every channel is corrected onto it -- including the one
+        // §3.1 names as clock master, whose crystal is no more this clock than
+        // any other mic's is. Each channel lands in it as early as its own
+        // device allows; the stems are lined up later, by the writer.
         for (int ch = 0; ch < channelCount; ++ch)
         {
             float* destination = deviceScratch.data() + static_cast<size_t> (ch) * frames;
@@ -1374,12 +1481,368 @@ void CaptureCoordinator::processOutputBlock (float* const* outputs, int numOutpu
             devicePointers[static_cast<size_t> (ch)] = destination;
         }
 
+        // Each channel is handed on as early as its own device allows; the
+        // writer is told how far to hold each back in the stems, as the
+        // streams stand after this pull.
+        updateRecordingOffsets();
+
+        const bool offsetsFit = recordingOffsets.size() >= static_cast<size_t> (channelCount)
+                             && recordingOffsetKinds.size() >= static_cast<size_t> (channelCount);
         mixAndPublish (devicePointers.data(), channelCount, outputs, numOutputs,
-                       frames, frameOffset);
+                       frames, frameOffset,
+                       offsetsFit ? recordingOffsets.data() : nullptr,
+                       offsetsFit ? recordingOffsetKinds.data() : nullptr);
         frameOffset += frames;
     }
 
     noteCallbackLoad (callbackStart, numSamples);
+}
+
+int CaptureCoordinator::channelOwnLatencyFrames (size_t index, size_t blockFloor) const noexcept
+{
+    if (index >= deviceStreams.size() || index >= channelInputLatency.size()
+        || channelInputLatency[index] < 0)
+        return -1;
+
+    // The block the stream sits at (DeviceInputStream: two pulls of cushion
+    // plus its device's block), or the floor where that is larger -- the
+    // size asked for, before the device has settled on one.
+    const auto block = std::min (std::max (deviceStreams[index]->getDeviceBlockSamples(), blockFloor),
+                                 static_cast<size_t> (DeviceInputStream::kLargestDeviceBlock) * 16);
+    return channelInputLatency[index] + static_cast<int> (block);
+}
+
+void CaptureCoordinator::updateRecordingOffsets() noexcept
+{
+    // A sample reaches its ring up to one device block after it was captured,
+    // on top of the device's own input latency, and every stream holds the
+    // same cushion beyond that. So each channel's place in time is its
+    // latency plus its block, and the stems line up when every channel is
+    // held back to the largest of those across the rig. The writer does the
+    // holding back (StemAligner), from these figures, so the headphones --
+    // fed from the same pull -- never wait for it.
+    //
+    // Worked out on the one thread that pulls every stream, before every
+    // block the writer is handed. The rig's reference is each device's
+    // settled block (two deliveries at it; a single large delivery may be a
+    // driver handing over a backlog, which moves nothing), so the slowest
+    // device growing moves every other stem's alignment once its new size
+    // settles -- about one of its blocks after its own stream moved -- and a
+    // backlog moves none. A channel's own place is where its stream really
+    // is, a block it has just moved for included, so when it grows without
+    // becoming the slowest its stem is brought forward in the very block its
+    // stream moved, while the silence that move put in is still at hand to
+    // take back out (StemAligner::setOffset).
+    //
+    // That block is provisional until its device's next delivery: one large
+    // delivery is also what a driver handing over a backlog looks like. So
+    // each change is tagged for the writer: provisional while the stream
+    // holds a block its device has not confirmed, and refused when that
+    // block is taken back (the held block falls, which nothing else makes it
+    // do). The writer then puts back what the provisional change took out,
+    // where it took it from, and the backlog moves nothing in the stem
+    // either. Nothing allocates or locks (§11): the vectors were sized at
+    // startMonitoring().
+    const size_t count = std::min ({ deviceStreams.size(), recordingOffsets.size(),
+                                     recordingOffsetKinds.size(), heldBlockSeen.size() });
+    const bool ready = latenciesReady.load (std::memory_order_acquire) && channelInputLatency.size() >= count;
+    int reference = 0;
+
+    for (size_t i = 0; i < count; ++i)
+        if (ready && channelInputLatency[i] >= 0)
+            reference = std::max (reference, channelInputLatency[i]
+                                                 + static_cast<int> (deviceStreams[i]->getSettledBlockSamples()));
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        const auto& stream = *deviceStreams[i];
+        const auto held = stream.getHeldBlockSamples();
+
+        recordingOffsetKinds[i] = held > stream.getSettledBlockSamples() ? StemOffsetKind::provisional
+                                : held < heldBlockSeen[i]                ? StemOffsetKind::refused
+                                                                         : StemOffsetKind::settled;
+        heldBlockSeen[i] = held;
+
+        // A device that did not open is silent; it is not moved.
+        recordingOffsets[i] = 0;
+
+        if (ready && channelInputLatency[i] >= 0)
+            recordingOffsets[i] = std::max (0, reference - channelInputLatency[i] - static_cast<int> (held));
+
+        if (recordingOffsetView != nullptr)
+            recordingOffsetView[i].store (recordingOffsets[i], std::memory_order_relaxed);
+    }
+}
+
+double CaptureCoordinator::monitorPathMs (double roundTripMs, int bufferSizeFrames,
+                                          int outputFrames, int inputFrames) const noexcept
+{
+    // Zero means nothing is monitoring, and stays zero.
+    if (roundTripMs <= 0.0 || sampleRate <= 0.0)
+        return roundTripMs;
+
+    const int size = std::max (1, bufferSizeFrames);
+
+    // Every microphone's ring holds this much ahead of the output, so the
+    // loop can absorb the drift between the two clocks (DeviceInputStream's
+    // target fill: kPreRollBlocks of the largest pull, which is the output
+    // block). A sample waits it out before the output takes it. Leaving it
+    // out made the Advanced panel read two blocks quicker than the
+    // buffer-ladder notice that had just announced the same figure.
+    const int cushion = DeviceInputStream::kPreRollBlocks * std::max (size, outputFrames);
+
+    // The round trip counts one input block at the size asked for. A
+    // microphone's own path adds its device's input latency, and whatever
+    // larger block its device runs at.
+    const int extra = std::max (0, inputFrames - size);
+
+    return roundTripMs + 1000.0 * static_cast<double> (cushion + extra) / sampleRate;
+}
+
+double CaptureCoordinator::getMonitoringLatencyMs() const noexcept
+{
+    const int size = std::max (1, bufferSize);
+    return monitorPathMs (monitoringLatencyMs, size, monitorOutputFrames, getMonitorInputFrames (size));
+}
+
+double CaptureCoordinator::getSlowestMonitoringLatencyMs() const noexcept
+{
+    const int size = std::max (1, bufferSize);
+    return monitorPathMs (monitoringLatencyMs, size, monitorOutputFrames, getSlowestMonitorInputFrames (size));
+}
+
+double CaptureCoordinator::getMonitoringLatencyMsAt (int bufferSizeFrames) const noexcept
+{
+    if (monitoringLatencyMs <= 0.0 || sampleRate <= 0.0)
+        return 0.0;
+
+    // The round trip as startMonitoring will work it out from the size the
+    // device grants, taken to be the size asked for; what the output device
+    // adds after the buffers does not change with them.
+    const int size = std::max (1, bufferSizeFrames);
+    const double roundTripMs = (2.0 * size + monitorPresentationFrames) / sampleRate * 1000.0;
+    return monitorPathMs (roundTripMs, size, size, getMonitorInputFrames (size));
+}
+
+double CaptureCoordinator::getSlowestMonitoringLatencyMsAt (int bufferSizeFrames) const noexcept
+{
+    if (monitoringLatencyMs <= 0.0 || sampleRate <= 0.0)
+        return 0.0;
+
+    const int size = std::max (1, bufferSizeFrames);
+    const double roundTripMs = (2.0 * size + monitorPresentationFrames) / sampleRate * 1000.0;
+    return monitorPathMs (roundTripMs, size, size, getSlowestMonitorInputFrames (size));
+}
+
+std::string CaptureCoordinator::getSlowestMonitoringDeviceId() const
+{
+    int channel = -1;
+    monitorInputFrames (std::max (1, bufferSize), true, &channel);
+
+    return channel >= 0 && static_cast<size_t> (channel) < channels.size()
+               ? channels[static_cast<size_t> (channel)].deviceId : std::string();
+}
+
+int CaptureCoordinator::getMonitorInputFrames (int bufferSizeFrames) const noexcept
+{
+    return monitorInputFrames (bufferSizeFrames, false, nullptr);
+}
+
+int CaptureCoordinator::getSlowestMonitorInputFrames (int bufferSizeFrames) const noexcept
+{
+    return monitorInputFrames (bufferSizeFrames, true, nullptr);
+}
+
+int CaptureCoordinator::monitorInputFrames (int bufferSizeFrames, bool slowest, int* channel) const noexcept
+{
+    const auto size = static_cast<size_t> (std::max (1, bufferSizeFrames));
+    int best = -1, bestChannel = -1;
+
+    // Each device's block the larger of this size and the one it has been
+    // running at; each channel's own path, since no channel waits for any
+    // other.
+    if (latenciesReady.load (std::memory_order_acquire))
+        for (size_t i = 0; i < deviceStreams.size() && i < channelInputLatency.size(); ++i)
+            if (const int own = channelOwnLatencyFrames (i, size);
+                own >= 0 && (best < 0 || (slowest ? own > best : own < best)))
+            {
+                best = own;
+                bestChannel = static_cast<int> (i);
+            }
+
+    if (channel != nullptr)
+        *channel = bestChannel;
+
+    return best >= 0 ? best : static_cast<int> (size);
+}
+
+int CaptureCoordinator::channelIndexForDevice (const std::string& deviceId) const noexcept
+{
+    for (size_t i = 0; i < channels.size() && i < deviceStreams.size(); ++i)
+        if (channels[i].deviceId == deviceId)
+            return static_cast<int> (i);
+
+    return -1;
+}
+
+int CaptureCoordinator::getDeviceInputLatencyFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0 || ! latenciesReady.load (std::memory_order_acquire)
+        || static_cast<size_t> (i) >= channelInputLatency.size())
+        return -1;
+
+    return channelInputLatency[static_cast<size_t> (i)];
+}
+
+std::optional<int> CaptureCoordinator::getDeviceReportedInputLatencyFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0 || ! latenciesReady.load (std::memory_order_acquire)
+        || static_cast<size_t> (i) >= channelReportedLatency.size()
+        || static_cast<size_t> (i) >= channelInputLatency.size()
+        || channelInputLatency[static_cast<size_t> (i)] < 0)
+        return std::nullopt;
+
+    return channelReportedLatency[static_cast<size_t> (i)];
+}
+
+int CaptureCoordinator::getDeviceIoBlockFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+    return i < 0 ? 0 : static_cast<int> (deviceStreams[static_cast<size_t> (i)]->getDeviceBlockSamples());
+}
+
+int CaptureCoordinator::getDeviceAlignmentDelayFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0 || getDeviceInputLatencyFrames (deviceId) < 0)
+        return 0;
+
+    // Every channel of one device shares its place in time, so the first
+    // channel's offset is the device's.
+    return getChannelRecordingOffset (i);
+}
+
+int CaptureCoordinator::getDeviceAlignmentStartFrames (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    // The writer's own record of it: the offset in force when the channel's
+    // first sample reached it (none, for a device that did not open). Until
+    // the writer has reached the channel -- it sleeps between chunks, and the
+    // take's start-time record is written before it wakes -- the offset the
+    // audio thread is handing it now, which is what its stem will open with:
+    // the writer's own figure is zero until the first change reaches it, and
+    // a record saying "starts at 0, held back by 37" is one no editor can
+    // follow.
+    if (pipeline != nullptr)
+        return pipeline->hasChannelAlignmentStarted (i) ? pipeline->getChannelStartAlignmentOffset (i)
+                                                        : getChannelRecordingOffset (i);
+
+    const auto index = static_cast<size_t> (i);
+    return index < lastTakeAlignmentStart.size() ? lastTakeAlignmentStart[index] : 0;
+}
+
+int CaptureCoordinator::getChannelRecordingOffset (int index) const noexcept
+{
+    if (index < 0 || static_cast<size_t> (index) >= recordingOffsets.size() || recordingOffsetView == nullptr)
+        return 0;
+
+    return recordingOffsetView[static_cast<size_t> (index)].load (std::memory_order_relaxed);
+}
+
+uint64_t CaptureCoordinator::getChannelShiftSilenceSamples (int index) const noexcept
+{
+    if (index < 0 || index >= static_cast<int> (deviceStreams.size()))
+        return 0;
+
+    return deviceStreams[static_cast<size_t> (index)]->getAlignmentSilenceSamples();
+}
+
+namespace {
+
+int clampedFrames (uint64_t frames) noexcept
+{
+    return static_cast<int> (std::min<uint64_t> (frames, static_cast<uint64_t> (std::numeric_limits<int>::max())));
+}
+
+} // namespace
+
+int CaptureCoordinator::getDeviceAlignmentSilenceFramesThisTake (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    const auto index = static_cast<size_t> (i);
+
+    if (pipeline != nullptr)
+        return clampedFrames (pipeline->getChannelAlignmentSilence (i));
+
+    return index < lastTakeAlignmentSilence.size() ? clampedFrames (lastTakeAlignmentSilence[index]) : 0;
+}
+
+int CaptureCoordinator::getDeviceAlignmentDroppedFramesThisTake (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    const auto index = static_cast<size_t> (i);
+
+    if (pipeline != nullptr)
+        return clampedFrames (pipeline->getChannelAlignmentDropped (i));
+
+    return index < lastTakeAlignmentDropped.size() ? clampedFrames (lastTakeAlignmentDropped[index]) : 0;
+}
+
+uint64_t CaptureCoordinator::channelShiftSilenceThisTake (size_t index) const noexcept
+{
+    if (pipeline == nullptr)
+        return index < lastTakeShiftSilence.size() ? lastTakeShiftSilence[index] : 0;
+
+    if (index >= deviceStreams.size())
+        return 0;
+
+    // A stream rebuilt since the take began counts from zero; all of it is
+    // then this take's.
+    const auto total = deviceStreams[index]->getAlignmentSilenceSamples();
+    const auto base = index < shiftSilenceBaselinePerStream.size() ? shiftSilenceBaselinePerStream[index] : 0;
+    return total >= base ? total - base : total;
+}
+
+int CaptureCoordinator::getDeviceIoShiftFramesThisTake (const std::string& deviceId) const noexcept
+{
+    const int i = channelIndexForDevice (deviceId);
+
+    if (i < 0)
+        return 0;
+
+    const auto index = static_cast<size_t> (i);
+    const auto shift = channelShiftSilenceThisTake (index);
+
+    // What the writer took out of this channel's stems is, for the most part,
+    // the silence its own stream put in as it moved (StemAligner takes the
+    // move's silence first), so the rest of the shift is what stayed.
+    const auto dropped = pipeline != nullptr ? pipeline->getChannelAlignmentDropped (i)
+                                             : (index < lastTakeAlignmentDropped.size() ? lastTakeAlignmentDropped[index] : 0);
+
+    return clampedFrames (shift > dropped ? shift - dropped : 0);
+}
+
+bool CaptureCoordinator::areStemsAligned() const noexcept
+{
+    return pipeline != nullptr ? pipeline->isAlignmentExact() && ! latencyClampedThisTake
+                               : lastTakeStemsAligned;
 }
 
 void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numInputs,
@@ -1397,13 +1860,16 @@ void CaptureCoordinator::processAudioBlock (const float* const* inputs, int numI
     // straight to the mixer without passing through the per-device rings.
     const int channelCount = std::min (numInputs, static_cast<int> (channels.size()));
 
-    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0);
+    // Already lined up by the OS, so the writer leaves every stem where it is.
+    mixAndPublish (inputs, channelCount, outputs, numOutputs, numSamples, 0, nullptr, nullptr);
     noteCallbackLoad (callbackStart, numSamples);
 }
 
 void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelCount,
                                         float* const* outputs, int numOutputs,
-                                        int numSamples, int outputFrameOffset) noexcept
+                                        int numSamples, int outputFrameOffset,
+                                        const int* recordingOffsetsForBlock,
+                                        const StemOffsetKind* recordingOffsetKindsForBlock) noexcept
 {
     if (inputs == nullptr || channelCount <= 0)
         return;
@@ -1425,7 +1891,8 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // unreported loss the one unacceptable failure, and the pipeline
         // rejects a mismatched block anyway -- what it does with it now is
         // count it.
-        activeWriter->pushBlock (inputs, channelCount, numSamples);
+        activeWriter->pushBlock (inputs, channelCount, numSamples, recordingOffsetsForBlock,
+                                 recordingOffsetKindsForBlock);
     }
 
     pipelineUsers.fetch_sub (1, std::memory_order_release);
@@ -1459,9 +1926,13 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
             peakArrived.store (arrived, std::memory_order_relaxed);
     }
 
-    // §14.4: measured here because this is the one place every channel is
-    // aligned in the same frame block -- the per-device path has just pulled
-    // them onto one timebase, and the aggregate path is handed them that way.
+    // §14.4: measured here because this is the one place every channel is in
+    // the same frame block -- the per-device path has just pulled them onto
+    // one timebase, and the aggregate path is handed them that way. On the
+    // per-device path each is as early as its own device allows rather than
+    // lined up (that is the writer's job); microphones of a kind, which is
+    // what this advice is about, hand their audio over within a few samples
+    // of each other.
     measurePolarPattern (inputs, channelCount, numSamples);
 
     // §8.2: the audio thread does only max-abs per block into the meter.
@@ -1470,7 +1941,11 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
             channelMeters[static_cast<size_t> (ch)]->processAudioBlock (inputs[ch], numSamples);
 
     if (outputs == nullptr || numOutputs <= 0)
+    {
+        // No headphone mix this cycle, so the feedback analysis has a hole.
+        feedbackGuard.noteGap();
         return;
+    }
 
     // §5.1: one mix, containing every microphone including the listener's own,
     // summed at unity with no attenuation for channel count.
@@ -1480,6 +1955,7 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
     // repack scratch, so an unwritten block replays the previous one -- a
     // buzz at the callback rate for as long as the condition lasts.
     if (mixScratch.size() < static_cast<size_t> (numSamples)
+        || busScratch.size() < static_cast<size_t> (numSamples)
         || static_cast<int> (trimFrame.size()) < channelCount
         || static_cast<int> (trimGains.size()) < channelCount)
     {
@@ -1513,9 +1989,16 @@ void CaptureCoordinator::mixAndPublish (const float* const* inputs, int channelC
         // §5.1: master volume is an output-stage gain, deliberately outside
         // processSample, so the bus keeps its -3 dBFS ceiling regardless of how
         // loud the listener happens to be running their headphones.
-        mixScratch[static_cast<size_t> (s)] =
-            monitorBus.applyMasterVolume (monitorBus.processSample (trimFrame));
+        const float bus = monitorBus.processSample (trimFrame);
+        busScratch[static_cast<size_t> (s)] = bus;
+        mixScratch[static_cast<size_t> (s)] = monitorBus.applyMasterVolume (bus);
     }
+
+    // §5.5 feedback protection: the bus as summed and limited, before the
+    // listener's volume and before the app's own tones (pure tones, which a
+    // narrowband detector would take for a howl). A copy into a preallocated
+    // ring; the analysis runs on the guard's own thread (§11).
+    feedbackGuard.push (busScratch.data(), numSamples);
 
     mixMeter.processAudioBlock (mixScratch.data(), numSamples);
 

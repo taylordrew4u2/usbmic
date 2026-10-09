@@ -7,11 +7,13 @@ add_executable(mma_core_tests
     test_DeadChannelDetector.cpp
     test_Metering.cpp
     test_MonitorBus.cpp
+    test_FeedbackDetector.cpp
     test_SessionFolderNaming.cpp
     test_CameraSelection.cpp
     test_AppSettings.cpp
     test_ShowTemplate.cpp
     test_SessionRecovery.cpp
+    test_BackgroundRecordWriter.cpp
     test_ActivityJournal.cpp
     test_CardRemovalNotice.cpp
     test_PreflightThroughputTest.cpp
@@ -31,6 +33,7 @@ add_executable(mma_core_tests
     test_SetupAdvisor.cpp
     test_SampleFormat.cpp
     test_WritePipeline.cpp
+    test_StemAligner.cpp
     test_CombinedTake.cpp
     test_Loudness.cpp
     test_TapToNameDetector.cpp
@@ -58,6 +61,7 @@ add_executable(mma_core_tests
     test_LogSizeBudget.cpp
     test_VolumeCapacity.cpp
     test_TakeFolderTracker.cpp
+    test_SlowMicrophoneNotice.cpp
 )
 
 target_link_libraries(mma_core_tests PRIVATE mma_core mma_warnings)

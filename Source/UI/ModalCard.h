@@ -67,6 +67,10 @@ protected:
     static constexpr int kButtonHeight = 38;
 
     juce::Rectangle<int> getCardBounds() const;
+    /// The card's width alone, which does not depend on its height -- so a
+    /// subclass can measure wrapped text for getContentHeight() with it, which
+    /// getCardBounds() (sized from that very height) cannot be used for.
+    int getCardWidth() const;
 
 private:
     juce::Label headingLabel, subheadingLabel;

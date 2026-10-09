@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.13.25 -- 2026-10-09 (release candidate)
+
+Headphones-first monitoring, Mac fixes and crash recovery.
+
+### Fixed
+
+- **Headphones come first.** The headphone mix is never held back to line
+  the microphones up. Each mic reaches the headphones as soon as its own
+  interface allows; the recorded files are lined up separately, after the
+  sound has gone to the headphones. session.json records each interface's
+  offset either way.
+- **Mac: an interface that changes its buffer size mid-take** (another app,
+  or macOS itself) no longer drops audio; going back and forth costs nothing.
+- **Feedback detection is switched on.** The headphone mix is now watched
+  for feedback while you record, as the guide always said; a howl cuts the
+  headphones with the same message and Unmute button as before.
+- **The headphone delay shown is accurate.** It now includes the small
+  safety cushion it used to leave out, so the figure reads a little higher;
+  the headphones are no slower. The buffer-change notice and the Settings
+  figure now always agree.
+- **The "slow microphone" warning** only names a mic that is really behind
+  the others, not every mic once the buffer has been raised.
+- **Meters, peak hold and tap-to-name keep real time** even when macOS slows
+  the app down in the background.
+- **Mute clears the runaway evidence,** so unmuting can't cut the headphones
+  for a burst that happened before the mute.
+- **Crash or power cut mid-take:** session.json is now kept up to date during
+  the take, so the record a crash leaves is accurate; a card that mounts late
+  after a crash is still checked; leftover half-written files are cleaned up;
+  if the card copy can't be repaired, the backup copy is offered instead;
+  "nothing playable survived" no longer repeats every launch; the recovered
+  list mentions camera movies (including Windows .wmv).
+- **Combined video:** a half-finished export is never left under the finished
+  name; a repeat failure is reported every take; a combine is skipped (with a
+  warning) when the card stopped answering; you're told when it's ready; on
+  Mac it now ends where the sound ends.
+
 ## v1.13.24 -- 2026-10-07 (release candidate)
 
 Mac fixes.

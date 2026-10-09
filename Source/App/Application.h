@@ -28,6 +28,8 @@
 #include "../Core/PortIdentity.h"
 #include "../Core/OutputDeviceSelector.h"
 #include "../Core/ActivityJournal.h"
+#include "../Core/BackgroundRecordWriter.h"
+#include "../Core/SessionRecordSchedule.h"
 #include "../Core/CapacityMonitor.h"
 #include "../Core/TakeWatchdog.h"
 #include "../Core/RecordingProof.h"
@@ -348,6 +350,13 @@ public:
     /// reopens the streams, since the size is fixed for the life of a stream.
     void setBufferSizeOverride (int samples);
     double getMeasuredLatencyMs() const { return measuredLatencyMs; }
+
+    /// §5.4: the slowest open microphone's own headphone delay. The figure
+    /// above is the quickest's, and on a rig of like devices the two agree;
+    /// a device held at a larger buffer, or reporting a longer delay, is that
+    /// much later in the headphones (its own channel only), and this says by
+    /// how much -- beside the headline figure, and in the take's record.
+    double getSlowestMicLatencyMs() const { return slowestMicLatencyMs; }
     juce::String getActiveBackendDescription() const;
     /// Display names of every candidate monitor output, and of every mic that
     /// could serve as §3.1 clock master.
@@ -727,7 +736,19 @@ private:
     double captureRate = 0.0;
     int captureBufferSize = 0;
     double measuredLatencyMs = 0.0;
+    double slowestMicLatencyMs = 0.0;
     double driftMeasuredSeconds = 0.0; // §3.1 60-second window
+
+    /// Both headphone figures from the coordinator, as it stands now.
+    void refreshMonitoringLatency();
+
+    /// §5.4: "never ship a 40 ms mix silently". Says, once per device, when
+    /// one microphone's own path through the headphones is past the 10 ms
+    /// ceiling while the headline figure (the quickest's) is well below it,
+    /// and again when that clears. reportedSlowMicId is the device last
+    /// named, empty when nothing is standing.
+    void noteSlowMicrophone();
+    std::string reportedSlowMicId;
 
     // Lifetime token for callbacks marshalled from OS threads; see initialise().
     // Every access goes through the mutex-backed helpers so shutdown cannot
@@ -975,6 +996,21 @@ private:
     double takeSampleRate = 0.0;
     int takeBitDepth = 0;
     std::vector<DeviceRecord> takeDevices;
+    int takeAlignedInputLatencyFrames = 0;
+    double takeMeasuredLatencyMs = 0.0;
+    double takeSlowestMicLatencyMs = 0.0;
+    bool takeStemsAligned = false;
+
+    /// Copies how the writer lined each take device's stems up -- input
+    /// latency, IO block, the offset it was held back by, the silence written
+    /// and samples taken out mid-take to keep it in step, and the silence its
+    /// own stream left in its stems when its IO block grew -- and whether all of
+    /// that was done exactly, into the take's record, and refreshes the
+    /// headphone latency figure. At the take's start, before every mid-take
+    /// refresh of its record, and again as it stops: a device whose IO size
+    /// grew during the take moved every other stem's alignment with it (never
+    /// the headphones), and a crash's record must carry that too.
+    void recordTakeAlignment();
 
     std::string destinationFolder;
 
@@ -1123,8 +1159,13 @@ private:
     double activityLineSeconds = 0.0;
 
     /// The last take's combine outcome that has already been reported, so a
-    /// finished combine is announced once.
-    juce::String reportedCombineProblem;
+    /// finished combine is announced once. Kept by run, not by wording: two
+    /// takes in a row whose combine failed for the same reason are two
+    /// failures, and matching the sentence left the second one unreported.
+    juce::uint64 reportedCombineRun = 0;
+
+    /// The last combine run whose finished files have been announced.
+    juce::uint64 announcedCombineRun = 0;
 
     // §5.1 listening level. Owned here, not on the bus, because the coordinator
     // that owns the bus is rebuilt on a rate or buffer change.
@@ -1192,6 +1233,21 @@ private:
     juce::String createMirrorFolder (const juce::String& sessionFolderName) const;
     /// §6.2 session.json, written at start and rewritten at stop.
     void writeSessionMetadata (bool sessionHasStopped);
+    std::string buildSessionMetadataJson (bool sessionHasStopped);
+
+    /// §6.2's record refreshed during the take -- every 30 s, and soon after a
+    /// dropout, a camera starting, the backup stopping, a loss or a buffer
+    /// step (SessionRecordSchedule) -- on workers, so a crash leaves an
+    /// accurate session.json and the message thread never waits on the card
+    /// for it. At Stop the card's are retired before its stop-time record;
+    /// the backup's stop-time record goes through its writer (writeLast), so
+    /// no refresh can land on top of either.
+    std::unique_ptr<BackgroundRecordWriter> sessionRecordCard, sessionRecordMirror;
+    SessionRecordSchedule sessionRecordSchedule;
+    std::string sessionRecordEventSignature() const;
+    void startSessionRecordRefreshes();
+    void refreshSessionRecordIfDue();
+    void retireSessionRecordRefreshes();
 
     /// Points currentSessionFolder at wherever the take's open files now are,
     /// when the folder was renamed or moved in Finder mid-take. Without it the
@@ -1233,6 +1289,9 @@ private:
     /// show listed as `name` is kept in -- an invalid File when there is none.
     static juce::File getTemplatesFolder();
     static std::vector<ShowTemplate::StoredFile> scanTemplateFiles();
+    /// Removes the hidden temporary files a crash strands mid-replace of the
+    /// settings, a show, or the camera start guard. Launch only.
+    static void sweepAbandonedSafeWriteTemps();
     static juce::File getTemplateFile (const juce::String& name);
 
     struct RecoveryActivity
@@ -1248,6 +1307,8 @@ private:
         bool isDestinationCopy = false;
         std::vector<RecoveredSession> sessions;
         std::vector<RecoveryActivity> activity;
+        /// The root was not there to scan -- a card not mounted yet.
+        bool rootMissing = false;
     };
 
     struct RecoveryAcknowledgementResult
@@ -1264,8 +1325,11 @@ private:
     void scanForInterruptedSessions();
     void startDestinationRecoveryScan();
     void startMirrorRecoveryScan();
+    /// True when no take, combined video or podcast-ready copy is being
+    /// written, so a recovery scan may remove their abandoned working files.
+    bool nothingIsWritingAfterATake() const;
     static RecoveryBackgroundResult runRecoveryScan (
-        std::string root, bool isDestinationCopy,
+        std::string root, bool isDestinationCopy, bool sweepWorkingFiles,
         const std::atomic<bool>& cancelled);
     static RecoveryAcknowledgementResult runRecoveryAcknowledgement (
         std::vector<std::string> sessionFolders, std::string recoveredAt,
@@ -1285,6 +1349,13 @@ private:
     std::string mirrorRecoveryRoot;
     mutable RecoveryScanStatus destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
     mutable RecoveryScanStatus mirrorRecoveryStatus = RecoveryScanStatus::NotStarted;
+    /// The destination scan finished because there was nothing at that path
+    /// yet. Its "nothing interrupted here" holds only until the card mounts.
+    mutable bool destinationRecoveryRootWasMissing = false;
+    mutable double destinationRecoveryMissingAtMs = 0.0;
+    /// Runs the destination scan again once the drive check has written to a
+    /// destination that was missing when it was scanned.
+    void rescanDestinationIfItHasAppeared();
     mutable std::vector<RecoveredSession> recoveredSessions;
     /// Folders of same-named copies hidden behind a shown recovered take.
     mutable std::vector<std::string> hiddenRecoveredFolders;

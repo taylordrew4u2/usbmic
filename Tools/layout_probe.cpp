@@ -6,6 +6,7 @@
 #include "UI/AdvancedPanel.h"
 #include "UI/SaveLocationPrompt.h"
 #include "UI/SetupGuidePanel.h"
+#include "UI/RecoveredTakesPanel.h"
 #include "UI/CameraPreviewCover.h"
 #include <algorithm>
 #include <cmath>
@@ -134,6 +135,31 @@ int main()
     std::printf ("saved 44.1 kHz stays visible: %s\n\n",
                  savedRateRemainsVisible ? "PASS" : "FAIL");
     failures += savedRateRemainsVisible ? 0 : 1;
+
+    // §5.4: the headline headphone delay is the quickest microphone's own
+    // path, so a slower interface's own delay has to be on screen beside it
+    // -- and only when there is one.
+    {
+        const auto latencyText = [&advancedPanel]
+        {
+            for (int i = 0; i < advancedPanel.getNumChildComponents(); ++i)
+                if (auto* label = dynamic_cast<juce::Label*> (advancedPanel.getChildComponent (i));
+                    label != nullptr && label->getText().startsWith ("2.7 ms"))
+                    return label->getText();
+
+            return juce::String();
+        };
+
+        advancedPanel.setMeasuredLatency (2.7, 45.3);
+        const auto slower = latencyText();
+        advancedPanel.setMeasuredLatency (2.7, 2.7);
+        const auto alike = latencyText();
+        const bool slowestShown = slower == "2.7 ms (slowest mic 45.3 ms)" && alike == "2.7 ms";
+
+        std::printf ("headphone delay names a slower mic's own beside it: %s ('%s', '%s')\n\n",
+                     slowestShown ? "PASS" : "FAIL", slower.toRawUTF8(), alike.toRawUTF8());
+        failures += slowestShown ? 0 : 1;
+    }
 
     std::printf ("-- camera viewer revision invalidates UI caches --\n");
 
@@ -952,6 +978,95 @@ int main()
 
         std::printf ("every setup guide page fits at both drawer widths: %s\n", everyPageFits ? "PASS" : "FAIL");
         failures += everyPageFits ? 0 : 1;
+    }
+
+    // --- The recovered-takes card: every take's account is readable ---------
+    //
+    // The line under each take grew a clause at a time -- files that could not
+    // be repaired, empty ones, the camera movies, the backup copy offered in
+    // the card's place -- and its row was sized by counting clauses, so the
+    // last one was cut off. Every detail must be drawn whole, inside the card,
+    // above the buttons, in a full-width window and a narrow one.
+    {
+        std::printf ("\nThe recovered-takes card shows every take's account whole\n");
+
+        std::vector<mma::RecoveredTakeRow> takes;
+        {
+            mma::RecoveredTakeRow plain;
+            plain.folderName = "2026-10-07_2100_Plain";
+            plain.fullPath = "/Volumes/CARD/RECORDINGS/" + plain.folderName;
+            plain.fileCount = plain.playableFileCount = 3;
+            plain.longestSeconds = 754.0;
+            takes.push_back (plain);
+
+            mma::RecoveredTakeRow backup = plain;
+            backup.folderName = "2026-10-07_2000_Locked-card_2";
+            backup.fullPath = "/Users/me/RECORDINGS-MIRROR/" + backup.folderName;
+            backup.emptyFileCount = 2;
+            backup.movieCount = 2;
+            backup.quickTimeMovieCount = 2; // a Mac's: AVFoundation's wording
+            backup.moviesInCardCopy = true;
+            backup.isBackupBecauseCardCopyUnrepairable = true;
+            takes.push_back (backup);
+
+            mma::RecoveredTakeRow worst = plain;
+            worst.folderName = "2026-10-07_1900_Everything";
+            worst.fileCount = 12;
+            worst.playableFileCount = 1;
+            worst.emptyFileCount = 3;
+            worst.movieCount = 3; // a Windows camera's .wmv: the longer, neutral wording
+            takes.push_back (worst);
+        }
+
+        for (const int width : { 1180, 707, 420 })
+        {
+            mma::RecoveredTakesPanel panel;
+            panel.setTakes (takes);
+            panel.setSize (width, 1400);
+
+            bool ok = panel.getRequiredHeight() < 1400 - 32;
+            int lastBottom = 0, rowsFound = 0;
+            const juce::Rectangle<int> card ((width - juce::jmin (480, juce::jmax (280, width - 32))) / 2, 0,
+                                             juce::jmin (480, juce::jmax (280, width - 32)), 1400);
+
+            for (int i = 0; i < panel.getNumChildComponents(); ++i)
+            {
+                auto* label = dynamic_cast<juce::Label*> (panel.getChildComponent (i));
+                if (label == nullptr)
+                    continue;
+
+                const bool isDetail = std::any_of (takes.begin(), takes.end(), [label] (const auto& t)
+                {
+                    return label->getText() == juce::String::fromUTF8 (mma::recoveredTakeDetail (t).c_str());
+                });
+                if (! isDetail)
+                    continue;
+
+                ++rowsFound;
+                const auto font = label->getFont();
+                const auto area = label->getBorderSize().subtractedFrom (label->getLocalBounds());
+                const int allowed = juce::jmax (1, (int) ((float) area.getHeight() / font.getHeight()));
+                const float needed = font.getStringWidthFloat (label->getText());
+                const bool fits = needed < (float) area.getWidth()
+                               || (float) allowed > (needed + 80.0f) / (float) area.getWidth();
+
+                ok = ok && fits && label->getX() >= card.getX() && label->getRight() <= card.getRight()
+                        && label->getY() >= lastBottom;
+                lastBottom = label->getBottom();
+
+                if (! fits)
+                    std::printf ("  cut off at %dpx: \"%s\" (%d lines allowed)\n", width,
+                                 label->getText().toRawUTF8(), allowed);
+            }
+
+            auto* open = findButton (panel, "Open the newest");
+            ok = ok && rowsFound == (int) takes.size() && open != nullptr && open->getY() >= lastBottom;
+
+            std::printf ("  %s  %4dpx: %d takes listed, last detail ends at y=%d, buttons at y=%d\n",
+                         ok ? "PASS" : "FAIL", width, rowsFound, lastBottom,
+                         open != nullptr ? open->getY() : -1);
+            failures += ok ? 0 : 1;
+        }
     }
 
     return failures == 0 ? 0 : 1;

@@ -26,6 +26,28 @@ struct TakeFile
 /// The app never writes a dot-file into a take folder itself.
 bool isSystemClutterFile (const std::string& fileName);
 
+/// True for the hidden temporary file a safe replace of `targetStem` +
+/// `targetExtension` leaves behind when the process dies between writing it
+/// and renaming it over the target: juce::TemporaryFile's ".settings_temp1a2b3c4d.json"
+/// for "settings" / ".json". An empty `targetStem` matches any stem, for a
+/// folder whose files are all written that way (show templates).
+///
+/// The rename is atomic, so such a file is never the only copy of anything:
+/// the target still holds the previous version. A crash, force-quit or power
+/// cut at the wrong moment simply strands one, and nothing ever removed them --
+/// and in the templates folder a stranded one was read back as a show.
+bool isAbandonedSafeWriteTemp (const std::string& fileName,
+                               const std::string& targetStem,
+                               const std::string& targetExtension);
+
+/// True for a file this app writes into a take folder only while making
+/// something after the take, and renames away once that is finished: the
+/// combined movie's hidden working file (".V01_Cam_with-sound.mov") and the
+/// podcast-ready copy's "MIX - Apple Podcasts.wav.part". Found at launch, one
+/// is what a crash, force-quit or power cut left of an unfinished export --
+/// never a recording, and never something the user can play.
+bool isAbandonedTakeWorkingFile (const std::string& fileName);
+
 /// True when a finished take produced files but no audio worth the name.
 ///
 /// A WAV header alone is 44 bytes plus the BWF chunk, so anything under a

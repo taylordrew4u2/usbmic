@@ -48,7 +48,20 @@ float MonitorBus::processSample (const std::vector<float>& trimmedInputSamples) 
     }
 
     if (isMuted())
+    {
+        // No sound is reaching the room, so there is nothing for the limiter
+        // to be protecting anyone from and no runaway in progress: whatever
+        // engagement had been building is evidence about a signal that has
+        // stopped. These counters used to freeze here instead, so a mute
+        // pressed 400 ms into a loud burst carried that 400 ms across the
+        // mute -- and the first 100 ms of ordinary loud audio after unmuting,
+        // possibly minutes later, cut the headphones as a "runaway". The run
+        // starts again from nothing when the sound comes back.
+        limiterEngaged = false;
+        limiterEngagedSeconds = 0.0;
+        limiterReleasedSeconds = 0.0;
         return 0.0f;
+    }
 
     float sum = 0.0f;
     for (auto s : trimmedInputSamples)

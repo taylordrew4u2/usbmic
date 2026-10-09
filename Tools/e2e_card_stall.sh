@@ -20,6 +20,10 @@
 # was a permanent freeze, and with deadlines but no memory of the dead card it
 # was one deadline per step -- tens of seconds -- which this gate also catches.
 #
+# The last scenario holds one write instead of the whole drive: a mid-take
+# refresh of the local backup's session.json, inside its rename until after
+# Stop. The backup's record must still end on the stop-time one.
+#
 # Needs Xvfb, xdotool and a build with -DMMA_ALLOW_TEST_INPUTS=ON.
 set -euo pipefail
 
@@ -71,8 +75,10 @@ click() {
 
 # Each scenario gets its own profile, so a remembered destination, a recovery
 # card or a first-run prompt from one cannot change what the next one sees.
+# Arguments after the name are extra environment for the app (VAR=value),
+# applied after the defaults so they can replace them.
 launch() {
-  local name="$1"
+  local name="$1"; shift
   SCENARIO_HOME="$WORK/$name"
   CARD="$SCENARIO_HOME/RECORDINGS"
   DEAD="$WORK/$name.dead"
@@ -80,16 +86,16 @@ launch() {
   LOG="$SCENARIO_HOME/.config/SobStage/log.txt"
   mkdir -p "$CARD"
   cp "$REAL_HOME/.asoundrc" "$SCENARIO_HOME/"
-  rm -f "$DEAD" "$METER" "$METER.now"
+  rm -f "$DEAD" "$DEAD.caught" "$DEAD.released" "$METER" "$METER.now"
 
   pkill Xvfb 2>/dev/null || true; sleep 1
   Xvfb "$DISPLAY_NUM" -screen 0 1280x1200x24 >/dev/null 2>&1 &
   sleep 2
 
-  HOME="$SCENARIO_HOME" DISPLAY="$DISPLAY_NUM" \
+  env HOME="$SCENARIO_HOME" DISPLAY="$DISPLAY_NUM" \
   MMA_STALL_PREFIX="$CARD" MMA_STALL_TRIGGER="$DEAD" MMA_STALL_METER_FILE="$METER" \
   LD_PRELOAD="$PWD/$SHIM" \
-    MMA_SKIP_SETUP_GUIDE=1 nohup "./$APP" >"$WORK/$name.stdout" 2>&1 &
+    MMA_SKIP_SETUP_GUIDE=1 "$@" nohup "./$APP" >"$WORK/$name.stdout" 2>&1 &
   APP_PID=$!
 
   for _ in {1..60}; do
@@ -119,6 +125,11 @@ worst_stall_since_card_died() {
   now=${now:-0}
   [ "$now" -gt "$worst" ] && worst=$now
   echo "$worst"
+}
+
+# A session.json's stopTimestamp, or nothing (no file, unreadable, unfinished).
+stop_stamp() {
+  python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('stopTimestamp',''))" "$1" 2>/dev/null || true
 }
 
 wait_for_log() {  # pattern, seconds
@@ -273,6 +284,91 @@ if kill -0 "$APP_PID" 2>/dev/null; then
   pass "start: app still running after the card came back"
 else
   fail "start: app exited after the card came back"
+fi
+[ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
+stop_app
+
+# -------------------------------------------------------------------------
+echo
+echo "=== The backup drive holds a mid-take refresh of session.json past Stop ==="
+# The local backup's session.json is refreshed mid-take on a worker. A slow
+# backup drive still inside one of those renames when Stop is pressed must not
+# get it put in place after the stop-time record, or the backup's record
+# describes an unfinished take. Only that one rename is held (the shim's
+# MMA_STALL_RENAME_ONTO); every other call, the stop-time record's own write
+# included, goes through. It is let go only after Stop has finished with the
+# backup. MMA_KEEP_SAME_DISK_BACKUP: the backup shares the scratch home's disk
+# with the take, and test builds keep it anyway.
+BEFORE_FAIL=$FAILED
+BACKUP_ROOT="$WORK/backup/RECORDINGS-MIRROR"
+launch backup MMA_STALL_PREFIX="$BACKUP_ROOT" MMA_STALL_RENAME_ONTO=session.json \
+              MMA_KEEP_SAME_DISK_BACKUP=1
+dismiss_cards
+press_record
+
+TAKE=""
+BACKUP_TAKE=""
+for _ in {1..15}; do
+  sleep 1
+  TAKE=$(find "$CARD" -mindepth 1 -maxdepth 1 -type d | head -1)
+  BACKUP_TAKE=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1 || true)
+  [ -n "$TAKE" ] && [ -n "$BACKUP_TAKE" ] && [ -f "$BACKUP_TAKE/session.json" ] && break
+done
+if [ -z "$TAKE" ] || [ -z "$BACKUP_TAKE" ] || [ ! -f "$BACKUP_TAKE/session.json" ]; then
+  fail "backup: no take with a backup copy started, so there was nothing to hold"
+else
+  pass "backup: take started in $(basename "$TAKE"), backed up to $(basename "$BACKUP_TAKE")"
+  sleep 2
+
+  # From here the next rename onto the backup's session.json is held: the
+  # thirty-second refresh, or an earlier one if something worth recording
+  # happens first.
+  kill_card
+  CAUGHT=""
+  for _ in {1..45}; do
+    [ -e "$DEAD.caught" ] && { CAUGHT=yes; break; }
+    sleep 1
+  done
+
+  if [ -z "$CAUGHT" ]; then
+    fail "backup: no refresh of the backup's session.json reached its rename in 45 s, so nothing was held"
+  else
+    pass "backup: a mid-take refresh is held inside its rename on the backup drive"
+
+    DISPLAY="$DISPLAY_NUM" xdotool key Escape
+    sleep 1
+    click 973 178
+
+    STOPPED=""
+    for _ in {1..30}; do
+      [ -n "$(stop_stamp "$TAKE/session.json")" ] && { STOPPED=yes; break; }
+      sleep 1
+    done
+    if [ -n "$STOPPED" ]; then pass "backup: the card's copy has its stop-time record"
+    else fail "backup: the card's session.json has no stop time 30 s after Stop"; fi
+
+    # Stop waits at most one deadline for the backup's record; by now it has
+    # finished with the backup, whatever it decided. Then the drive lets the
+    # held refresh go.
+    sleep 8
+    rm -f "$DEAD"
+    RELEASED=""
+    for _ in {1..20}; do
+      [ -e "$DEAD.released" ] && { RELEASED=yes; break; }
+      sleep 1
+    done
+    [ -n "$RELEASED" ] || fail "backup: the held refresh never finished its rename"
+    # Anything ordered behind the refresh lands straight after it.
+    sleep 3
+
+    if [ -n "$(stop_stamp "$BACKUP_TAKE/session.json")" ]; then
+      pass "backup: the backup's session.json still has its stop time after the held refresh landed"
+    else
+      fail "backup: the held refresh was put in place over the stop-time record; the backup's session.json describes an unfinished take"
+    fi
+  fi
+
+  check_responsive backup
 fi
 [ "$FAILED" = "$BEFORE_FAIL" ] || { echo "--- log ---"; tail -30 "$LOG" 2>/dev/null || true; }
 stop_app

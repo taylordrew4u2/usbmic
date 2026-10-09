@@ -472,3 +472,314 @@ TEST_CASE (SessionRecovery_theCardDoesNotCallUnrepairedFilesPlayable)
     REQUIRE (recoveredTakesExplanation ({ good }).find ("repaired and is playable") != std::string::npos);
     REQUIRE (recoveredTakeDetail (good) == "2 files, 4s of sound");
 }
+
+TEST_CASE (SessionRecovery_aBackupFolderThatTookASuffixIsStillTheSameTake)
+{
+    // A backup folder of that name already existed -- the take restarted on a
+    // new card after the first was pulled -- so the backup went to "_2". Matched
+    // by name alone, one interrupted take was listed as two.
+    const auto take = [] (const std::string& folder, const std::string& mirror)
+    {
+        RecoveredSession s;
+        s.folder = folder;
+        s.mirrorFolder = mirror;
+        s.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false });
+        return s;
+    };
+
+    for (const bool mirrorFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        const std::vector<RecoveredSession> mirror {
+            take ("/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2", "") };
+        const std::vector<RecoveredSession> card {
+            take ("/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take",
+                  "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2") };
+
+        if (mirrorFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), mirror, false),
+                                               card, true);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), card, true),
+                                               mirror, false);
+
+        REQUIRE (list.shown.size() == 1);
+        REQUIRE (list.shown[0].folder == "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take");
+        REQUIRE (list.hiddenFolders.size() == 1);
+        REQUIRE (list.hiddenFolders[0] == "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2");
+    }
+}
+
+TEST_CASE (SessionRecovery_theCardListsTheNewestTakeFirstWhicheverScanFinishedFirst)
+{
+    // The card's button is "Open the newest" and opens the first row. The
+    // backup scan's older take used to come first just because that scan was
+    // merged first.
+    const auto take = [] (const std::string& folder, int64_t modifiedMs)
+    {
+        RecoveredSession s;
+        s.folder = folder;
+        s.modifiedMs = modifiedMs;
+        s.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false });
+        return s;
+    };
+
+    for (const bool mirrorFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        const std::vector<RecoveredSession> mirror { take ("/Users/me/RECORDINGS-MIRROR/2026-08-20_2000_Old", 1000) };
+        const std::vector<RecoveredSession> card { take ("/Volumes/CARD/RECORDINGS/2026-09-01_2000_New", 5000),
+                                                   take ("/Volumes/CARD/RECORDINGS/2026-08-01_2000_Older", 500) };
+
+        if (mirrorFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), mirror, false),
+                                               card, true);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), card, true),
+                                               mirror, false);
+
+        REQUIRE (list.shown.size() == 3);
+        REQUIRE (list.shown[0].folder == "/Volumes/CARD/RECORDINGS/2026-09-01_2000_New");
+        REQUIRE (list.shown[1].folder == "/Users/me/RECORDINGS-MIRROR/2026-08-20_2000_Old");
+        REQUIRE (list.shown[2].folder == "/Volumes/CARD/RECORDINGS/2026-08-01_2000_Older");
+    }
+}
+
+TEST_CASE (SessionRecovery_aPlayableBackupIsShownWhenTheCardsCopyCouldNotBeRepaired)
+{
+    // A locked card refused the header repair; the backup on this computer
+    // took it. The card copy used to win anyway, so "Open the folder" went to
+    // files with broken headers while playable ones sat in the backup.
+    const auto take = [] (const std::string& folder, bool repairFailed)
+    {
+        RecoveredSession s;
+        s.folder = folder;
+        s.files.push_back ({ "MIX.wav", 48000 * 4, 4.0, true, false, repairFailed });
+        s.files.push_back ({ "01_Alice.wav", 48000 * 4, 4.0, true, false, repairFailed });
+        return s;
+    };
+
+    for (const bool mirrorFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        const std::vector<RecoveredSession> mirror { take ("/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take", false) };
+        const std::vector<RecoveredSession> card { take ("/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take", true) };
+
+        if (mirrorFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), mirror, false),
+                                               card, true);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan (std::move (list), card, true),
+                                               mirror, false);
+
+        REQUIRE (list.shown.size() == 1);
+        REQUIRE (list.shown[0].folder == "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take");
+        REQUIRE (list.shown[0].shownBecauseCardCopyUnrepairable);
+        // Still dismissed together.
+        REQUIRE (list.hiddenFolders.size() == 1);
+        REQUIRE (list.hiddenFolders[0] == "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take");
+
+        const auto row = recoveredTakeRow (list.shown[0]);
+        REQUIRE (recoveredTakeDetail (row)
+                 == "2 files, 4s of sound; the card's copy couldn't be repaired, so this is the local backup copy");
+        REQUIRE (recoveredTakesExplanation ({ row }).find ("repaired and is playable") != std::string::npos);
+    }
+
+    // Both broken, or both fine: the card's copy, as before.
+    for (const bool broken : { true, false })
+    {
+        auto list = SessionRecovery::mergeScan ({}, { take ("/Users/me/RECORDINGS-MIRROR/T", broken) }, false);
+        list = SessionRecovery::mergeScan (std::move (list), { take ("/Volumes/CARD/RECORDINGS/T", broken) }, true);
+        REQUIRE (list.shown.size() == 1);
+        REQUIRE (list.shown[0].folder == "/Volumes/CARD/RECORDINGS/T");
+        REQUIRE_FALSE (list.shown[0].shownBecauseCardCopyUnrepairable);
+    }
+}
+
+TEST_CASE (SessionRecovery_aLockedCardsTakeIsOfferedFromTheBackupWithItsMoviesAccountedFor)
+{
+    // A locked card will not even open its files for the repair, so nothing on
+    // it can be measured; the backup folder took a "_2" and is tied to the card
+    // copy only by session.json's mirrorPath. The movies are on the card --
+    // they are never backed up -- and the row has to say so, since Open goes
+    // to the backup folder where they are not.
+    RecoveredSession card;
+    card.folder = "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take";
+    card.mirrorFolder = "/Users/me/RECORDINGS-MIRROR/2026-09-01_2000_Take_2";
+    SessionRecovery::countCameraMovie (card, "V01_FaceTime.mov", ".mov");
+    card.modifiedMs = 2000;
+    card.files.push_back ({ "01_Alice.wav", 0, 0.0, false, false, true });
+    card.files.push_back ({ "MIX.wav", 0, 0.0, false, false, true });
+
+    RecoveredSession backup;
+    backup.folder = card.mirrorFolder;
+    backup.modifiedMs = 1000;
+    backup.files.push_back ({ "01_Alice.wav", 48000 * 3, 3.0, true, false, false });
+    backup.files.push_back ({ "MIX.wav", 48000 * 3, 3.0, true, false, false });
+
+    for (const bool cardFirst : { true, false })
+    {
+        RecoveredSessionList list;
+        if (cardFirst)
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan ({}, { card }, true), { backup }, false);
+        else
+            list = SessionRecovery::mergeScan (SessionRecovery::mergeScan ({}, { backup }, false), { card }, true);
+
+        REQUIRE (list.shown.size() == 1);
+        REQUIRE (list.shown[0].folder == backup.folder);
+        REQUIRE (list.shown[0].shownBecauseCardCopyUnrepairable);
+        REQUIRE (list.hiddenFolders == std::vector<std::string> { card.folder });
+
+        const auto row = recoveredTakeRow (list.shown[0]);
+        REQUIRE (row.fullPath == backup.folder);
+        REQUIRE (row.playableFileCount == row.fileCount);
+        REQUIRE (recoveredTakeDetail (row)
+                 == "2 files, 3s of sound; the card's copy couldn't be repaired, so this is the "
+                    "local backup copy; 1 camera movie on the card only, which may not open");
+    }
+}
+
+TEST_CASE (SessionRecovery_aBackupMissingPartOfTheTakeNeverStandsInForTheCard)
+{
+    // The card refused the repair but its bytes were counted: 60 s of sound.
+    const auto cardCopy = []
+    {
+        RecoveredSession s;
+        s.folder = "/Volumes/CARD/RECORDINGS/T";
+        s.files.push_back ({ "01_Alice.wav", 48000 * 60, 60.0, true, false, true });
+        s.files.push_back ({ "MIX.wav", 48000 * 60, 60.0, true, false, true });
+        return s;
+    };
+    const auto backupCopy = [] (double seconds)
+    {
+        RecoveredSession s;
+        s.folder = "/Users/me/RECORDINGS-MIRROR/T";
+        s.files.push_back ({ "01_Alice.wav", (uint64_t) (48000 * seconds), seconds, true, false, false });
+        s.files.push_back ({ "MIX.wav", (uint64_t) (48000 * seconds), seconds, true, false, false });
+        return s;
+    };
+    const auto shownFolder = [] (const RecoveredSession& card, const RecoveredSession& backup)
+    {
+        auto list = SessionRecovery::mergeScan ({}, { backup }, false);
+        list = SessionRecovery::mergeScan (std::move (list), { card }, true);
+        REQUIRE (list.shown.size() == 1);
+        REQUIRE (list.hiddenFolders.size() == 1);
+        return list.shown[0].folder;
+    };
+
+    // The whole take, give or take the last moment: the backup.
+    REQUIRE (shownFolder (cardCopy(), backupCopy (60.0)) == "/Users/me/RECORDINGS-MIRROR/T");
+    REQUIRE (shownFolder (cardCopy(), backupCopy (60.0 - SessionRecovery::kBackupLengthToleranceSeconds / 2))
+             == "/Users/me/RECORDINGS-MIRROR/T");
+
+    // The backup stopped forty seconds in -- its drive filled -- and repaired
+    // cleanly. Offering it would cost the user the end of the take.
+    REQUIRE (shownFolder (cardCopy(), backupCopy (20.0)) == "/Volumes/CARD/RECORDINGS/T");
+
+    // Cut short, as the take's own record says: either copy's record will do,
+    // because the card's may have been refreshed after the backup stopped and
+    // the backup's could not be.
+    for (const bool saidByCard : { true, false })
+    {
+        auto card = cardCopy();
+        auto backup = backupCopy (60.0);
+        (saidByCard ? card : backup).backupCopyCutShort = true;
+        REQUIRE (shownFolder (card, backup) == "/Volumes/CARD/RECORDINGS/T");
+    }
+
+    // A file the card has and the backup does not.
+    {
+        auto backup = backupCopy (60.0);
+        backup.files.pop_back();
+        REQUIRE (shownFolder (cardCopy(), backup) == "/Volumes/CARD/RECORDINGS/T");
+    }
+
+    // A backup with a file of its own that would not repair is no better.
+    {
+        auto backup = backupCopy (60.0);
+        backup.files.back().repairFailed = true;
+        REQUIRE (shownFolder (cardCopy(), backup) == "/Volumes/CARD/RECORDINGS/T");
+    }
+
+    // And the card copy, when shown, still says nothing about a backup.
+    {
+        auto list = SessionRecovery::mergeScan ({}, { backupCopy (20.0) }, false);
+        list = SessionRecovery::mergeScan (std::move (list), { cardCopy() }, true);
+        const auto row = recoveredTakeRow (list.shown[0]);
+        REQUIRE_FALSE (row.isBackupBecauseCardCopyUnrepairable);
+        REQUIRE (recoveredTakeDetail (row).find ("backup") == std::string::npos);
+    }
+}
+
+TEST_CASE (SessionRecovery_theCardSaysWhatACrashMeansForTheCameraMovies)
+{
+    // The movies beside the sound were never mentioned, and nothing repairs
+    // them: an interrupted movie ends at its last ten-second fragment.
+    RecoveredSession session;
+    session.folder = "/Volumes/CARD/RECORDINGS/2026-09-01_2000_Take";
+    session.files.push_back ({ "MIX.wav", 48000 * 64, 64.0, true, false, false });
+    session.movieCount = 2;
+    session.quickTimeMovieCount = 2;
+
+    const auto row = recoveredTakeRow (session);
+    REQUIRE (row.movieCount == 2);
+    REQUIRE (recoveredTakeDetail (row) == "1 file, 1m 4s of sound; 2 camera movies, which may end up to 10 s early");
+
+    // Shorter than one fragment: there may be nothing in the movie to open.
+    session.files[0].seconds = 4.0;
+    session.movieCount = 1;
+    session.quickTimeMovieCount = 1;
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
+             == "1 file, 4s of sound; 1 camera movie, which may not open");
+
+    // No camera, no mention.
+    session.movieCount = 0;
+    session.quickTimeMovieCount = 0;
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session)) == "1 file, 4s of sound");
+}
+
+TEST_CASE (SessionRecovery_aWindowsTakesMoviesAreCountedWithoutAQuickTimePromise)
+{
+    // JUCE's Windows cameras write .wmv. The scan counted *.mov and *.mp4
+    // only, so a Windows take's recovery row never mentioned its movies --
+    // and AVFoundation's ten-second fragments are nothing a .wmv promises.
+    RecoveredSession session;
+    session.folder = "D:\\RECORDINGS\\2026-09-01_2000_Take";
+    session.files.push_back ({ "MIX.wav", 48000 * 64, 64.0, true, false, false });
+
+    for (const char* name : { "V01_Logitech.wmv", "V02_Capture.WMV", "._V01_Logitech.wmv", "MIX.wav",
+                              "session.json", "activity.log", ".DS_Store", "notes.txt" })
+        SessionRecovery::countCameraMovie (session, name, ".wmv");
+
+    REQUIRE (session.movieCount == 2);
+    REQUIRE (session.quickTimeMovieCount == 0);
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
+             == "1 file, 1m 4s of sound; 2 camera movies, which weren't finished and may not open");
+
+    session.files[0].seconds = 4.0;
+    session.movieCount = 0;
+    SessionRecovery::countCameraMovie (session, "V01_Logitech.wmv", ".wmv");
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (session))
+             == "1 file, 4s of sound; 1 camera movie, which wasn't finished and may not open");
+
+    // A Mac's movies, read on Windows, are still QuickTime's; a card with
+    // both kinds is promised nothing about either.
+    RecoveredSession mixed = session;
+    mixed.movieCount = 0;
+    mixed.quickTimeMovieCount = 0;
+    SessionRecovery::countCameraMovie (mixed, "V01_FaceTime.mov", ".wmv");
+    REQUIRE (mixed.movieCount == 1);
+    REQUIRE (mixed.quickTimeMovieCount == 1);
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (mixed)) == "1 file, 4s of sound; 1 camera movie, which may not open");
+    SessionRecovery::countCameraMovie (mixed, "V02_Logitech.wmv", ".mov");
+    REQUIRE (recoveredTakeDetail (recoveredTakeRow (mixed))
+             == "1 file, 4s of sound; 2 camera movies, which weren't finished and may not open");
+
+    // Whatever container this computer's cameras write is a movie.
+    RecoveredSession other;
+    SessionRecovery::countCameraMovie (other, "V01_Cam.avi", ".avi");
+    SessionRecovery::countCameraMovie (other, "V02_Cam.mp4", ".avi");
+    SessionRecovery::countCameraMovie (other, "V03_Cam.avi", ".mov");
+    REQUIRE (other.movieCount == 2);
+    REQUIRE (other.quickTimeMovieCount == 0);
+}

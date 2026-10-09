@@ -16,6 +16,17 @@
  *
  *   MMA_STALL_PREFIX   directory standing in for the card (exact path or below)
  *   MMA_STALL_TRIGGER  while this file exists, the card does not answer
+ *
+ * A drive can also hold one write and not the others: a slow backup disk still
+ * inside one rename when the next write to the same file comes along. With
+ *
+ *   MMA_STALL_RENAME_ONTO  a file name, e.g. session.json
+ *
+ * only rename() onto a file of that name under the prefix is held, and only the
+ * first one made while the trigger exists; every other call goes straight
+ * through. "<trigger>.caught" appears when that rename starts waiting and
+ * "<trigger>.released" once it has returned, so a gate can tell that the write
+ * it meant to hold was held, and when it has landed.
  */
 // Fortified builds turn open() and friends into inline wrappers, which would
 // collide with the definitions below.
@@ -125,16 +136,63 @@ void waitWhileCardIsDead()
         std::this_thread::sleep_for (std::chrono::milliseconds (20));
 }
 
+const char* renameOnto()
+{
+    static const char* name = [] {
+        const char* v = std::getenv ("MMA_STALL_RENAME_ONTO");
+        return v != nullptr && *v != 0 ? v : nullptr;
+    }();
+    return name;
+}
+
+// Everything under the prefix stalls, unless only one rename is to be held.
+bool stallsEverything()
+{
+    return renameOnto() == nullptr;
+}
+
 void touchPath (const char* path)
 {
-    if (underPrefix (path))
+    if (stallsEverything() && underPrefix (path))
         waitWhileCardIsDead();
 }
 
 void touchFd (int fd)
 {
-    if (isCardFd (fd))
+    if (stallsEverything() && isCardFd (fd))
         waitWhileCardIsDead();
+}
+
+// MMA_STALL_RENAME_ONTO: true for the one rename to hold -- onto the named
+// file under the prefix, while the trigger exists, and the first such.
+bool isTheRenameToHold (const char* to)
+{
+    if (renameOnto() == nullptr || to == nullptr || ! underPrefix (to) || ! cardIsDead())
+        return false;
+
+    const char* slash = std::strrchr (to, '/');
+
+    if (std::strcmp (slash != nullptr ? slash + 1 : to, renameOnto()) != 0)
+        return false;
+
+    static std::atomic<bool> held { false };
+    return ! held.exchange (true);
+}
+
+// "<trigger><suffix>", created empty. The trigger is outside the prefix.
+void mark (const char* suffix)
+{
+    static const auto realOpen = real<int (*) (const char*, int, ...)> ("open");
+    static const auto realClose = real<int (*) (int)> ("close");
+
+    if (trigger() == nullptr)
+        return;
+
+    const std::string path = std::string (trigger()) + suffix;
+    const int fd = realOpen (path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+    if (fd >= 0)
+        realClose (fd);
 }
 
 mode_t modeArg (int flags, va_list args)
@@ -381,9 +439,21 @@ DIR* opendir (const char* path)
 
 int rename (const char* from, const char* to)
 {
+    static const auto fn = real<int (*) (const char*, const char*)> ("rename");
+
+    if (isTheRenameToHold (to))
+    {
+        mark (".caught");
+        waitWhileCardIsDead();
+        const int result = fn (from, to);
+        const int savedErrno = errno;
+        mark (".released");
+        errno = savedErrno;
+        return result;
+    }
+
     touchPath (from);
     touchPath (to);
-    static const auto fn = real<int (*) (const char*, const char*)> ("rename");
     return fn (from, to);
 }
 

@@ -155,3 +155,50 @@ TEST_CASE (TakeCompleteness_FindersOwnFilesDoNotCountAsAudio)
     REQUIRE (takeHoldsNoAudio (files));
     REQUIRE (judgeTakeAudio (files, 0.0f) == TakeAudioVerdict::NothingWritten);
 }
+
+// juce::TemporaryFile's names for a safe replace: what a crash between the
+// write and the rename leaves behind, and nothing else.
+TEST_CASE (TakeCompleteness_AStrandedSafeWriteTemporaryIsRecognisedAndNothingElse)
+{
+    REQUIRE (isAbandonedSafeWriteTemp (".settings_temp1a2b3c4d.json", "settings", ".json"));
+    REQUIRE (isAbandonedSafeWriteTemp (".settings_tempFFFFFFFF.json", "settings", ".json"));
+    REQUIRE (isAbandonedSafeWriteTemp (".settings_temp1a2b3c4d_2.json", "settings", ".json"));
+    REQUIRE (isAbandonedSafeWriteTemp (".camera-starting_temp7f.txt", "camera-starting", ".txt"));
+    REQUIRE (isAbandonedSafeWriteTemp (".session_temp7f.json", "session", ".json"));
+    REQUIRE (isAbandonedSafeWriteTemp (".activity_temp7f.log", "activity", ".log"));
+
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp ("settings.json", "settings", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp ("settings_temp1a.json", "settings", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp (".settings_temp.json", "settings", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp (".settings_tempxyz.json", "settings", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp (".settings_temp1a.txt", "settings", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp (".other_temp1a.json", "settings", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp (".DS_Store", "settings", ".json"));
+
+    // Any stem, for the show templates folder.
+    REQUIRE (isAbandonedSafeWriteTemp (".Friday gig_temp0c1d.json", "", ".json"));
+    REQUIRE (isAbandonedSafeWriteTemp (".My_temp_show_temp0c1d.json", "", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp ("Friday gig.json", "", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp ("._Friday gig.json", "", ".json"));
+    REQUIRE_FALSE (isAbandonedSafeWriteTemp ("._temp1a.json", "", ".json"));
+}
+
+// Only the working names of what is made after a take; never the finished
+// files, never the recording, never a Finder twin.
+TEST_CASE (TakeCompleteness_AnUnfinishedExportsWorkingFileIsRecognisedAndNothingElse)
+{
+    REQUIRE (isAbandonedTakeWorkingFile (".V01_Kitchen-Cam_with-sound.mov"));
+    REQUIRE (isAbandonedTakeWorkingFile (".V02_Desk_with-sound.mkv"));
+    REQUIRE (isAbandonedTakeWorkingFile ("MIX - Apple Podcasts.wav.part"));
+    REQUIRE (isAbandonedTakeWorkingFile ("MIX - Spotify-2.wav.part"));
+
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("V01_Kitchen-Cam_with-sound.mov"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("._V01_Kitchen-Cam_with-sound.mov"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("._with-sound.mov"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("V01_Kitchen-Cam.mov"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("MIX - Apple Podcasts.wav"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("MIX.wav"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("MIX.wav.part"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("._MIX - Apple Podcasts.wav.part"));
+    REQUIRE_FALSE (isAbandonedTakeWorkingFile ("session.json"));
+}

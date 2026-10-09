@@ -153,7 +153,7 @@ files really are empty and the card says so instead of calling it saved.
 
 > The screenshots are historical UI checkpoints from several earlier binaries;
 > the version visible in each masthead identifies the build. They are retained
-> to show the implemented flows, not as proof of the v1.13.24 release candidate.
+> to show the implemented flows, not as proof of the v1.13.25 release candidate.
 > They were rendered headless on Linux by
 > [`Tools/screenshot_app.sh`](../Tools/screenshot_app.sh) against the virtual ALSA microphones
 > [`Tools/setup_alsa_fixture.sh`](../Tools/setup_alsa_fixture.sh) creates — the
@@ -210,6 +210,43 @@ files really are empty and the card says so instead of calling it saved.
   person's jack can be switched off in Settings; a switched-off jack gets
   silence, never a different mix. Picking another output under **Monitoring
   and output** in Settings turns this off, and that choice is remembered.
+
+- **Headphones first; the tracks are lined up afterwards.** Microphones and
+  interfaces don't hand their sound over at the same moment: each has its
+  own delay, and a Mac sometimes runs one at a much larger buffer than the
+  rest (another app asked for it). Everyone hears each microphone as soon as
+  that microphone allows — one slow interface never adds its delay to
+  everyone else's headphones. The recording is lined up as it is written
+  instead: a clap that two microphones heard at once lands on the same frame
+  in both tracks, and once in `MIX.wav`. The quicker microphones' tracks
+  therefore start with a few milliseconds of silence. The headphone delay
+  shown under Advanced (and in the message when the app raises its buffer,
+  which names the figure Advanced will show at the new size) is the
+  quickest microphone's own; a slower interface's microphone is late
+  in its own channel only, and where there is one its delay is shown beside
+  it ("slowest mic"). If that one is past 10 ms while the others are not,
+  or 5 ms or more behind them, the app tells you which microphone it is, in
+  the activity list.
+
+  `session.json` records how each device was lined up: its delay
+  (`inputLatencyFrames`), the buffer it really ran at (`ioBlockFrames`), how
+  many samples later its tracks sit than its sound arrived, at the start of
+  the take (`alignmentStartFrames`: the silence its tracks open with) and at
+  the end (`alignmentDelayFrames`; for a take the app did not get to stop,
+  when its record was last brought up to date, which it is every 30 seconds
+  and whenever any of these change); any silence written into or samples
+  taken out of its tracks mid-take to keep it in step
+  (`alignmentSilenceFrames`, `alignmentDroppedFrames`); and any short
+  silence its own buffer growing left in its tracks (`ioShiftFrames`; the
+  other tracks get the same silence at the same moment, so they stay in
+  step). `stemsAligned` says whether all of that was done exactly. If it
+  ever reads `false` (a driver reporting an implausibly long delay, say,
+  which `reportedInputLatencyFrames` then shows), check that device's tracks
+  against the others in an editor: its sound belongs `alignmentStartFrames`
+  samples later than it arrived at the start of the take and
+  `alignmentDelayFrames` by the end (the two differ only if a buffer grew
+  mid-take), which is the slowest device's `inputLatencyFrames` plus
+  `ioBlockFrames` less its own.
 
 - **Tell your mics apart** — tap (or speak into) a microphone and its strip
   lights up. Click a strip to name that mic; the name sticks to the physical
@@ -369,7 +406,10 @@ recording remain part of the physical-hardware gate.
   got a stop timestamp, repairs their file headers from the audio actually on
   disk, and shows you what it found before the main screen — with a button that
   opens the folder. Files holding less than a second are reported as empty
-  rather than offered, and are left on disk rather than deleted.
+  rather than offered, and are left on disk rather than deleted. Camera
+  movies in the take are counted on the card too, but nothing repairs them:
+  a Mac's (`.mov`) plays up to its last ten-second fragment, and one from a
+  Windows camera (`.wmv`) was not finished and may not open.
 
 <p align="center">
   <img src="images/recovered.png" alt="A card headed 'Recovered.' explaining that the app stopped before the take was finished, listing the session folder with '3 files, 4s of sound, and 1 empty file left alone', and buttons reading Done and Open the folder" width="660">

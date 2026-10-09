@@ -20,7 +20,15 @@ namespace mma {
 ///
 /// Verbatim: no line-ending conversion, so the size check compares like with
 /// like.
-inline bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
+///
+/// `commit` is handed the rename, as a callable returning bool, and runs it --
+/// or does not, and returns false. A file written from more than one thread
+/// (BackgroundRecordWriter's session.json) uses it to refuse an older text at
+/// the last moment rather than rename it over a newer one. Declined, the
+/// target is left exactly as it was and the temporary file removed, as for any
+/// other failure.
+template <typename Commit>
+inline bool replaceWithTextChecked (const juce::File& file, const juce::String& text, Commit&& commit)
 {
     const auto expectedBytes = static_cast<juce::int64> (text.getNumBytesAsUTF8());
 
@@ -46,10 +54,15 @@ inline bool replaceWithTextChecked (const juce::File& file, const juce::String& 
     if (temp.getFile().getSize() != expectedBytes)
         return false;
 
-    if (! temp.overwriteTargetFileWithTemporary())
+    if (! commit ([&temp] { return temp.overwriteTargetFileWithTemporary(); }))
         return false;
 
     return file.getSize() == expectedBytes;
+}
+
+inline bool replaceWithTextChecked (const juce::File& file, const juce::String& text)
+{
+    return replaceWithTextChecked (file, text, [] (const auto& rename) { return rename(); });
 }
 
 } // namespace mma

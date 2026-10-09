@@ -33,6 +33,37 @@ struct RecoveredSession
     std::string folder;
     std::string startedIso;
     std::vector<RecoveredFile> files;
+    /// Where this take's session.json said its local backup copy was going.
+    /// The backup folder is not always named like the card's -- one that
+    /// already existed in the backup root gets a "_2" -- so this, not the name
+    /// alone, is what ties the two copies of one take together.
+    std::string mirrorFolder;
+    /// The folder's modification time, milliseconds since 1970. Orders the
+    /// card newest first across both roots: the scans finish in either order.
+    int64_t modifiedMs = 0;
+    /// Camera movies beside the audio, in whatever container the camera
+    /// wrote (see countCameraMovie). Nothing repairs them.
+    int movieCount = 0;
+    /// Of those, the QuickTime movies (.mov) AVFoundation writes on a Mac: it
+    /// writes a movie fragment every ten seconds, so one cut off by a crash
+    /// opens up to its last fragment -- or not at all if the take was
+    /// shorter. A Windows camera's .wmv is not written that way, and nothing
+    /// is promised about where it ends.
+    int quickTimeMovieCount = 0;
+    /// The take's own record says its local backup copy had stopped being
+    /// written before the record was last refreshed -- the backup's drive
+    /// filled or failed, or the backup was switched off mid-take. That copy
+    /// ends early whatever its headers say, so it never stands in for the
+    /// card's. Read from session.json (backup on, no longer active).
+    bool backupCopyCutShort = false;
+    /// This is the local backup copy, shown because the card's copy of the
+    /// same take could not be repaired (a locked or read-only card) while this
+    /// one could -- so "Open" goes to audio that plays.
+    bool shownBecauseCardCopyUnrepairable = false;
+    /// With the above: the camera movies are in the card's copy, not this one.
+    /// Movies are never backed up, so the count is the card copy's, and the
+    /// card says where they are rather than leaving them out.
+    bool moviesInCardCopy = false;
 
     /// Files worth putting in front of the user: those with real audio, plus
     /// those whose length could not be established because the file would not
@@ -79,6 +110,15 @@ struct RecoveredTakeRow
     int playableFileCount = 0;
     int emptyFileCount = 0;
     double longestSeconds = 0.0;
+    int movieCount = 0;
+    int quickTimeMovieCount = 0;
+    /// The row is the local backup copy, because the card's copy could not be
+    /// repaired; said in the detail line, or the user opens a folder that is
+    /// not on the card they recorded to and wonders why.
+    bool isBackupBecauseCardCopyUnrepairable = false;
+    /// The movies counted above are in the card's copy, not the folder Open
+    /// goes to.
+    bool moviesInCardCopy = false;
 };
 
 RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session);
@@ -118,13 +158,48 @@ public:
     /// throwing -- a folder recovered off a card can contain anything.
     static RecoveredFile repairWavFile (const std::string& path);
 
-    /// Adds one root's scan to the list. A take found under the same folder
-    /// name in both the save location and the local backup is shown once: the
+    /// Counts `fileName`, one file in an interrupted take's folder, into
+    /// `session` when it is a camera movie: in the container this computer's
+    /// cameras write (`cameraExtension`, juce::CameraDevice's own -- ".mov"
+    /// on a Mac, ".wmv" on Windows) or any other a camera writes (.mov, .mp4,
+    /// .wmv), for a card recorded on another computer. Matched without regard
+    /// to case. A hidden file is the operating system's (isSystemClutterFile),
+    /// never a movie. Only .mov counts as a QuickTime movie.
+    ///
+    /// Windows' .wmv was not counted at all, so the recovery card never
+    /// mentioned a Windows take's movies.
+    static void countCameraMovie (RecoveredSession& session, const std::string& fileName,
+                                  const std::string& cameraExtension);
+
+    /// Adds one root's scan to the list. A take found in both the save
+    /// location and the local backup -- under the same folder name, or as the
+    /// backup folder the card copy's session.json names -- is shown once: the
     /// save location's copy wins, and the other copy's folder is remembered in
-    /// hiddenFolders rather than forgotten.
+    /// hiddenFolders rather than forgotten. The shown list is kept newest
+    /// first, because the card's button opens the first one as "the newest".
+    ///
+    /// The one exception: a card copy with files the card would not let be
+    /// repaired (a locked, read-only or failing card), beside a backup copy
+    /// that holds the whole take and repaired cleanly. Then the backup is
+    /// shown, marked shownBecauseCardCopyUnrepairable, and the card copy is
+    /// the hidden one -- see backupCanStandInForCard().
     static RecoveredSessionList mergeScan (RecoveredSessionList list,
                                            std::vector<RecoveredSession> scanned,
                                            bool scanIsPrimaryCopy);
+
+    /// How much shorter than the card's audio, where that could be measured,
+    /// the backup's may be and still count as the same take: the writer feeds
+    /// both copies block by block, so after a crash they end together, give or
+    /// take what the last moment left unwritten.
+    static constexpr double kBackupLengthToleranceSeconds = 1.0;
+
+    /// True when `backup` should be offered instead of `card`: the card copy
+    /// has files whose repair the card refused, and the backup has every file
+    /// the card copy has, all of them repaired and playable, was not cut short
+    /// mid-take, and is not measurably shorter. Anything less and the card's
+    /// copy stays the one offered, as it always was -- a backup missing the
+    /// end of the take is not a better answer than a card copy that has it.
+    static bool backupCanStandInForCard (const RecoveredSession& card, const RecoveredSession& backup);
 };
 
 } // namespace mma

@@ -229,9 +229,22 @@ public:
     /// after an unplug finalizes a partial movie.
     std::vector<TakeVideoRecord> getTakeVideoRecords() const;
 
+    /// The same list while the take is still running, for the session.json a
+    /// crash leaves behind: every movie whose writer confirmed it started and
+    /// has not failed, finished or not. getTakeVideoRecords() waits for the
+    /// finish, which is right at Stop and meant that the record refreshed
+    /// mid-take named no movie at all -- while the movie a crash cut short was
+    /// in the folder beside the sound, playable up to its last fragment.
+    std::vector<TakeVideoRecord> getTakeVideoRecordsSoFar() const;
+
     /// What each camera contributed to the take just finished: the file it
     /// wrote and how late it started. Empty when nothing recorded.
     std::vector<CombinedTakeInput> getCombinedTakeInputs() const;
+
+    /// The container this computer's cameras write their movies in,
+    /// juce::CameraDevice's own: ".mov" on a Mac, ".wmv" on Windows (and
+    /// ".mov" where cameras are not supported, for the summaries).
+    static juce::String getMovieFileExtension();
 
     /// The file names currently available enabled cameras would write,
     /// extension included, for the pre-take save summary.

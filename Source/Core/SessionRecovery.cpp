@@ -1,7 +1,9 @@
 #include "SessionRecovery.h"
+#include "TakeCompleteness.h"
 #include "Utf8Path.h"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -307,6 +309,10 @@ RecoveredTakeRow recoveredTakeRow (const RecoveredSession& session)
     row.playableFileCount = session.playableFileCount();
     row.emptyFileCount = session.emptyFileCount();
     row.longestSeconds = session.longestSeconds();
+    row.movieCount = session.movieCount;
+    row.quickTimeMovieCount = session.quickTimeMovieCount;
+    row.isBackupBecauseCardCopyUnrepairable = session.shownBecauseCardCopyUnrepairable;
+    row.moviesInCardCopy = session.moviesInCardCopy;
     return row;
 }
 
@@ -350,7 +356,93 @@ std::string recoveredTakeDetail (const RecoveredTakeRow& take)
                 + (take.emptyFileCount == 1 ? " empty file left alone"
                                             : " empty files left alone");
 
+    // Said, or the user opens a folder in the backup and wonders why it is
+    // not the card they recorded to.
+    if (take.isBackupBecauseCardCopyUnrepairable)
+        detail += "; the card's copy couldn't be repaired, so this is the local backup copy";
+
+    // The card said only what happened to the sound, and the camera movies in
+    // the same folder were not mentioned at all -- so the first anyone heard
+    // of a movie cut short was opening it. Nothing here repairs a movie.
+    if (take.movieCount > 0)
+    {
+        detail += "; " + std::to_string (take.movieCount)
+                + (take.movieCount == 1 ? " camera movie" : " camera movies");
+
+        // Movies are never backed up. A backup copy offered in the card's
+        // place has none beside it, and the folder Open goes to would leave
+        // them unaccounted for.
+        if (take.moviesInCardCopy)
+            detail += " on the card only";
+
+        // AVFoundation writes a QuickTime movie one ten-second fragment at a
+        // time, so an interrupted one plays up to its last fragment, and one
+        // shorter than that may not open at all. That is promised of .mov
+        // only: what a crash leaves of another container -- the .wmv a
+        // Windows camera writes -- is not known here, so it is not guessed at.
+        if (take.quickTimeMovieCount == take.movieCount)
+            detail += take.longestSeconds < 10.0 ? ", which may not open"
+                                                 : ", which may end up to 10 s early";
+        else
+            detail += take.movieCount == 1 ? ", which wasn't finished and may not open"
+                                           : ", which weren't finished and may not open";
+    }
+
     return detail;
+}
+
+void SessionRecovery::countCameraMovie (RecoveredSession& session, const std::string& fileName,
+                                        const std::string& cameraExtension)
+{
+    if (isSystemClutterFile (fileName))
+        return;
+
+    const auto endsWith = [&fileName] (const std::string& extension)
+    {
+        if (extension.empty() || fileName.size() <= extension.size())
+            return false;
+
+        return std::equal (extension.rbegin(), extension.rend(), fileName.rbegin(),
+                           [] (char a, char b)
+                           {
+                               return std::tolower (static_cast<unsigned char> (a))
+                                   == std::tolower (static_cast<unsigned char> (b));
+                           });
+    };
+
+    if (! (endsWith (cameraExtension) || endsWith (".mov") || endsWith (".mp4") || endsWith (".wmv")))
+        return;
+
+    ++session.movieCount;
+
+    if (endsWith (".mov"))
+        ++session.quickTimeMovieCount;
+}
+
+bool SessionRecovery::backupCanStandInForCard (const RecoveredSession& card, const RecoveredSession& backup)
+{
+    // Only a card copy in trouble is ever passed over.
+    if (card.playableFileCount() >= card.keptFileCount())
+        return false;
+
+    // A backup that stopped mid-take ends early, whatever its headers say.
+    // Either copy's record can know: the card's session.json may have been
+    // refreshed after the backup's drive stopped taking writes.
+    if (card.backupCopyCutShort || backup.backupCopyCutShort)
+        return false;
+
+    // Every file the card copy has, and every one of them playable. A file the
+    // card would not even open counts as one the card has -- nobody knows
+    // what is in it, which is the point.
+    if (backup.playableFileCount() != backup.keptFileCount()
+        || backup.keptFileCount() < card.keptFileCount())
+        return false;
+
+    // Not shorter than what could be measured on the card. A file the card
+    // would not open has no length here, so a locked card's copy measures
+    // nothing; one that opened but refused the repair still has its bytes
+    // counted, and a backup missing the end of them is not the better copy.
+    return backup.longestSeconds() + kBackupLengthToleranceSeconds >= card.longestSeconds();
 }
 
 RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
@@ -361,14 +453,48 @@ RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
     {
         const auto name = folderName (session.folder);
         const auto existing = std::find_if (list.shown.begin(), list.shown.end(),
-                                            [&name] (const RecoveredSession& candidate)
+                                            [&] (const RecoveredSession& candidate)
                                             {
-                                                return folderName (candidate.folder) == name;
+                                                if (folderName (candidate.folder) == name)
+                                                    return true;
+
+                                                // The card copy names its backup. A backup
+                                                // folder that had to take a "_2" was shown as
+                                                // a second interrupted take beside the first.
+                                                const auto& primary = scanIsPrimaryCopy ? session : candidate;
+                                                const auto& backup = scanIsPrimaryCopy ? candidate : session;
+                                                return ! primary.mirrorFolder.empty()
+                                                    && primary.mirrorFolder == backup.folder;
                                             });
+
+        // The card's copy normally wins. Not when the card refused the repair
+        // (locked, read-only, failing) and the backup took it: the card copy
+        // then still has its broken header, and the button sent the user to
+        // it while a playable copy of the same take sat in the backup folder.
+        // The backup stands in for it, carrying the card copy's movie count --
+        // movies are never backed up -- so the row still accounts for them.
+        const auto standIn = [] (RecoveredSession& backup, const RecoveredSession& card)
+        {
+            backup.shownBecauseCardCopyUnrepairable = true;
+            backup.moviesInCardCopy = card.movieCount > 0;
+            backup.movieCount = card.movieCount;
+            backup.quickTimeMovieCount = card.quickTimeMovieCount;
+        };
 
         if (existing == list.shown.end())
         {
             list.shown.push_back (std::move (session));
+        }
+        else if (scanIsPrimaryCopy && backupCanStandInForCard (session, *existing))
+        {
+            standIn (*existing, session);
+            list.hiddenFolders.push_back (std::move (session.folder));
+        }
+        else if (! scanIsPrimaryCopy && backupCanStandInForCard (*existing, session))
+        {
+            standIn (session, *existing);
+            list.hiddenFolders.push_back (std::move (existing->folder));
+            *existing = std::move (session);
         }
         else if (scanIsPrimaryCopy)
         {
@@ -382,6 +508,15 @@ RecoveredSessionList SessionRecovery::mergeScan (RecoveredSessionList list,
             list.hiddenFolders.push_back (std::move (session.folder));
         }
     }
+
+    // Newest first. The card's button is "Open the newest" and opens the first
+    // entry, which was simply whichever root's scan was merged first -- the
+    // backup folder's take from last week over the one interrupted today.
+    std::stable_sort (list.shown.begin(), list.shown.end(),
+                      [] (const RecoveredSession& a, const RecoveredSession& b)
+                      {
+                          return a.modifiedMs > b.modifiedMs;
+                      });
 
     return list;
 }

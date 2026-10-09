@@ -20,6 +20,7 @@
 #include "../Core/WriteSafetyActions.h"
 #include "../Core/UpdateCheck.h"
 #include "../Core/ShowTemplate.h"
+#include "../Core/SlowMicrophoneNotice.h"
 #include "../Platform/NullBackend.h"
 #include "CheckedTextWrite.h"
 #include <algorithm>
@@ -294,6 +295,13 @@ void Application::initialise()
     // Before anything that could be worth recording, so every entry this
     // session shares one origin.
     appStartMs = juce::Time::getMillisecondCounterHiRes();
+
+    // Before anything reads the folders they sit in. Each settings, show or
+    // camera-guard write goes to a hidden temporary file that is renamed over
+    // the real one; a crash, force-quit or power cut between the two strands
+    // the temporary file, and nothing removed them. This launch holds the
+    // single-instance lock, so none of them can be a write in progress.
+    sweepAbandonedSafeWriteTemps();
 
     // First, before anything reads a setting: the capture coordinator is built
     // with masterVolume a few lines down, and the destination is chosen below.
@@ -1107,7 +1115,7 @@ void Application::restartCapture()
     // session.json recorded 0.0 as a permanent fact about how the take was
     // made. Zero is not a small latency; it is an impossible one. Every backend
     // had worked the figure out all along and CaptureCoordinator dropped it.
-    measuredLatencyMs = capture->getMonitoringLatencyMs();
+    refreshMonitoringLatency();
 
     // The microphones that actually OPENED, not the ones that were selected.
     //
@@ -2121,21 +2129,37 @@ juce::String Application::applyBufferLadderStep (const juce::String& cause)
     const int size = bufferLadder.getCurrentSize();
     const bool midTake = capture != nullptr && capture->isRecording();
 
-    // What the monitor path costs at this size: an input block, the two-block
-    // drift cushion and an output block. "Slightly more delay" was the old
+    // What the headphones will cost at this size, from the coordinator's own
+    // sum (getMonitoringLatencyMsAt): "slightly more delay" was the old
     // wording at every rung, and at 512 samples that is over 40 ms, which
-    // §5.4 says is never to be shipped without saying so.
-    // Plus the slowest microphone's own input latency, which every channel is
-    // lined up to and the rebuilt rig will carry just the same.
-    const double inputLatencyFrames = capture != nullptr ? capture->getAlignedInputLatencyFrames() : 0;
-    const double delayMs = (4.0 * static_cast<double> (size) + inputLatencyFrames)
-                         / std::max (1.0, currentSampleRate) * 1000.0;
+    // §5.4 says is never to be shipped without saying so. The quickest
+    // microphone's own path -- no channel waits for any other in the
+    // headphones, the stems are lined up on the writer -- so a device that
+    // refuses this size and runs at 1156 frames delays its own channel, not
+    // this figure. It is the figure the Advanced panel shows once the rig is
+    // rebuilt; this notice worked its own out and read two blocks slower.
+    const auto spoken = [] (double ms)
+    {
+        return ms < 10.0 ? juce::String (ms, 1) : juce::String (juce::roundToInt (ms));
+    };
+
+    const double delayMs = capture != nullptr ? capture->getMonitoringLatencyMsAt (size) : 0.0;
+
+    // And a slower device's own path, where there is one: that microphone is
+    // that much later in the headphones, and §5.4 does not let it go unsaid.
+    const double slowestMs = capture != nullptr ? capture->getSlowestMonitoringLatencyMsAt (size) : 0.0;
 
     auto line = juce::String ("This computer could not keep up") + cause
-              + ", so the audio buffer has been increased to " + juce::String (size)
-              + " samples. The headphone delay is now about "
-              + (delayMs < 10.0 ? juce::String (delayMs, 1) : juce::String (juce::roundToInt (delayMs)))
-              + " ms";
+              + ", so the audio buffer has been increased to " + juce::String (size) + " samples";
+
+    // Nothing is monitoring, so there is no headphone delay to name.
+    if (delayMs > 0.0)
+    {
+        line += ". The headphone delay is now about " + spoken (delayMs) + " ms";
+
+        if (slowestMs - delayMs >= 1.0)
+            line += " (about " + spoken (slowestMs) + " ms for the slowest microphone)";
+    }
 
     // Fixed for the life of a stream, so the streams are reopened through the
     // same path a hot-plug takes -- the same one setBufferSizeOverride uses.
@@ -2868,10 +2892,28 @@ void Application::toggleRecording()
                     noteActivity (ActivityLevel::Failed, "Cameras", cameraProblem);
                 }
 
+                // This take's record starts with none of the last one's
+                // unplugs in it. The list is reset for the take further down,
+                // after this write -- so the start-time session.json, which is
+                // what a crash in the take's first half-minute leaves behind,
+                // carried the previous take's dropouts as this one's.
+                midTakeDropouts.clear();
+
+                // How the stems are being lined up, read just before the
+                // record that carries it -- and that the first refresh's
+                // signature is taken against -- so nothing that changed while
+                // the cameras started is missed until the next period.
+                recordTakeAlignment();
+
                 // §6.2: session.json is written at the start so a crash mid-take
                 // still leaves a record of what the rig was, and rewritten on
                 // stop to add the stop time and everything logged since.
                 writeSessionMetadata (false);
+
+                // And kept current in between, so a crash part way through
+                // leaves an account of the take up to then: the unplugs, the
+                // cameras, the backup -- not just its first instant.
+                startSessionRecordRefreshes();
 
                 noteActivity (ActivityLevel::Started, "Recording",
                               "Recording started into " + juce::File (folder).getFileName()
@@ -2984,6 +3026,7 @@ void Application::toggleRecording()
         // The stop-time session.json is written from this, not from whatever
         // the live state says by the time a camera finishes its movie.
         takeStopSnapshot.capture (liveTakeFigures (true));
+        recordTakeAlignment();
 
         // Before the folder is listed for the panel that shows what was saved,
         // so the video files are closed and their real sizes are on disk by the
@@ -3006,45 +3049,6 @@ void Application::toggleRecording()
         // records are the take's final ones -- and before recordingStartMs is
         // cleared, or every timestamp inside it would read as zero.
         writeSessionMetadata (true);
-
-        // The combined file, if it was asked for. Started only once every input
-        // is closed and complete, and run on its own thread: copying a
-        // four-hour picture is minutes of work, and none of it may happen on
-        // the thread drawing the meters.
-        //
-        // Nothing here can cost anyone the take. The inputs are finished files
-        // that this only reads, and a failure leaves the folder exactly as it
-        // was -- separate, complete, and playable.
-        if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
-        {
-            // The take's own bit depth goes with it, so the combined file's
-            // audio is written at the depth it was recorded at rather than
-            // being quietly narrowed on the way out.
-            const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
-                                                     cameraController.getCombinedTakeInputs(),
-                                                     "MIX.wav",
-                                                     takeBitDepth);
-
-            if (plan.hasWork())
-            {
-                takeCombiner.start (juce::File (currentSessionFolder), plan);
-            }
-            else if (! plan.problem.empty())
-            {
-                // The user asked for one file with the sound on it and is not
-                // getting one. buildCombinedTakePlan has always written a
-                // plain-language reason -- "None of the cameras wrote a file,
-                // so there is nothing to combine." -- and nothing in Source/
-                // ever read it, so the plan was dropped in silence and the
-                // user went looking for a file that was never attempted.
-                //
-                // TakeCombiner's own failures were already surfaced; this was
-                // the remaining hole in that chain, and it is the half that
-                // fires when the cameras failed rather than ffmpeg.
-                noteActivity (ActivityLevel::Warning, "Combined video",
-                              juce::String (plan.problem));
-            }
-        }
 
         // §10.6: the outcome is stated, not implied. Ten seconds is enough to
         // read without becoming furniture.
@@ -3095,6 +3099,61 @@ void Application::toggleRecording()
             lastTakeHeldNoAudio = lastTakeVerdict == TakeAudioVerdict::NothingWritten
                                || lastTakeVerdict == TakeAudioVerdict::OnlySilence
                                || lastTakeVerdict == TakeAudioVerdict::DroppedByApp;
+        }
+
+        // The combined file, if it was asked for. Started only once every input
+        // is closed and complete, and run on its own thread: copying a
+        // four-hour picture is minutes of work, and none of it may happen on
+        // the thread drawing the meters.
+        //
+        // After the bounded listing above, not before it: that listing is the
+        // first post-take question the card is asked, and a card that fails
+        // it is not given a combine to hang on.
+        //
+        // Nothing here can cost anyone the take. The inputs are finished files
+        // that this only reads, and a failure leaves the folder exactly as it
+        // was -- separate, complete, and playable.
+        if (combineVideoAndAudio && currentSessionFolder.isNotEmpty())
+        {
+            // The take's own bit depth goes with it, so the combined file's
+            // audio is written at the depth it was recorded at rather than
+            // being quietly narrowed on the way out.
+            const auto plan = buildCombinedTakePlan (CombinedVideoMode::Combined,
+                                                     cameraController.getCombinedTakeInputs(),
+                                                     "MIX.wav",
+                                                     takeBitDepth);
+
+            if (plan.hasWork() && takeCardUnresponsive)
+            {
+                // A card that stopped answering -- at Stop, or to the listing
+                // just above -- is not asked to be read again, as with the
+                // podcast copy below. The combine used to be: its worker hung
+                // listing the folder, so it never finished, every later take's
+                // combine queued behind it and silently never ran, and
+                // quitting asked to wait for it.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              "No combined video was made: the card stopped answering. "
+                              "Whatever reached the card is still in its separate files.");
+            }
+            else if (plan.hasWork())
+            {
+                takeCombiner.start (juce::File (currentSessionFolder), plan);
+            }
+            else if (! plan.problem.empty())
+            {
+                // The user asked for one file with the sound on it and is not
+                // getting one. buildCombinedTakePlan has always written a
+                // plain-language reason -- "None of the cameras wrote a file,
+                // so there is nothing to combine." -- and nothing in Source/
+                // ever read it, so the plan was dropped in silence and the
+                // user went looking for a file that was never attempted.
+                //
+                // TakeCombiner's own failures were already surfaced; this was
+                // the remaining hole in that chain, and it is the half that
+                // fires when the cameras failed rather than ffmpeg.
+                noteActivity (ActivityLevel::Warning, "Combined video",
+                              juce::String (plan.problem));
+            }
         }
 
         // A copy of the mix set to the delivery target's loudness, when one is
@@ -4569,6 +4628,114 @@ juce::String Application::createMirrorFolder (const juce::String& sessionFolderN
     return root.getFullPathName();
 }
 
+void Application::refreshMonitoringLatency()
+{
+    if (capture == nullptr)
+        return;
+
+    measuredLatencyMs = capture->getMonitoringLatencyMs();
+    slowestMicLatencyMs = std::max (measuredLatencyMs, capture->getSlowestMonitoringLatencyMs());
+}
+
+void Application::noteSlowMicrophone()
+{
+    // The headline figure is the quickest microphone's own path, since no
+    // channel waits for any other (§5.4). That is what most of the rig
+    // hears -- but one interface that another app holds at a 2048-frame
+    // buffer is 40 ms late in the headphones, in its own channel, while the
+    // figure reads 5 ms. Past the ceiling while the rest are within it, or
+    // several milliseconds behind them, it is said once, naming the
+    // microphone. Not for being a block behind a rig the buffer ladder has
+    // taken past the ceiling as a whole: the ladder's notice has said that.
+    if (capture == nullptr || ! capture->isMonitoring())
+        return;
+
+    std::string slowId;
+
+    if (SlowMicrophoneNotice::isFarBehind (measuredLatencyMs, slowestMicLatencyMs))
+        slowId = capture->getSlowestMonitoringDeviceId();
+
+    if (slowId == reportedSlowMicId)
+        return;
+
+    const bool wasStanding = ! reportedSlowMicId.empty();
+    reportedSlowMicId = slowId;
+
+    if (slowId.empty())
+    {
+        if (wasStanding)
+            noteActivity (ActivityLevel::Recovered, "Monitoring",
+                          "No microphone is far behind the others in the headphones any more (about "
+                              + juce::String (juce::roundToInt (slowestMicLatencyMs)) + " ms for the slowest).");
+        return;
+    }
+
+    juce::String name ("One microphone");
+
+    for (const auto& d : deviceManager.getDevices())
+        if (d.identity.key() == slowId)
+        {
+            name = juce::String (d.displayName);
+            break;
+        }
+
+    noteActivity (ActivityLevel::Warning, "Monitoring",
+                  name + " reaches the headphones about " + juce::String (juce::roundToInt (slowestMicLatencyMs))
+                      + " ms late: its interface runs at a larger buffer than the others (another app may "
+                        "have set it) or reports a longer delay. The other microphones are not held back for "
+                        "it, and its recording is lined up with theirs. If another audio app is open, "
+                        "closing it and then unplugging and replugging this microphone may bring it back.");
+}
+
+void Application::recordTakeAlignment()
+{
+    if (capture == nullptr)
+    {
+        takeMeasuredLatencyMs = measuredLatencyMs;
+        takeSlowestMicLatencyMs = slowestMicLatencyMs;
+        takeStemsAligned = false;
+        return;
+    }
+
+    takeAlignedInputLatencyFrames = capture->getAlignedInputLatencyFrames();
+
+    // What the headphones cost now that the devices have said what IO size
+    // they really run at: the quickest microphone's own path, which no other
+    // device's latency or block is added to (the stems are lined up on the
+    // writer instead). Fixed here for the take's record, so a stop-time
+    // session.json written after the engine has moved on still describes it,
+    // with the slowest microphone's own path beside it.
+    if (capture->isMonitoring())
+        refreshMonitoringLatency();
+
+    takeMeasuredLatencyMs = measuredLatencyMs;
+    takeSlowestMicLatencyMs = slowestMicLatencyMs;
+
+    // Whether the writer lined the stems up exactly; with each device's
+    // offset below, whatever it could not do can be done in an editor.
+    takeStemsAligned = capture->areStemsAligned();
+
+    for (auto& record : takeDevices)
+    {
+        const int latency = capture->getDeviceInputLatencyFrames (record.usbId);
+        record.inputLatencyFrames = latency;
+
+        // Kept only where the driver's own figure was not believed, beside
+        // the bound the stems were lined up by.
+        record.reportedInputLatencyFrames.reset();
+        if (const auto reported = capture->getDeviceReportedInputLatencyFrames (record.usbId);
+            latency >= 0 && reported.has_value() && *reported != latency)
+            record.reportedInputLatencyFrames = *reported;
+
+        record.ioBlockFrames = latency >= 0 ? capture->getDeviceIoBlockFrames (record.usbId) : 0;
+        record.alignmentDelayFrames = latency >= 0 ? capture->getDeviceAlignmentDelayFrames (record.usbId) : 0;
+        record.alignmentStartFrames = latency >= 0 ? capture->getDeviceAlignmentStartFrames (record.usbId) : 0;
+        record.alignmentSilenceFrames = latency >= 0 ? capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId) : 0;
+        record.alignmentDroppedFrames = latency >= 0 ? capture->getDeviceAlignmentDroppedFramesThisTake (record.usbId) : 0;
+        record.ioShiftFrames = latency >= 0 ? capture->getDeviceIoShiftFramesThisTake (record.usbId) : 0;
+    }
+}
+
 TakeFigures Application::liveTakeFigures (bool sessionHasStopped) const
 {
     TakeFigures f;
@@ -4604,11 +4771,8 @@ TakeFigures Application::liveTakeFigures (bool sessionHasStopped) const
     return f;
 }
 
-void Application::writeSessionMetadata (bool sessionHasStopped)
+std::string Application::buildSessionMetadataJson (bool sessionHasStopped)
 {
-    if (currentSessionFolder.isEmpty())
-        return;
-
     // Every figure below that describes the moment the take ended comes from
     // here -- see TakeStopSnapshot.
     const auto figures = takeStopSnapshot.resolve (sessionHasStopped, liveTakeFigures (sessionHasStopped));
@@ -4624,7 +4788,10 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // The size the take's streams actually ran at. The ladder can have stepped
     // on during the take; that step applies to the next one.
     meta.bufferSizeSamples = figures.bufferSizeSamples;
-    meta.measuredLatencyMs = measuredLatencyMs;
+    meta.measuredLatencyMs = takeMeasuredLatencyMs;
+    meta.slowestMicLatencyMs = takeSlowestMicLatencyMs;
+    meta.alignedInputLatencyFrames = takeAlignedInputLatencyFrames;
+    meta.stemsAligned = takeStemsAligned;
 
     // The take's roster, fixed when it started, not whoever is ticked and
     // plugged in now. A mic unplugged mid-take still has its stem in the
@@ -4663,8 +4830,11 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // Only camera writers which actually started belong in session.json. The
     // watchdog separately keeps the complete intended roster so it can report
     // a missing capture card, but inventing that card's movie filename here
-    // would make an editor look for a file which never existed.
-    for (const auto& video : cameraController.getTakeVideoRecords())
+    // would make an editor look for a file which never existed. At Stop, only
+    // the movies that finished; before it -- the record a crash leaves -- the
+    // ones being written as well, which are in the folder either way.
+    for (const auto& video : sessionHasStopped ? cameraController.getTakeVideoRecords()
+                                               : cameraController.getTakeVideoRecordsSoFar())
         meta.videos.push_back ({ video.displayName, video.fileName, false });
 
     meta.mirrorEnabled = mirrorPolicy.getState() != MirrorState::DisabledByUser;
@@ -4754,8 +4924,22 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
                                        + " frames before recording: the sound hardware delivered "
                                          "more audio than it could hand over." });
 
+    return meta.toJsonString();
+}
+
+void Application::writeSessionMetadata (bool sessionHasStopped)
+{
+    if (currentSessionFolder.isEmpty())
+        return;
+
+    // The Stop boundary for the mid-take refreshes: none of them may land
+    // after the record written here, or a finished take's session.json would
+    // go back to having no stop time and be offered as interrupted.
+    if (sessionHasStopped)
+        retireSessionRecordRefreshes();
+
     // Written to the card copy and the mirror alike, so either one stands alone.
-    const auto json = meta.toJsonString();
+    const auto json = buildSessionMetadataJson (sessionHasStopped);
 
     // The result is checked. session.json is the durable record of everything
     // above -- every dropout, every buffer change, why the backup stopped --
@@ -4773,16 +4957,165 @@ void Application::writeSessionMetadata (bool sessionHasStopped)
     // backup whose record failed to write is a folder of audio with no account
     // of how the take went -- which is the half of the pair the user reaches
     // for precisely when the card's copy is the one that went wrong.
-    if (currentMirrorFolder.isNotEmpty()
-        && ! writeTakeText (juce::File (currentMirrorFolder).getChildFile ("session.json"), juce::String (json)))
-        noteActivity (ActivityLevel::Warning, "Local backup",
-                      "Couldn't write the details file into the backup copy. The backed-up audio "
-                      "itself is there.");
+    if (currentMirrorFolder.isNotEmpty())
+    {
+        const auto mirrorRecord = juce::File (currentMirrorFolder).getChildFile ("session.json");
+
+        // At Stop, through the refreshes' own writer, so one still in flight
+        // to a slow backup drive can never be put in place over this record:
+        // refused at its rename if it gets there later, and waited for on the
+        // writer's worker -- not here -- if it is inside its rename now. The
+        // same deadline as any other write here; past it this record still
+        // lands, and still lands last.
+        const bool mirrorWritten =
+            sessionHasStopped && sessionRecordMirror != nullptr
+                ? sessionRecordMirror->writeLast (mirrorRecord.getFullPathName().toStdString(), json,
+                                                  kRemovableVolumeDeadline).value_or (false)
+                : writeTakeText (mirrorRecord, juce::String (json));
+
+        if (! mirrorWritten)
+            noteActivity (ActivityLevel::Warning, "Local backup",
+                          "Couldn't write the details file into the backup copy. The backed-up audio "
+                          "itself is there.");
+    }
+
+    if (sessionHasStopped)
+        sessionRecordMirror.reset();
 
     writeActivityLog (juce::File (currentSessionFolder));
 
     if (currentMirrorFolder.isNotEmpty())
         writeActivityLog (juce::File (currentMirrorFolder));
+}
+
+std::string Application::sessionRecordEventSignature() const
+{
+    // What a crash would otherwise take with it: each of these changes the
+    // record in a way someone reading it afterwards needs, and none of them
+    // changes often. The figures that move all the time -- the length, drift,
+    // how much was dropped -- are carried by the periodic refresh, with only
+    // the first loss counted here: the one that makes the take a lossy one.
+    const auto figures = liveTakeFigures (false);
+    const bool lossCounted = figures.framesDropped > 0 || figures.overrunSamples > 0
+                          || figures.underrunSamples > 0 || figures.framesMissedByLayout > 0
+                          || figures.backendFramesDropped > 0;
+
+    auto signature = std::to_string (midTakeDropouts.size())
+                   + "|" + std::to_string (cameraController.getTakeVideoRecordsSoFar().size())
+                   + "|" + (capture != nullptr && capture->isMirroring() ? "1" : "0")
+                   + "|" + (mirrorPolicy.wasStoppedForSpace() ? "1" : "0")
+                   + "|" + (mirrorPolicy.wasStoppedForWriteFailure() ? "1" : "0")
+                   + "|" + (capacityMonitor.getDegradationSamplePosition() >= 0 ? "1" : "0")
+                   + "|" + std::to_string (bufferLadder.getChangeLog().size())
+                   + "|" + (lossCounted ? "1" : "0");
+
+    // How the stems are being lined up: a device that has only now said its
+    // input latency, an IO block that grew and moved every other stem, an
+    // offset that had to be clamped. Each changes the offsets an editor needs
+    // to put right whatever the writer could not, and they change a handful
+    // of times a take -- so a crash just after one still leaves the offsets
+    // the files were written with.
+    if (capture != nullptr)
+    {
+        signature += capture->areStemsAligned() ? "|A" : "|a";
+
+        for (const auto& record : takeDevices)
+            signature += "|" + std::to_string (capture->getDeviceInputLatencyFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceIoBlockFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentStartFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentDelayFrames (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentSilenceFramesThisTake (record.usbId))
+                       + "," + std::to_string (capture->getDeviceAlignmentDroppedFramesThisTake (record.usbId))
+                       + "," + std::to_string (capture->getDeviceIoShiftFramesThisTake (record.usbId));
+    }
+
+    return signature;
+}
+
+void Application::refreshSessionRecordIfDue()
+{
+    if (! isRecording() || currentSessionFolder.isEmpty() || sessionRecordCard == nullptr)
+        return;
+
+    const auto nowSeconds = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    auto signature = sessionRecordEventSignature();
+
+    if (! sessionRecordSchedule.isDue (nowSeconds, signature))
+        return;
+
+    sessionRecordSchedule.written (nowSeconds, std::move (signature));
+
+    // Each device's offsets, the silence and cuts the writer has made since,
+    // and whether the stems are still lined up exactly, as they stand now:
+    // copied at the take's start and its Stop only, a crash in between left
+    // the start's figures beside the latest of everything else.
+    recordTakeAlignment();
+
+    // Built here, written elsewhere: the message thread assembles a few
+    // hundred bytes from state it already owns and hands them over. The write
+    // is the same checked temp-then-rename every record uses, on a worker
+    // that may wait on the card for as long as the card likes -- and a card
+    // already known to have stopped answering is not asked again.
+    const auto json = buildSessionMetadataJson (false);
+
+    if (! takeCardUnresponsive)
+        sessionRecordCard->submit (juce::File (currentSessionFolder).getChildFile ("session.json")
+                                       .getFullPathName().toStdString(), json);
+
+    if (currentMirrorFolder.isNotEmpty() && sessionRecordMirror != nullptr)
+        sessionRecordMirror->submit (juce::File (currentMirrorFolder).getChildFile ("session.json")
+                                         .getFullPathName().toStdString(), json);
+}
+
+void Application::startSessionRecordRefreshes()
+{
+    // A free function and two strings: the worker never reaches back into
+    // Application, so one still stuck on a dead card when the app quits holds
+    // nothing that is going away.
+    // The rename goes through the writer's commit, which refuses a refresh
+    // that reaches it after Stop -- however long the drive held it.
+    const auto write = [] (const std::string& path, const std::string& text,
+                           const BackgroundRecordWriter::Commit& commit)
+    {
+        return replaceWithTextChecked (juce::File (juce::String::fromUTF8 (path.data(), (int) path.size())),
+                                       juce::String::fromUTF8 (text.data(), (int) text.size()),
+                                       commit);
+    };
+
+    sessionRecordCard = std::make_unique<BackgroundRecordWriter> (write);
+    sessionRecordMirror = std::make_unique<BackgroundRecordWriter> (write);
+
+    // What writeSessionMetadata (false) has just put on disk, so the first
+    // refresh comes with the first change -- the microphones that would not
+    // open, a camera's start confirmed -- or in thirty seconds.
+    sessionRecordSchedule.written (juce::Time::getMillisecondCounterHiRes() / 1000.0,
+                                   sessionRecordEventSignature());
+}
+
+void Application::retireSessionRecordRefreshes()
+{
+    sessionRecordSchedule.stop();
+
+    // No refresh may land after the stop-time record, or a finished take's
+    // session.json goes back to having no stop time and is offered as
+    // interrupted at the next launch. A refresh still writing its temporary
+    // copy is refused at its rename; one inside the rename on the card is
+    // waited for within the same deadline as every other card step, and a card
+    // that does not answer in it is treated as every other step treats it:
+    // gone, for the rest of the take, so its stop-time write is skipped and
+    // the steps after this one do not wait again. A card already known to be
+    // gone is not waited on at all.
+    if (sessionRecordCard != nullptr
+        && ! sessionRecordCard->retire (takeCardUnresponsive ? std::chrono::milliseconds (0)
+                                                             : kRemovableVolumeDeadline))
+        takeCardUnresponsive = true;
+
+    sessionRecordCard.reset();
+
+    // The backup's refreshes are retired by its stop-time record itself
+    // (writeSessionMetadata), written through the same writer: the backup is
+    // on this computer and gets that record whatever its drive is doing, so it
+    // is ordered after any refresh still in flight rather than skipped.
 }
 
 void Application::followRenamedTakeFolder()
@@ -5095,10 +5428,17 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     // assertion. Idempotent, so this costs nothing on an unchanged tick.
     syncSleepInhibitor();
 
+    // A save location that was not mounted when it was checked for an
+    // interrupted take is checked again once it is.
+    rescanDestinationIfItHasAppeared();
+
     // Before anything reads the take's files: a folder renamed in Finder
     // mid-take is followed here, well inside the growth check's six seconds.
     if (isRecording())
         followRenamedTakeFolder();
+
+    // Every 30 s, and soon after anything worth recording happens.
+    refreshSessionRecordIfDue();
 
     // The assertion above holds a plugged-in Mac up with its lid shut; on
     // battery nothing can, so the performer hears it while the lid is open.
@@ -5112,6 +5452,27 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     for (const auto& exported : podcastExporter.collectFinished())
         noteActivity (exported.written ? ActivityLevel::Stopped : ActivityLevel::Warning,
                       "Podcast copy", exported.message, exported.written);
+
+    // The combined videos, likewise, once their run has finished. Failures
+    // have their own line further down; this is the news that the file the
+    // user asked for is there, which used to go unsaid -- the saved-take card
+    // is listed at Stop, minutes before the combine is done, so nothing ever
+    // named the file. Once per run, naming every file it wrote.
+    {
+        const auto combine = takeCombiner.getStatus();
+
+        if (! combine.running && combine.run != 0 && combine.run != announcedCombineRun)
+        {
+            announcedCombineRun = combine.run;
+
+            if (! combine.written.isEmpty())
+                noteActivity (ActivityLevel::Stopped, "Combined video",
+                              (combine.written.size() == 1 ? "Combined video saved: "
+                                                           : "Combined videos saved: ")
+                                  + combine.written.joinIntoString (", ") + ".",
+                              true);
+        }
+    }
 
     // The microphone answer read at launch goes stale the moment the user
     // answers the first-run prompt or revokes access in System Settings. Kept
@@ -5205,6 +5566,15 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
     {
         capture->tickDriftReporting (sinceLastCallSeconds);
         driftMeasuredSeconds += sinceLastCallSeconds;
+
+        // §5.4's headphone figures, kept current for the Advanced panel: each
+        // microphone's own path is only known once every device has said
+        // what IO size it really runs at, and can grow while it runs.
+        if (capture->isMonitoring())
+        {
+            refreshMonitoringLatency();
+            noteSlowMicrophone();
+        }
 
         // Walked over capture's channels rather than the device list: the two
         // agree only until a microphone is unplugged mid-take, and after that
@@ -6075,16 +6445,13 @@ juce::String Application::pollStatusAdvice (double sinceLastCallSeconds)
         const auto combine = takeCombiner.getStatus();
         const auto problem = juce::String (combine.problem);
 
-        if (! combine.running && problem.isNotEmpty() && problem != reportedCombineProblem)
+        if (! combine.running && problem.isNotEmpty() && combine.run != reportedCombineRun)
         {
-            reportedCombineProblem = problem;
+            reportedCombineRun = combine.run;
 
             noteActivity (ActivityLevel::Warning, "Combined video", problem);
             return problem;
         }
-
-        if (problem.isEmpty())
-            reportedCombineProblem.clear();
     }
 
     // §10.5: hardware guidance, most serious first.
@@ -6563,6 +6930,27 @@ juce::File Application::getTemplatesFolder()
     return getSupportFolder().getChildFile ("Templates");
 }
 
+void Application::sweepAbandonedSafeWriteTemps()
+{
+    const auto sweep = [] (const juce::File& folder, const std::string& stem, const std::string& extension)
+    {
+        if (! folder.isDirectory())
+            return;
+
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, ".*", juce::File::findFiles))
+            if (isAbandonedSafeWriteTemp (entry.getFile().getFileName().toStdString(), stem, extension))
+                entry.getFile().deleteFile();
+    };
+
+    const auto support = getSupportFolder();
+    sweep (support, getSettingsFile().getFileNameWithoutExtension().toStdString(),
+           getSettingsFile().getFileExtension().toStdString());
+    sweep (support, "camera-starting", ".txt");
+
+    // Every show is written this way, under its own name.
+    sweep (getTemplatesFolder(), std::string(), ".json");
+}
+
 std::vector<ShowTemplate::StoredFile> Application::scanTemplateFiles()
 {
     std::vector<ShowTemplate::StoredFile> files;
@@ -6571,6 +6959,13 @@ std::vector<ShowTemplate::StoredFile> Application::scanTemplateFiles()
                                                             juce::File::findFiles))
     {
         const auto file = entry.getFile();
+
+        // A hidden file is not a show this app saved. The one that turned up
+        // here was a save's own temporary file, stranded by a crash before its
+        // rename: read back, it was offered in the show list as a second copy
+        // of the show, or under its temporary name.
+        if (isSystemClutterFile (file.getFileName().toStdString()))
+            continue;
         const auto loaded = ShowTemplate::fromJsonString (file.loadFileAsString().toStdString());
 
         // A file that is not a template is still recorded, so saving never
@@ -7024,6 +7419,7 @@ void Application::startDestinationRecoveryScan()
 
     destinationRecoveryRoot = target;
     destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    destinationRecoveryRootWasMissing = false;
 
     // If the user's destination is the mirror root itself, the existing scan
     // already establishes the same safety fact. Do not race two header repairs
@@ -7034,15 +7430,16 @@ void Application::startDestinationRecoveryScan()
         return;
 
     const auto mutationGate = recoveryMutationGate;
+    const bool sweepWorkingFiles = nothingIsWritingAfterATake();
     const bool launched = destinationRecoveryTask.start (
-        [target, mutationGate] (const std::atomic<bool>& cancelled) mutable
+        [target, mutationGate, sweepWorkingFiles] (const std::atomic<bool>& cancelled) mutable
         {
             auto mutationLease = waitForMutationLease (
                 mutationGate, { target }, cancelled);
             if (mutationLease == nullptr)
                 return RecoveryBackgroundResult { target, true, {}, {} };
 
-            auto result = Application::runRecoveryScan (target, true, cancelled);
+            auto result = Application::runRecoveryScan (target, true, sweepWorkingFiles, cancelled);
             mutationLease.reset();
             return result;
         });
@@ -7066,6 +7463,58 @@ void Application::startDestinationRecoveryScan()
         && mirrorRecoveryRoot != destinationRecoveryRoot
         && mirrorRecoveryStatus == RecoveryScanStatus::NotStarted)
         startMirrorRecoveryScan();
+}
+
+bool Application::nothingIsWritingAfterATake() const
+{
+    // A take, a combined video and a podcast-ready copy are the only things
+    // that write those working files. None of them may be running when a
+    // scan is told it may remove one.
+    return recordingEngine.getState() == RecordingState::Idle
+        && ! takeCombiner.isRunning()
+        && ! podcastExporter.isRunning()
+        && ! cameraController.isFinalizingRecording();
+}
+
+void Application::rescanDestinationIfItHasAppeared()
+{
+    publishCompletedRecoveryScans();
+
+    if (! destinationRecoveryRootWasMissing
+        || destinationRecoveryStatus != RecoveryScanStatus::Succeeded
+        || recordingEngine.getState() != RecordingState::Idle)
+        return;
+
+    // One task serves both when the destination is the backup root itself;
+    // re-running only one side of that would leave the other waiting on it.
+    if (destinationRecoveryRoot == mirrorRecoveryRoot)
+        return;
+
+    if (juce::File (juce::String (destinationFolder)).getFullPathName().toStdString()
+            != destinationRecoveryRoot)
+        return;
+
+    // Evidence from the worker that is allowed to touch the drive, never a
+    // stat on this thread: the drive check wrote its test file there, so the
+    // location exists now. It re-checks a location it could not write on its
+    // own, which is how a card that mounts late gets here.
+    //
+    // Only a verdict reached after the scan found nothing there counts. One
+    // from before -- the card was there for the drive check and gone by the
+    // scan -- proves nothing, and would rescan on every tick.
+    publishCompletedPreflight();
+    const auto verdict = preflightResults.find (destinationFolder);
+    const auto verdictAt = preflightVerdictAtMs.find (destinationFolder);
+
+    if (verdict == preflightResults.end() || verdict->second.couldNotWrite
+        || verdictAt == preflightVerdictAtMs.end()
+        || verdictAt->second <= destinationRecoveryMissingAtMs)
+        return;
+
+    destinationRecoveryRootWasMissing = false;
+    destinationRecoveryRoot.clear();
+    destinationRecoveryStatus = RecoveryScanStatus::NotStarted;
+    startDestinationRecoveryScan();
 }
 
 void Application::startMirrorRecoveryScan()
@@ -7093,15 +7542,16 @@ void Application::startMirrorRecoveryScan()
         return;
 
     const auto mutationGate = recoveryMutationGate;
+    const bool sweepWorkingFiles = nothingIsWritingAfterATake();
     const bool launched = mirrorRecoveryTask.start (
-        [target, mutationGate] (const std::atomic<bool>& cancelled) mutable
+        [target, mutationGate, sweepWorkingFiles] (const std::atomic<bool>& cancelled) mutable
         {
             auto mutationLease = waitForMutationLease (
                 mutationGate, { target }, cancelled);
             if (mutationLease == nullptr)
                 return RecoveryBackgroundResult { target, false, {}, {} };
 
-            auto result = Application::runRecoveryScan (target, false, cancelled);
+            auto result = Application::runRecoveryScan (target, false, sweepWorkingFiles, cancelled);
             mutationLease.reset();
             return result;
         });
@@ -7120,7 +7570,7 @@ void Application::startMirrorRecoveryScan()
 }
 
 Application::RecoveryBackgroundResult Application::runRecoveryScan (
-    std::string rootPath, bool isDestinationCopy,
+    std::string rootPath, bool isDestinationCopy, bool sweepWorkingFiles,
     const std::atomic<bool>& cancelled)
 {
     RecoveryBackgroundResult result;
@@ -7137,11 +7587,29 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
         result.activity.push_back ({ level, "Interrupted take", message.toStdString() });
     };
 
+    // A constant of the platform's camera code: no device is asked.
+    const auto movieExtension = CameraController::getMovieFileExtension().toStdString();
+
     if (wasCancelled())
         return result;
 
     const juce::File root { juce::String (result.root) };
-    if (! root.isDirectory() || wasCancelled())
+    if (wasCancelled())
+        return result;
+
+    // Not there is not the same as checked. After a power cut or a kernel
+    // panic macOS checks a card before mounting it, and that can take minutes;
+    // a scan that ran first found nothing and called the card clear, so the
+    // take the crash interrupted was never repaired or offered, and new takes
+    // were allowed in beside it. Said, so the scan can be run again once the
+    // location really is there.
+    if (! root.isDirectory())
+    {
+        result.rootMissing = true;
+        return result;
+    }
+
+    if (wasCancelled())
         return result;
 
     // One level down and newest first. A card can hold hundreds of takes; an
@@ -7215,12 +7683,74 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
                     + " has a details file this app can't read, so what it says about "
                       "that take is gone. Its audio is still in that folder.");
 
+        // What a hard kill left of the combined movie or the podcast-ready
+        // copy being made after this take. Those are made after the take has
+        // stopped, so this folder is usually NOT an interrupted one. Only
+        // when nothing could be writing them now -- the caller decides that
+        // on the message thread -- and only by their own working names.
+        if (sweepWorkingFiles)
+        {
+            int removed = 0;
+
+            for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*", juce::File::findFiles))
+            {
+                if (wasCancelled())
+                    return result;
+
+                if (isAbandonedTakeWorkingFile (entry.getFile().getFileName().toStdString())
+                    && entry.getFile().deleteFile())
+                    ++removed;
+            }
+
+            if (removed > 0)
+                report (ActivityLevel::Warning,
+                        folder.getFileName()
+                        + ": SobStage stopped while it was still making the combined video or "
+                          "podcast-ready copy of this take, and the unfinished file has been "
+                          "removed. The take itself is untouched.");
+        }
+
         if (! SessionRecovery::sessionWasInterrupted (meta))
             continue;
 
         RecoveredSession session;
         session.folder = folder.getFullPathName().toStdString();
         session.startedIso = meta.startTimestampIso;
+        session.mirrorFolder = meta.mirrorPath;
+        session.modifiedMs = folder.getLastModificationTime().toMilliseconds();
+        // The backup was on and had stopped being written by the time the
+        // record was last refreshed: that copy ends early, so it is never
+        // offered in place of a card copy that could not be repaired.
+        session.backupCopyCutShort = meta.mirrorEnabled && ! meta.mirrorActive
+                                  && ! meta.mirrorPath.empty();
+
+        // The hidden half-written copy a crash left mid-replace of the take's
+        // session.json or activity.log. Its target still holds the previous
+        // version, so it is never the only copy of anything -- and on a card
+        // later opened on Windows it is a stray file in the take.
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, ".*", juce::File::findFiles))
+        {
+            const auto name = entry.getFile().getFileName().toStdString();
+
+            if (isAbandonedSafeWriteTemp (name, "session", ".json")
+                || isAbandonedSafeWriteTemp (name, "activity", ".log"))
+                entry.getFile().deleteFile();
+        }
+
+        if (wasCancelled())
+            return result;
+
+        // Camera movies are not repaired -- there is nothing in them this app
+        // can fix -- but the card must not leave them out of its account. In
+        // the container this computer's cameras write as well as the others:
+        // a Windows camera's .wmv was never counted, so a Windows take's
+        // recovery row never mentioned its movies.
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*", juce::File::findFiles))
+            SessionRecovery::countCameraMovie (session, entry.getFile().getFileName().toStdString(),
+                                               movieExtension);
+
+        if (wasCancelled())
+            return result;
 
         for (const auto& entry : juce::RangedDirectoryIterator (
                  folder, false, "*.wav", juce::File::findFiles))
@@ -7281,6 +7811,16 @@ Application::RecoveryBackgroundResult Application::runRecoveryScan (
                     folder.getFileName()
                     + " was interrupted and nothing playable survived in it. There is "
                       "nothing to recover from that folder.");
+
+            // Marked as dealt with now. Nothing is offered for it, so there is
+            // no card whose Done could do it -- and unmarked, this same failure
+            // was announced again at every launch for as long as the folder
+            // stayed among the newest. A card that refuses the write leaves it
+            // as it was, to be said again next time, which is no worse.
+            meta.stopTimestampIso = juce::Time::getCurrentTime().toISO8601 (true).toStdString();
+
+            if (! wasCancelled())
+                (void) replaceWithTextChecked (metadataFile, juce::String (meta.toJsonString()));
         }
     }
 
@@ -7327,6 +7867,12 @@ void Application::publishCompletedRecoveryScans() const
 
         status = RecoveryScanStatus::Succeeded;
 
+        if (&status == &destinationRecoveryStatus)
+        {
+            destinationRecoveryRootWasMissing = completed->rootMissing;
+            destinationRecoveryMissingAtMs = juce::Time::getMillisecondCounterHiRes();
+        }
+
         for (const auto& entry : completed->activity)
             noteActivity (entry.level, juce::String (entry.subject),
                           juce::String (entry.message));
@@ -7334,11 +7880,27 @@ void Application::publishCompletedRecoveryScans() const
         // A take mirrored to the local backup is found twice. It is shown
         // once, and the hidden copy's folder is kept so that dismissing the
         // card stamps it too -- otherwise it came back at every launch.
+        std::set<std::string> standingInBefore;
+        for (const auto& session : recoveredSessions)
+            if (session.shownBecauseCardCopyUnrepairable)
+                standingInBefore.insert (session.folder);
+
         auto merged = SessionRecovery::mergeScan (
             { std::move (recoveredSessions), std::move (hiddenRecoveredFolders) },
             std::move (completed->sessions), completed->isDestinationCopy);
         recoveredSessions = std::move (merged.shown);
         hiddenRecoveredFolders = std::move (merged.hiddenFolders);
+
+        // The card offers the backup copy of a take whose card copy the card
+        // would not let be repaired. Said in the log as well as on the card,
+        // with where it is: the card is gone once dismissed, and the log is
+        // what someone helping reads afterwards.
+        for (const auto& session : recoveredSessions)
+            if (session.shownBecauseCardCopyUnrepairable && standingInBefore.count (session.folder) == 0)
+                noteActivity (ActivityLevel::Warning, "Interrupted take",
+                              juce::File (juce::String (session.folder)).getFileName()
+                              + ": the card's copy couldn't be repaired, so the local backup copy is "
+                                "the one offered -- it is in " + juce::String (session.folder) + ".");
     };
 
     publish (mirrorRecoveryTask, mirrorRecoveryRoot, mirrorRecoveryStatus,

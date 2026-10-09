@@ -5,7 +5,27 @@ namespace mma {
 
 namespace {
     constexpr int kRowPitch = 38;
+    constexpr int kSecondDetailLine = 16;
+    constexpr int kMaxDetailLines = 4;
     constexpr int kMaxListedTakes = 5;
+
+    /// The lines JUCE will draw a take's detail on at `width`, worked out ahead
+    /// of it so the row reserved is the row needed. JUCE's rule in
+    /// GlyphArrangement: one line when it fits, otherwise the fewest lines
+    /// that beat the text's width plus an 80px allowance for ragged breaks.
+    /// The detail grew a clause at a time -- unrepaired files, empty ones, the
+    /// camera movies, the backup copy -- and a count of clauses, rather than a
+    /// measurement, cut the last of them off.
+    int detailLines (const juce::Label& label, int width)
+    {
+        const auto textWidth = label.getFont().getStringWidthFloat (label.getText());
+        const auto available = (float) juce::jmax (1, width - label.getBorderSize().getLeftAndRight());
+
+        if (textWidth < available)
+            return 1;
+
+        return juce::jlimit (1, kMaxDetailLines, (int) ((textWidth + 80.0f) / available) + 1);
+    }
 }
 
 RecoveredTakesPanel::RecoveredTakesPanel()
@@ -79,9 +99,23 @@ bool RecoveredTakesPanel::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
+int RecoveredTakesPanel::rowHeight (const Row& row, int width)
+{
+    return kRowPitch + (detailLines (*row.detail, width) - 1) * kSecondDetailLine;
+}
+
 int RecoveredTakesPanel::getContentHeight() const
 {
-    return 52 + 12 + (int) rows.size() * kRowPitch + 18 + kButtonHeight;
+    // Measured at the width the card will have. Before the panel has been
+    // given one, that is the card's full width, which is what it gets in any
+    // window wide enough to show it whole.
+    const int width = (getWidth() > 0 ? getCardWidth() : kCardWidth) - 2 * kCardPadding;
+    int rowsHeight = 0;
+
+    for (const auto& row : rows)
+        rowsHeight += rowHeight (row, width);
+
+    return 52 + 12 + rowsHeight + 18 + kButtonHeight;
 }
 
 void RecoveredTakesPanel::layOutContent (juce::Rectangle<int> area)
@@ -91,7 +125,7 @@ void RecoveredTakesPanel::layOutContent (juce::Rectangle<int> area)
 
     for (auto& row : rows)
     {
-        auto line = area.removeFromTop (kRowPitch);
+        auto line = area.removeFromTop (rowHeight (row, area.getWidth()));
         row.name->setBounds (line.removeFromTop (18));
         row.detail->setBounds (line);
     }

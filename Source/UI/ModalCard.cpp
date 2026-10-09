@@ -61,9 +61,14 @@ int ModalCard::getRequiredHeight() const
     return kCardPadding * 2 + headingBlockHeight() + 16 + getContentHeight();
 }
 
+int ModalCard::getCardWidth() const
+{
+    return juce::jmin (kCardWidth, juce::jmax (280, getWidth() - 32));
+}
+
 juce::Rectangle<int> ModalCard::getCardBounds() const
 {
-    const int width = juce::jmin (kCardWidth, juce::jmax (280, getWidth() - 32));
+    const int width = getCardWidth();
     const int height = juce::jmin (getRequiredHeight(), juce::jmax (160, getHeight() - 32));
 
     return juce::Rectangle<int> (width, height).withCentre (getLocalBounds().getCentre());

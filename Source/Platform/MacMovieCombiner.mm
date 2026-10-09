@@ -109,6 +109,13 @@ std::string combineMovieWithSound (const std::string& videoPath,
         if (CMTimeCompare (cursor, kCMTimeZero) <= 0)
             return "The sound ended before the picture began.";
 
+        // Ends where the shorter stream does, as the ffmpeg combine does
+        // (-shortest). The cameras stop after the sound, so the picture used
+        // to run on past the end of the sound -- a silent tail on the Mac's
+        // combined file that the Windows one never had.
+        if (CMTimeCompare (cursor, videoDuration) < 0)
+            [pictureOut removeTimeRange:CMTimeRangeMake (cursor, CMTimeSubtract (videoDuration, cursor))];
+
         AVAssetExportSession* exporter =
             [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetPassthrough];
 
@@ -116,9 +123,21 @@ std::string combineMovieWithSound (const std::string& videoPath,
             return "macOS couldn't set up the combined file.";
 
         NSURL* outputUrl = fileUrl (outputPath);
-        [[NSFileManager defaultManager] removeItemAtURL:outputUrl error:nil];
 
-        exporter.outputURL = outputUrl;
+        // Written under a hidden working name and renamed into place only once
+        // complete. Exported straight to the final name, a combine cut short
+        // by "Quit now", a crash or a power cut left a multi-gigabyte file
+        // with no index -- unplayable, and named exactly like the finished
+        // one. Hidden by a leading dot (the app's own rule for files that are
+        // not part of the take), and still .mov, which the export requires.
+        NSURL* workingUrl = [[outputUrl URLByDeletingLastPathComponent]
+                                URLByAppendingPathComponent:[@"." stringByAppendingString:outputUrl.lastPathComponent]];
+        NSFileManager* files = [NSFileManager defaultManager];
+
+        [files removeItemAtURL:outputUrl error:nil];
+        [files removeItemAtURL:workingUrl error:nil];
+
+        exporter.outputURL = workingUrl;
         exporter.outputFileType = AVFileTypeQuickTimeMovie;
         exporter.shouldOptimizeForNetworkUse = NO;
 
@@ -139,7 +158,7 @@ std::string combineMovieWithSound (const std::string& videoPath,
                 // finished. This runs on a detached worker, so waiting here
                 // never holds up quitting.
                 dispatch_semaphore_wait (done, dispatch_time (DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC));
-                [[NSFileManager defaultManager] removeItemAtURL:outputUrl error:nil];
+                [files removeItemAtURL:workingUrl error:nil];
                 return "Stopped before the combined file was finished.";
             }
         }
@@ -147,9 +166,16 @@ std::string combineMovieWithSound (const std::string& videoPath,
         if (exporter.status != AVAssetExportSessionStatusCompleted)
         {
             const auto why = describe (exporter.error);
-            [[NSFileManager defaultManager] removeItemAtURL:outputUrl error:nil];
+            [files removeItemAtURL:workingUrl error:nil];
             return why.empty() ? std::string ("macOS couldn't finish the combined file.")
                                : "macOS couldn't finish the combined file: " + why;
+        }
+
+        NSError* moveError = nil;
+        if (! [files moveItemAtURL:workingUrl toURL:outputUrl error:&moveError])
+        {
+            [files removeItemAtURL:workingUrl error:nil];
+            return "Couldn't name the finished combined file: " + describe (moveError);
         }
 
         return {};

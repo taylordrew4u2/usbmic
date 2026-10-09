@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STR
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
     "Minimum macOS version supported by SobStage")
 
-project(SobStage VERSION 1.13.24 LANGUAGES CXX)
+project(SobStage VERSION 1.13.25 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,6 +55,7 @@ add_library(mma_core STATIC
     Source/Core/ControllerContentionDetector.cpp
     Source/Core/Metering.cpp
     Source/Core/MonitorBus.cpp
+    Source/Core/FeedbackDetector.cpp
     Source/Core/AlarmTone.cpp
     Source/Core/MixBusLimiter.cpp
     Source/Core/RingBuffer.cpp
@@ -84,6 +85,7 @@ add_library(mma_core STATIC
     Source/Core/TakeFolderTracker.cpp
     Source/Core/WriteSafetyActions.cpp
     Source/Core/SetupAdvisor.cpp
+    Source/Core/StemAligner.cpp
     Source/Core/WritePipeline.cpp
     Source/Core/TapToNameDetector.cpp
     Source/Core/PermissionGuidance.cpp
@@ -361,7 +363,8 @@ if (MMA_BUILD_APP)
         Source/UI/AppLookAndFeel.cpp
         Source/UI/ModalCard.cpp
         Source/UI/SaveLocationPrompt.cpp
-        Source/UI/SetupGuidePanel.cpp)
+        Source/UI/SetupGuidePanel.cpp
+        Source/UI/RecoveredTakesPanel.cpp)
     target_compile_definitions(layout_probe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
         JUCE_STANDALONE_APPLICATION=1)
     target_include_directories(layout_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
